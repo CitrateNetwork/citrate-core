@@ -244,13 +244,65 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
  * must not imply otherwise.
  */
 /**
+ * C1-V5 — the member's validator key as the bond reads give it (the rule #354's S7 read uses):
+ * `MemberBond.pubkey()` once the bond has activated (kept after an exit), else this node's own key.
+ * An activated bond whose key did not read, or a grant whose bond state is unread, has no key yet.
+ */
+export function memberKeyRule(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): { kind: "bond"; key: string } | { kind: "node" } | { kind: "unread"; reason: string } {
+  if (s.bondPubkey && /^0x[0-9a-fA-F]{64}$/.test(s.bondPubkey)) return { kind: "bond", key: s.bondPubkey.toLowerCase() };
+  if (s.bondActivated === true) return { kind: "unread", reason: "your bond's validator key isn't read yet (MemberBond.pubkey()), so these rewards can't be matched to it" };
+  if (s.hasGrant && s.bondActivated === null) return { kind: "unread", reason: "your bond isn't read yet, so the validator key these rewards belong to isn't known" };
+  return { kind: "node" };
+}
+
+/** fxEARN — `memberKeyRule` as one dependency value: the bond key, "node", or "unread". */
+export function memberKeyRuleKey(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): string {
+  const r = memberKeyRule(s);
+  return r.kind === "bond" ? r.key : r.kind;
+}
+
+/**
+ * #391 — whether a node_validator_earnings answer belongs to the member's validator key; null = it
+ * does, otherwise why not. `expected` is the key that was asked for (`MemberBond.pubkey()`), or
+ * undefined when the node's own key was read (no bond has activated). A missing or malformed
+ * `proposerPubkey`, or one that isn't the expected key, fails closed. (The reasons avoid the words
+ * "proposer key", which the rewards view reads as "no key minted yet".)
+ */
+export function earningsKeyCheck(expected: string | undefined, proposerPubkey: unknown): string | null {
+  const short = (k: string) => k.slice(0, 10) + "…" + k.slice(-6);
+  if (typeof proposerPubkey !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(proposerPubkey)) {
+    return "node_validator_earnings didn't name a readable key (" + JSON.stringify(proposerPubkey) + "), so its figures can't be matched to your validator key";
+  }
+  if (expected !== undefined && expected.toLowerCase() !== proposerPubkey.toLowerCase()) {
+    return "this node reads rewards for key " + short(proposerPubkey) + ", which is not your bond's validator key " + short(expected) + " (MemberBond.pubkey())";
+  }
+  return null;
+}
+
+/**
  * The bond reads the app keeps from a grant read (observed, never persisted): `MemberBond.activated()`,
  * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
  * does not send, is null (unread).
  */
-export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> {
-  if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null };
-  return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null };
+/**
+ * #362 B-1 (contract v1.2 §1) — why the bond path's Claim is not offered, or null when it may be.
+ * The bond's claimRewards() reverts KycRequired unless MemberBond.isKycVerified(), so a member whose
+ * rewards are claimed through the bond (an activated bond, or registered stake from the grant) is
+ * offered Claim only once the grant read says the flag is true. The identity provider's kyc_status
+ * claim is never a substitute. Off the bond path this returns null (that path keeps the live check).
+ */
+export function bondClaimBlocked(s: Pick<AppState, "bondActivated" | "bondedStake" | "hasGrant" | "bondKycVerified">): string | null {
+  const throughBond = s.bondActivated === true || (s.hasGrant && s.bondedStake > 0);
+  if (!throughBond || s.bondKycVerified === true) return null;
+  if (s.bondKycVerified === false) {
+    return "Claiming needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.";
+  }
+  return "Claim waits for MemberBond.isKycVerified(), which is not read yet; the bond's claimRewards() requires it.";
+}
+
+export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> {
+  if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: null };
+  return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null, bondKycVerified: g.isKycVerified === true };
 }
 
 export function describeBond(g: {
@@ -746,6 +798,8 @@ export class Store {
   private validatorArmed = false;
   // Join-8 — the generation of the newest activation read; older responses are ignored.
   private activationGen = 0;
+  // #556 — the generation of the newest refreshEarnings call; an older rewards read never writes.
+  private earningsGen = 0;
   // Join-8 — a read is in flight (the 15 s poll does not start another meanwhile).
   private activationInFlight = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
@@ -1530,9 +1584,10 @@ export class Store {
    * state is unread, has NO key yet: never the node's, which may be another key. null = no key.
    */
   private async memberValidatorKey(): Promise<string | null> {
-    const s = this.state;
-    if (s.bondPubkey && /^0x[0-9a-fA-F]{64}$/.test(s.bondPubkey)) return s.bondPubkey.toLowerCase();
-    if (s.bondActivated === true || (s.hasGrant && s.bondActivated === null)) return null;
+    // One rule for the registry reads and the rewards read (memberKeyRule).
+    const rule = memberKeyRule(this.state);
+    if (rule.kind === "bond") return rule.key;
+    if (rule.kind === "unread") return null;
     if (!this.validatorPubkey) {
       const v = await bridge.node.validatorEarnings();
       if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
@@ -1636,7 +1691,7 @@ export class Store {
       let grantPatch: Partial<AppState> | null = null;
       let grantRead = false;
       let bondActivated = this.state.bondActivated;
-      let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> | null = null;
+      let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> | null = null;
       let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
@@ -1647,7 +1702,13 @@ export class Store {
       // reads wait for the key), and chain#331: so is an un-activated bond's lock, which gates the
       // activation offer. Both are retried on the next due poll until they land.
       const needActivation =
-        this.state.hasGrant && (bondActivated === null || (bondActivated === true && this.state.bondPubkey === null) || (bondActivated === false && this.state.bondUnlocked === null));
+        this.state.hasGrant &&
+        (bondActivated === null ||
+          (bondActivated === true && this.state.bondPubkey === null) ||
+          (bondActivated === false && this.state.bondUnlocked === null) ||
+          // #362 B-1: an activated bond not (yet) verified on chain is re-read, so a verification
+          // made meanwhile offers Claim.
+          (bondActivated === true && this.state.bondKycVerified !== true));
       // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
       // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
       const needStake = !stakeRead;
@@ -2578,6 +2639,8 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // fxEARN: the reason Node › Rewards shows instead of Claim, so the agent never promises a claim the app refuses.
+      claimBlocked: bondClaimBlocked(s),
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
@@ -4819,18 +4882,70 @@ export class Store {
    * no longer shown as rewards. A failed read keeps `rewards` null (unknown is not zero) and says so.
    */
   async refreshEarnings(): Promise<void> {
-    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
-      this.setState({ rewards: null });
+    // #556: every call starts a new generation, so a read still in flight from an earlier call never
+    // writes over what this call (or a later one) decides, early returns included.
+    const gen = ++this.earningsGen;
+    const gate = this.earningsGate();
+    if (gate.kind === "skip") {
+      this.setState(gate.patch);
       return;
     }
+    const { key, ruleKey } = gate;
+    // A result is committed only while this is the newest call and the member-key rule, read again
+    // now, still names the key that was read. Otherwise the current rule decides what is shown.
+    const commit = (patch: Pick<AppState, "rewards" | "rewardsError">, toast?: string) => {
+      if (gen !== this.earningsGen) return;
+      const now = this.earningsGate();
+      if (now.kind === "skip") {
+        this.setState(now.patch);
+        return;
+      }
+      if (now.ruleKey !== ruleKey) {
+        this.setState({ rewards: null, rewardsError: "your validator key changed while its rewards were being read, so those figures aren't shown" });
+        return;
+      }
+      this.setState(patch);
+      if (toast) this.toast(toast);
+    };
+    // Contract rule 2: an empty or malformed figure is unknown, never 0.
+    const dec = (w: unknown): string | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w).toString() : null);
     try {
-      const v = await bridge.node.validatorEarnings();
-      this.setState({ rewards: { totalWei: BigInt(v.totalWei).toString(), claimableWei: BigInt(v.claimableWei).toString() } });
+      const v = await bridge.node.validatorEarnings(key);
+      const keyMismatch = earningsKeyCheck(key, v.proposerPubkey);
+      if (keyMismatch) {
+        commit({ rewards: null, rewardsError: keyMismatch });
+        return;
+      }
+      const totalWei = dec(v.totalWei);
+      const claimableWei = dec(v.claimableWei);
+      if (totalWei == null || claimableWei == null) {
+        commit({ rewards: null, rewardsError: "node_validator_earnings returned a figure that isn't a number" });
+        return;
+      }
+      commit({ rewards: { totalWei, claimableWei }, rewardsError: null });
     } catch (err) {
-      this.setState({ rewards: null });
-      this.toast("Validator rewards unavailable — " + String((err as Error).message ?? err));
+      const msg = String((err as Error).message ?? err);
+      commit({ rewards: null, rewardsError: msg }, "Validator rewards unavailable — " + msg);
     }
   }
+
+  /**
+   * #394 / #391 / #556 — what the rewards read may do in the current state. No registered stake and
+   * no activated bond: no validator rewards (`rewards` null, no reason). An unread key reads nothing
+   * and says why. Otherwise read rewardsOf for the member's validator key (C1-V5):
+   * MemberBond.pubkey() once the bond has activated, the node's own key (no key sent) when none has.
+   */
+  private earningsGate():
+    | { kind: "skip"; patch: Pick<AppState, "rewards" | "rewardsError"> }
+    | { kind: "read"; key: string | undefined; ruleKey: string } {
+    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
+      return { kind: "skip", patch: { rewards: null, rewardsError: null } };
+    }
+    const rule = memberKeyRule(this.state);
+    if (rule.kind === "unread") return { kind: "skip", patch: { rewards: null, rewardsError: rule.reason } };
+    return { kind: "read", key: rule.kind === "bond" ? rule.key : undefined, ruleKey: memberKeyRuleKey(this.state) };
+  }
+
 
   /**
    * CORE-C2-F-1 (@rule8) — the REAL Claim. This REPLACES the old sim-ceremony
@@ -4885,25 +5000,46 @@ export class Store {
   }
 
   async claimRewards(): Promise<void> {
-    // Payout gate: KYC is required to take SALT out (participation is not gated).
-    if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
     // C1-V review round 2: choose the claim path from the SAME signal Rust's user_claim uses
     // (grant_status::claims_through_bond: bondDeployed && (hasValidator || bondActivated)), read now.
     // Registry stake is NOT that signal, and neither is hasValidator alone: after a full exit both
     // read 0 / false, yet the activated bond can still claim the key's matured rewards. If the
     // grant status cannot be read, stop with the reason.
     let validator: boolean;
+    let pubkey: string | null = null;
+    let bondKycVerified = false;
     try {
       const g = await bridge.membership.grantStatus(this.identity().wallet);
       validator = g.bondDeployed && (g.hasValidator || g.bondActivated === true);
+      // #394 / #416: the bond claims for MemberBond.pubkey(); the pre-check reads that key's rewardsOf.
+      pubkey = g.bondPubkey ?? null;
+      bondKycVerified = g.isKycVerified === true;
+      // Fold the fresh bond reads, so Node › Earning's Claim follows what was just read.
+      this.setState(bondReadsFromGrant(g));
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
       return;
     }
+    // Payout gate (KYC is required to take SALT out; participation is not gated). Contract v1.2 §1
+    // (#362 B-1): the bond's claimRewards() requires MemberBond.isKycVerified() and reverts
+    // KycRequired otherwise, so the bond path is gated on the chain's flag alone; the identity
+    // provider's kyc_status claim is never a substitute. The other path keeps the live identity check.
+    if (validator) {
+      if (!bondKycVerified) {
+        this.toast("Claiming rewards needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.");
+        return;
+      }
+      if (!pubkey) {
+        this.toast("Claim unavailable — your bond's validator key isn't read yet (MemberBond.pubkey()). Try again in a moment.");
+        return;
+      }
+    } else if (!(await this.assertPayoutKyc("Claiming rewards"))) {
+      return;
+    }
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
-      // A validator's pre-check reads rewardsOf.claimableNow, the figure "Claimable now" shows.
-      res = await bridge.agent.claim({ validator });
+      // A validator's pre-check reads rewardsOf(bond key).claimableNow, the figure "Claimable now" shows.
+      res = await bridge.agent.claim(validator ? { validator, pubkey } : { validator });
     } catch (err) {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;

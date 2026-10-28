@@ -8,6 +8,7 @@ import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
+import { bondClaimBlocked, memberKeyRuleKey } from "../shell/store";
 import { CHAIN_ID_TEXT, rpcHost } from "../network/profile";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
@@ -65,9 +66,12 @@ export function Node({ store, s }: SurfaceProps) {
   // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
   // activated flag reconciles after mount; #348 review).
   const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-  }, [store, s.nTab, readsRewards]);
+  }, [store, s.nTab, readsRewards, rewardsKey]);
   // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
   // activation shows here with its way out (Try again / Forget), as on S7.
   useEffect(() => {
@@ -157,15 +161,19 @@ export function Node({ store, s }: SurfaceProps) {
   const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
   const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
   // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
-  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? "not read yet" : "Not a validator";
+  // #391: a read that failed or wasn't for the member's validator key says why (s.rewardsError).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? (s.rewardsError ?? "not read yet") : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
+  // #362 B-1: on the bond path Claim is offered only once MemberBond.isKycVerified() reads true (the
+  // bond's claimRewards() reverts otherwise); until then the reason shows instead of the button.
+  const claimBlocked = bondClaimBlocked(s);
   const claimNote =
     rClaim == null
       ? "Validator rewards are paid to the block producer only."
       : rClaim < 5
         ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
-        : "Claimable now is above the 5 SALT dust threshold.";
+        : "Claimable now is at or above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
@@ -520,11 +528,16 @@ export function Node({ store, s }: SurfaceProps) {
                   {v == null ? "—" : fmt2(v)}
                 </span>
                 <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{v == null ? rewardsReason : "SALT · " + rewardsSrc}</span>
-                {label === "Claimable now" && (
-                  <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
-                    Claim
-                  </button>
-                )}
+                {label === "Claimable now" &&
+                  (claimBlocked ? (
+                    <span data-testid="claim-blocked" style={{ fontSize: 11.5, color: "var(--tx-2)", marginTop: 4, lineHeight: 1.45 }}>
+                      {claimBlocked}
+                    </span>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
+                      Claim
+                    </button>
+                  ))}
               </div>
             ))}
           </div>

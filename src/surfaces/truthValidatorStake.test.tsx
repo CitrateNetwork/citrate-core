@@ -508,10 +508,13 @@ describe("#348 round 2 — the claim path is chosen from the same signal as Rust
   it("an exited validator (registry stake 0, has_validator) with claimable rewards takes the validator path", async () => {
     store.setState({ bondedStake: 0 });
     vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
-    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({}));
+    // #394: the validator path pre-checks rewardsOf for the bond's key (MemberBond.pubkey()).
+    const bondKey = "0x" + "66".repeat(32);
+    // #362 B-1: the bond path needs MemberBond.isKycVerified() on chain.
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondPubkey: bondKey, isKycVerified: true }));
     const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
     await store.claimRewards();
-    expect(claim).toHaveBeenCalledWith({ validator: true });
+    expect(claim).toHaveBeenCalledWith({ validator: true, pubkey: bondKey });
   });
 
   it("a bonded stake without has_validator does not take the validator path", async () => {

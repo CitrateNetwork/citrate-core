@@ -372,7 +372,7 @@ export interface NodeDomain {
    * validator honestly returns zeros. This is the CORRECT source for validator
    * earnings; `ContributionAccounting.claimable` is a different accrual.
    */
-  validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
+  validatorEarnings(pubkey?: string): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
   /**
    * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
    * plain follower and never mints its `proposer.key`; arming respawns it with
@@ -460,7 +460,7 @@ export interface AgentDomain {
    * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
    * the sim impl is guarded out of packaged builds and never claims for real.
    */
-  claim(opts?: { validator: boolean }): Promise<ClaimResult>;
+  claim(opts?: { validator: boolean; pubkey?: string | null }): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).

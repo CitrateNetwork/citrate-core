@@ -21,6 +21,7 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
 import { readStakeSalt, readsValidatorRewards, saltFromWei, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
+import { memberKeyRuleKey } from "../shell/store";
 import { rpcHost, CHAIN_ID_TEXT } from "../network/profile";
 import { grantExplanation } from "../data/grantCopy";
 
@@ -83,9 +84,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
   // once the node poll has reconciled the stake / bond after mount.
   const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     void store.refreshEarnings();
-  }, [store, readsRewards]);
+  }, [store, readsRewards, rewardsKey]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
@@ -122,7 +126,8 @@ export function Wallet({ store, s }: SurfaceProps) {
   const wsaltStr = "—";
   const stakedSub = stakeRead == null ? (stakeUnread ? NOT_READ : STAKE_NOT_READ) : stakeRead > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
-  const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
+  // #391: unknown rewards say why (not the member's validator key, or the read failed).
+  const rewardsStr = rewardsTotal == null ? (s.rewardsError ? "— · " + s.rewardsError : "—") : fmt2(rewardsTotal);
   const grantStr = grantUnread ? NOT_READ : s.hasGrant ? grantSaltStr + " SALT" : "—";
 
   // core#425 — Receive shows the wallet this app signs with: the device key in the custody vault

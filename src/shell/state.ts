@@ -482,6 +482,8 @@ export interface AppState {
    * per-day or per-source split: no contract exposes one, so none is shown.
    */
   rewards: { totalWei: string; claimableWei: string } | null;
+  /** #391 — why `rewards` is null when a read was attempted (e.g. not the member's key); null = no error. */
+  rewardsError: string | null;
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
    * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
@@ -507,6 +509,12 @@ export interface AppState {
    * only inside the lock). null = not read. Observed, never persisted.
    */
   bondUnlocked: boolean | null;
+  /**
+   * Contract v1.2 §1 (#362 B-1) — `MemberBond.isKycVerified()` from the grant read: the gate the bond's
+   * `claimRewards()` checks (reverts KycRequired otherwise). null = not read, or no bond. Observed,
+   * never persisted. The identity provider's kyc_status claim is never a substitute for it.
+   */
+  bondKycVerified: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
@@ -901,11 +909,13 @@ export function freshState(pid: string): AppState {
     hasGrant: false,
     hasSbt: false,
     rewards: null,
+    rewardsError: null,
     validatorActivation: null,
     validatorCounts: null,
     bondActivated: null,
     bondPubkey: null,
     bondUnlocked: null,
+    bondKycVerified: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

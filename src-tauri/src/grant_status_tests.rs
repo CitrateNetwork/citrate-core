@@ -610,8 +610,16 @@ fn user_claim_routes_through_claims_through_bond() {
         .nth(1)
         .and_then(|rest| rest.split("\n}\n").next())
         .unwrap_or_default();
-    assert!(body.contains("claims_through_bond"), "user_claim must route with claims_through_bond");
+    // #416: the routing lives in validator_claim, which user_claim calls.
+    assert!(body.contains("validator_claim("), "user_claim must route through validator_claim");
+    let helper = src
+        .split("pub(crate) fn validator_claim<")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_default();
+    assert!(helper.contains("claims_through_bond"), "validator_claim must route with claims_through_bond");
     assert!(!body.contains("g.bond_deployed && g.has_validator"));
+    assert!(!helper.contains("g.bond_deployed && g.has_validator"));
 }
 
 // C1-V5 (UI truth contract v1.1 §1): the validator key is `MemberBond.pubkey()` where the bond
@@ -732,4 +740,97 @@ fn no_bond_has_no_unlocked_reading() {
     let rpc = RpcClient::with_transport(MockRpc::new(responses));
     let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
     assert_eq!(status.bond_unlocked, None);
+}
+
+// ---------------------------------------------------------------------------
+// fxEARN — the r1005 member whose validator bond is activated, replayed from recorded live reads
+// (fixtures/r1005/member-bond-reads-2026-10-27.json). Pins the whole earnings chain the app uses:
+// member wallet → bondOf → the MemberBond clone → its pubkey() → rewardsOf(that key), and the
+// claim that pays it. Any request the recording does not hold fails, so a changed selector,
+// target or argument is caught rather than answered.
+// ---------------------------------------------------------------------------
+struct R1005Replay(Vec<(String, String, String)>);
+impl R1005Replay {
+    fn load() -> (String, Self) {
+        let v: JsonValue = serde_json::from_str(include_str!(
+            "../../fixtures/r1005/member-bond-reads-2026-10-27.json"
+        ))
+        .expect("fixture parses");
+        let calls = v["calls"]
+            .as_array()
+            .expect("calls")
+            .iter()
+            .map(|c| {
+                (
+                    c["to"].as_str().unwrap_or_default().to_string(),
+                    c["data"].as_str().unwrap_or_default().to_string(),
+                    c["result"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        (v["member"].as_str().unwrap_or_default().to_string(), Self(calls))
+    }
+}
+impl RpcTransport for R1005Replay {
+    fn call(&self, body: JsonValue) -> Result<JsonValue, RpcError> {
+        let to = body["params"][0]["to"].as_str().unwrap_or_default().to_ascii_lowercase();
+        let data = body["params"][0]["data"].as_str().unwrap_or_default().to_ascii_lowercase();
+        let hit = self.0.iter().find(|(t, d, _)| *t == to && *d == data);
+        match hit {
+            Some((_, _, r)) => Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": r})),
+            None => Err(RpcError::MissingField(format!("not in the r1005 recording: {to} {data}"))),
+        }
+    }
+}
+
+const R1005_BOND: &str = "0x88fdccc0d0f6a3906803f339e20026b5d8d1d73b";
+const R1005_KEY: &str = "0xb4a646a56e3946943f0014459e88595c45737745e0421e201ac1d3f9320ff748";
+
+#[test]
+fn r1005_member_resolves_to_its_activated_bond_and_key() {
+    let (member, t) = R1005Replay::load();
+    let rpc = RpcClient::with_transport(t);
+    let g = read_grant_status(&rpc, &member).expect("every read is in the recording");
+    assert_eq!(g.bond_address, R1005_BOND);
+    assert!(g.bond_deployed);
+    assert_eq!(g.bond_activated, Some(true));
+    assert_eq!(g.bond_pubkey.as_deref(), Some(R1005_KEY));
+    assert!(g.has_validator);
+    assert_eq!(g.bonded_stake_wei, "32000000000000000000000");
+    assert_eq!(g.attributed_stake_wei, "32000000000000000000000");
+    assert!(g.has_sbt);
+    assert!(!g.is_kyc_verified, "live r1005: MemberBond.isKycVerified() reads false");
+    assert_eq!(g.unlock_block, Some(16_041_992));
+    assert!(claims_through_bond(&g));
+}
+
+#[test]
+fn r1005_member_rewards_are_read_for_the_bond_key_and_match_the_claim() {
+    let (member, t) = R1005Replay::load();
+    let rpc = RpcClient::with_transport(t);
+    let g = read_grant_status(&rpc, &member).expect("grant");
+    // The figure the app shows: rewardsOf(MemberBond.pubkey()).
+    let shown = crate::node::validator_earnings_for(
+        &rpc,
+        crate::addresses::validator_registry(),
+        g.bond_pubkey.as_deref(),
+        || Err("the node's own key must not be read for a member with a bond".to_string()),
+    )
+    .expect("earnings");
+    assert_eq!(shown.proposer_pubkey, R1005_KEY);
+    assert_eq!((shown.total_wei.as_str(), shown.claimable_wei.as_str()), ("0", "0"));
+    // The claim the app builds: MemberBond.claimRewards() on the same bond, for the same figure.
+    let claim = crate::agent::validator_claim(&rpc, crate::addresses::validator_registry(), Ok(g))
+        .expect("claim")
+        .expect("claims through the bond");
+    assert_eq!(claim.0, R1005_BOND);
+    assert_eq!(claim.1.to_string(), shown.claimable_wei);
+}
+
+#[test]
+fn r1005_replay_refuses_a_read_it_did_not_record() {
+    let (_, t) = R1005Replay::load();
+    let rpc = RpcClient::with_transport(t);
+    // The bond's own address is not a member: bondOf(bond) was never recorded, so it can't answer.
+    assert!(read_grant_status(&rpc, R1005_BOND).is_err());
 }
