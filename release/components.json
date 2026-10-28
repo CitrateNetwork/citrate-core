@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "f6b6f3e451a1f8d5eb59eeb03717d41726bf5207"
+        "rev": "ad11ed9df0d898dda2c0b8704e64fcc809a44d47"
       },
       "federation": {
-        "rev": "f6b6f3e451a1f8d5eb59eeb03717d41726bf5207",
+        "rev": "ad11ed9df0d898dda2c0b8704e64fcc809a44d47",
         "status": "match",
-        "note": "The node rev is f6b6f3e4, the r1006 restart node (chain #437: main with #430, #428, #431, #433 (d939d4ec), then #434 and #437, plus the r1006 ops files; fed#331), genesis 0xa3651a27 unchanged; a descendant of 9a32147e and c384fc98 (the node 0.5.1 shipped). citrate-federation#413 moves [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core and citrate-commd [[drift]] rows to it and merges before this (Rule 12)."
+        "note": "The node rev is ad11ed9d, chain main with the sync hardening on top of f6b6f3e4 (chain #437: #430, #428, #431, #433, #434, #437 and the r1006 ops files; fed#331); genesis 0xa3651a27 unchanged; a descendant of 9a32147e and c384fc98 (the node 0.5.1 shipped). citrate-federation#420 moves [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core and citrate-commd [[drift]] rows to it from f6b6f3e4 (#413) and merges before this (Rule 12)."
       },
       "build": {
         "kind": "cargo",
@@ -37,17 +37,13 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-f6b6f3e451a1",
-          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-28 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-28 (owner-directed, RC52 r1006 restart), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x024ad6062348f2a2962966f83b637c0c, every input except git_sha identical to the d939d4ec and 9a32147e builds. As with 9a32147e, a clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
-        },
-        "x86_64-unknown-linux-gnu": {
-          "sha256": "7e5abafc012a734f90b35da1fa3c4706f042903f9f692da714cedd4e0f1c458e",
-          "evidence": "DGX lane fixed asset (the node rebuild does not reproduce, chain#427), built on citrate-core-linux-build 2026-10-28 19:51Z: `cargo build --release --locked -p citrate-node --bin citrate` with CARGO_PROFILE_RELEASE_DEBUG=0, from citrate-chain origin/main at f6b6f3e4 (git_dirty=false), rustc 1.96.0; posted on fed#331 c.6479105183; consensus --json fingerprint with no config 0x512d2bfb7520c96941884b4d92263dbd (identical on both Linux arches and on the macOS build); under the r1006 producer config (prod-3) 0x024ad6062348f2a2962966f83b637c0c, equal to the macOS build's under the app's r1006 config"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "sha256": "800a35393f42f2ea910d8b1f9bd0786a6aa54a4f4f5cd96ae82418c443cf3354",
-          "evidence": "DGX lane fixed asset (the node rebuild does not reproduce, chain#427), built on the DGX 2026-10-28: `cargo build --release --locked -p citrate-node --bin citrate` with CARGO_PROFILE_RELEASE_DEBUG=0, from citrate-chain origin/main at f6b6f3e4 (git_dirty=false), rustc 1.96.0; posted on fed#331 c.6479105183; consensus --json fingerprint with no config 0x512d2bfb7520c96941884b4d92263dbd (identical on both Linux arches and on the macOS build); under the r1006 producer config (prod-3) 0x024ad6062348f2a2962966f83b637c0c, equal to the macOS build's under the app's r1006 config"
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-ad11ed9df0d8",
+          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-28 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-28 (RC52), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x353646fb15b9c03ac7e5bb06b2f0ca02 (no config: 0x0ff604c39354583a04c54ec0aea866bd), git_dirty false; every input except git_sha identical to the f6b6f3e4 build. A clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
         }
+      },
+      "pending": {
+        "x86_64-unknown-linux-gnu": "DGX lane (citrate-core-linux-build (O-17)): `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV, git_dirty=false), rustc 1.96.0, uploaded as a fixed asset (the rebuild does not reproduce, chain#427; docs/RELEASE_LINUX.md); the sha256 is posted on fed#331, then pinned here inline",
+        "aarch64-unknown-linux-gnu": "DGX lane (spark-2e01): `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at the rev pinned above (= build-sidecar.sh MIN_CHAIN_REV, git_dirty=false), rustc 1.96.0, uploaded as a fixed asset (the rebuild does not reproduce, chain#427; docs/RELEASE_LINUX.md); the sha256 is posted on fed#331, then pinned here inline"
       }
     },
     {

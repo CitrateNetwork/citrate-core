@@ -51,7 +51,7 @@
       ],
       "addressBook": "addresses/40204.json",
       "addressBookSha256": "724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b",
-      "minChainRev": "f6b6f3e451a1f8d5eb59eeb03717d41726bf5207",
+      "minChainRev": "ad11ed9df0d898dda2c0b8704e64fcc809a44d47",
       "pending": {}
     },
     "genesis-2026-12": {

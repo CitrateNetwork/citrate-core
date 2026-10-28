@@ -30,12 +30,13 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # build-hermes.sh in new trees of the same build root, uploaded under these new names and verified by
 # download. hermes reproduces from a clean target dir; the node does not (a second clean build gave
 # ea53cdc9..., different inlining), so its pin is the uploaded first build: stage that asset.
-# 2026-10-28 (RC52, r1006 restart): citrate is citrate-chain f6b6f3e4 (chain #437, MIN_CHAIN_REV),
+# 2026-10-28 (RC52): citrate is citrate-chain ad11ed9d (chain main with the sync hardening, after
+# f6b6f3e4 / chain #437; MIN_CHAIN_REV),
 # built on the release Mac with build-sidecar.sh in a new tree of the same build root (rustc 1.96.0,
 # --locked), uploaded under this new name and verified by download. Like 9a32147e, the pin is the
 # uploaded first build: stage that asset.
 # Not uploaded yet: node-agent, comms-member-daemon, cluster-daemon.
-049543e1d03b5a46bb54fbf8d85d8d39e30f2d91a9e499f18224abf7a8efe593  citrate-aarch64-apple-darwin-f6b6f3e451a1
+b805bf5bad3556989e29ff94263b3068efb5a85dcd761581c9113bfb12a888e5  citrate-aarch64-apple-darwin-ad11ed9df0d8
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369
 192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
