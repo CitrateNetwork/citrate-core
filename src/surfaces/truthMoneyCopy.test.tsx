@@ -17,7 +17,7 @@ vi.mock("../bridge/mode", () => ({
   assertSimAllowed: () => {},
 }));
 
-import { Onboarding, S3, S5 } from "../onboarding/Onboarding";
+import { MembershipCheckout, Onboarding, S3, S5 } from "../onboarding/Onboarding";
 import { Community } from "./Community";
 import { MEMBERSHIP_PRICING_URL } from "../data/membership";
 import { Wallet } from "./Wallet";
@@ -85,7 +85,8 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("onboarding S3 (membership) uses it", () => {
-    expectOneStory(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />));
+    // #576: S3 opens on the free-node choice; the membership screen is the member checkout.
+    expectOneStory(renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />));
   });
 
   it("onboarding S5 before and after the grant uses it", () => {
@@ -148,7 +149,9 @@ describe("V12 — no in-app price until core-membership serves one", () => {
   const PRICE = /\$\s?\d/;
 
   it("S3 shows a 'See membership pricing' link and no price", () => {
-    const html = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />);
+    // #576: the pricing link lives on the member checkout; S3's free-node choice shows no price at all.
+    expect(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />)).not.toMatch(PRICE);
+    const html = renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />);
     expect(html).not.toMatch(PRICE);
     expect(html).toContain("See membership pricing");
     expect(html).toContain(MEMBERSHIP_PRICING_URL);
