@@ -10,6 +10,6 @@
     "release-inside-lock": { "validatorWord": "Validator active", "phase": "active" },
     "lock-elapsed": { "validatorWord": "Validator active", "phase": "active" },
     "release": { "validatorWord": "Exiting", "phase": "exiting" },
-    "exit-matured": { "validatorWord": "Exiting", "phase": "exiting" }
+    "exit-matured": { "validatorWord": "Bond returned", "phase": "exited" }
   }
 }
