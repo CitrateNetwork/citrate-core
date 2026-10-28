@@ -499,9 +499,14 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
         : memExpiry
           ? "expires " + memExpiry
           : "expiry not set";
-  const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
-  const mb =
-    s.entitlement === "active"
+  // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
+  // price is shown only on the checkout itself.
+  const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
+  // A free user has no membership to be "active": a neutral "free" badge, never the green one.
+  const memBadge = freeUser ? "free" : s.entitlement === "active" ? "active" : s.entitlement;
+  const mb = freeUser
+    ? ["var(--srf-2)", "var(--line-1)", "var(--tx-2)"]
+    : s.entitlement === "active"
       ? ["var(--ok-bg)", "var(--ok)", "var(--ok)"]
       : s.entitlement === "lapsed"
         ? ["var(--danger-bg)", "var(--danger)", "var(--danger)"]
@@ -1088,6 +1093,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </span>
                 <span
                   className="mono"
+                  data-testid="membership-badge"
                   style={{
                     fontSize: 9.5,
                     letterSpacing: ".1em",
@@ -1103,17 +1109,28 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </span>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
-                  Renew ↗
-                </button>
+                {freeUser ? (
+                  // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.becomeMember()}>
+                    Become a member ↗
+                  </button>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
+                    Renew ↗
+                  </button>
+                )}
                 {/* Q-A.1 (Rule 1) — the Stripe customer-portal link has no backend
                     in this build; honest DISABLED state, not a toast excuse. Renew
-                    (left) is the REAL wired checkout path. */}
-                <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
+                    (left) is the REAL wired checkout path. A free user has nothing to cancel. */}
+                {!freeUser && <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />}
               </div>
-              <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}
-              </p>
+              {!freeUser && (
+                <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
+                  On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours.
+                  {/* The grant sentence only for someone who holds a grant. */}
+                  {s.hasGrant && <> The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}</>}
+                </p>
+              )}
             </div>
             {s.hasSbt && (
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>

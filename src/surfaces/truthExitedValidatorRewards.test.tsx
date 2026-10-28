@@ -71,6 +71,9 @@ const exitedGrant: GrantStatus = {
   bondedStakeWei: "0",
   hasValidator: false,
   bondActivated: true,
+  // C1-V5: the bond keeps the key it activated with after the exit.
+  bondPubkey: "0x" + "33".repeat(32),
+  bondUnlocked: true,
   unlockBlock: 16_000_000,
   isUnlocked: true,
   isKycVerified: true,
@@ -177,13 +180,13 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
       expect(html).not.toContain("Activate validator");
     }
     // A bond that reads not activated (MemberBond.activated() = false) is offered activation.
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
     expect(html).toContain("Activate validator");
   });
 
   // Join-8 (#354): the activation offer moved to S7; S6 points to it.
   it("a granted bond with no registered stake is still offered activation (in S7)", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
     expect(html).toContain("Bond locked · not staked");
     expect(html).toContain("next: activate your validator, after the local model below");
   });
@@ -260,7 +263,7 @@ describe("#348 round 2 — MemberBond.activated() loads after a restart, and Rew
   it("once activated() has read, a stopped node with a settled grant does not re-read it every poll", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     // Both reads landed (activated() and, since the stake gate, stakeOf): nothing left to read.
-    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondedStakeRead: true, bondActivated: false });
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);

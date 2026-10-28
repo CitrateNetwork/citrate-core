@@ -20,9 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use citrate_core_kit::supervisor::{
-    BackoffPolicy, ChildWatch, Clock, ControlResult, ControlToken, DeadlinePublisher,
-    DeadlineState, Desired, HealthCheck, Phase, PublicationRefused, Readiness, Receipt,
-    SidecarSpec, Supervisor, SupervisorConfig, SupervisorState, DEADLINE_RECORDS,
+    BackoffPolicy, ChildWatch, Clock, CommitRefused, ControlResult, ControlToken,
+    DeadlinePublisher, DeadlineState, Desired, HealthCheck, Phase, PublicationRefused, Readiness,
+    Receipt, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState, DEADLINE_RECORDS,
 };
 use lifecycle::fixture::{
     pgrep, pid_alive, pid_reaped, sh_bin, sleep_bin, OwnedFixture, SUITE_PREFIX,
@@ -48,6 +48,11 @@ fn fast_backoff(max_retries: u32) -> BackoffPolicy {
 
 /// A receipt read that rides out a briefly contended cell: `Unknown` (the bounded read found
 /// the cell busy) is retried for up to a second, so assertions see the real receipt.
+/// An activation step with nothing to do (the tests that use it are about ticket currency).
+fn activate_nothing() -> Result<(), std::convert::Infallible> {
+    Ok(())
+}
+
 fn receipt_of(sup: &Supervisor, token: ControlToken) -> Receipt {
     let deadline = Deadline::after(Duration::from_secs(1));
     loop {
@@ -1674,7 +1679,10 @@ fn publication_ticket_released_before_stop_settles_is_in_the_complete_scope() {
     let current = sup
         .admit_publication("seed")
         .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
-    assert!(current.commit().is_ok(), "a current ticket becomes active");
+    assert!(
+        current.commit(activate_nothing).is_ok(),
+        "a current ticket becomes active"
+    );
     let ticket = sup
         .admit_publication("bearer")
         .unwrap_or_else(|e| panic!("admission while running: {e:?}"));
@@ -1683,9 +1691,9 @@ fn publication_ticket_released_before_stop_settles_is_in_the_complete_scope() {
         ControlResult::Accepted(t) => t,
         other => panic!("Stop: {other:?}"),
     };
-    let stale = match ticket.commit() {
-        Err(stale) => stale,
-        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    let stale = match ticket.commit(activate_nothing) {
+        Err(CommitRefused::Stale(stale)) => stale,
+        other => panic!("a ticket admitted before Stop must not become active after it: {other:?}"),
     };
     stale.cleaned();
     let settled = wait_for(ACQUIRE, Duration::from_millis(5), || {
@@ -1758,9 +1766,9 @@ fn publication_released_after_the_readers_end_is_in_the_complete_scope() {
         Receipt::Pending,
         "the Stop waits at the gate"
     );
-    let stale = match ticket.commit() {
-        Err(stale) => stale,
-        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    let stale = match ticket.commit(activate_nothing) {
+        Err(CommitRefused::Stale(stale)) => stale,
+        other => panic!("a ticket admitted before Stop must not become active after it: {other:?}"),
     };
     stale.cleaned();
     gate.release();
@@ -1848,9 +1856,9 @@ fn a_dropped_stale_ticket_keeps_the_stop_open() {
         ControlResult::Accepted(t) => t,
         other => panic!("Stop: {other:?}"),
     };
-    let stale = match ticket.commit() {
-        Err(stale) => stale,
-        Ok(()) => panic!("a ticket admitted before Stop must not become active after it"),
+    let stale = match ticket.commit(activate_nothing) {
+        Err(CommitRefused::Stale(stale)) => stale,
+        other => panic!("a ticket admitted before Stop must not become active after it: {other:?}"),
     };
     drop(stale); // never cleaned: the file is still there
     let receipt = settle(&sup, stop, ACQUIRE);
@@ -1964,12 +1972,16 @@ fn a_ticket_from_a_replaced_intent_never_becomes_active() {
         Some(Desired::Running),
         "the service is meant to run again"
     );
-    match ticket.commit() {
-        Err(stale) => {
+    match ticket.commit(activate_nothing) {
+        Err(CommitRefused::Stale(stale)) => {
             assert_eq!(stale.name(), "bearer");
             stale.cleaned();
         }
-        Ok(()) => panic!("a ticket from a replaced intent must not become the active reference"),
+        other => {
+            panic!(
+                "a ticket from a replaced intent must not become the active reference: {other:?}"
+            )
+        }
     }
     assert!(matches!(
         settle(&sup, start, ACQUIRE),
@@ -2700,6 +2712,161 @@ fn publisher_exit_leaves_admission_unavailable_without_replacement() {
         "no replacement"
     );
     assert_eq!(sup.status().state, SupervisorState::Running);
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// While a publication's activation step runs, no Stop can commit: the step and the currency
+/// check are one critical section, so the file can never become active under an intent that a
+/// Stop has already replaced.
+#[test]
+fn no_stop_commits_while_a_publication_activates() {
+    let fx = OwnedFixture::new("pub-activate");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-activate"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+    let during = ticket.commit(|| {
+        // A Stop from another thread while the file is being made active.
+        let r = std::thread::scope(|s| s.spawn(|| sup.request_stop()).join());
+        Ok::<_, std::convert::Infallible>(r)
+    });
+    let during = match during {
+        Ok(Ok(r)) => r,
+        other => panic!("INCONCLUSIVE: the activation step did not complete: {other:?}"),
+    };
+    assert!(
+        !matches!(during, ControlResult::Accepted(_)),
+        "a Stop committed while the publication was being activated: {during:?}"
+    );
+    assert_eq!(sup.lifecycle().map(|l| l.open_tickets), Some(0));
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop after the activation: {other:?}"),
+    };
+    assert!(
+        matches!(settle(&sup, stop, ACQUIRE), Receipt::Complete { .. }),
+        "a committed ticket leaves nothing for the Stop to wait on"
+    );
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// An activation step that fails leaves the ticket open: the Stop names the publication until
+/// the caller removes what it wrote and says so.
+#[test]
+fn a_failed_activation_keeps_the_ticket_open_until_cleaned() {
+    let fx = OwnedFixture::new("pub-actfail");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-actfail"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+    let open = match ticket.commit(|| Err::<(), _>("rename failed")) {
+        Err(CommitRefused::Failed { ticket, error }) => {
+            assert_eq!(error, "rename failed");
+            ticket
+        }
+        other => panic!("a failed activation must be reported with its ticket: {other:?}"),
+    };
+    assert_eq!(
+        sup.lifecycle().map(|l| l.open_tickets),
+        Some(1),
+        "a failed activation must not release the publication"
+    );
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop: {other:?}"),
+    };
+    let settled = wait_for(ACQUIRE, Duration::from_millis(5), || {
+        match receipt_of(&sup, stop) {
+            Receipt::Pending | Receipt::Unknown { .. } => None,
+            r => Some(r),
+        }
+    });
+    match settled {
+        Ok((Receipt::Incomplete { remaining, .. }, _)) => assert!(
+            remaining.iter().any(|r| r == "publication:bearer"),
+            "{remaining:?}"
+        ),
+        other => panic!("a Stop with an uncleaned publication is not Complete: {other:?}"),
+    }
+    open.cleaned();
+    let released = wait_for(ACQUIRE, Duration::from_millis(10), || {
+        (sup.lifecycle().map(|l| l.phase) == Some(Phase::Stopped)).then_some(())
+    });
+    assert!(released.is_ok(), "cleaning the ticket leaves quarantine");
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// An activation step that unwinds drops the ticket unresolved: the publication stays owned.
+#[test]
+fn an_activation_that_unwinds_keeps_the_publication_owned() {
+    let fx = OwnedFixture::new("pub-actpanic");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-actpanic"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = ticket.commit(|| -> Result<(), std::convert::Infallible> {
+            panic!("deliberate: the activation step fails by unwinding")
+        });
+    }));
+    assert!(unwound.is_err(), "the activation step unwound as intended");
+    assert_eq!(
+        sup.lifecycle().map(|l| l.open_tickets),
+        Some(1),
+        "an unwound activation must not release the publication"
+    );
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("Stop after the unwind: {other:?}"),
+    };
+    match &settle(&sup, stop, ACQUIRE) {
+        Receipt::Incomplete { remaining, .. } => assert!(
+            remaining.iter().any(|r| r == "publication:bearer"),
+            "{remaining:?}"
+        ),
+        other => panic!("a Stop with an unresolved publication is not Complete: {other:?}"),
+    }
+    drop(sup);
+    fx.assert_clean();
+}
+
+/// A stale ticket never runs its activation step.
+#[test]
+fn a_stale_ticket_never_runs_its_activation_step() {
+    let fx = OwnedFixture::new("pub-actstale");
+    let mut cfg = SupervisorConfig::new(fx.leaf_spec("lcf-pub-actstale"), fx.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(500);
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    running_pid(&sup, &fx);
+    let ticket = sup
+        .admit_publication("bearer")
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: admission while running: {e:?}"));
+    assert!(matches!(sup.request_stop(), ControlResult::Accepted(_)));
+    let mut ran = false;
+    match ticket.commit(|| {
+        ran = true;
+        Ok::<(), std::convert::Infallible>(())
+    }) {
+        Err(CommitRefused::Stale(stale)) => stale.cleaned(),
+        other => panic!("a ticket admitted before Stop must not become active: {other:?}"),
+    }
+    assert!(!ran, "the activation step ran for a stale ticket");
     drop(sup);
     fx.assert_clean();
 }

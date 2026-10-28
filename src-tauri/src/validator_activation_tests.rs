@@ -793,3 +793,28 @@ fn tripwire_the_command_budgets_both_transports() {
     assert!(body.contains("Budgeted::new(&local"), "the local transport is budgeted");
     assert!(!body.contains("read_activation_status(\n        &public,"), "the raw public transport is not passed");
 }
+
+// chain#331 / owner decision 2026-10-19: activation only inside the bond lock. `MemberBond.activate`
+// reverts `ActivationWindowClosed` once `isUnlocked()` is true, so the step's gate needs the flag AS
+// READ: a failed or non-bool answer is None (unread), never "locked".
+#[test]
+fn the_bonds_lock_is_read_as_is_and_an_unread_lock_is_none() {
+    assert_eq!(IS_UNLOCKED, keccak4("isUnlocked()"));
+    for (word, want) in [(Some(0u128), Some(false)), (Some(1u128), Some(true)), (Some(7u128), None), (None, None)] {
+        let mut chain = granted(false, None);
+        if let Some(v) = word {
+            chain = chain.call(BOND, IS_UNLOCKED, ret(&[w(v)]));
+        }
+        let st = read(&chain, None, Some(NODE_KEY), None);
+        assert_eq!(st.bond_unlocked, want, "isUnlocked() word {word:?}");
+        assert_eq!(st.bond_deployed, Some(true), "the other bond reads still stand");
+    }
+}
+
+#[test]
+fn no_bond_means_no_lock_read() {
+    let chain = Chain::default().call(VAULT, BOND_OF, ret(&[addr_word(BOND)])).call(BOND, ACTIVATED, "0x".to_string());
+    let st = read(&chain, None, Some(NODE_KEY), None);
+    assert_eq!(st.bond_deployed, Some(false));
+    assert_eq!(st.bond_unlocked, None);
+}

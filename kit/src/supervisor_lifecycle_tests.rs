@@ -4,10 +4,8 @@
 
 /// A service whose binary does not exist: every spawn fails at once, on every OS.
 fn missing_bin_config(tag: &str, max_retries: u32) -> SupervisorConfig {
-    let dir = std::env::temp_dir().join(format!(
-        "citrate-core-sup-lc-{tag}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("citrate-core-sup-lc-{tag}-{}", std::process::id()));
     let spec = SidecarSpec::new(
         format!("lc-{tag}"),
         dir.join("no-such-binary"),
@@ -217,7 +215,11 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     };
     assert_eq!(start.intent_sequence, 2);
     assert!(matches!(wait_receipt(&sup, start), Receipt::Failed { .. }));
-    assert_eq!(sup.status().restarts, 2, "one more attempt under a fresh budget");
+    assert_eq!(
+        sup.status().restarts,
+        2,
+        "one more attempt under a fresh budget"
+    );
 
     let stop = match sup.request_stop() {
         ControlResult::Accepted(t) => t,
@@ -226,7 +228,10 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     assert_eq!(stop.intent_sequence, 3);
     match wait_receipt(&sup, stop) {
         Receipt::Complete { scope } => {
-            assert!(!scope.contains(&"child".to_string()), "there was no child: {scope:?}")
+            assert!(
+                !scope.contains(&"child".to_string()),
+                "there was no child: {scope:?}"
+            )
         }
         other => panic!("{other:?}"),
     }
@@ -234,12 +239,19 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     assert_eq!(snap.phase, Phase::Stopped);
     assert_eq!(snap.desired, Desired::Stopped);
     assert_eq!(sup.status().state, SupervisorState::Off);
-    assert!(snap.revision > rev_before, "every change bumps the revision");
+    assert!(
+        snap.revision > rev_before,
+        "every change bumps the revision"
+    );
     assert!(matches!(
         sup.request_stop(),
         ControlResult::AlreadySatisfied(_)
     ));
-    assert_eq!(sup.status().restarts, 2, "Stop never consumes failure budget");
+    assert_eq!(
+        sup.status().restarts,
+        2,
+        "Stop never consumes failure budget"
+    );
 }
 
 #[test]
@@ -282,11 +294,21 @@ fn deadline_overlay_arms_up_to_its_fixed_size_and_frees_on_release() {
         assert!(p.arm(7, 1, seq, Duration::from_secs(60)));
     }
     assert_eq!(p.armed_records(), DEADLINE_RECORDS);
-    assert!(!p.arm(7, 1, 99, Duration::from_secs(60)), "no record beyond the overlay");
+    assert!(
+        !p.arm(7, 1, 99, Duration::from_secs(60)),
+        "no record beyond the overlay"
+    );
     p.release(7, 1, 3);
     assert_eq!(p.armed_records(), DEADLINE_RECORDS - 1);
-    assert!(p.arm(7, 1, 99, Duration::from_secs(60)), "a freed record is reused");
-    assert_eq!(p.expired(7, 1, 3), Some(false), "a released control has no record");
+    assert!(
+        p.arm(7, 1, 99, Duration::from_secs(60)),
+        "a freed record is reused"
+    );
+    assert_eq!(
+        p.expired(7, 1, 3),
+        Some(false),
+        "a released control has no record"
+    );
 }
 
 #[test]
@@ -301,8 +323,16 @@ fn a_deadline_read_compares_the_monotonic_clock_without_the_publisher() {
         instance: 1,
         intent_sequence: 1,
     };
-    assert_eq!(p.record_state(1, token), Some(DeadlineState::Armed), "never marked");
-    assert_eq!(p.expired(1, 1, 1), Some(true), "but the read sees the deadline passed");
+    assert_eq!(
+        p.record_state(1, token),
+        Some(DeadlineState::Armed),
+        "never marked"
+    );
+    assert_eq!(
+        p.expired(1, 1, 1),
+        Some(true),
+        "but the read sees the deadline passed"
+    );
 }
 
 #[test]
@@ -317,14 +347,21 @@ fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
     };
     assert_eq!(p.record_state(1, a), Some(DeadlineState::Expired));
     p.release(1, 1, 1);
-    assert!(p.arm(2, 1, 5, Duration::from_secs(60)), "the same record, rewritten");
+    assert!(
+        p.arm(2, 1, 5, Duration::from_secs(60)),
+        "the same record, rewritten"
+    );
     let b = ControlToken {
         app_epoch: 1,
         instance: 2,
         intent_sequence: 5,
     };
     assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
-    assert_eq!(p.expired(2, 1, 5), Some(false), "A's mark does not carry over to B");
+    assert_eq!(
+        p.expired(2, 1, 5),
+        Some(false),
+        "A's mark does not carry over to B"
+    );
 }
 
 #[test]
@@ -339,7 +376,10 @@ fn the_publisher_marks_expiry_within_its_cadence() {
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while p.record_state(3, token) != Some(DeadlineState::Expired) {
-        assert!(std::time::Instant::now() < deadline, "the publisher never marked it");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the publisher never marked it"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -347,10 +387,19 @@ fn the_publisher_marks_expiry_within_its_cadence() {
 #[test]
 fn joining_a_deadline_only_ever_tightens_it() {
     let p = idle_publisher();
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)), "arms when absent");
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)), "a looser join is accepted");
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)),
+        "arms when absent"
+    );
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)),
+        "a looser join is accepted"
+    );
     assert_eq!(p.expired(4, 1, 1), Some(false));
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::ZERO), "a tighter join moves it earlier");
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::ZERO),
+        "a tighter join moves it earlier"
+    );
     assert_eq!(p.expired(4, 1, 1), Some(true));
     assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)));
     assert_eq!(p.expired(4, 1, 1), Some(true), "never moved later again");
@@ -430,8 +479,14 @@ fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     let at_settle = p.expired_at_settle(4, 1, 2);
     let _ = go.send(());
     let _ = armer.join();
-    assert_eq!(read, None, "INCONCLUSIVE: the paused write did not make the read torn");
-    assert!(at_settle, "an indeterminate expiry at settlement counts as expired");
+    assert_eq!(
+        read, None,
+        "INCONCLUSIVE: the paused write did not make the read torn"
+    );
+    assert!(
+        at_settle,
+        "an indeterminate expiry at settlement counts as expired"
+    );
     assert!(
         !p.expired_at_settle(4, 1, 2),
         "once readable, a control without a record has not expired"
@@ -562,6 +617,49 @@ fn publication_tickets_never_release_on_drop() {
     }
 }
 
+/// Tripwire: `PublicationTicket::commit` runs the caller's activation step inside the same
+/// critical section as the currency check. The step must run before the lock is dropped and
+/// before the publication is resolved; a commit that returns first and leaves activation to the
+/// caller reopens the window in which a Stop settles while a file becomes active.
+#[test]
+fn publication_commit_activates_inside_the_critical_section() {
+    let source = include_str!("supervisor.rs");
+    let start = source
+        .find("    pub fn commit<T, E>(")
+        .expect("PublicationTicket::commit takes an activation step");
+    let body = &source[start..];
+    let end = body.find("\n    }\n").expect("commit body ends");
+    let body = &body[..end];
+    let lock = body
+        .find("self.shared.lock()")
+        .expect("commit takes the cell lock");
+    let activate = body
+        .find("activate()")
+        .expect("commit runs the activation step");
+    let resolve = body
+        .find("resolve_publication(")
+        .expect("commit resolves the publication");
+    assert!(lock < activate, "activation runs under the cell lock");
+    assert!(
+        activate < resolve,
+        "the publication resolves only after activation"
+    );
+    let between = &body[lock..activate];
+    assert!(
+        !between.contains("return Ok"),
+        "commit must not return success before activating"
+    );
+    for (at, _) in between.match_indices("drop(c)") {
+        let after = &between[at..];
+        let next = after.find(';').map_or(after, |i| &after[i + 1..]);
+        assert!(
+            next.trim_start()
+                .starts_with("return Err(CommitRefused::Stale"),
+            "the lock is dropped before activation only on the stale path"
+        );
+    }
+}
+
 #[test]
 fn releasing_an_owner_frees_only_its_records() {
     let p = idle_publisher();
@@ -628,13 +726,25 @@ fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
     };
     assert!(matches!(wait_receipt(&a, ta), Receipt::Complete { .. }));
     assert!(matches!(wait_receipt(&b, tb), Receipt::Complete { .. }));
-    assert_eq!(b.receipt(ta), Receipt::Expired, "B never answers for A's token");
-    assert_eq!(a.receipt(tb), Receipt::Expired, "A never answers for B's token");
+    assert_eq!(
+        b.receipt(ta),
+        Receipt::Expired,
+        "B never answers for A's token"
+    );
+    assert_eq!(
+        a.receipt(tb),
+        Receipt::Expired,
+        "A never answers for B's token"
+    );
     drop(a);
     let a2 = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a2");
     a2.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
     let _ = a2.request_stop();
-    assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
+    assert_eq!(
+        a2.receipt(ta),
+        Receipt::Expired,
+        "a replacement never answers for the old one"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -955,7 +1065,10 @@ fn already_satisfied_start_requires_a_running_monitor_source_check() {
             "start_intent answers AlreadySatisfied without checking the monitor: {cond}"
         );
     }
-    assert!(found > 0, "tripwire: start_intent has no AlreadySatisfied answer to check");
+    assert!(
+        found > 0,
+        "tripwire: start_intent has no AlreadySatisfied answer to check"
+    );
     let monitor = fn_source(src, "fn run_monitor(", "");
     let guard_at = monitor
         .find("MonitorExit(")

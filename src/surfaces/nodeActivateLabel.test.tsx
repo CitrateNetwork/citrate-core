@@ -18,6 +18,8 @@ function syncedState(principalWei: string | null): AppState {
   s.hasGrant = true;
   // #348's offer gate: activation is offered only for a bond that reads not activated.
   s.bondActivated = false;
+  // chain#331 (#554): and only while the bond's lock reads running (an unread lock offers nothing).
+  s.bondUnlocked = false;
   s.activation = principalWei == null ? null : ({ principalWei, bondActivated: false } as unknown as ActivationStatusView);
   return s;
 }

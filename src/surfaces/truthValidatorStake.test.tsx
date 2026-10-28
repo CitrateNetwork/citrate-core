@@ -77,7 +77,7 @@ describe("chainTruth helpers", () => {
   it("derives the §1 validator word from the registry only (V4)", () => {
     expect(validatorWord(0, null, false)).toBe("Not a validator");
     // #348 review: the bond-locked word needs MemberBond.activated() = false; unread is null ("—").
-    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true, false, false)).toBe("Bond locked · not staked");
     expect(validatorWord(0, null, true)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
@@ -186,7 +186,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond is not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondedStakeRead: true, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false })} />);
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
   });
@@ -205,7 +205,7 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never the grant", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondedStakeRead: true, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false })} />);
     expect(html).not.toContain(">32,000<");
     expect(html).toMatch(/bond locked · not staked/i);
   });
@@ -373,6 +373,7 @@ describe("#348 review — the activation ceremony states the bond principal, not
           principalWei: wei(33_500),
           unlockBlock: 16_200_000,
           unlockTimestamp: 1_822_000_000,
+          bondUnlocked: false,
           memberTokenId: "4",
           membershipActive: true,
           validatorPubkey: "0x" + "07".repeat(32),
