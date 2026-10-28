@@ -14,6 +14,8 @@ export type NetworkProfile = {
   label: string;
   chainId: number | null;
   genesisHash: string | null;
+  /** The `[chain] genesis_profile` the node is told (which block 0 it builds); one of NODE_GENESIS_PROFILES. */
+  genesisProfile: string | null;
   nodeNetwork: string | null;
   rpcUrl: string | null;
   explorerUrl: string | null;
@@ -29,11 +31,22 @@ export type NetworkProfile = {
 
 type RawProfile = Omit<NetworkProfile, "id">;
 
-const raw = file as unknown as { active: string; profiles: Record<string, RawProfile> };
+/** A genesis profile the bundled node builds (network_profile.rs `NodeGenesis`). */
+export type NodeGenesis = { genesisHash: string; nodeDefault: boolean; compiledActivations: boolean };
+
+const raw = file as unknown as {
+  active: string;
+  nodeGenesisProfiles?: Record<string, NodeGenesis>;
+  profiles: Record<string, RawProfile>;
+};
+
+/** The genesis profiles the bundled node builds, by `[chain] genesis_profile` name. */
+export const NODE_GENESIS_PROFILES: Readonly<Record<string, NodeGenesis>> = raw.nodeGenesisProfiles ?? {};
 
 const FIELDS = [
   "chainId",
   "genesisHash",
+  "genesisProfile",
   "nodeNetwork",
   "rpcUrl",
   "explorerUrl",
@@ -123,6 +136,14 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   const out: string[] = [];
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");
+  // network_profile.rs ready(): a name the bundled node does not build is refused (fail closed).
+  if (
+    typeof p.genesisProfile !== "string" ||
+    !/^[a-z0-9_]+$/.test(p.genesisProfile) ||
+    !Object.prototype.hasOwnProperty.call(NODE_GENESIS_PROFILES, p.genesisProfile)
+  ) {
+    out.push("genesisProfile is not a genesis profile the bundled node builds");
+  }
   if (typeof p.nodeNetwork !== "string" || !/^[A-Za-z0-9_-]+$/.test(p.nodeNetwork)) {
     out.push("nodeNetwork is malformed");
   }

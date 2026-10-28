@@ -61,7 +61,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
   const stages: [string, string][] = [
     ["s1", "Sign in"],
     ["s2", "Verify identity"],
-    ["s3", "Membership"],
+    ["s3", "Free node or membership"],
     ["s4", "Wallet ready"],
     ["s5", "Membership grant"],
     ["s6", "Node ignition"],
@@ -87,6 +87,9 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 16, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
               Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.
             </p>
+            <p style={{ fontFamily: "var(--font-sans)", fontSize: 14, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
+              Running a node is free. Membership is optional, and you can choose it during setup or later.
+            </p>
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <button className="btn btn-primary btn-lg" onClick={() => store.onJoin()}>
@@ -101,9 +104,10 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               <HaveAnInvite store={store} s={s} />
             </div>
           )}
-          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. */}
+          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. Owner decision 2026-10-27
+              (option a): Join sets up a free node first, so membership and its bond are optional. */}
           <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, maxWidth: 520 }}>
-            Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.
+            Membership and its bond are optional. You can upgrade later in Settings › Billing.
           </p>
           {/* Join 3 V-02: the network by its genesis-checked name (contract §2, §6), not the chain id. */}
           <NetworkName style={eyebrow} />
@@ -121,9 +125,12 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
             {/* marquee-only, 2.5× (was the mark icon + a height:13 marquee) */}
             <img src={marqueeBlack} alt="Citrate" style={{ height: 33 }} />
           </div>
-          <div style={{ ...eyebrow, marginBottom: 6 }}>Membership onboarding</div>
-          {stages.map(([, label], i) => {
-            const done = i < cur;
+          <div style={{ ...eyebrow, marginBottom: 6 }}>Setup</div>
+          {stages.map(([id, label], i) => {
+            // The free path (no membership checkout, no grant) passes S5 without a grant: it is
+            // marked skipped, never done.
+            const skipped = id === "s5" && i < cur && s.s3 !== "settled" && !s.hasGrant;
+            const done = i < cur && !skipped;
             const active = i === cur;
             return (
               <div key={label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 8px", borderRadius: "var(--r-1)" }}>
@@ -143,11 +150,11 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
                     flexShrink: 0,
                   }}
                 >
-                  {done ? "✓" : String(i + 1)}
+                  {done ? "✓" : skipped ? "–" : String(i + 1)}
                 </span>
                 <span style={{ flex: 1, fontSize: 13, fontWeight: active ? 500 : 400, color: active ? "var(--tx-1)" : done ? "var(--tx-2)" : "var(--tx-3)" }}>{label}</span>
                 <span className="mono" style={{ fontSize: 9, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                  {done ? "done" : active ? "now" : ""}
+                  {skipped ? "skipped" : done ? "done" : active ? "now" : ""}
                 </span>
               </div>
             );
@@ -366,7 +373,7 @@ function S2({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S2 · Verify</div>
       <div style={h1}>Verify your identity</div>
       <p style={body}>
-        Verification is optional — you can finish it any time. Your membership only needs your payment; identity verification unlocks certain features and upgrades you
+        Verification is optional — you can finish it any time. Running a node doesn&apos;t need it, and neither does membership; identity verification unlocks certain features and upgrades you
         to the <span className="mono">commercial.kyc</span> tier. It runs in your browser with our in-house provider; this app only observes the claim change, and your
         documents never touch this machine.
       </p>
@@ -403,7 +410,7 @@ function S2({ store, s }: { store: Store; s: AppState }) {
           </div>
           <div>
             <button className="btn btn-primary" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-              Continue to membership
+              Continue
             </button>
           </div>
         </div>
@@ -433,10 +440,10 @@ function S2({ store, s }: { store: Store; s: AppState }) {
       {s.s2 !== "verified" && (
         <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
           <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-            Skip for now — continue to membership
+            Skip for now — continue
           </button>
           <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
-            Membership needs only your payment. You keep the <span className="mono">commercial</span> tier now and can finish KYC any time to upgrade to
+            Running a node and membership don&apos;t need it. You keep the <span className="mono">commercial</span> tier now and can finish KYC any time to upgrade to
             {" "}<span className="mono">commercial.kyc</span>.
           </p>
         </div>
@@ -551,10 +558,69 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
   );
 }
 
+// Owner decision 2026-10-27 (option a): S3 opens on a choice, with the free node first. Running a
+// node needs no payment; membership is optional. The price shows only inside MembershipCheckout,
+// which mounts only after the member chooses it (or resumes a checkout already started).
 export function S3({ store, s }: { store: Store; s: AppState }) {
+  const [member, setMember] = useState(false);
+  if (member || s.s3 !== "idle") {
+    return <MembershipCheckout store={store} s={s} onBack={s.s3 === "idle" ? () => setMember(false) : undefined} />;
+  }
+  const freeGets = [
+    "A full node on this machine: it follows the chain, checks every block and serves your reads locally",
+    "Your wallet: a signing key sealed on this device",
+    "Hermes, chain reads and the marketplace view",
+  ];
+  return (
+    <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={eyebrow}>S3 · Free node or membership</div>
+      <div style={h1}>Run your node for free</div>
+      <p style={body}>
+        You don&apos;t need a membership to run a node, use your wallet or work with Hermes. Membership is optional: choose it now, or later in Settings › Billing.
+      </p>
+      <div className="surface" data-testid="s3-free-path" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10, borderColor: "var(--tx-1)" }}>
+        <div style={eyebrow}>Free · no charge</div>
+        {freeGets.map((text, i) => (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+            <span style={{ width: 5, height: 5, borderRadius: 999, background: "var(--accent)", flexShrink: 0, position: "relative", top: -2 }}></span>
+            <span style={{ fontSize: 13.5, lineHeight: 1.5, color: "var(--tx-1)" }}>{text}</span>
+          </div>
+        ))}
+        <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+          No membership, no bond. Your node produces blocks only if it becomes an active validator.
+        </p>
+        <div>
+          <button className="btn btn-primary btn-lg" onClick={() => store.onS3Free()}>
+            Run a node for free
+          </button>
+        </div>
+      </div>
+      <div className="surface" data-testid="s3-member-path" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={eyebrow}>Membership · optional</div>
+        <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+          Adds the membership SBT (the on-chain record of your seat), member-tier features across the app and Commissary access at your tier. The next screen
+          shows what it includes and its price. Nothing is charged until you check out in your browser.
+        </p>
+        <div>
+          <button className="btn btn-ghost" onClick={() => setMember(true)}>
+            Become a member (optional)
+          </button>
+        </div>
+      </div>
+      <div className="mono" style={dataSrc}>
+        Free path — no payment and no checkout · membership checkout — core-membership, in your browser
+      </div>
+    </div>
+  );
+}
+
+/** The member checkout: the only onboarding screen that shows the membership price. Exported so
+ *  tests (and #349/#379's money-copy tests) can render the checkout directly. */
+export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppState; onBack?: () => void }) {
   const [entOpen, setEntOpen] = useState(false);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
-  // doesn't hunt for a second button. The "Link your wallet" click is the explicit intent
+  // doesn't hunt for a second button. This component mounts only after the member chose
+  // membership on S3, so landing on S3 never opens checkout by itself. The "Link your wallet" click is the explicit intent
   // signal (or the wallet was linked in a prior session); once linked + idle on S3 we open
   // the Stripe checkout automatically. The settle→S4 effect below then finishes the flow
   // when the grant poll lands (the approved "auto-open + auto-advance on poll" shape).
@@ -590,6 +656,13 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S3 · Membership</div>
       <div style={h1}>Yearly membership</div>
+      {onBack && (
+        <div>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>
+            ← Back to the free node
+          </button>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 12 }}>
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Free</div>
@@ -727,6 +800,7 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
   // address stands in, as before.
   const deviceKey = s.custodyAddr || (!s.signedIn ? s.walletAddr : "");
   const linkNote = deviceKey === "" ? "device key not read yet" : store.walletIsLinked() ? "linked to your identity" : "not linked to your identity yet";
+  const member = s.s3 === "settled" || s.hasGrant;
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
@@ -752,8 +826,9 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
         </div>
       </div>
       <div>
-        <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: "s5" }); store.save(); }}>
-          Continue to the grant ceremony
+        {/* The free path (no membership checkout, no grant) has no grant step: straight to the node. */}
+        <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: member ? "s5" : "s6" }); store.save(); }}>
+          {member ? "Continue to the grant ceremony" : "Continue to your node"}
         </button>
       </div>
       <div className="mono" style={dataSrc}>

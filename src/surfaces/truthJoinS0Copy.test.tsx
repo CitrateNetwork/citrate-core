@@ -45,7 +45,10 @@ describe("Join 3 V-01 — S0 opening line", () => {
   it("uses the reviewed wording, and says what Join involves under the buttons", () => {
     const html = s0();
     expect(html).toContain("Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.");
-    expect(html).toContain("Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.");
+    // #576 (owner decision 2026-10-27, option a): Join sets up a free node first, so the line under
+    // the buttons no longer says joining means a membership and a bond.
+    expect(html).toContain("Membership and its bond are optional. You can upgrade later in Settings › Billing.");
+    expect(html).not.toContain("Joining means a yearly membership");
   });
 });
 
