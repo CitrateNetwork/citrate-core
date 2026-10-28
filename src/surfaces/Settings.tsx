@@ -483,12 +483,14 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
         : memExpiry
           ? "expires " + memExpiry
           : "expiry not set";
-  const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
   // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
   // price is shown only on the checkout itself.
   const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
-  const mb =
-    s.entitlement === "active"
+  // A free user has no membership to be "active": a neutral "free" badge, never the green one.
+  const memBadge = freeUser ? "free" : s.entitlement === "active" ? "active" : s.entitlement;
+  const mb = freeUser
+    ? ["var(--srf-2)", "var(--line-1)", "var(--tx-2)"]
+    : s.entitlement === "active"
       ? ["var(--ok-bg)", "var(--ok)", "var(--ok)"]
       : s.entitlement === "lapsed"
         ? ["var(--danger-bg)", "var(--danger)", "var(--danger)"]
