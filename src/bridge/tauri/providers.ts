@@ -11,6 +11,8 @@ import type {
   ProvidersDomain,
   ProviderStatus,
   ProviderUsageSummary,
+  ProviderPreferredModel,
+  ProviderPreferredView,
 } from "../domains";
 
 export const tauriProviders: ProvidersDomain = {
@@ -52,5 +54,11 @@ export const tauriProviders: ProvidersDomain = {
   },
   resetUsageLog() {
     return invoke<ProviderUsageSummary>("providers_usage_log_reset");
+  },
+  preferredGet() {
+    return invoke<ProviderPreferredView>("providers_preferred_get");
+  },
+  preferredSet(choice: ProviderPreferredModel | null) {
+    return invoke<ProviderPreferredView>("providers_preferred_set", { choice });
   },
 };

@@ -118,6 +118,7 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
       minStakeWei: async () => 32_000n * WEI,
       blockSeconds: async () => 2,
       producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
     } as unknown as ChainReads & { validatorActivation: ReturnType<typeof vi.fn> };
     (store as unknown as { chainReads: ChainReads }).chainReads = reads;
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
@@ -397,7 +398,8 @@ describe("#348 review — the activation ceremony states the bond principal, not
     vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
     store.setState({ walletReview: null });
     vi.spyOn(bridge.node, "registerValidator").mockResolvedValue({ id: "c1", decoded: { action: "MemberBond.activate", cost: "0", destination: "0x" } } as never);
-    await store.activateValidator();
+    // Join-8 follow-ups (#378): the guarded entry reads the activation fresh, then opens the review.
+    await store.requestValidatorActivation();
     const r = store.state.walletReview!;
     expect(r.label).not.toContain("32,000");
     expect(String(r.spendSummary)).toContain("33,500");

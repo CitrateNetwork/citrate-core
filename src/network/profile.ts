@@ -14,28 +14,47 @@ export type NetworkProfile = {
   label: string;
   chainId: number | null;
   genesisHash: string | null;
+  /** The `[chain] genesis_profile` the node is told (which block 0 it builds); one of NODE_GENESIS_PROFILES. */
+  genesisProfile: string | null;
   nodeNetwork: string | null;
   rpcUrl: string | null;
   explorerUrl: string | null;
   faucetUrl: string | null;
   bootnodes: string[] | null;
   addressBook: string | null;
+  /** sha256 (64 lowercase hex) of the frozen canonical address book of this genesis. */
+  addressBookSha256: string | null;
+  /** The citrate-chain commit (40 lowercase hex) the bundled node must contain. */
+  minChainRev: string | null;
   pending: Record<string, string>;
 };
 
 type RawProfile = Omit<NetworkProfile, "id">;
 
-const raw = file as unknown as { active: string; profiles: Record<string, RawProfile> };
+/** A genesis profile the bundled node builds (network_profile.rs `NodeGenesis`). */
+export type NodeGenesis = { genesisHash: string; nodeDefault: boolean; compiledActivations: boolean };
+
+const raw = file as unknown as {
+  active: string;
+  nodeGenesisProfiles?: Record<string, NodeGenesis>;
+  profiles: Record<string, RawProfile>;
+};
+
+/** The genesis profiles the bundled node builds, by `[chain] genesis_profile` name. */
+export const NODE_GENESIS_PROFILES: Readonly<Record<string, NodeGenesis>> = raw.nodeGenesisProfiles ?? {};
 
 const FIELDS = [
   "chainId",
   "genesisHash",
+  "genesisProfile",
   "nodeNetwork",
   "rpcUrl",
   "explorerUrl",
   "faucetUrl",
   "bootnodes",
   "addressBook",
+  "addressBookSha256",
+  "minChainRev",
 ] as const;
 
 /** Every profile this build knows. */
@@ -86,6 +105,11 @@ function isHttps(v: unknown): boolean {
   return typeof v === "string" && v.startsWith("https://") && v.length > 8 && !/\s/.test(v);
 }
 
+/** Exactly `len` lowercase hex digits, not all zero (network_profile.rs is_lower_hex_nonzero). */
+function isLowerHexNonZero(v: unknown, len: number): boolean {
+  return typeof v === "string" && v.length === len && /^[0-9a-f]+$/.test(v) && /[1-9a-f]/.test(v);
+}
+
 /**
  * Why the profile is not ready: every unset value, then every malformed one. The same rule as
  * the Rust `NetworkProfile::ready` (src-tauri/src/network_profile.rs), which gates node starts
@@ -98,6 +122,14 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   const out: string[] = [];
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");
+  // network_profile.rs ready(): a name the bundled node does not build is refused (fail closed).
+  if (
+    typeof p.genesisProfile !== "string" ||
+    !/^[a-z0-9_]+$/.test(p.genesisProfile) ||
+    !Object.prototype.hasOwnProperty.call(NODE_GENESIS_PROFILES, p.genesisProfile)
+  ) {
+    out.push("genesisProfile is not a genesis profile the bundled node builds");
+  }
   if (typeof p.nodeNetwork !== "string" || !/^[A-Za-z0-9_-]+$/.test(p.nodeNetwork)) {
     out.push("nodeNetwork is malformed");
   }
@@ -107,6 +139,8 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   if (!Array.isArray(p.bootnodes) || p.bootnodes.length === 0) out.push("bootnodes is empty");
   else if (!p.bootnodes.every(isBootnode)) out.push("bootnodes has a malformed entry");
   if (typeof p.addressBook !== "string" || p.addressBook.length === 0) out.push("addressBook is empty");
+  if (!isLowerHexNonZero(p.addressBookSha256, 64)) out.push("addressBookSha256 is not a sha256 digest");
+  if (!isLowerHexNonZero(p.minChainRev, 40)) out.push("minChainRev is not a commit");
   return out;
 }
 

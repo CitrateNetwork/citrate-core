@@ -415,7 +415,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "method", "message": "POST only"}}),
         );
     }
-    let Some(route) = bearer(req).and_then(|b| proxy.route_for(b)) else {
+    let Some((token, route)) = bearer(req).and_then(|b| proxy.route_for(b).map(|r| (b, r))) else {
         return write_json(out, 401, &error_body(&ProxyError::Unauthorized));
     };
     let body: Value = match serde_json::from_slice(&req.body) {
@@ -435,7 +435,13 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
     let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
     let model = route.model.clone();
     if !chat.stream {
-        match proxy.call(&route, chat, conversation, &mut |_| {}) {
+        match proxy.call_routed_until(
+            token,
+            chat,
+            conversation,
+            Arc::new(AtomicBool::new(false)),
+            &mut |_| {},
+        ) {
             Ok(r) => write_json(out, 200, &completion_json(&model, &r)),
             Err(e) => write_json(out, e.http().0, &error_body(&e)),
         }
@@ -446,7 +452,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
     let mut broken = false;
     // Set when the client's socket breaks: the vendor call is then cut off at its next read.
     let gone = Arc::new(AtomicBool::new(false));
-    let result = proxy.call_until(&route, chat, conversation, gone.clone(), &mut |t| {
+    let result = proxy.call_routed_until(token, chat, conversation, gone.clone(), &mut |t| {
         if broken {
             return;
         }
