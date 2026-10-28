@@ -78,6 +78,36 @@ describe("Settings › Billing for a free user", () => {
   });
 });
 
+// #579 review (P2): a free user saw a green ACTIVE badge next to "Public tier — no membership".
+// The badge is a neutral "free" for a free user; members keep the entitlement badge.
+function badge(s: AppState): { text: string; style: string } {
+  const host = document.createElement("div");
+  host.innerHTML = renderToStaticMarkup(<Settings store={makeStore().store} s={s} />);
+  const el = host.querySelector('[data-testid="membership-badge"]');
+  expect(el, "the billing card renders its membership badge").toBeTruthy();
+  return { text: (el!.textContent ?? "").trim(), style: el!.getAttribute("style") ?? "" };
+}
+
+describe("Settings › Billing badge", () => {
+  it("a free user sees a neutral 'free' badge, not a green 'active' one", () => {
+    const b = badge(billing(FREE));
+    expect(b.text).toBe("free");
+    expect(b.style).not.toMatch(/var\(--ok/);
+  });
+
+  it("an active member keeps the green 'active' badge", () => {
+    const b = badge(billing(MEMBER_GRANTED));
+    expect(b.text).toBe("active");
+    expect(b.style).toMatch(/var\(--ok/);
+  });
+
+  it("a lapsed member keeps the 'lapsed' badge", () => {
+    const b = badge(billing(LAPSED));
+    expect(b.text).toBe("lapsed");
+    expect(b.style).toMatch(/var\(--danger/);
+  });
+});
+
 describe("Settings › Billing for members", () => {
   it("a lapsed member keeps 'Renew ↗', which renews", async () => {
     const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(LAPSED)} />));

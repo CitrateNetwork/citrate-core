@@ -1082,6 +1082,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </span>
                 <span
                   className="mono"
+                  data-testid="membership-badge"
                   style={{
                     fontSize: 9.5,
                     letterSpacing: ".1em",
