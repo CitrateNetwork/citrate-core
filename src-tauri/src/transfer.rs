@@ -21,8 +21,6 @@ use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 
 // The chain id this build targets (the kit constant pinned to the active network profile).
 use crate::rpc::CITRATE_CHAIN_ID;
-/// Standard gas for a native (no-calldata) value transfer — the fixed 21,000.
-const TRANSFER_GAS: u64 = 21_000;
 /// The origin surfaced to the human for a user-initiated Send (displayed verbatim).
 const LOCAL_USER_ORIGIN: &str = "local-user";
 
@@ -40,16 +38,18 @@ fn validate_address(addr: &str) -> Result<String, String> {
 
 /// Build the ceremony tx-JSON for a native SALT transfer. Same object shape the
 /// node-agent path emits (`{from,to,value,data,gas,chainId}`); `data` is empty
-/// (`0x`) because a native transfer carries no calldata, and `gas` is the fixed
-/// 21,000. Values are `0x`-hex quantities. Returned as a JSON string — for a
-/// `Transaction` intent the ceremony reads `raw` as JSON (not hex bytes).
-fn encode_transfer_json(from: &str, to: &str, value_wei: u128) -> String {
+/// (`0x`) because a native transfer carries no calldata, and `gas` is the node's
+/// estimate plus the margin (`money_gas`): 21,000 only covers a transfer to a
+/// plain account, and a recipient that is a contract costs more. Values are
+/// `0x`-hex quantities. Returned as a JSON string — for a `Transaction` intent the
+/// ceremony reads `raw` as JSON (not hex bytes).
+fn encode_transfer_json(from: &str, to: &str, value_wei: u128, gas: u64) -> String {
     serde_json::json!({
         "from": from,
         "to": to,
         "value": format!("0x{value_wei:x}"),
         "data": "0x",
-        "gas": format!("0x{TRANSFER_GAS:x}"),
+        "gas": format!("0x{gas:x}"),
         "chainId": format!("0x{CITRATE_CHAIN_ID:x}"),
     })
     .to_string()
@@ -94,14 +94,27 @@ pub fn wallet_send_sync(
     }
     // The sender = THIS vault's wallet (public address only; never the key).
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let intent = SignatureIntent {
+    let rpc = crate::rpc::RpcClient::citrate();
+    let intent = transfer_intent(&rpc, &wallet.address, &to, value_wei)?;
+    // Store PENDING + return the decoded view; the human approves via B1.4.
+    Ok(ceremony.0.request(intent))
+}
+
+/// The body of [`wallet_send`]: the native transfer of `value_wei` from `from` to `to` (both
+/// already validated), with the gas the node estimates for it (`money_gas`).
+pub(crate) fn transfer_intent<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    to: &str,
+    value_wei: u128,
+) -> Result<SignatureIntent, String> {
+    let gas = crate::money_gas::estimate(rpc, from, to, value_wei, &[])?;
+    Ok(SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
         chain_id: CITRATE_CHAIN_ID,
-        raw: encode_transfer_json(&wallet.address, &to, value_wei),
-    };
-    // Store PENDING + return the decoded view; the human approves via B1.4.
-    Ok(ceremony.0.request(intent))
+        raw: encode_transfer_json(from, to, value_wei, gas),
+    })
 }
 
 #[cfg(test)]

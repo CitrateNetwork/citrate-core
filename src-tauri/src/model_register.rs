@@ -27,10 +27,6 @@ use crate::model_registry::selector;
 /// in the contract). Sent as the tx `value`.
 pub const REGISTRATION_FEE_WEI: u128 = 100_000_000_000_000_000; // 0.1 * 1e18
 
-/// Explicit gas for `registerModel` (a calldata tx MUST carry explicit gas — it writes
-/// several storage slots + calls the precompile, so it is heavier than a bond register).
-const REGISTER_MODEL_GAS: u64 = 900_000;
-
 /// The `registerModel` signature the selector + tuple layout derive from.
 const REGISTER_MODEL_SIG: &str = "registerModel(string,string,string,string,uint256,uint256,(string,string[],string[],uint256,string,string[]))";
 
@@ -146,15 +142,16 @@ pub fn register_model_calldata(
 }
 
 /// The pending-ceremony tx JSON: from the member EOA, to the ModelRegistry, value = the
-/// registration fee, data = the `registerModel` calldata (mirrors `storage.rs`).
-fn encode_register_tx_json(from: &str, calldata: &[u8]) -> String {
+/// registration fee, data = the `registerModel` calldata (mirrors `storage.rs`). A calldata tx
+/// must carry explicit gas: `gas` is the node's estimate plus the margin (`money_gas`).
+fn encode_register_tx_json(from: &str, calldata: &[u8], gas: u64) -> String {
     json!({
         "from": from,
         // REROLL-SENSITIVE: from the pinned address book, never hardcoded.
         "to": crate::addresses::model_registry(),
         "value": format!("0x{REGISTRATION_FEE_WEI:x}"),
         "data": format!("0x{}", hex::encode(calldata)),
-        "gas": format!("0x{REGISTER_MODEL_GAS:x}"),
+        "gas": format!("0x{gas:x}"),
         "chainId": format!("0x{:x}", crate::rpc::CITRATE_CHAIN_ID),
     })
     .to_string()
@@ -240,15 +237,33 @@ pub fn models_registry_register_sync(
         &meta,
     );
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let raw = encode_register_tx_json(&wallet.address, &calldata);
-    let intent = crate::ceremony::SignatureIntent {
+    let rpc = crate::rpc::RpcClient::citrate();
+    ceremony
+        .0
+        .request(register_model_intent(&rpc, &wallet.address, &calldata)?);
+    Ok(())
+}
+
+/// The `registerModel` ceremony intent from `from` (value = the registration fee), with the gas
+/// the node estimates for it (`money_gas`).
+pub(crate) fn register_model_intent<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    calldata: &[u8],
+) -> std::result::Result<crate::ceremony::SignatureIntent, String> {
+    let gas = crate::money_gas::estimate(
+        rpc,
+        from,
+        crate::addresses::model_registry(),
+        REGISTRATION_FEE_WEI,
+        calldata,
+    )?;
+    Ok(crate::ceremony::SignatureIntent {
         origin: "agent:hermes".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
         chain_id: crate::rpc::CITRATE_CHAIN_ID,
-        raw,
-    };
-    ceremony.0.request(intent);
-    Ok(())
+        raw: encode_register_tx_json(from, calldata, gas),
+    })
 }
 
 #[cfg(test)]

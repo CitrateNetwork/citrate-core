@@ -117,6 +117,8 @@ pub enum HermesError {
     /// K5a: Hermes restarted since a Store daemon's tools were checked; the session was not
     /// opened (the new sidecar may offer other host tool sets).
     Restarted,
+    /// D-11: core refused to hand the sidecar something (a body carrying a key shape).
+    Refused(String),
 }
 
 impl std::fmt::Display for HermesError {
@@ -146,6 +148,7 @@ impl std::fmt::Display for HermesError {
                 f,
                 "Not started: Hermes restarted after this run's tools were checked; nothing was opened"
             ),
+            HermesError::Refused(m) => f.write_str(m),
         }
     }
 }
@@ -408,6 +411,8 @@ pub struct HermesManager {
     /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
     /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
     env_source: Option<crate::hermes_web::EnvSource>,
+    /// D-11: this sidecar's cloud sessions and their proxy route labels.
+    pub(crate) cloud: cloud::CloudSessions,
     /// HUP-S1.2 / US-1.4: the loopback BGE embedding server the sidecar ranks tools and skills
     /// with. Started before the sidecar; its URL and key FILE are passed only while it runs.
     /// `None` (tests, or no bundled model) = sessions rank lexically and report it.
@@ -480,6 +485,7 @@ impl HermesManager {
             mcp_servers: None,
             chain_data_dir: None,
             env_source: None,
+            cloud: cloud::CloudSessions::default(),
             embed: None,
             health_interval: HEALTH_INTERVAL,
             browser_record: None,
@@ -705,6 +711,21 @@ impl HermesManager {
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
+        // D-11 tripwire: nothing shaped like a vendor key crosses into the sidecar's environment
+        // or arguments (keys travel as file paths or not at all).
+        spec.env.retain(|(k, v)| {
+            let keyless = cloud::ensure_keyless("environment", v).is_ok();
+            if !keyless {
+                eprintln!("citrate-core: {k} was not passed to Hermes: its value is shaped like an API key");
+            }
+            keyless
+        });
+        spec.args
+            .retain(|a| cloud::ensure_keyless("arguments", a).is_ok());
+        spec.env_remove = cloud::inherited_key_vars(
+            std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+        );
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -850,6 +871,9 @@ impl HermesManager {
             sup.stop();
             drop(sup);
         }
+        // D-11: the sidecar's sessions are gone; their cloud routes are revoked by the caller
+        // that holds the proxy (`hermes_stop_sync`).
+        self.cloud.forget_all();
         // After the stop (its last child-watch call may have rewritten the spawn-time allowlist).
         self.sweep_mcp_runtime_files();
         if let Some(embed) = &self.embed {
@@ -1099,6 +1123,7 @@ impl HermesManager {
 
     /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
     pub fn session_open(&self, body: &str) -> Result<String> {
+        cloud::ensure_keyless("session", body).map_err(HermesError::Refused)?;
         let bearer = self.bearer()?;
         let resp = Self::check(self.control.post(
             &format!("{}/sessions", self.control_url()),
@@ -1130,6 +1155,7 @@ impl HermesManager {
     /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
     /// fails open, so its session is closed and the run refused.
     pub fn session_open_store(&self, body: &str, sent_sets: &[String]) -> Result<String> {
+        cloud::ensure_keyless("session", body).map_err(HermesError::Refused)?;
         let bearer = self.bearer()?;
         let resp = Self::check(self.control.post(
             &format!("{}/sessions", self.control_url()),
@@ -1983,6 +2009,7 @@ pub async fn hermes_stop(app_h: tauri::AppHandle) -> std::result::Result<(), Str
 /// Blocking body of [`hermes_stop`]; reached only through [`crate::blocking::off_main`].
 pub fn hermes_stop_sync(app: tauri::AppHandle) -> std::result::Result<(), String> {
     manager(&app)?.stop();
+    cloud::on_stop(crate::providers_ipc::open_proxy(&app).as_deref());
     Ok(())
 }
 
@@ -2579,8 +2606,59 @@ pub async fn hermes_session_close(
     app: tauri::AppHandle,
     id: String,
 ) -> std::result::Result<(), String> {
-    crate::blocking::off_main(move || manager(&app)?.session_close(&id).map_err(|e| e.to_string()))
-        .await
+    crate::blocking::off_main(move || {
+        let m = manager(&app)?;
+        let r = m.session_close(&id).map_err(|e| e.to_string());
+        // D-11: a cloud session's route is revoked whether or not the sidecar still had it.
+        cloud::on_close(m, crate::providers_ipc::open_proxy(&app).as_deref(), &id);
+        r
+    })
+    .await
+}
+
+/// **hermes_session_open_cloud** — open a sidecar agent session on the member's preferred cloud
+/// model (D-11, ADR P-5/P-6; source: `<app data>/providers/preferred.json`). The sidecar gets a
+/// loopback route to the core model proxy, never a key. Refused under Local model only, with no
+/// preferred model, and when the provider is not connected in Settings › Models.
+#[tauri::command]
+pub async fn hermes_session_open_cloud(
+    app: tauri::AppHandle,
+    system_prompt: String,
+    tools_json: String,
+    persona: Option<String>,
+    custom_persona: Option<personas::CustomPersonaInput>,
+) -> std::result::Result<String, String> {
+    let route_dir = crate::chat_route::route_dir(&app)?;
+    crate::blocking::off_main(move || {
+        let proxy = crate::ai::proxy_for_app(&app)?;
+        // The provider and model are the member's stored choice (`provider_preferred`), never an
+        // argument from the webview.
+        let pref = crate::provider_preferred::route(proxy.dir(), cloud::CLOUD_ROUTE_PREFIX)?;
+        let (provider_id, model) = (pref.provider.to_string(), pref.model);
+        let store = crate::agent_grants::GrantStore::for_app(&app)?;
+        let m = manager(&app)?;
+        cloud::open_cloud_session(
+            &proxy,
+            m,
+            &provider_id,
+            &model,
+            route_dir,
+            &system_prompt,
+            &tools_json,
+            |body| {
+                let body = personas::with_session_persona(
+                    body,
+                    persona.as_deref(),
+                    custom_persona.as_ref(),
+                )?;
+                // The same folder grants a local session gets (HUP-S2.1).
+                crate::agent_grants::open_with_grants(&store, &body, |b| {
+                    m.session_open(b).map_err(|e| e.to_string())
+                })
+            },
+        )
+    })
+    .await
 }
 
 /// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
@@ -2633,10 +2711,12 @@ pub async fn hermes_session_send(
     id: String,
     text: String,
 ) -> std::result::Result<(), String> {
+    let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
-        manager(&app)?
-            .session_send(&id, &text)
-            .map_err(|e| e.to_string())
+        // D-11: a cloud session's turn starts only while remote sends are allowed.
+        let m = manager(&app)?;
+        cloud::check_send(m, &id, &route_dir)?;
+        m.session_send(&id, &text).map_err(|e| e.to_string())
     })
     .await
 }
@@ -2690,6 +2770,10 @@ pub async fn hermes_session_stop(
     crate::blocking::off_main(move || manager(&app)?.session_stop(&id).map_err(|e| e.to_string()))
         .await
 }
+
+// D-11 (RC52): the agent loop on a cloud model through the core proxy (child module).
+#[path = "hermes_cloud.rs"]
+pub mod cloud;
 
 // HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
 #[path = "hermes_personas.rs"]

@@ -81,6 +81,8 @@ export interface ChainReads {
   blockSeconds(): Promise<number | null>;
   /** The distinct `proposerPubkey`s of the last PRODUCER_SAMPLE_BLOCKS blocks (one JSON-RPC batch). */
   producerSample(): Promise<ProducerSample>;
+  /** The public head: eth_blockNumber on the network profile's RPC. null for 0x0 (unknown, not block 0). */
+  publicHead(): Promise<number | null>;
 }
 
 /**
@@ -220,6 +222,10 @@ export function createChainReads(): ChainReads {
       const blocks = body.map((r) => (r && typeof r === "object" ? (r as { result?: unknown }).result : null)).filter(Boolean);
       if (blocks.length === 0) throw new Error("no blocks came back");
       return { head: Number(head), window: blocks.length, proposers: distinctProposers(blocks) };
+    },
+    async publicHead() {
+      const head = await clientFor("the network head").getBlockNumber({ cacheTime: 0 });
+      return head > 0n ? Number(head) : null;
     },
   };
 }

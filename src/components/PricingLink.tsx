@@ -1,0 +1,20 @@
+// C1-V V12 — the link every surface shows in place of a membership price (chain-team ruling: no
+// in-app price until core-membership serves one). Opens the membership site in the system browser.
+import { MEMBERSHIP_PRICING_URL, SEE_PRICING, membershipPriceLabel } from "../data/membership";
+
+export function PricingLink({ open, style }: { open: (url: string) => void; style?: React.CSSProperties }) {
+  const served = membershipPriceLabel();
+  if (served) return <span style={style}>{served}</span>;
+  return (
+    <a
+      href={MEMBERSHIP_PRICING_URL}
+      onClick={(e) => {
+        e.preventDefault();
+        open(MEMBERSHIP_PRICING_URL);
+      }}
+      style={{ color: "var(--accent-text)", ...style }}
+    >
+      {SEE_PRICING} ↗
+    </a>
+  );
+}

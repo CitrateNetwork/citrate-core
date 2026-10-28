@@ -2485,13 +2485,13 @@ fn a_resend_after_a_restart_is_not_a_first_submission() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&again), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2613,9 +2613,9 @@ fn a_resend_after_the_history_was_truncated_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-evict-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
     // 256 other submissions push the original out of the window.
@@ -2623,7 +2623,7 @@ fn a_resend_after_the_history_was_truncated_is_unknown() {
         c.submitted_log().record(&format!("0x{n:064x}"));
     }
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
     assert_eq!(submitted_outcome_unknown(&again), Some(hash), "the original may have been mined");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2634,13 +2634,13 @@ fn a_resend_after_a_corrupt_record_was_rewritten_and_reopened_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-corrupt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     std::fs::write(&file, b"{not json").expect("corrupt");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     c.submitted_log().record(&format!("0x{:064x}", 7));
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (r, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&r), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2651,10 +2651,10 @@ fn nothing_is_broadcast_when_the_submission_cannot_be_recorded_durably() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-nodurable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
-    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let from = canonical_addr_lower();
     let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
     let mock = MockRpc::new(vec![
@@ -3378,9 +3378,9 @@ fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
     // Crash window: the node receives the tx, then the app dies (no receipt). The record must
     // already be durable when the send arrives, and still name the tx after a restart.
     let dir = tmp_dir("ondisk");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
     let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
     let send = RpcClient::with_transport(RecordCheckRpc {
@@ -3391,7 +3391,7 @@ fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
     let r = c.send_prepared(&send, &view.id, bcfg(1));
     assert_eq!(*send.transport().on_disk_at_send.borrow(), Some(true), "the record was durable before the send");
     assert!(r.is_err() || r.is_ok());
-    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
     assert_eq!(
         reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash),
         Some(hash.clone()),
@@ -3404,10 +3404,10 @@ fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
 #[test]
 fn join8_a_prepared_send_without_a_durable_record_sends_nothing() {
     let dir = tmp_dir("nodurable");
-    let file = dir.join("submitted-tx.json");
-    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
     c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
     let send = RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(format!("0x{}", "ab".repeat(32))))]));
@@ -3537,16 +3537,16 @@ fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history
     // Codex P2 at f98f8ae: a first-submission refusal ("not sent") must not come back as the
     // member's pending activation from the durable record, yet those bytes stay a re-submission.
     let dir = tmp_dir("refused");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
     let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
     let refused = MockRpc::new(vec![node_error("Failed to submit transaction: SenderLimitExceeded")]);
     let r = c.send_prepared(&RpcClient::with_transport(refused), &view.id, bcfg(1));
     assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "a first definitive refusal is not sent: {r:?}");
     assert_eq!(c.submitted_log().latest_call(&canonical_addr_lower(), &activate_meta()), None, "not recovered in this run");
-    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
     assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()), None, "nor after a restart");
     assert_eq!(reopened.try_record_for(&hash, &canonical_addr_lower(), 7), Ok(false), "still in the submission history");
     let _ = std::fs::remove_dir_all(&dir);
@@ -3556,14 +3556,14 @@ fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history
 fn join8_an_unknown_outcome_activation_is_still_recovered() {
     // The other side: an error that is NOT a definitive first-send refusal keeps the record.
     let dir = tmp_dir("unknown");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let view = c.request(activate_intent());
     let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
     let r = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &view.id, bcfg(1));
     assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()));
-    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
     assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3660,15 +3660,15 @@ fn join8_a_prepared_activation_refused_after_another_attempt_recorded_it_is_outc
     // is "outcome unknown" with the hash, never "not sent", and the activation stays recoverable.
     for refusal in ["Failed to submit transaction: Full", "Failed to submit transaction: SenderLimitExceeded"] {
         let dir = tmp_dir("raced");
-        let file = dir.join("submitted-tx.json");
+        let file = dir.join(crate::submitted_log::RECORD_FILE);
         let (v, _p) = vault_with_wallet();
-        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
         let view = c.request(activate_intent());
         let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
         let t = RacedSend { inner: MockRpc::new(vec![]), log: c.submitted_log(), refusal };
         let r = c.send_prepared(&RpcClient::with_transport(t), &view.id, bcfg(1));
         assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()), "{refusal}: {r:?}");
-        let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+        let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
         assert_eq!(
             reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash),
             Some(hash),
@@ -3688,7 +3688,7 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join("submitted-tx.json")));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join(crate::submitted_log::RECORD_FILE), crate::submitted_log::LEGACY_GENESIS));
     for msg in ["Insufficient funds: account balance 0 < required 21000", "Failed to submit transaction: Full"] {
         let (r, hash) = send_once(&c, &v, node_error(msg));
         assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg}: {r:?}");
@@ -3701,10 +3701,10 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
     // Reviewer CR at d737f33: Forget (or a refusal), then the same bytes re-sent, then a restart.
     // Recovery must find the in-flight send, or Activate is offered a second time.
     let dir = tmp_dir("forget-resend");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
     {
-        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
         let first = c.request(activate_intent());
         let h1 = c.approve_and_sign(&v, &prep_rpc(), &first.id, false, 40204).expect("sign 1");
         let r1 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &first.id, bcfg(1));
@@ -3716,11 +3716,68 @@ fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
         let r2 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(h2.clone()))])), &again.id, bcfg(1));
         assert!(r2.is_ok() || submitted_outcome_unknown(&r2).is_some(), "{r2:?}");
     }
-    let reopened = crate::submitted_log::SubmittedTxLog::open(file);
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
     assert!(
         reopened.latest_call(&canonical_addr_lower(), &activate_meta()).is_some(),
         "the re-sent activation is recovered after a restart"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// #511: a send history kept on r1005 does not decide the outcome of sends on a new genesis. The
+// install's r1005 record is uncertain (a 0.5.1 wallet with no record); after the switch the new
+// chain is upgrade-bounded, and above the bound a definitive refusal of new bytes is "not sent", while a re-send of the exact bytes
+// broadcast on r1005 (same chain id) is still "submitted, outcome unknown".
+#[test]
+fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_sends() {
+    const NEW: &str = "0x2026120100000000000000000000000000000000000000000000000000000c52";
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-xgenesis-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    let (on_r1005, r1005_hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&on_r1005), Some(r1005_hash.clone()), "r1005's history is uncertain");
+    drop(r1005);
+    let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
+    // r1005's history is unknown, so the new chain starts upgrade-bounded: the first fetched-nonce
+    // send is unknown, and a later one above it is decided by the new chain's history alone.
+    let (bounded, bounded_hash) = send_at(&switched, &v, "0x1", node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&bounded), Some(bounded_hash), "the bound send");
+    let (fresh, fresh_hash) = send_at(&switched, &v, "0x2", node_error("Failed to submit transaction: Full"));
+    assert_ne!(fresh_hash, r1005_hash);
+    assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))), "new bytes refused on the new chain were not sent: {fresh:?}");
+    let (same, same_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(same_hash, r1005_hash, "the same nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&same), Some(same_hash), "bytes broadcast on r1005 may have been mined");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Review of 0cffe02 (lead decision (i)): a send evicted from r1005's section, refused
+// `NonceTooLow` when its identical bytes are sent after the switch, may have been mined: it reads
+// "outcome unknown", never "not sent".
+#[test]
+fn a_send_evicted_on_r1005_then_refused_nonce_too_low_after_a_switch_is_outcome_unknown() {
+    const NEW: &str = "0x2026120100000000000000000000000000000000000000000000000000000c52";
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-xgenesis-evicted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let me = canonical_addr_lower();
+    let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    // Sent on r1005 (the node's answer doesn't matter here: the bytes are recorded before the send).
+    let (_first, hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
+    for n in 1..=(crate::submitted_log::CAPACITY as u64) {
+        r1005.submitted_log().try_record_for(&format!("0x{n:064x}"), &me, n).expect("record");
+    }
+    drop(r1005);
+    let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
+    let (again, again_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(again_hash, hash, "the same nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash), "may have been mined: {again:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4027,9 +4084,9 @@ fn an_upgraded_profile_reports_not_sent_again_after_its_first_send() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault marker");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let refused = || node_error("Insufficient funds: account balance 0");
     let first = send_at_fetched_nonce(&c, &v, 5, refused());
     assert!(submitted_outcome_unknown(&first).is_some(), "the first send after the upgrade: {first:?}");
