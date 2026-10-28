@@ -18,6 +18,7 @@ import { bridge } from "../bridge";
 import type { Group, RewardInfo, RoundPhase, RoundStatus } from "../bridge/domains";
 import { FlRoundsPanel } from "../fl/FlRoundsPanel";
 import book from "../../src-tauri/addresses/40204.json";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const ZERO_ADDRESS = /^0x0{40}$/i;
 const isDeployed = (a: string | undefined): boolean => !!a && /^0x[0-9a-fA-F]{40}$/.test(a) && !ZERO_ADDRESS.test(a);
@@ -148,11 +149,11 @@ export function Train({ store }: SurfaceProps) {
             Group training rounds need two contracts, PatronageLedger and FederatedRoundLedger, and neither is deployed on betanet yet. Rounds, contributions and
             claims appear here once they are. Nothing on this card is read from a round in the meantime.
           </p>
-          <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>source · address book 40204 (no PatronageLedger entry)</span>
+          <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>source · address book {CHAIN_ID_TEXT} (no PatronageLedger entry)</span>
         </div>
       ) : (
       <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
-        Your group trains a model together: each member trains locally and contributes, the network aggregates the result, and contributors are settled in SALT for verified work. The round and your reward below are read live from 40204 (PatronageLedger); member SALT claims activate once revenue is credited, past the @rule8 money-surface sign-off (gateSec).
+        Your group trains a model together: each member trains locally and contributes, the network aggregates the result, and contributors are settled in SALT for verified work. The round and your reward below are read live from {CHAIN_ID_TEXT} (PatronageLedger); member SALT claims activate once revenue is credited, past the @rule8 money-surface sign-off (gateSec).
       </p>
       )}
 
@@ -181,10 +182,10 @@ export function Train({ store }: SurfaceProps) {
 
             {pending ? (
               <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>Couldn't read the round from 40204.</span>
+                <span style={{ fontSize: 13, fontWeight: 500 }}>Couldn't read the round from {CHAIN_ID_TEXT}.</span>
                 <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>{pending}</p>
                 <p style={{ fontSize: 12.5, color: "var(--tx-2)", margin: 0, lineHeight: 1.6 }}>
-                  Reads are wired to the PatronageLedger on 40204. If this persists, the RPC or the settlement address is unavailable — nothing here is fabricated in the meantime.
+                  Reads are wired to the PatronageLedger on {CHAIN_ID_TEXT}. If this persists, the RPC or the settlement address is unavailable — nothing here is fabricated in the meantime.
                 </p>
               </div>
             ) : ui ? (

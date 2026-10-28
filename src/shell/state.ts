@@ -179,15 +179,6 @@ export interface LogLine {
   line: string;
   id: number;
 }
-export interface PeerRow {
-  id: string;
-  dir: string;
-  lat: string;
-}
-export interface Crash {
-  when: string;
-  note: string;
-}
 export interface Pin {
   cid: string;
   bond: number;
@@ -234,6 +225,14 @@ export interface CerSpec {
  * `spendSummary` is an optional plain-language line the caller can pass (the
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
+/** C1-V3 — a signed transaction that was (or may have been) submitted, with no known outcome. */
+export interface CeremonyOutcomeUnknown {
+  kind: "outcome-unknown";
+  /** The tx hash when the ceremony knows it; null when the failure carried none. */
+  txHash: string | null;
+  reason: string;
+}
+
 export interface WalletReview {
   kind: "send" | "stake" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
@@ -252,7 +251,12 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
   /**
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
@@ -339,6 +343,17 @@ export interface AppState {
    */
   s3PollExhausted: boolean;
   /**
+   * core#584: the pre-checkout grant check (onS3Pay's money guard) is running. One attempt at a
+   * time: Pay and "Continue free" are disabled until it ends, and Back ends it. Not persisted.
+   */
+  s3Checking: boolean;
+  /**
+   * core#584: Settings › Billing "Become a member" is checking chain 40204 for a grant this account
+   * already holds, before any checkout. One attempt at a time; the button is disabled meanwhile.
+   * Not persisted.
+   */
+  billingChecking: boolean;
+  /**
    * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
    * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
    * "Membership activating" notice instead of the red lapse. Never unlocks paid
@@ -376,7 +391,6 @@ export interface AppState {
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
-  nTab: string;
   cTab: string;
   sSec: string;
   coach: number;
@@ -416,11 +430,13 @@ export interface AppState {
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   syncPct: number;
-  cpu: number;
-  ram: number;
   logs: LogLine[];
-  peerRows: PeerRow[];
-  crashes: Crash[];
+  /**
+   * K3: when the node_status answer behind `node` / `height` / `peers` was read, set by the poll
+   * that committed them (ms since epoch); null = not read this session. Node › Status reads its
+   * freshness from this. Observed, never persisted.
+   */
+  nodeStatusAt: number | null;
   liquid: number;
   /**
    * The member's REAL validator bond in the `ValidatorRegistry` (SALT), read from
@@ -434,6 +450,12 @@ export interface AppState {
    * Rule 1: a funded bond is not the same as an activated one).
    */
   bondedStake: number;
+  /**
+   * True once a `ValidatorRegistry.stakeOf` read (the grant-status read) has returned THIS
+   * session. Until then `bondedStake` is a default or a persisted value, not a reading, so the
+   * staked figure is shown as "—" (UI truth contract rule 2: unknown is not zero). Not persisted.
+   */
+  bondedStakeRead: boolean;
   /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
   netUnread: NetRead[];
   /** RC52: the genesis-switch notice, shown on Node until dismissed. */
@@ -452,6 +474,8 @@ export interface AppState {
    * per-day or per-source split: no contract exposes one, so none is shown.
    */
   rewards: { totalWei: string; claimableWei: string } | null;
+  /** #391 — why `rewards` is null when a read was attempted (e.g. not the member's key); null = no error. */
+  rewardsError: string | null;
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
    * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
@@ -467,11 +491,31 @@ export interface AppState {
    * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
    */
   bondActivated: boolean | null;
+  /**
+   * C1-V5 — `MemberBond.pubkey()` from the grant read: the member's validator key once the bond has
+   * activated (kept after an exit). null = not read, not activated, or no bond. Observed, never persisted.
+   */
+  bondPubkey: string | null;
+  /**
+   * `MemberBond.isUnlocked()` from the grant read (owner decision 2026-10-19 / chain#331: activation
+   * only inside the lock). null = not read. Observed, never persisted.
+   */
+  bondUnlocked: boolean | null;
+  /**
+   * Contract v1.2 §1 (#362 B-1) — `MemberBond.isKycVerified()` from the grant read: the gate the bond's
+   * `claimRewards()` checks (reverts KycRequired otherwise). null = not read, or no bond. Observed,
+   * never persisted. The identity provider's kyc_status claim is never a substitute for it.
+   */
+  bondKycVerified: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
   minStakeWei: string | null;
-  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  /**
+   * C1-V — the member's validator key, the one the registry reads and the producer check use (C1-V5):
+   * `MemberBond.pubkey()` once the bond has activated, else this node's `proposer.key`. Observed,
+   * never persisted.
+   */
   validatorPubkey: string | null;
   /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
   producers: { head: number; window: number; proposers: string[] } | null;
@@ -812,6 +856,8 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    s3Checking: false,
+    billingChecking: false,
     membershipActivating: false,
     agentTabRequest: null,
     s5: "idle",
@@ -823,7 +869,6 @@ export function freshState(pid: string): AppState {
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
-    nTab: "ops",
     cTab: "apps",
     sSec: "account",
     coach: -1,
@@ -840,13 +885,11 @@ export function freshState(pid: string): AppState {
     nodeBlocked: null,
     miningHold: null,
     syncPct: 0,
-    cpu: 0,
-    ram: 0,
     logs: [],
-    peerRows: [],
-    crashes: [],
+    nodeStatusAt: null,
     liquid: 0,
     bondedStake: 0,
+    bondedStakeRead: false,
     netUnread: [],
     networkNotice: null,
     netArchived: [],
@@ -854,9 +897,13 @@ export function freshState(pid: string): AppState {
     hasGrant: false,
     hasSbt: false,
     rewards: null,
+    rewardsError: null,
     validatorActivation: null,
     validatorCounts: null,
     bondActivated: null,
+    bondPubkey: null,
+    bondUnlocked: null,
+    bondKycVerified: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,
@@ -1036,7 +1083,6 @@ export function freshState(pid: string): AppState {
       s.peers = 23;
       s.liquid = 142.63;
       s.claimable = 9.41;
-      s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
       s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
@@ -1077,7 +1123,7 @@ export const PERSIST_SCOPE = {
   telemetry: D, telemetryConsentVersion: D, storageMode: D, coachDone: D, dataDir: D, coreMembershipUrl: D,
   s5StakeWei: N, s5BondStatus: N,
   walletAddr: D, commsAddr: D, socketPath: D, activeModelId: D,
-  kycOutcome: D, chatBackend: D, crashes: D, wTab: D, nTab: D, cTab: D, sSec: D, route: D, deviceId: D,
+  kycOutcome: D, chatBackend: D, wTab: D, cTab: D, sSec: D, route: D, deviceId: D,
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
   pins: D, userSkills: D, jPages: D, jSel: D, connections: D, aiDefault: D, hermesSidecarLoop: D,
@@ -1095,7 +1141,7 @@ export const PERSIST_KEYS = Object.keys(PERSIST_SCOPE) as (keyof typeof PERSIST_
 export const NETWORK_KEYS = PERSIST_KEYS.filter((k) => PERSIST_SCOPE[k] === N);
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
-export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
+export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height", "nodeStatusAt"];
 
 /** D-11 (P-9d): an older build persisted a gateway key display. Provider keys live only in the OS
  *  keychain, so these are retired, and a save that still holds them is rewritten without them. */
@@ -1104,8 +1150,10 @@ const LEGACY_GATEWAY_KEYS = ["gwKey", "gwKeyFull"] as const;
 /** Keys earlier builds persisted that are retired, dropped from a save when it loads:
  *  - D-9 (2026-10-26): the liquid staking pool is retired, so its self-stake figure is not current.
  *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday).
+ *  - K3: the 0.5.1 Node screen's own tab switch (nTab) and its seeded crash rows (crashes); the
+ *    Node place's tabs are routes, and the last crash record is read from node_last_crash.
  *  - D-11 (P-9d): the gateway key display (`LEGACY_GATEWAY_KEYS`). */
-export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", ...LEGACY_GATEWAY_KEYS];
+export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "nTab", "crashes", ...LEGACY_GATEWAY_KEYS];
 
 export function loadState(netKey: string = currentNetKey()): AppState {
   let saved: Partial<AppState> | null = null;

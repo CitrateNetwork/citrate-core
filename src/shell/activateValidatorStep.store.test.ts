@@ -15,6 +15,7 @@ function readyStatus(over: Partial<ActivationStatusView> = {}): ActivationStatus
     principalWei: WEI_32K,
     unlockBlock: 16_200_000,
     unlockTimestamp: 1_822_000_000,
+    bondUnlocked: false, // still locked: activation is offered only inside the lock (chain#331)
     memberTokenId: "4",
     membershipActive: true,
     validatorPubkey: "0x" + "07".repeat(32),
@@ -1054,5 +1055,39 @@ describe("tripwire (#405): no ceremony build after a fresh read without a gate r
     expect(gate).toBeLessThan(arm);
     expect(gate).toBeLessThan(build);
     expect(src.match(/this\.activateValidator\(/g)?.length).toBe(1); // no other entry builds a ceremony
+  });
+});
+
+// Port of #366 "activateValidator itself refuses an unlocked bond: no arming, no ceremony" (review on
+// #554). Today's 40204 MemberBond.activate() has no activation-window check, so the app gate is the
+// only guard (owner decision 2026-10-19: activation only inside the lock). Since #378 the one entry
+// (S7 and the Node button) is requestValidatorActivation; activateValidator is private and is
+// reached only through it (tripwire above). That entry must refuse an open or unread lock, with
+// every other condition met, before it arms or builds a ceremony.
+describe("activation only inside the lock: the activation entry refuses", () => {
+  for (const [label, bondUnlocked] of [
+    ["an unlocked bond", true],
+    ["an unread lock", null],
+  ] as const) {
+    for (const armed of [false, true]) {
+      it(`${label} (producer ${armed ? "armed" : "not armed"}): no arming, no ceremony`, async () => {
+        chain.current = readyStatus({ bondUnlocked });
+        const store = memberStore();
+        (store as unknown as { validatorArmed: boolean }).validatorArmed = armed;
+        expect(await store.requestValidatorActivation()).toBe(false);
+        expect(armMiningMock).not.toHaveBeenCalled();
+        expect(registerValidatorMock).not.toHaveBeenCalled();
+        expect(store.state.walletReview).toBeNull();
+        expect(String(store.getSnapshot().toast)).toMatch(bondUnlocked ? /Unlocked · not activated/ : /MemberBond\.isUnlocked/);
+      });
+    }
+  }
+
+  it("the same read with the lock still running opens the ceremony (the refusal is the lock alone)", async () => {
+    chain.current = readyStatus({ bondUnlocked: false });
+    const store = memberStore();
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    expect(await store.requestValidatorActivation()).toBe(true);
+    expect(registerValidatorMock).toHaveBeenCalledTimes(1);
   });
 });

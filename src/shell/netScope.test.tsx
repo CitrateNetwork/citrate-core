@@ -16,7 +16,7 @@ import { readNetArchive, NET_ARCHIVE_KEY } from "./netScope";
 import { store, type Store } from "./store";
 import { bridge } from "../bridge";
 import { Wallet } from "../surfaces/Wallet";
-import { Node } from "../surfaces/Node";
+import { renderStatus } from "../surfaces/node/nodePage.fixture";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
 import type { GrantStatus } from "../bridge/domains";
@@ -47,8 +47,9 @@ const R1005_VALUES = [
 const DEVICE_VALUES = [
   "walletAddr", "commsAddr", "deviceId", "telemetry", "rpc", "net", "cpuCap", "autolock", "channel", "dataDir",
   "jPages", "userSkills", "connections", "pins", "hermesSidecarLoop", "hermesTerminal", "hermesReadAloud",
-  "aiDefault", "activeModelId", "kycOutcome", "s2", "s3", "stage", "crashes",
+  "aiDefault", "activeModelId", "kycOutcome", "s2", "s3", "stage",
 ] as const;
+// (The 0.5.1 save's `crashes` seed rows are retired by K3, #563: RETIRED_KEYS drops them on any network.)
 
 function loadOn(blob: Record<string, unknown>, genesis: string): AppState {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
@@ -241,11 +242,11 @@ describe("what the member sees after the switch", () => {
 
   it("Node keeps the switch notice until it is dismissed", () => {
     const s = loadOn(MEMBER, NEW_GENESIS);
-    const html = renderToStaticMarkup(<Node store={stubStore} s={s} />);
+    const html = renderStatus(stubStore, s);
     expect(html).toContain('data-network-notice="switch"');
     expect(html).toContain(OLD_GENESIS.slice(0, 10));
     expect(html).toContain("Dismiss");
-    const gone = renderToStaticMarkup(<Node store={stubStore} s={{ ...s, networkNotice: null }} />);
+    const gone = renderStatus(stubStore, { ...s, networkNotice: null });
     expect(gone).not.toContain('data-network-notice="switch"');
   });
 

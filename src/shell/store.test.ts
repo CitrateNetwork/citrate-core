@@ -482,19 +482,19 @@ describe("staked = REAL registry bond, not hasGrant (W1.3 Rule-1 fix)", () => {
   // and the node read as "validating · eligible for proposer election" with 0 bonded.
   // The snapshot's `staked` must now come from the REAL bond (`bondedStake`) only.
   it("hasGrant alone does NOT count as staked", () => {
-    store.setState({ hasGrant: true, bondedStake: 0 });
+    store.setState({ hasGrant: true, bondedStake: 0, bondedStakeRead: true });
     expect(store.snapshot().staked).toBe(0);
     // …and with no registered stake the node is not active (isActive is never true unread).
     expect(mapNodeState("running", 100, null)).toBe("synced");
   });
   it("a real registry bond counts as staked", () => {
-    store.setState({ hasGrant: true, bondedStake: 32000 });
+    store.setState({ hasGrant: true, bondedStake: 32000, bondedStakeRead: true });
     expect(store.snapshot().staked).toBe(32000);
   });
   // D-9: the liquid staking pool is retired. A pool self-stake left in state by an older build
   // never adds to staked, and never lifts a node into the validating set.
   it("a legacy pool self-stake never adds to staked", () => {
-    store.setState({ hasGrant: false, bondedStake: 32000, [RETIRED_POOL_KEYS[0]]: 2500 } as never);
+    store.setState({ hasGrant: false, bondedStake: 32000, bondedStakeRead: true, [RETIRED_POOL_KEYS[0]]: 2500 } as never);
     expect(store.snapshot().staked).toBe(32000);
     store.setState({ hasGrant: false, bondedStake: 0, [RETIRED_POOL_KEYS[0]]: 32000 } as never);
     expect(store.snapshot().staked).toBe(0);
@@ -1030,7 +1030,7 @@ describe("activateValidator — arms block production before it needs the key", 
       s7TxHash: null,
       activation: {
         bondAddress: "0x" + "22".repeat(20), bondDeployed: true, bondActivated: false, principalWei: (32000n * 10n ** 18n).toString(),
-        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, memberTokenId: "4", membershipActive: true,
+        unlockBlock: 16_200_000, unlockTimestamp: 1_822_000_000, bondUnlocked: false, memberTokenId: "4", membershipActive: true,
         validatorPubkey: "0x" + "07".repeat(32), pubkeySource: "node", nodeKeyReady: true, nodePubkey: "0x" + "07".repeat(32), bondPubkey: null,
         registryStatus: 0, activationEpoch: 0, registryActive: false, currentEpoch: 500, epochBlocks: 1000,
         headBlock: 500_000, blockTimeMs: 2000, localBlock: 499_999, localSyncing: false, tx: null, recordedTx: null,

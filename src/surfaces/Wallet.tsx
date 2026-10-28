@@ -20,7 +20,9 @@ import { shortNet } from "../shell/netScope";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { RegisteredAgents } from "../onboarding/AgentIdentityStep";
-import { readsValidatorRewards, saltFromWei, validatorDash } from "../shell/chainTruth";
+import { readStakeSalt, readsValidatorRewards, saltFromWei, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
+import { memberKeyRuleKey } from "../shell/store";
+import { rpcHost, CHAIN_ID_TEXT } from "../network/profile";
 import { grantExplanation } from "../data/grantCopy";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -51,13 +53,15 @@ export function Wallet({ store, s }: SurfaceProps) {
   const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
   // folded as `bondedStake`. The grant in a locked bond is not staked until the bond is activated.
+  // Unknown is not zero (rule 2): null until a stakeOf read returns this session.
+  const stakeRead = readStakeSalt(s);
   const staked = s.bondedStake;
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
-  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
   // C1-V V9: every Wallet read (balance, validator stake and rewards) goes to the public RPC
   // through the Rust RpcClient, whether or not the local node runs.
-  const src = "rpc.citrate.ai";
+  const src = rpcHost() ?? "public RPC not set";
   const minStake = saltFromWei(s.minStakeWei);
   const rewardsTotal = s.rewards ? saltFromWei(s.rewards.totalWei) : null;
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
@@ -80,9 +84,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   // #348 review: the Staking tab shows ValidatorRegistry.rewardsOf, so read it here too, and again
   // once the node poll has reconciled the stake / bond after mount.
   const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     void store.refreshEarnings();
-  }, [store, readsRewards]);
+  }, [store, readsRewards, rewardsKey]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
@@ -109,16 +116,18 @@ export function Wallet({ store, s }: SurfaceProps) {
   const grantUnread = s.netUnread.includes("grant");
   const balancesUnread = s.netUnread.includes("balances");
   const activityUnread = s.netUnread.includes("activity");
-  // The one staked figure (stakeOf, folded as `bondedStake`) comes from the grant read.
+  // The one staked figure (stakeOf, folded as `bondedStake`) comes from the grant read, and is
+  // shown only once that read has returned this session (readStakeSalt).
   const stakeUnread = grantUnread;
   const saltStr = balancesUnread ? "—" : fmt2(s.liquid);
-  const stakedStr = stakeUnread ? "—" : staked > 0 ? fmtI(staked) : "0";
+  const stakedStr = stakeRead == null ? "—" : fmtI(stakeRead);
   // UI truth contract rules 1 and 2: the number catalog has no wSALT entry and nothing reads a
   // wSALT balance, so the tile shows the unavailable state. Unknown is not zero.
   const wsaltStr = "—";
-  const stakedSub = stakeUnread ? NOT_READ : staked > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
+  const stakedSub = stakeRead == null ? (stakeUnread ? NOT_READ : STAKE_NOT_READ) : stakeRead > 0 ? "ValidatorRegistry.stakeOf" : validatorStateText;
   // C1-V V8: validator rewards are ValidatorRegistry.rewardsOf(pubkey).total, or "—".
-  const rewardsStr = rewardsTotal == null ? "—" : fmt2(rewardsTotal);
+  // #391: unknown rewards say why (not the member's validator key, or the read failed).
+  const rewardsStr = rewardsTotal == null ? (s.rewardsError ? "— · " + s.rewardsError : "—") : fmt2(rewardsTotal);
   const grantStr = grantUnread ? NOT_READ : s.hasGrant ? grantSaltStr + " SALT" : "—";
 
   // core#425 — Receive shows the wallet this app signs with: the device key in the custody vault
@@ -304,7 +313,7 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>Receive</span>
-              <span className="lbl">Wallet key on this device · chain 40204</span>
+              <span className="lbl">Wallet key on this device · chain {CHAIN_ID_TEXT}</span>
               <span className="mono" style={{ fontSize: 12.5, wordBreak: "break-all", background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "10px 12px" }}>
                 {deviceKey || "— · device key not read yet"}
               </span>
@@ -549,7 +558,7 @@ export function Wallet({ store, s }: SurfaceProps) {
           <div style={{ border: "1px dashed var(--line-2)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="eyebrow">Verifiable identity proofs</span>
             <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              ZK identity checkpoints are in development — the verify precompile is live on 40204; the identity-checkpoint circuit is not. Nothing to click yet; this page will say so until it&apos;s real.
+              ZK identity checkpoints are in development — the verify precompile is live on {CHAIN_ID_TEXT}; the identity-checkpoint circuit is not. Nothing to click yet; this page will say so until it&apos;s real.
             </p>
           </div>
         </div>

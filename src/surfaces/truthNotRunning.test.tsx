@@ -32,7 +32,7 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
+import { renderRewards, renderStatus } from "./node/nodePage.fixture";
 import { Train, groupRoundsLive } from "./Train";
 import { COACH_STEPS, NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
@@ -96,12 +96,13 @@ describe("V1 — finality is not drawn as running", () => {
 
 describe("V2 — heartbeat has no source, so it shows unavailable", () => {
   it("never renders a seeded ack age or a slashing-protection claim", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "earn" })} />);
-    expect(html).not.toMatch(/last ack \d+s ago/);
-    expect(html).not.toContain("slashing protection");
-    expect(html).not.toContain("NematocystSlashing");
-    expect(html).toContain("Heartbeat");
-    expect(html).toContain("no heartbeat reading");
+    // K3: Node › Rewards and Status draw no Heartbeat row at all: there is no source for one.
+    for (const html of [renderRewards(stub, running()), renderStatus(stub, running())]) {
+      expect(html).not.toMatch(/last ack \d+s ago/);
+      expect(html).not.toContain("slashing protection");
+      expect(html).not.toContain("NematocystSlashing");
+      expect(html).not.toContain("Heartbeat");
+    }
   });
 
   it("is not part of app state (nothing to go stale)", () => {
@@ -115,7 +116,8 @@ describe("V3 — pin bonds are dormant", () => {
   ] as unknown as AppState["pins"];
 
   it("shows 'Pin bonds not live yet' and no projection or challenge tallies", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "pin", pins })} />);
+    // K3: pin rewards are on Node › Rewards (local pins are Storage › Pins).
+    const html = renderRewards(stub, running({ pins }));
     expect(html).toContain("Pin bonds not live yet");
     expect(html).not.toContain("Projected");
     expect(html).not.toContain("at current demand");

@@ -11,6 +11,7 @@
 //! | `bondActivated`           | `MemberBond.activated()`                                      |
 //! | `principalWei`            | `MemberBond.principal()`                                      |
 //! | `unlockBlock/Timestamp`   | `MemberBond.unlockBlock()` / `unlockTimestamp()`              |
+//! | `bondUnlocked`            | `MemberBond.isUnlocked()` (activation only inside the lock)   |
 //! | `memberTokenId`           | `MemberBond.memberTokenId()`                                  |
 //! | `membershipActive`        | `CitrateMemberSBT.isActive(memberTokenId)`                    |
 //! | `validatorPubkey`         | `MemberBond.pubkey()` once activated, else this node's key    |
@@ -83,6 +84,8 @@ pub const MEMBER_TOKEN_ID: [u8; 4] = [0x5f, 0xce, 0x5d, 0xf8];
 pub const BOND_PUBKEY: [u8; 4] = [0x48, 0x4d, 0x59, 0xe6];
 /// `MemberBond.unlockBlock()`.
 pub const UNLOCK_BLOCK: [u8; 4] = [0xea, 0x35, 0xdf, 0x16];
+/// `MemberBond.isUnlocked()` (either lock leg elapsed; chain#331: `activate` reverts once true).
+pub const IS_UNLOCKED: [u8; 4] = [0x83, 0x80, 0xed, 0xb7];
 /// `MemberBond.unlockTimestamp()`.
 pub const UNLOCK_TIMESTAMP: [u8; 4] = [0xaa, 0x08, 0x2a, 0x9d];
 /// `CitrateMemberSBT.isActive(uint256)`.
@@ -190,6 +193,8 @@ pub struct ActivationStatus {
     pub principal_wei: Option<String>,
     pub unlock_block: Option<u64>,
     pub unlock_timestamp: Option<u64>,
+    /// `MemberBond.isUnlocked()` as read. None = no bond, or the read failed (unread, never locked).
+    pub bond_unlocked: Option<bool>,
     pub member_token_id: Option<String>,
     pub membership_active: Option<bool>,
     /// The key the registry reads are keyed on (`0x` + 64 hex).
@@ -364,6 +369,8 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
                     .map(|v| v.to_string());
                 st.unlock_block = read(UNLOCK_BLOCK).as_ref().and_then(word_u64);
                 st.unlock_timestamp = read(UNLOCK_TIMESTAMP).as_ref().and_then(word_u64);
+                // chain#331: activate() reverts once isUnlocked(); a non-bool answer is unread.
+                st.bond_unlocked = read(IS_UNLOCKED).as_ref().and_then(word_bool);
                 let token = read(MEMBER_TOKEN_ID);
                 st.member_token_id = token.as_ref().and_then(word_u128).map(|v| v.to_string());
                 if let Some(token) = token {

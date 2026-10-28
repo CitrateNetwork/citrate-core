@@ -245,9 +245,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
       },
-      async validatorEarnings() {
+      // #394: `pubkey` is the validator key to read (MemberBond.pubkey() for a deployed bond);
+      // without it Rust reads the node's own proposer key.
+      async validatorEarnings(pubkey?: string) {
         return invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>(
           "node_validator_earnings",
+          pubkey ? { pubkey } : undefined,
         );
       },
       // W1.x — arm the producer once synced (consensus-gated). The respawn mints
@@ -325,9 +328,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // .claimableNow via node_validator_earnings; only a non-validator is checked against
       // ContributionAccounting. Checking ContributionAccounting for a validator told a member with
       // claimable validator rewards that there was nothing to claim.
-      async claim(opts?: { validator: boolean }): Promise<ClaimResult> {
+      // #394: the bond claims for MemberBond.pubkey(), so the pre-check reads that key.
+      async claim(opts?: { validator: boolean; pubkey?: string | null }): Promise<ClaimResult> {
         const claimableWei = opts?.validator
-          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings")).claimableWei
+          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings", opts.pubkey ? { pubkey: opts.pubkey } : undefined)).claimableWei
           : (await invoke<{ claimableWei: string; walletAddress: string; contract: string }>("agent_earnings")).claimableWei;
         if (BigInt(claimableWei) === 0n) {
           return { kind: "nothing", claimableWei };

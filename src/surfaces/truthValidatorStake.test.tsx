@@ -25,7 +25,8 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
+import { renderRewards, renderStatus } from "./node/nodePage.fixture";
+import { PLACES } from "../shell/places";
 import { Wallet } from "./Wallet";
 import { S5, Onboarding } from "../onboarding/Onboarding";
 import { blocksWithTime, measuredBlockSeconds, validatorWord, type ChainReads } from "../shell/chainTruth";
@@ -77,7 +78,7 @@ describe("chainTruth helpers", () => {
   it("derives the §1 validator word from the registry only (V4)", () => {
     expect(validatorWord(0, null, false)).toBe("Not a validator");
     // #348 review: the bond-locked word needs MemberBond.activated() = false; unread is null ("—").
-    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true, false, false)).toBe("Bond locked · not staked");
     expect(validatorWord(0, null, true)).toBeNull();
     expect(validatorWord(32_000, ACT_PENDING, true)).toBe("Registered · active from epoch 501");
     expect(validatorWord(32_000, ACT_ON, true)).toBe("Validator active");
@@ -168,10 +169,10 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
   });
 
   it("the Node surface shows the §1 word and no made-up election odds", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_PENDING })} />);
+    const html = renderStatus(stub, member({ bondedStake: 32_000, validatorActivation: ACT_PENDING }));
     expect(html).toContain("Registered · active from epoch 501");
     expect(html).not.toContain("Election odds");
-    const active = renderToStaticMarkup(<Node store={stub} s={member({ node: "validating", bondedStake: 32_000, validatorActivation: ACT_ON })} />);
+    const active = renderStatus(stub, member({ node: "validating", bondedStake: 32_000, validatorActivation: ACT_ON }));
     expect(active).toContain("Validator active");
   });
 
@@ -186,13 +187,13 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond is not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false })} />);
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
   });
 
   it("Wallet: staked equals the registry stake once activated", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000, bondedStakeRead: true })} />);
     expect(html).toContain("ValidatorRegistry.stakeOf");
     expect(html).toContain("32,000 SALT");
   });
@@ -205,7 +206,7 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never the grant", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false })} />);
     expect(html).not.toContain(">32,000<");
     expect(html).toMatch(/bond locked · not staked/i);
   });
@@ -223,8 +224,9 @@ describe("V8 — reward and balance captions per §1 Rewards", () => {
   });
 
   it("the Node Earning tab names rewardsOf, splits claimable/maturing, and has no off-chain estimates", () => {
-    const s = member({ nTab: "earn", bondedStake: 32_000, validatorActivation: ACT_ON, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
-    const html = renderToStaticMarkup(<Node store={stub} s={s} />);
+    // K3: the Earning view is the Node › Rewards tab.
+    const s = member({ bondedStake: 32_000, validatorActivation: ACT_ON, rewards: { totalWei: wei(30), claimableWei: wei(20) } });
+    const html = renderRewards(stub, s);
     expect(html).not.toContain("off-chain estimate");
     expect(html).not.toContain("ContributionAccounting.claimable");
     expect(html).toContain("Validator rewards");
@@ -237,7 +239,8 @@ describe("V8 — reward and balance captions per §1 Rewards", () => {
   });
 
   it("a member who is not a validator sees no rewards figure", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ nTab: "earn", bondedStake: 0, rewards: null, claimable: 9.41 })} />);
+    // K3 (#362): "Not a validator" needs the reads to say so; a member with no grant has no bond.
+    const html = renderRewards(stub, member({ hasGrant: false, bondedStake: 0, rewards: null, claimable: 9.41 }));
     expect(html).not.toContain("9.41");
     expect(html).toContain("Not a validator");
   });
@@ -315,9 +318,12 @@ function stringLiterals(path: string): string {
 
 describe("#348 review — §1 Rewards words", () => {
   it("the Node tab is 'Rewards', not 'Earning'", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member()} />);
-    expect(html).toContain(">Rewards<");
-    expect(html).not.toContain(">Earning<");
+    // K3: the Node place's tab strip is PLACES; the Status and Rewards tabs never say Earning.
+    expect(PLACES.find((p) => p.id === "node")?.tabs.map((t) => t.label)).toContain("Rewards");
+    for (const html of [renderStatus(stub, member()), renderRewards(stub, member())]) {
+      expect(html).not.toContain(">Earning<");
+      expect(html).not.toContain("Earnings");
+    }
   });
 
   it("no 'earnings' / 'keep accruing' in agent prompts, tools, suggestions, greeting or toasts", () => {
@@ -373,6 +379,7 @@ describe("#348 review — the activation ceremony states the bond principal, not
           principalWei: wei(33_500),
           unlockBlock: 16_200_000,
           unlockTimestamp: 1_822_000_000,
+          bondUnlocked: false,
           memberTokenId: "4",
           membershipActive: true,
           validatorPubkey: "0x" + "07".repeat(32),
@@ -440,16 +447,16 @@ describe("#348 review — 'Producing blocks' from a sampled proposer set", () =>
     await store.refreshProducers();
     expect(store.state.producers).toBeNull();
     expect(store.state.producersError).toContain("rpc 503");
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" })} />);
+    const html = renderStatus(stub, member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: null, producersError: "rpc 503" }));
     expect(html).toContain("— · producer sample unavailable: rpc 503");
     expect(html.toLowerCase()).not.toContain("not producing");
   });
 
   it("the Node card shows the word and names the window", () => {
-    const seen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    const seen = renderStatus(stub, member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: OTHER, producers: { head: 1, window: 100, proposers: [OTHER] } }));
     expect(seen).toContain("Producing blocks");
     expect(seen).toContain("sampled over the last 100 blocks");
-    const unseen = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } })} />);
+    const unseen = renderStatus(stub, member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: { head: 1, window: 100, proposers: [OTHER] } }));
     expect(unseen).toContain("Not seen producing in the last 100 blocks");
     expect(unseen).not.toContain(">Producing blocks<");
   });
@@ -475,7 +482,7 @@ describe("#348 round 2 — the producer labels state the N actually sampled", ()
     const short = { head: 1, window: 37, proposers: [ME] };
     expect(producerShortfall(short)).toBe("only 37 of 100 blocks came back");
     expect(producingWord(short, ME)).toBeNull();
-    const node = renderToStaticMarkup(<Node store={stub} s={member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short })} />);
+    const node = renderStatus(stub, member({ bondedStake: 32_000, validatorActivation: ACT_ON, validatorPubkey: ME, producers: short }));
     expect(node).toContain("— · producer sample incomplete: only 37 of 100 blocks came back");
     expect(node).not.toContain(">Producing blocks<");
     expect(node).not.toContain("last 100 blocks");
@@ -507,10 +514,13 @@ describe("#348 round 2 — the claim path is chosen from the same signal as Rust
   it("an exited validator (registry stake 0, has_validator) with claimable rewards takes the validator path", async () => {
     store.setState({ bondedStake: 0 });
     vi.spyOn(store as never, "assertPayoutKyc").mockResolvedValue(true as never);
-    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({}));
+    // #394: the validator path pre-checks rewardsOf for the bond's key (MemberBond.pubkey()).
+    const bondKey = "0x" + "66".repeat(32);
+    // #362 B-1: the bond path needs MemberBond.isKycVerified() on chain.
+    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondPubkey: bondKey, isKycVerified: true }));
     const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
     await store.claimRewards();
-    expect(claim).toHaveBeenCalledWith({ validator: true });
+    expect(claim).toHaveBeenCalledWith({ validator: true, pubkey: bondKey });
   });
 
   it("a bonded stake without has_validator does not take the validator path", async () => {

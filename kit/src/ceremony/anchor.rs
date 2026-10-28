@@ -43,7 +43,7 @@ pub const ANCHOR_SELECTOR: [u8; 4] = [0x9e, 0x62, 0x1f, 0x4c];
 /// `AnchorRegistry.AnchorKind.NightlyMerkle`.
 pub const NIGHTLY_MERKLE: u8 = 2;
 /// The only chain an anchor is signed for.
-pub const ANCHOR_CHAIN_ID: u64 = 40_204;
+pub const ANCHOR_CHAIN_ID: u64 = crate::rpc::CITRATE_CHAIN_ID;
 /// The origin shown on every anchor approval card.
 pub const ANCHOR_ORIGIN: &str = "hermes:nightly-anchor";
 
@@ -296,16 +296,11 @@ pub struct AnchorGuards<'a> {
     pub not_sent: &'a dyn Fn(&AnchorReceipt),
 }
 
-/// Whether a send error proves the node did not accept the transaction. Only a JSON-RPC error
-/// object does; a node that reports it already knows the transaction did accept it.
+/// Whether a send error is one of the node's definitive refusals (UI truth contract v1.1 §1), the
+/// same allowlist the signature ceremony uses. It proves the transaction was refused only on the
+/// FIRST submission of those bytes; `approve_and_broadcast` checks that against the shared record.
 pub fn send_refused(e: &RpcError) -> bool {
-    match e {
-        RpcError::Node(m) => {
-            let m = m.to_ascii_lowercase();
-            !(m.contains("already known") || m.contains("known transaction"))
-        }
-        _ => false,
-    }
+    super::is_definitive_send_error(e)
 }
 
 /// What happened to a broadcast anchor. `block_number` / `status` are `None` while unknown.
@@ -347,6 +342,9 @@ struct Pending {
 pub struct AnchorCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// The app's record of submitted signed bytes (shared with the signature ceremony, persisted
+    /// across restarts). In memory until the app hands over its record.
+    submitted: Mutex<std::sync::Arc<crate::submitted_log::SubmittedTxLog>>,
 }
 
 impl Default for AnchorCeremony {
@@ -381,7 +379,15 @@ impl AnchorCeremony {
         AnchorCeremony {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            submitted: Mutex::new(std::sync::Arc::new(
+                crate::submitted_log::SubmittedTxLog::unpersisted(),
+            )),
         }
+    }
+
+    /// Use the app's shared record of submitted signed bytes (C1-V6).
+    pub fn use_submitted_log(&self, log: std::sync::Arc<crate::submitted_log::SubmittedTxLog>) {
+        *self.submitted.lock().unwrap_or_else(|e| e.into_inner()) = log;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Pending>> {
@@ -593,14 +599,38 @@ impl AnchorCeremony {
         if let Err(e) = (guards.before_send)(&in_flight) {
             return Err(keep(p, AnchorError::NotRecorded(e)));
         }
+        // The bytes go into the shared record durably BEFORE they are broadcast (#347): a hash
+        // that can't be recorded is never sent, and the day is withdrawn with the card kept.
+        let log = self
+            .submitted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // The anchor key's address and this tx's nonce let an eviction be bounded by nonce.
+        let first_submission = match log.try_record_for(&in_flight.tx_hash, &from, nonce) {
+            Ok(first) => first,
+            Err(e) => {
+                (guards.not_sent)(&in_flight);
+                return Err(keep(
+                    p,
+                    AnchorError::NotRecorded(format!(
+                        "the submission could not be recorded durably, so nothing was sent: {e}"
+                    )),
+                ));
+            }
+        };
         let tx_hash = match rpc.send_raw_transaction_gated(&signed.raw, gate) {
             Ok(h) => h,
             Err(e) => {
-                // Nothing went out only when the node says so: it answers that it does not hold
-                // the transaction, and the send error was not the node saying it already knows it.
-                // Any other answer (a failed lookup included) keeps the day held as possibly sent.
-                let not_held = matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false))
-                    && (send_refused(&e) || !matches!(e, RpcError::Node(_)));
+                // Contract v1.1 §1: nothing went out only when this was the first submission of
+                // these bytes, the node answered with a definitive refusal, and it says it does not
+                // hold the transaction. Anything else (an unlisted or ambiguous error, a transport
+                // failure, a re-send, a failed lookup) keeps the day held as possibly sent.
+                // #347 Codex P1: and no other attempt recorded the same bytes while this one sent.
+                let not_held = first_submission
+                    && log.sole_attempt(&in_flight.tx_hash)
+                    && send_refused(&e)
+                    && matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false));
                 if not_held {
                     (guards.not_sent)(&in_flight);
                     return Err(keep(p, rpc_err(e)));

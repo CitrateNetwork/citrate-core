@@ -17,6 +17,7 @@ import { parseAbiItem, type AbiFunction } from "viem";
 import { decodeResult, encodeCall, parseAbi, parseArg, type ReaderFunction } from "../contractReader/abi";
 import { fenceUntrusted } from "./untrusted";
 import { isAddress, type VerifiedSourceView } from "./verifiedSource";
+import { ACTIVE_PROFILE } from "../network/profile";
 
 /** What the tool needs from core (the bridge's contracts domain). */
 export interface ContractViewDeps {
@@ -38,7 +39,7 @@ function str(v: unknown): string {
 /** The read target: "citrate" (chain 40204) unless the model names a loopback fork URL. */
 export function viewTarget(raw: unknown): { ok: true; target: string } | { ok: false; error: string } {
   const t = str(raw);
-  if (t === "" || t === "citrate" || t === "40204") return { ok: true, target: "citrate" };
+  if (t === "" || t === "citrate" || (ACTIVE_PROFILE?.chainId != null && t === String(ACTIVE_PROFILE.chainId))) return { ok: true, target: "citrate" };
   if (LOOPBACK.test(t)) return { ok: true, target: t };
   return { ok: false, error: "target must be citrate (chain 40204) or a local fork at an http:// loopback address" };
 }

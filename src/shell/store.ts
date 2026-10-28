@@ -30,7 +30,7 @@ import {
 import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
-import { broadcastFailure } from "./broadcastOutcome";
+import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
@@ -71,11 +71,11 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
-import { SyncTracker } from "./syncProgress";
+import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
@@ -106,6 +106,7 @@ import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
+import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -242,6 +243,68 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
  * withdrawable while KYC is outstanding — the chain enforces both gates, and the UI
  * must not imply otherwise.
  */
+/**
+ * C1-V5 — the member's validator key as the bond reads give it (the rule #354's S7 read uses):
+ * `MemberBond.pubkey()` once the bond has activated (kept after an exit), else this node's own key.
+ * An activated bond whose key did not read, or a grant whose bond state is unread, has no key yet.
+ */
+export function memberKeyRule(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): { kind: "bond"; key: string } | { kind: "node" } | { kind: "unread"; reason: string } {
+  if (s.bondPubkey && /^0x[0-9a-fA-F]{64}$/.test(s.bondPubkey)) return { kind: "bond", key: s.bondPubkey.toLowerCase() };
+  if (s.bondActivated === true) return { kind: "unread", reason: "your bond's validator key isn't read yet (MemberBond.pubkey()), so these rewards can't be matched to it" };
+  if (s.hasGrant && s.bondActivated === null) return { kind: "unread", reason: "your bond isn't read yet, so the validator key these rewards belong to isn't known" };
+  return { kind: "node" };
+}
+
+/** fxEARN — `memberKeyRule` as one dependency value: the bond key, "node", or "unread". */
+export function memberKeyRuleKey(s: Pick<AppState, "hasGrant" | "bondActivated" | "bondPubkey">): string {
+  const r = memberKeyRule(s);
+  return r.kind === "bond" ? r.key : r.kind;
+}
+
+/**
+ * #391 — whether a node_validator_earnings answer belongs to the member's validator key; null = it
+ * does, otherwise why not. `expected` is the key that was asked for (`MemberBond.pubkey()`), or
+ * undefined when the node's own key was read (no bond has activated). A missing or malformed
+ * `proposerPubkey`, or one that isn't the expected key, fails closed. (The reasons avoid the words
+ * "proposer key", which the rewards view reads as "no key minted yet".)
+ */
+export function earningsKeyCheck(expected: string | undefined, proposerPubkey: unknown): string | null {
+  const short = (k: string) => k.slice(0, 10) + "…" + k.slice(-6);
+  if (typeof proposerPubkey !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(proposerPubkey)) {
+    return "node_validator_earnings didn't name a readable key (" + JSON.stringify(proposerPubkey) + "), so its figures can't be matched to your validator key";
+  }
+  if (expected !== undefined && expected.toLowerCase() !== proposerPubkey.toLowerCase()) {
+    return "this node reads rewards for key " + short(proposerPubkey) + ", which is not your bond's validator key " + short(expected) + " (MemberBond.pubkey())";
+  }
+  return null;
+}
+
+/**
+ * The bond reads the app keeps from a grant read (observed, never persisted): `MemberBond.activated()`,
+ * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
+ * does not send, is null (unread).
+ */
+/**
+ * #362 B-1 (contract v1.2 §1) — why the bond path's Claim is not offered, or null when it may be.
+ * The bond's claimRewards() reverts KycRequired unless MemberBond.isKycVerified(), so a member whose
+ * rewards are claimed through the bond (an activated bond, or registered stake from the grant) is
+ * offered Claim only once the grant read says the flag is true. The identity provider's kyc_status
+ * claim is never a substitute. Off the bond path this returns null (that path keeps the live check).
+ */
+export function bondClaimBlocked(s: Pick<AppState, "bondActivated" | "bondedStake" | "hasGrant" | "bondKycVerified">): string | null {
+  const throughBond = s.bondActivated === true || (s.hasGrant && s.bondedStake > 0);
+  if (!throughBond || s.bondKycVerified === true) return null;
+  if (s.bondKycVerified === false) {
+    return "Claiming needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.";
+  }
+  return "Claim waits for MemberBond.isKycVerified(), which is not read yet; the bond's claimRewards() requires it.";
+}
+
+export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> {
+  if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: null };
+  return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null, bondKycVerified: g.isKycVerified === true };
+}
+
 export function describeBond(g: {
   bondDeployed: boolean;
   unlockBlock: number | null;
@@ -273,6 +336,14 @@ export function describeBond(g: {
   // unverified member is NOT told their funds are available.
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
+}
+
+/** A wei amount (decimal string) as SALT; null when it is not a decimal wei string (never 0). */
+export function saltFromStakeWei(wei: string | null | undefined): number | null {
+  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
+  const w = BigInt(wei);
+  const unit = 10n ** 18n;
+  return Number(w / unit) + Number(w % unit) / 1e18;
 }
 
 /**
@@ -596,9 +667,8 @@ export function tickPatch(
   s: AppState,
   sim: boolean,
   rand: () => number = Math.random,
-  ctx: { nextId: () => number; makePeers: (n: number) => AppState["peerRows"] } = {
+  ctx: { nextId: () => number } = {
     nextId: () => Date.now(),
-    makePeers: () => [],
   },
 ): Partial<AppState> {
   const u: Partial<AppState> = {};
@@ -606,8 +676,8 @@ export function tickPatch(
   // NODE VITALS SIMULATION — web-dev ONLY. In a Tauri build height/peers/
   // syncPct/node-state come from the REAL node via `refreshNode`
   // (bridge.node.status → node.rs → local RPC eth_blockNumber/net_peerCount),
-  // and cpu/ram/logs/peer-rows are honestly blank rather than fabricated
-  // (Rule 1). This whole block is the source of the implausible always-
+  // and logs are honestly blank rather than fabricated (Rule 1). K3: no
+  // cpu / ram / peer rows are simulated either; the Node page shows none. This whole block is the source of the implausible always-
   // climbing height + steady ~24 peers a packaged build must never show.
   if (sim) {
     u.height = s.height + (rand() < 0.85 ? 1 : 2);
@@ -627,14 +697,13 @@ export function tickPatch(
         // isActive in refreshNode. Self-stake never counts (C1-V V4).
         const simBond = s.hasGrant ? 32000 : 0;
         u.bondedStake = simBond;
+        u.bondedStakeRead = true;
         u.node = simBond > 0 ? "validating" : "synced";
         if (s.stage === "s6") u.s6ready = true;
       }
     }
     if (s.node === "validating" && rand() < 0.018) u.blocksProposed = s.blocksProposed + 1;
     if (running) {
-      u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
-      u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
       if (rand() < 0.55) {
         const T = NODE_LOG_TEMPLATES;
         const line = T[(rand() * T.length) | 0]
@@ -646,7 +715,6 @@ export function tickPatch(
           String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
         u.logs = s.logs.concat([{ t, line, id: ctx.nextId() }]).slice(-14);
       }
-      if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = ctx.makePeers(u.peers!);
     }
   }
   if (s.s5 === "settling") {
@@ -690,6 +758,8 @@ export class Store {
   private lastActiveReadAt = 0;
   /** C1-V V4 — this node's validator key (`proposer.key`), cached once read. */
   private validatorPubkey: `0x${string}` | null = null;
+  /** C1-V3 — agent payments submitted with an unknown outcome this session: effect key → tx hash. */
+  private unknownAgentPayments = new Map<string, string | null>();
   /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
   private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
@@ -724,11 +794,17 @@ export class Store {
   private validatorArmed = false;
   // Join-8 — the generation of the newest activation read; older responses are ignored.
   private activationGen = 0;
+  // #556 — the generation of the newest refreshEarnings call; an older rewards read never writes.
+  private earningsGen = 0;
   // Join-8 — a read is in flight (the 15 s poll does not start another meanwhile).
   private activationInFlight = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
+  /** core#584 — the current S3 checkout attempt; a check whose token is stale opens nothing. */
+  private s3Attempt = 0;
+  /** core#584 — the current Settings › Billing "Become a member" attempt (see becomeMember). */
+  private billingAttempt = 0;
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
   private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
   private entitlementPollDeadline = 0;
@@ -1011,8 +1087,11 @@ export class Store {
    */
   async seedMemoryGraph(): Promise<void> {
     const s = this.state;
-    const facts = {
-      chainId: 40204,
+    // K6: the chain id is the network profile's. A build with no network set has no network facts
+    // to seed (the docs below are still ingested).
+    const chainId = isProfileReady() ? (ACTIVE_PROFILE?.chainId ?? null) : null;
+    const facts = chainId === null ? null : {
+      chainId,
       nodeState: s.node,
       height: s.height,
       peers: s.peers,
@@ -1024,8 +1103,8 @@ export class Store {
     };
     let changed = false;
     try {
-      const r = await bridge.memory.seedContext(facts);
-      if (r.authored > 0) changed = true;
+      const r = facts === null ? null : await bridge.memory.seedContext(facts);
+      if (r && r.authored > 0) changed = true;
     } catch {
       /* honest no-op: daemon race / unavailable (web preview) — never a fabricated node */
     }
@@ -1449,7 +1528,11 @@ export class Store {
     // #348 review: the bond's activated flag is observed, never persisted. Fold it from this
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
-    this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    this.setState(bondReadsFromGrant(grant));
+    // The same read carries ValidatorRegistry.stakeOf for the bond's key: fold it, so the staked
+    // figure is a reading from launch, even with the node stopped (unknown is not zero).
+    const stakeSalt = saltFromStakeWei(grant.bondedStakeWei);
+    if (stakeSalt != null) this.setState({ bondedStake: stakeSalt, bondedStakeRead: true });
     // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
     // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
     // that is on chain; otherwise the last value stands.
@@ -1463,29 +1546,50 @@ export class Store {
   }
 
   /**
-   * C1-V (contract v1.1 §1) — this node's key in the registry: isActive, validatorInfo (status,
-   * actEpoch) and currentEpoch, the only source of the validator words. Read for this node's key
-   * whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
+   * C1-V (contract v1.1 §1) — the member's validator key in the registry: isActive, validatorInfo
+   * (status, actEpoch) and currentEpoch, the only source of the validator words. The key is
+   * `memberValidatorKey()` (C1-V5), read whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
    * read is null (unknown), which is never shown as active.
    */
   private async readValidatorActivation(nodeRunning: boolean): Promise<ValidatorActivation | null> {
-    // C1-V2: read whenever this node's key is known, whatever the registry stake. A full exit sets
+    // C1-V2: read whenever the member's key is known, whatever the registry stake. A full exit sets
     // `stakeOf` to 0 while `validatorInfo.status` is Exiting (2) or Slashed (3), so gating the read
     // on stake > 0 would make those words unreachable. A key the registry never saw reads status 0.
     const ACTIVE_READ_MS = 60_000;
     if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
     try {
-      if (!this.validatorPubkey) {
-        const v = await bridge.node.validatorEarnings();
-        if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
-        this.validatorPubkey = v.proposerPubkey as `0x${string}`;
-        this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
+      const key = await this.memberValidatorKey();
+      if (!key) {
+        // No member key yet: nothing is checked for producing under a stale key either.
+        if (this.state.validatorPubkey !== null) this.setState({ validatorPubkey: null });
+        return null;
       }
-      return await this.chainReads.validatorActivation(this.validatorPubkey);
+      // #366 F1: the chosen key is also the key the producer sample is checked against.
+      if (this.state.validatorPubkey !== key) this.setState({ validatorPubkey: key });
+      return await this.chainReads.validatorActivation(key as `0x${string}`);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * C1-V5 — the member's validator key, the same rule as the S7 read (#354, validator_activation.rs):
+   * `MemberBond.pubkey()` once the bond has activated (it survives an exit, unlike pubkeyOfStaker),
+   * else this node's proposer key. An activated bond whose key did not read, or a grant whose bond
+   * state is unread, has NO key yet: never the node's, which may be another key. null = no key.
+   */
+  private async memberValidatorKey(): Promise<string | null> {
+    // One rule for the registry reads and the rewards read (memberKeyRule).
+    const rule = memberKeyRule(this.state);
+    if (rule.kind === "bond") return rule.key;
+    if (rule.kind === "unread") return null;
+    if (!this.validatorPubkey) {
+      const v = await bridge.node.validatorEarnings();
+      if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
+      this.validatorPubkey = v.proposerPubkey as `0x${string}`;
+    }
+    return this.validatorPubkey.toLowerCase();
   }
 
   /**
@@ -1545,6 +1649,9 @@ export class Store {
     this.nodeRefreshing = true;
     try {
       const st = await bridge.node.status();
+      // K3: when this answer was read. It is committed with the values below, so a poll that stalls
+      // on a later read (grant status, registry, logs) leaves Node › Status's freshness to age.
+      const statusReadAt = Date.now();
       // 40204 reroll: the node's start deleted another genesis's chain data. Say so once.
       if (st.notice && !this.nodeChainResetNotified) {
         this.nodeChainResetNotified = true;
@@ -1583,20 +1690,41 @@ export class Store {
       let grantPatch: Partial<AppState> | null = null;
       let grantRead = false;
       let bondActivated = this.state.bondActivated;
+      let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> | null = null;
+      let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
-      const needActivation = this.state.hasGrant && bondActivated === null;
-      if ((needBond || needGrant || needActivation) && dueForBondRead) {
+      // C1-V5: an activated bond whose MemberBond.pubkey() did not read is unread too (its registry
+      // reads wait for the key), and chain#331: so is an un-activated bond's lock, which gates the
+      // activation offer. Both are retried on the next due poll until they land.
+      const needActivation =
+        this.state.hasGrant &&
+        (bondActivated === null ||
+          (bondActivated === true && this.state.bondPubkey === null) ||
+          (bondActivated === false && this.state.bondUnlocked === null) ||
+          // #362 B-1: an activated bond not (yet) verified on chain is re-read, so a verification
+          // made meanwhile offers Claim.
+          (bondActivated === true && this.state.bondKycVerified !== true));
+      // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
+      // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
+      const needStake = !stakeRead;
+      if ((needBond || needGrant || needActivation || needStake) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           grantRead = true;
-          bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          // A malformed stake is not a reading: it stays unread, never a fabricated 0.
+          const salt = saltFromStakeWei(g.bondedStakeWei);
+          if (salt != null) {
+            bonded = salt;
+            stakeRead = true;
+          }
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
-          bondActivated = g.bondActivated ?? null;
+          bondReads = bondReadsFromGrant(g);
+          bondActivated = bondReads.bondActivated;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
           // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
           // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
@@ -1607,6 +1735,8 @@ export class Store {
       }
       // C1-V (contract v1.1 §1) — the validator words come ONLY from the registry: isActive,
       // validatorInfo (status, actEpoch) and currentEpoch, read at most every ACTIVE_READ_MS.
+      // The key the registry is read for depends on the bond reads just folded (C1-V5).
+      if (bondReads) this.setState(bondReads);
       const validatorActivation = await this.readValidatorActivation(st.state === "running");
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
@@ -1636,8 +1766,10 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
-        bondActivated,
+        bondedStakeRead: stakeRead,
+        ...(bondReads ?? { bondActivated }),
         validatorActivation,
+        nodeStatusAt: statusReadAt,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -1659,9 +1791,9 @@ export class Store {
           this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
           this.nodeStallSince = 0;
         } else if (st.peers > 0) {
-          const NODE_STALL_MS = 60_000; // height frozen this long while behind + peered = stalled
-          if (this.nodeStallSince === 0) this.nodeStallSince = Date.now();
-          else if (Date.now() - this.nodeStallSince >= NODE_STALL_MS) nextNode = "stalled";
+          // Monotonic clock: a wall-clock step back must not hold off (or fake) a stall.
+          if (this.nodeStallSince === 0) this.nodeStallSince = performance.now() || 1;
+          else if (performance.now() - this.nodeStallSince >= STALL_MS) nextNode = "stalled"; // contract §1, shared with the sync line
         }
       } else if (nextNode === "synced" || nextNode === "validating") {
         // Fully caught up — clear the entire stall budget (a fresh session on any later dip).
@@ -1678,7 +1810,7 @@ export class Store {
       patch.miningHold = st.miningHold ?? null;
       // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
       // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
-      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead());
+      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead(), st.peers);
       if (this.validatorArmed && !st.miningArmed && st.miningHold) this.validatorArmed = false;
       if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;
@@ -1731,7 +1863,7 @@ export class Store {
     // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
     // activation, and neither does an Exiting / Slashed key.
     // #348 review: only a bond that reads not activated (activated() = false); unread never opens it.
-    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated)) return;
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated, s.bondUnlocked)) return;
 
     // ARM the producer so the node mints `proposer.key` (the validator identity activation
     // needs). The node runs as a plain follower and NEVER mints the key on its own; arming
@@ -2217,6 +2349,9 @@ export class Store {
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
     this.stopEntitlementPoll();
+    // core#584: a Billing checkout attempt still checking for a held grant opens nothing after sign-out.
+    this.billingAttempt++;
+    if (this.state.billingChecking) this.setState({ billingChecking: false });
     await bridge.auth.logout();
     this.setState({
       tier: "free",
@@ -2329,6 +2464,11 @@ export class Store {
       this.toast("Renewal opens the checkout in the desktop app.");
       return;
     }
+    await this.openMembershipCheckout();
+  }
+
+  /** Open the core-membership checkout in the browser and watch for the new entitlement. */
+  private async openMembershipCheckout(): Promise<void> {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
@@ -2337,6 +2477,38 @@ export class Store {
     } catch (err) {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
+  }
+  /**
+   * Settings › Billing "Become a member ↗" for a free user: the same guards as onboarding S3
+   * (onS3Pay) before any money moves. (1) Link first: the grant goes to the identity's wallet
+   * claim, which this device can spend from only once linked. (2) Never open checkout for an
+   * account that already holds the grant on chain (one per sub; a second order can never be
+   * granted). An unreadable chain is not evidence of a grant, as in S3. Renewal for a lapsed
+   * member stays on renewMembership: a lapsed member holds the grant and still renews.
+   */
+  async becomeMember(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Membership checkout opens in the desktop app.");
+      return;
+    }
+    if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    // ONE ATTEMPT AT A TIME (core#584), as in onS3Pay: a second click while the held-grant read
+    // runs is ignored (the button is disabled too), and an attempt superseded meanwhile (sign-out
+    // ends it) opens nothing.
+    if (this.state.billingChecking) return;
+    const attempt = ++this.billingAttempt;
+    this.setState({ billingChecking: true });
+    const held = await this.readHeldGrant();
+    if (attempt !== this.billingAttempt) return;
+    this.setState({ billingChecking: false });
+    if (held) {
+      this.setState({ hasGrant: true, hasSbt: held.hasSbt });
+      this.save();
+      this.toast("This account already holds the membership grant, so there is nothing to check out. Your membership shows here once your identity claim refreshes.");
+      this.startEntitlementPoll();
+      return;
+    }
+    await this.openMembershipCheckout();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -2449,17 +2621,26 @@ export class Store {
     // registry stake) plus the bond status (which carries the unlock block), so it can explain a
     // member with 0 spendable, 0 staked and a locked grant.
     const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The grant's principal: MemberBond.principal() from the activation read, else the vault's
+    // attribution (MembershipStakeVault.attributedStake). null when neither is read: never 0.
+    const principalSalt = saltFromStakeWei(s.activation?.principalWei);
+    const grantSalt = principalSalt ?? (s.hasGrant ? saltFromStakeWei(s.s5StakeWei) : null);
+    // The stake only from a stakeOf read this session (unknown is not zero).
+    const stakeSalt = readStakeSalt(s);
     return {
       height: s.height,
       peers: s.peers,
       nodeState: nodeLabelLocal(s.node),
       // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf (UI truth contract §2). The
       // locked grant is reported separately under `membership`; self-stake is not validator stake.
-      staked: s.bondedStake,
+      staked: stakeSalt,
+      grantSalt,
       liquid: s.liquid,
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // fxEARN: the reason Node › Rewards shows instead of Claim, so the agent never promises a claim the app refuses.
+      claimBlocked: bondClaimBlocked(s),
       // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
@@ -2467,8 +2648,10 @@ export class Store {
       membership: {
         grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
-        validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
+        // ValidatorRegistry.stakeOf, or null with "not read yet" before the read (never a default 0).
+        validatorBondedSalt: stakeSalt,
+        validatorBonded: stakeSalt == null ? "not read yet (ValidatorRegistry.stakeOf)" : "ValidatorRegistry.stakeOf",
+        locked: stakeSalt == null || grantSalt == null ? null : grantSalt > 0 && stakeSalt < grantSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
           grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
@@ -2677,22 +2860,8 @@ export class Store {
     this.setState((s) =>
       tickPatch(s, BRIDGE_MODE === "sim", Math.random, {
         nextId: () => this.mid++,
-        makePeers: (n) => this.makePeers(n),
       }),
     );
-  }
-
-  makePeers(n: number) {
-    const rows = [];
-    const cities = ["fra1", "sgp1", "nyc3", "ams2", "tok1", "sfo2"];
-    for (let i = 0; i < Math.min(5, Math.max(2, (n / 5) | 0)); i++) {
-      rows.push({
-        id: "16Uiu2HA" + Math.random().toString(36).slice(2, 8) + "…" + cities[i % cities.length],
-        dir: Math.random() < 0.5 ? "in" : "out",
-        lat: ((18 + Math.random() * 120) | 0) + " ms",
-      });
-    }
-    return rows;
   }
 
   // ---------- ceremony ----------
@@ -3825,7 +3994,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated, this.state.bondUnlocked),
           validatorActivation: a,
         });
       } catch (e) {
@@ -4442,7 +4611,7 @@ export class Store {
       void this.refreshNode();
       return Promise.resolve("the app already has the node starting or running");
     }
-    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
+    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [] });
     if (BRIDGE_MODE === "tauri") {
       // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
       // poller (refreshNode) then folds live state/height/peers as it boots +
@@ -4486,7 +4655,7 @@ export class Store {
       );
     }
     setTimeout(() => {
-      this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
+      this.setState({ node: "syncing", syncPct: 2 });
       this.save();
     }, 1500);
     return Promise.resolve(null);
@@ -4496,7 +4665,7 @@ export class Store {
   /** Stop the node. Resolves to the reason the stop was refused, or null (see `startNode`). */
   stopNode(): Promise<string | null> {
     // Explicit member action — remember it so launch does NOT restart the node.
-    this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0, peerRows: [] });
+    this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0 });
     if (BRIDGE_MODE === "tauri") {
       // Only claim the supervisor was released once the real stop RESOLVES — the
       // optimistic "off" reflects intent, but the toast must not overstate.
@@ -4699,18 +4868,70 @@ export class Store {
    * no longer shown as rewards. A failed read keeps `rewards` null (unknown is not zero) and says so.
    */
   async refreshEarnings(): Promise<void> {
-    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
-      this.setState({ rewards: null });
+    // #556: every call starts a new generation, so a read still in flight from an earlier call never
+    // writes over what this call (or a later one) decides, early returns included.
+    const gen = ++this.earningsGen;
+    const gate = this.earningsGate();
+    if (gate.kind === "skip") {
+      this.setState(gate.patch);
       return;
     }
+    const { key, ruleKey } = gate;
+    // A result is committed only while this is the newest call and the member-key rule, read again
+    // now, still names the key that was read. Otherwise the current rule decides what is shown.
+    const commit = (patch: Pick<AppState, "rewards" | "rewardsError">, toast?: string) => {
+      if (gen !== this.earningsGen) return;
+      const now = this.earningsGate();
+      if (now.kind === "skip") {
+        this.setState(now.patch);
+        return;
+      }
+      if (now.ruleKey !== ruleKey) {
+        this.setState({ rewards: null, rewardsError: "your validator key changed while its rewards were being read, so those figures aren't shown" });
+        return;
+      }
+      this.setState(patch);
+      if (toast) this.toast(toast);
+    };
+    // Contract rule 2: an empty or malformed figure is unknown, never 0.
+    const dec = (w: unknown): string | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w).toString() : null);
     try {
-      const v = await bridge.node.validatorEarnings();
-      this.setState({ rewards: { totalWei: BigInt(v.totalWei).toString(), claimableWei: BigInt(v.claimableWei).toString() } });
+      const v = await bridge.node.validatorEarnings(key);
+      const keyMismatch = earningsKeyCheck(key, v.proposerPubkey);
+      if (keyMismatch) {
+        commit({ rewards: null, rewardsError: keyMismatch });
+        return;
+      }
+      const totalWei = dec(v.totalWei);
+      const claimableWei = dec(v.claimableWei);
+      if (totalWei == null || claimableWei == null) {
+        commit({ rewards: null, rewardsError: "node_validator_earnings returned a figure that isn't a number" });
+        return;
+      }
+      commit({ rewards: { totalWei, claimableWei }, rewardsError: null });
     } catch (err) {
-      this.setState({ rewards: null });
-      this.toast("Validator rewards unavailable — " + String((err as Error).message ?? err));
+      const msg = String((err as Error).message ?? err);
+      commit({ rewards: null, rewardsError: msg }, "Validator rewards unavailable — " + msg);
     }
   }
+
+  /**
+   * #394 / #391 / #556 — what the rewards read may do in the current state. No registered stake and
+   * no activated bond: no validator rewards (`rewards` null, no reason). An unread key reads nothing
+   * and says why. Otherwise read rewardsOf for the member's validator key (C1-V5):
+   * MemberBond.pubkey() once the bond has activated, the node's own key (no key sent) when none has.
+   */
+  private earningsGate():
+    | { kind: "skip"; patch: Pick<AppState, "rewards" | "rewardsError"> }
+    | { kind: "read"; key: string | undefined; ruleKey: string } {
+    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
+      return { kind: "skip", patch: { rewards: null, rewardsError: null } };
+    }
+    const rule = memberKeyRule(this.state);
+    if (rule.kind === "unread") return { kind: "skip", patch: { rewards: null, rewardsError: rule.reason } };
+    return { kind: "read", key: rule.kind === "bond" ? rule.key : undefined, ruleKey: memberKeyRuleKey(this.state) };
+  }
+
 
   /**
    * CORE-C2-F-1 (@rule8) — the REAL Claim. This REPLACES the old sim-ceremony
@@ -4765,25 +4986,46 @@ export class Store {
   }
 
   async claimRewards(): Promise<void> {
-    // Payout gate: KYC is required to take SALT out (participation is not gated).
-    if (!(await this.assertPayoutKyc("Claiming rewards"))) return;
     // C1-V review round 2: choose the claim path from the SAME signal Rust's user_claim uses
     // (grant_status::claims_through_bond: bondDeployed && (hasValidator || bondActivated)), read now.
     // Registry stake is NOT that signal, and neither is hasValidator alone: after a full exit both
     // read 0 / false, yet the activated bond can still claim the key's matured rewards. If the
     // grant status cannot be read, stop with the reason.
     let validator: boolean;
+    let pubkey: string | null = null;
+    let bondKycVerified = false;
     try {
       const g = await bridge.membership.grantStatus(this.identity().wallet);
       validator = g.bondDeployed && (g.hasValidator || g.bondActivated === true);
+      // #394 / #416: the bond claims for MemberBond.pubkey(); the pre-check reads that key's rewardsOf.
+      pubkey = g.bondPubkey ?? null;
+      bondKycVerified = g.isKycVerified === true;
+      // Fold the fresh bond reads, so Node › Earning's Claim follows what was just read.
+      this.setState(bondReadsFromGrant(g));
     } catch (err) {
       this.toast("Claim unavailable — could not read your validator status: " + String((err as Error).message ?? err));
       return;
     }
+    // Payout gate (KYC is required to take SALT out; participation is not gated). Contract v1.2 §1
+    // (#362 B-1): the bond's claimRewards() requires MemberBond.isKycVerified() and reverts
+    // KycRequired otherwise, so the bond path is gated on the chain's flag alone; the identity
+    // provider's kyc_status claim is never a substitute. The other path keeps the live identity check.
+    if (validator) {
+      if (!bondKycVerified) {
+        this.toast("Claiming rewards needs identity verification on chain: MemberBond.isKycVerified() reads false, and the bond's claimRewards() requires it.");
+        return;
+      }
+      if (!pubkey) {
+        this.toast("Claim unavailable — your bond's validator key isn't read yet (MemberBond.pubkey()). Try again in a moment.");
+        return;
+      }
+    } else if (!(await this.assertPayoutKyc("Claiming rewards"))) {
+      return;
+    }
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
-      // A validator's pre-check reads rewardsOf.claimableNow, the figure "Claimable now" shows.
-      res = await bridge.agent.claim({ validator });
+      // A validator's pre-check reads rewardsOf(bond key).claimableNow, the figure "Claimable now" shows.
+      res = await bridge.agent.claim(validator ? { validator, pubkey } : { validator });
     } catch (err) {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;
@@ -5175,9 +5417,9 @@ export class Store {
     view: CeremonyView,
     spendSummary?: string,
     onResolved?: WalletReview["onResolved"],
-    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord },
+    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord; warning?: string },
   ): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.warning ? { warning: extra.warning } : {}), ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
   }
 
   /**
@@ -5213,6 +5455,26 @@ export class Store {
       }
       onDone?.();
     };
+    // C1-V3: the member approved and the payment was submitted, but its outcome is unknown. Release
+    // the sidecar call as submitted with the tx hash (never through reject, which the agent reads as
+    // "rejected"), and remember it so an identical proposal names this tx. Nothing retries it.
+    const settleUnknown = async (key: string | null, txHash: string | null) => {
+      if (key !== null) this.unknownAgentPayments.set(key, txHash);
+      try {
+        await bridge.agentHarness.resolveOutcomeUnknown(ap.id, txHash);
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (msg.startsWith("STALE_APPROVAL")) {
+          this.toast(
+            "Your transaction was submitted, outcome unknown" +
+              (txHash ? " (tx " + txHash + ")" : "") +
+              ", but the agent had already stopped waiting for it and was not told. Check it on the block explorer before approving a retry.",
+          );
+        }
+        /* otherwise best-effort: the sidecar head unblocks on its own timeout if this fails */
+      }
+      onDone?.();
+    };
     if (ap.kind === "chain") {
       let view: CeremonyView | null = null;
       try {
@@ -5229,7 +5491,24 @@ export class Store {
       }
       if (view) {
         // approved === true here means the ceremony signed AND broadcast the transaction.
-        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved, approved));
+        // C1-V3: an identical payment whose earlier submission has an unknown outcome is named on
+        // the new review, so the member checks that tx before approving this one.
+        const key = agentEffectKey(ap.to, ap.data);
+        const prior = key !== null && this.unknownAgentPayments.has(key) ? (this.unknownAgentPayments.get(key) ?? null) : undefined;
+        const warning =
+          prior === undefined
+            ? undefined
+            : "an identical payment was submitted earlier, outcome unknown" +
+              (prior ? " (tx " + prior + ")" : "") +
+              ": check it on the block explorer before approving this one";
+        this.openWalletReview(
+          "agent",
+          ap.summary,
+          view,
+          undefined,
+          (approved, _txHash, outcome) => (outcome?.kind === "outcome-unknown" ? settleUnknown(key, outcome.txHash) : settle(approved, approved)),
+          { warning },
+        );
         return;
       }
       // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.
@@ -5503,8 +5782,10 @@ export class Store {
             ").",
         );
       }
-      // Not confirmed → the sidecar effect does not proceed.
-      await r.onResolved?.(false);
+      // Not confirmed → the sidecar effect does not proceed. C1-V3: an unknown outcome says so, so
+      // an agent's payment is reported as submitted with an unknown outcome, never as rejected.
+      if (failure.kind === "not-sent") await r.onResolved?.(false);
+      else await r.onResolved?.(false, undefined, { kind: "outcome-unknown", txHash: failure.txHash, reason: failure.reason });
       return;
     }
     this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
@@ -5607,6 +5888,7 @@ export class Store {
    *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
    *  paid membership stays available later (Settings → Billing opens the same checkout). */
   onS3Free(): void {
+    this.endS3Check();
     this.setState({ stage: "s4", tier: "free" });
     this.save();
   }
@@ -5715,11 +5997,7 @@ export class Store {
       // check out. The link ceremony re-reads the claim on approval
       // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
       // Pay proceeds. This mirrors how activation is gated on the link.
-      if (!this.walletIsLinked()) {
-        this.toast("Link your wallet first — approve the link, then tap Pay again.");
-        void this.linkWallet();
-        return;
-      }
+      if (this.linkBeforeCheckout("Link your wallet first — approve the link, then tap Pay again.")) return;
       // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
       // grant. Settlement is chain truth, and the client had no way to observe an
       // existing grant: `settled` was reachable ONLY through `pollMembership`, which
@@ -5729,8 +6007,28 @@ export class Store {
       // thing that cannot help, because the membership is one-per-sub and the second
       // order can never be granted. Observed 2026-08-15: a member reached three
       // stranded `paid` orders this way. Read the chain BEFORE spending money.
+      //
+      // ONE ATTEMPT AT A TIME (core#584). The read above takes time, and until it ends a second
+      // Pay, Back, or choosing membership again could each still open a checkout. So: a second
+      // call while a check runs is ignored; each attempt carries a token, and an attempt whose
+      // token was superseded (Back ends it via endS3Check) or whose stage changed opens nothing.
+      if (this.state.s3Checking) return;
+      const attempt = ++this.s3Attempt;
+      const stage = this.state.stage;
+      this.setState({ s3Checking: true });
       void (async () => {
-        if (await this.settleS3IfAlreadyGranted()) return;
+        let settled: boolean;
+        try {
+          settled = await this.settleS3IfAlreadyGranted();
+        } catch {
+          // Not a read failure (that returns false inside): something unexpected. Open nothing,
+          // and give the controls back so the member can try again.
+          if (attempt === this.s3Attempt) this.setState({ s3Checking: false });
+          return;
+        }
+        if (attempt !== this.s3Attempt) return; // ended by Back / Continue free; ignore the result
+        this.setState({ s3Checking: false });
+        if (settled || this.state.stage !== stage) return;
         this.setState({ s3: "paying" });
         // login_hint = the signed-in email → the browser checkout binds to THIS account.
         void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
@@ -5751,6 +6049,15 @@ export class Store {
       this.setState({ s3: "settled", tier: "pilot" });
       this.save();
     }, 2500);
+  }
+
+  /**
+   * core#584 — end any running pre-checkout grant check: its result is ignored, so it opens no
+   * checkout. Back on the member checkout and "Continue free" call this. Idempotent.
+   */
+  endS3Check(): void {
+    this.s3Attempt++;
+    if (this.state.s3Checking) this.setState({ s3Checking: false });
   }
 
   /**
@@ -5854,22 +6161,38 @@ export class Store {
   async settleS3IfAlreadyGranted(): Promise<boolean> {
     if (BRIDGE_MODE !== "tauri") return false;
     if (this.state.s3 === "settled") return true;
+    const grant = await this.readHeldGrant();
+    if (!grant) return false;
+    this.setState({
+      s3: "settled",
+      s3PollExhausted: false,
+      hasGrant: true,
+      hasSbt: grant.hasSbt,
+    });
+    this.save();
+    return true;
+  }
+
+  /**
+   * The membership grant this account already holds on chain (`isGrantOnChain && hasSbt`, read
+   * permissionlessly from 40204), or null. Null on any read failure: an unreadable chain is not
+   * evidence of a grant (Rule 1). Shared by every checkout's money guard.
+   */
+  private async readHeldGrant(): Promise<GrantStatus | null> {
     try {
       const grant = await bridge.membership.grantStatus(this.identity().wallet);
-      if (isGrantOnChain(grant) && grant.hasSbt) {
-        this.setState({
-          s3: "settled",
-          s3PollExhausted: false,
-          hasGrant: true,
-          hasSbt: grant.hasSbt,
-        });
-        this.save();
-        return true;
-      }
+      return isGrantOnChain(grant) && grant.hasSbt ? grant : null;
     } catch {
-      // Honest no-op: an unreadable chain is not evidence of a grant.
+      return null;
     }
-    return false;
+  }
+
+  /** Checkout ordering guard: true (and the link ceremony opened) when the wallet is not linked yet. */
+  private linkBeforeCheckout(message: string): boolean {
+    if (this.walletIsLinked()) return false;
+    this.toast(message);
+    void this.linkWallet();
+    return true;
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });

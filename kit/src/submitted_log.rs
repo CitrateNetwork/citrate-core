@@ -58,7 +58,7 @@
 //! have sent, so it is a first submission again. The bound belongs to the section it was set in
 //! and moves to the archive with it. It never applies to an uncertainty from a damaged or
 //! truncated history. Either way the missing record is written at once. A hash whose record can't
-//! be made durable is refused ([`SubmittedTxLog::try_record`] returns `Err`) and not kept: the
+//! be made durable is refused ([`SubmittedTxLog::try_record_for`] returns `Err`) and not kept: the
 //! caller must not send. Hashes are public transaction ids, not key material.
 //!
 //! # Files
@@ -717,17 +717,21 @@ impl SubmittedTxLog {
         }
     }
 
-    /// Record `hash` BEFORE it is broadcast. `Ok(true)` only when this is provably its first
-    /// submission (never seen, history certain) and the record is durable. `Ok(false)` for a
-    /// re-submission or an uncertain history. `Err` when the record could not be written: the
-    /// hash is not kept, and the caller must not send.
-    pub fn try_record(&self, hash: &str) -> Result<bool, String> {
+    /// [`Self::try_record_for`] with no sender or nonce: history from before they were kept.
+    /// Test-only (#366 N-2): every production send records with its sender and nonce
+    /// (`try_record_for`, `try_record_call`), so an eviction can be bounded by nonce. Such an entry,
+    /// once evicted, leaves the whole history uncertain.
+    #[cfg(test)]
+    pub(crate) fn try_record(&self, hash: &str) -> Result<bool, String> {
         self.record_entry(hash, None, NonceSource::Supplied, None)
     }
 
-    /// [`Self::try_record`] for a transaction whose sender and nonce are known, so an eviction
-    /// can be bounded by nonce instead of making the whole history uncertain. The nonce's origin
-    /// is not known here, so it is treated as [`NonceSource::Supplied`].
+    /// Record a signed tx BEFORE it is broadcast, with its sender and nonce so an eviction can be
+    /// bounded by nonce instead of making the whole history uncertain. `Ok(true)` only when this is
+    /// provably its first submission (never seen, history certain) and the record is durable;
+    /// `Ok(false)` for a re-submission or an uncertain history; `Err` when the record could not be
+    /// written: the hash is not kept, and the caller must not send. The nonce's origin is not known
+    /// here, so it is treated as [`NonceSource::Supplied`].
     pub fn try_record_for(&self, hash: &str, sender: &str, nonce: u64) -> Result<bool, String> {
         self.record_entry(hash, Some((sender, nonce)), NonceSource::Supplied, None)
     }
@@ -877,9 +881,10 @@ impl SubmittedTxLog {
         a.get(&hash.to_ascii_lowercase()).copied() == Some(1)
     }
 
-    /// [`Self::try_record`] for callers that only need first-ness. A failed write is never a
-    /// first submission (the hash is not kept).
-    pub fn record(&self, hash: &str) -> bool {
+    /// [`Self::try_record`] for tests that only need first-ness. A failed write is never a first
+    /// submission (the hash is not kept). Test-only (#366 N-2).
+    #[cfg(test)]
+    pub(crate) fn record(&self, hash: &str) -> bool {
         self.try_record(hash).unwrap_or(false)
     }
 

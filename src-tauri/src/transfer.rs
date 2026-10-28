@@ -19,8 +19,8 @@
 
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 
-/// The Citrate chain id (40204).
-const CITRATE_CHAIN_ID: u64 = 40204;
+// The chain id this build targets (the kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID;
 /// The origin surfaced to the human for a user-initiated Send (displayed verbatim).
 const LOCAL_USER_ORIGIN: &str = "local-user";
 

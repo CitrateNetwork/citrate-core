@@ -20,7 +20,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { Wallet } from "./Wallet";
 import { Dashboard } from "./Dashboard";
 import { Onboarding } from "../onboarding/Onboarding";
@@ -64,7 +64,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
     expect(validatorWord(0, null, true, null)).toBeNull();
     expect(validatorWord(0, NONE, true, null)).toBeNull();
     expect(validatorWord(0, null, true, undefined)).toBeNull();
-    expect(validatorWord(0, null, true, false)).toBe("Bond locked · not staked");
+    expect(validatorWord(0, null, true, false, false)).toBe("Bond locked · not staked");
     expect(validatorWord(0, NONE, false, null)).toBe("Not a validator");
   });
 
@@ -78,7 +78,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
     });
 
     it(`the Node page offers no activation and shows no bond-locked word (${which})`, () => {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ validatorActivation })} />);
+      const html = renderStatus(stub, member({ validatorActivation }));
       expect(html).not.toContain("Activate validator");
       expect(html).not.toContain("Bond locked · not staked");
     });
@@ -95,7 +95,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
   });
 
   it("a bond that reads not activated still gets the word and the offer", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation: null, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
     expect(html).toContain("Bond locked · not staked");
     // Join-8 (#354): the offer is the S7 step; S6 points to it.
     expect(html).toContain("next: activate your validator, after the local model below");

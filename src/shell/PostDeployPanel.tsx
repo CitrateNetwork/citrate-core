@@ -9,6 +9,7 @@
 // =====================================================================
 import { useState, type CSSProperties } from "react";
 import type { ContractsDomain, VerifyOutcomeView } from "../bridge/domains";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 export type PostDeployOps = Pick<
   ContractsDomain,
@@ -106,7 +107,7 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
   return (
     <div className="surface" data-testid="post-deploy" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
       <span style={{ fontSize: 13.5, fontWeight: 500 }}>After deploy</span>
-      <span style={note}>For a hello-mint project: verify the contract, point the page at chain 40204, pin it to IPFS, and export it for Vercel.</span>
+      <span style={note}>For a hello-mint project: verify the contract, point the page at chain {CHAIN_ID_TEXT}, pin it to IPFS, and export it for Vercel.</span>
       <div style={{ display: "flex", gap: 6 }}>
         <input className="input" data-testid="pd-project" style={{ ...mono, flex: 1 }} placeholder="hello-mint project folder" value={project} onChange={(e) => setProject(e.target.value)} />
         <button className="btn btn-sm btn-ghost" onClick={() => void pickFolder()}>

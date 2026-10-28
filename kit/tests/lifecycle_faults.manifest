@@ -48,6 +48,10 @@ a_ticket_dropped_by_an_unwinding_caller_keeps_the_stop_open | regression | SCL-S
 a_withdrawn_ticket_lets_the_stop_complete | positive-control | SCL-S2.3 | a ticket withdrawn before the Stop is resolved and the Stop settles Complete
 a_ticket_from_a_replaced_intent_never_becomes_active | regression | SCL-S2.3 | a ticket whose intent a Stop and then a Start replaced is refused as stale, though the service is meant to run again
 start_during_teardown_waits_for_an_old_publication_ticket | regression | SCL-S2.3 | a Start superseding a Stop spawns nothing while an old-intent publication ticket is held
+no_stop_commits_while_a_publication_activates | regression | SCL-S2.3 | the step that makes a publication active runs under the lifecycle lock: no Stop commits while it runs
+a_failed_activation_keeps_the_ticket_open_until_cleaned | regression | SCL-S2.3 | a failed activation step returns the open ticket; the Stop is Incomplete naming it until cleaned()
+an_activation_that_unwinds_keeps_the_publication_owned | regression | SCL-S2.3 | an activation step that unwinds leaves the publication owned: the Stop is Incomplete naming it
+a_stale_ticket_never_runs_its_activation_step | positive-control | SCL-S2.3 | a ticket whose intent a Stop replaced is refused as stale without running its activation step
 shutdown_with_an_open_publication_ticket_is_incomplete | regression | SCL-S2.3 | Stop plus immediate shutdown with an open ticket is Incomplete and stays Quarantined; a late release reconciles
 after_shutdown_quarantine_clears_once_readers_and_tickets_are_done | regression | SCL-S2.3 | after shutdown, releasing the last ticket re-checks the readers and reconciles to Stopped
 after_shutdown_a_late_reader_end_clears_quarantine | regression | SCL-S2.3 | after shutdown, a late reader end is observed by a snapshot read
@@ -64,4 +68,22 @@ deadline_overlay_is_fixed_and_full_admission_commits_nothing | regression | SCL-
 expired_stop_followed_by_later_controls_never_reads_complete | regression | SCL-S2.4 | an expired Stop followed by later controls never reads Complete
 publisher_creation_failure_leaves_deadline_admission_unavailable | regression | SCL-S2.4 | creation failure: Unavailable, nothing committed, no replacement (RT-16)
 publisher_exit_leaves_admission_unavailable_without_replacement | regression | SCL-S2.4 | a publisher that ends leaves admission Unavailable, no replacement (RT-16)
+grace_longer_than_healthy_after_never_credits_a_failing_probe | regression | SCL-S3.2 | bug (b): grace 120 ms > healthy_after 40 ms, always-false probe, max_retries 1: Failed within 3 s with at most 2 children (INV-7, INV-8)
+late_probe_answers_never_make_ready_or_credit | regression | SCL-S3.2 | answers that arrive after the probe interval never make Ready or earn credit; probe workers never overlap inside the grace
+probe_workers_never_overlap_across_incarnations | regression | SCL-S3.2 | a probe worker that outlives its incarnation holds the one probe slot; the next incarnation starts no second worker
+a_stale_probe_success_never_makes_the_new_incarnation_ready | regression | SCL-S3.1 | an earlier incarnation's late success never makes the current one Ready (INV-12, INV-13)
+a_probed_service_is_awaiting_then_ready_then_unavailable | regression | SCL-S3.1 | readiness moves apart from liveness: Alive+Awaiting cold, Ready on a fresh success, Unavailable on a failed sample in the grace, no restart
+a_liveness_only_service_is_alive_and_never_assessed | positive-control | SCL-S3.1 | a service without a probe is Alive and NotAssessed, never Ready (D-6, INV-9)
+a_forward_wall_clock_jump_never_grants_credit | regression | SCL-S3.2 | the liveness-only reset runs on the monotonic clock: a jumping wall clock grants no credit
+sustained_fresh_success_resets_the_retry_budget | positive-control | SCL-S3.2 | fresh successes spanning healthy_after reset the budget; four crashes after healthy runs never reach Failed (INV-1)
+automated_restarts_never_reset_the_budget | regression | SCL-S3.2 | automated restarts carry the retry budget: a crashing child restarted once after every crash still reaches Failed after 1 + max_retries failures (INV-17)
+an_automated_start_carries_the_budget_over | regression | SCL-S3.2 | an automated start after a Stop counts the failures before the Stop; 1 + max_retries failures in all (INV-17)
+a_probe_answer_after_its_interval_never_counts | regression | SCL-S3.1 | an answer that finishes after the probe interval is discarded even when collected before the timeout is noticed (INV-12, INV-13)
 manifest_lists_every_fixture | harness | SCL-S1.3 | this manifest and the suite list the same fixtures
+a_member_start_joining_an_automated_start_gives_a_fresh_budget | regression | SCL-S3 | a member Start that joins a pending automated Start gives the fresh budget, even if the monitor read the automated intent first
+a_member_joining_an_unspent_automated_start_gets_exactly_its_budget | regression | SCL-S3 | a member joining a pending automated Start with an unspent budget gives the next incarnation the fresh budget: max_retries 0 allows exactly one incarnation
+a_member_joining_during_the_spawn_call_gets_exactly_its_budget | regression | SCL-S3 | a member joining while the admitted spawn is in its OS call gives that incarnation the fresh budget: max_retries 0 allows exactly one incarnation
+a_failed_probe_outside_the_grace_clears_ready_before_teardown | regression | SCL-S3 | a failed probe outside the grace makes the service Unavailable before its teardown, never Ready during it and never only Stale
+a_success_collected_late_by_the_monitor_never_reads_ready | regression | SCL-S3 | end to end: an on-time probe success collected after the freshness limit never reads Ready and earns no credit
+a_flapping_probe_never_earns_credit | regression | SCL-S3 | credit needs fresh successes spanning healthy_after: a probe that flaps per incarnation runs out the budget
+a_hung_probe_slot_counts_as_a_failure_outside_the_grace | regression | SCL-S3 | a probe slot still taken an interval past due, outside the grace, is a failure: the service reaches Failed
