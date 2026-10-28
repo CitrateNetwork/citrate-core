@@ -729,6 +729,8 @@ export class Store {
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
+  /** core#584 — the current S3 checkout attempt; a check whose token is stale opens nothing. */
+  private s3Attempt = 0;
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
   private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
   private entitlementPollDeadline = 0;
@@ -5601,6 +5603,7 @@ export class Store {
    *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
    *  paid membership stays available later (Settings → Billing opens the same checkout). */
   onS3Free(): void {
+    this.endS3Check();
     this.setState({ stage: "s4", tier: "free" });
     this.save();
   }
@@ -5723,8 +5726,28 @@ export class Store {
       // thing that cannot help, because the membership is one-per-sub and the second
       // order can never be granted. Observed 2026-08-15: a member reached three
       // stranded `paid` orders this way. Read the chain BEFORE spending money.
+      //
+      // ONE ATTEMPT AT A TIME (core#584). The read above takes time, and until it ends a second
+      // Pay, Back, or choosing membership again could each still open a checkout. So: a second
+      // call while a check runs is ignored; each attempt carries a token, and an attempt whose
+      // token was superseded (Back ends it via endS3Check) or whose stage changed opens nothing.
+      if (this.state.s3Checking) return;
+      const attempt = ++this.s3Attempt;
+      const stage = this.state.stage;
+      this.setState({ s3Checking: true });
       void (async () => {
-        if (await this.settleS3IfAlreadyGranted()) return;
+        let settled: boolean;
+        try {
+          settled = await this.settleS3IfAlreadyGranted();
+        } catch {
+          // Not a read failure (that returns false inside): something unexpected. Open nothing,
+          // and give the controls back so the member can try again.
+          if (attempt === this.s3Attempt) this.setState({ s3Checking: false });
+          return;
+        }
+        if (attempt !== this.s3Attempt) return; // ended by Back / Continue free; ignore the result
+        this.setState({ s3Checking: false });
+        if (settled || this.state.stage !== stage) return;
         this.setState({ s3: "paying" });
         // login_hint = the signed-in email → the browser checkout binds to THIS account.
         void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
@@ -5745,6 +5768,15 @@ export class Store {
       this.setState({ s3: "settled", tier: "pilot" });
       this.save();
     }, 2500);
+  }
+
+  /**
+   * core#584 — end any running pre-checkout grant check: its result is ignored, so it opens no
+   * checkout. Back on the member checkout and "Continue free" call this. Idempotent.
+   */
+  endS3Check(): void {
+    this.s3Attempt++;
+    if (this.state.s3Checking) this.setState({ s3Checking: false });
   }
 
   /**

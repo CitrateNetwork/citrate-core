@@ -15,6 +15,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 type GrantShape = { attributedStakeWei: string; hasSbt: boolean };
 const NOT_GRANTED: GrantShape = { attributedStakeWei: "0", hasSbt: false };
@@ -240,5 +242,48 @@ describe("S3 checkout: one attempt at a time while the grant check runs (core#58
     expect(m.grantStatus).not.toHaveBeenCalled();
     expect(m.checkout).not.toHaveBeenCalled();
     expect(store.state.s3Checking).toBe(false);
+  });
+});
+
+// Tripwire for the bug class: a checkout opened after an awaited check without asking whether the
+// attempt is still current. (1) onS3Pay keeps its guard order: refuse a second call while a check
+// runs, then, after the awaited grant read, drop a superseded attempt BEFORE opening checkout.
+// (2) The app opens checkout from exactly two call sites (S3 and Settings › Billing). A new one
+// fails here, so whoever adds it checks it for one attempt at a time and updates this count.
+describe("tripwire: checkout opens only from a current attempt (core#584)", () => {
+  const SRC = join(__dirname, "..");
+  const store = readFileSync(join(SRC, "shell", "store.ts"), "utf8");
+
+  it("onS3Pay refuses a second call during the check and drops a stale attempt before checkout", () => {
+    const start = store.indexOf("  onS3Pay(): void {");
+    expect(start).toBeGreaterThan(-1);
+    const body = store.slice(start, store.indexOf("\n  }\n", start));
+    const busy = body.indexOf("if (this.state.s3Checking) return;");
+    const read = body.indexOf("await this.settleS3IfAlreadyGranted()");
+    const stale = body.indexOf("if (attempt !== this.s3Attempt) return;");
+    const open = body.indexOf("bridge.membership.checkout(");
+    expect(busy).toBeGreaterThan(-1);
+    expect(read).toBeGreaterThan(busy);
+    expect(stale).toBeGreaterThan(read);
+    expect(open).toBeGreaterThan(stale);
+  });
+
+  it("checkout is opened from exactly two call sites in app code", () => {
+    const sites: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name)) {
+          readFileSync(p, "utf8")
+            .split("\n")
+            .forEach((line, i) => {
+              if (/bridge\.membership\.checkout\(/.test(line) && !/^\s*(\/\/|\*)/.test(line)) sites.push(`${p}:${i + 1}`);
+            });
+        }
+      }
+    };
+    walk(SRC);
+    expect(sites, sites.join("\n")).toHaveLength(2);
   });
 });

@@ -51,6 +51,7 @@ function spyStore(linked: boolean) {
   return {
     onS3Free: vi.fn(),
     onS3Pay: vi.fn(),
+    endS3Check: vi.fn(),
     linkWallet: vi.fn(),
     openExternal: vi.fn(),
     walletIsLinked: vi.fn().mockReturnValue(linked),
@@ -123,6 +124,8 @@ describe("S3 — the free node is offered first", () => {
     const back = button(host, /Back/);
     expect(back).toBeTruthy();
     await act(async () => back!.click());
+    // Back ends any running pre-checkout grant check (core#584).
+    expect(st.endS3Check).toHaveBeenCalledTimes(1);
     expect(button(host, /Run a node for free/)).toBeTruthy();
     expect(host.textContent ?? "").not.toMatch(PRICE);
     root.unmount();
