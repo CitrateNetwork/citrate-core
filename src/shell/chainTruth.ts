@@ -304,6 +304,19 @@ export function saltFromWei(wei: string | null | undefined): number | null {
 }
 
 /**
+ * The ONE staked figure as shown (contract §2 "Your stake": ValidatorRegistry.stakeOf), in SALT,
+ * or null until a stakeOf read has returned this session. `bondedStake` starts at 0 and is
+ * persisted, so without the read flag it is a default or a stale value, not a reading (rule 2:
+ * unknown is not zero). Every surface that shows the figure goes through this.
+ */
+export function readStakeSalt(s: { bondedStake: number; bondedStakeRead: boolean }): number | null {
+  return s.bondedStakeRead ? s.bondedStake : null;
+}
+
+/** The caption for a stake that has not been read yet. */
+export const STAKE_NOT_READ = "— · not read yet (ValidatorRegistry.stakeOf)";
+
+/**
  * Whether this member's validator rewards (`ValidatorRegistry.rewardsOf`) are read, shown and
  * claimed through the bond: registered stake, or a bond that activated (`MemberBond.activated()`).
  * After a full exit or a slash the stake reads 0 and pubkeyOfStaker is cleared, but the bond stays
