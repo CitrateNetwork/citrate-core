@@ -10,7 +10,7 @@ Targets: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-g
 Components:
   app: citrate-core@bd5d6a52e44d6fa3ee7be7f46c4bf605d59fe36a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 505 third-party packages
   app-webview: citrate-core@bd5d6a52e44d6fa3ee7be7f46c4bf605d59fe36a, vite 7.3.6 build (vite.config.ts), 710 bundled modules and assets, 24 third-party packages
-  citrate-node: citrate-chain@9a32147e2aac60d388356ecc67488d717aa84c41, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
+  citrate-node: citrate-chain@f6b6f3e451a1f8d5eb59eeb03717d41726bf5207, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
   cluster-daemon: citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 217 third-party packages
   comms-member-daemon: citrate-comms@9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 193 third-party packages
   hermes-sidecar: citrate-agent-runtime@05243c72bd521a55bc38333eaf6ae6efacee3816, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 485 third-party packages

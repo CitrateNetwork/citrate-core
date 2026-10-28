@@ -214,8 +214,11 @@ describe("component-pins check", () => {
     comp(m, "citrate-node").source.rev = "f9f6257b2dcde21149fe9c09236231ccfc32da68";
     setManifest(r, m);
     const e = errorsOf(r);
-    expect(e).toMatch(/citrate-node rev f9f6257b\S+ != build-sidecar.sh MIN_CHAIN_REV 9a32147e/);
-    expect(e).toMatch(/src-tauri\/Cargo.toml pins citrate-chain 9a32147e\S+, the bundled node is f9f6257b/);
+    // The current floor is read from build-sidecar.sh, so a node rev change is the pin lines only.
+    const floor = /^MIN_CHAIN_REV="([0-9a-f]{40})"/m.exec(fs.readFileSync(path.join(r, "scripts", "build-sidecar.sh"), "utf8"))[1];
+    const short = floor.slice(0, 8);
+    expect(e).toMatch(new RegExp(`citrate-node rev f9f6257b\\S+ != build-sidecar.sh MIN_CHAIN_REV ${short}`));
+    expect(e).toMatch(new RegExp(`src-tauri/Cargo.toml pins citrate-chain ${short}\\S+, the bundled node is f9f6257b`));
   });
 
   it("refuses a Gemma pin that differs from the app's own model pin", () => {

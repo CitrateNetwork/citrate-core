@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "9a32147e2aac60d388356ecc67488d717aa84c41"
+        "rev": "f6b6f3e451a1f8d5eb59eeb03717d41726bf5207"
       },
       "federation": {
-        "rev": "9a32147e2aac60d388356ecc67488d717aa84c41",
+        "rev": "f6b6f3e451a1f8d5eb59eeb03717d41726bf5207",
         "status": "match",
-        "note": "citrate-federation#408 (Rule 12, merges before this) pins [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core and citrate-commd rows at 9a32147e: the rev the r1006 fleet runs (genesis 0xa3651a27, fed#331), a descendant of c384fc98 (the node 0.5.1 shipped)."
+        "note": "The node rev is f6b6f3e4, the r1006 restart node (chain #437: main with #430, #428, #431, #433 (d939d4ec), then #434 and #437, plus the r1006 ops files; fed#331), genesis 0xa3651a27 unchanged; a descendant of 9a32147e and c384fc98 (the node 0.5.1 shipped). citrate-federation#413 moves [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core and citrate-commd [[drift]] rows to it and merges before this (Rule 12)."
       },
       "build": {
         "kind": "cargo",
@@ -37,8 +37,8 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-9a32147e2aac",
-          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin. NOT reproducible from a clean target dir: a second clean build in the same tree gave ea53cdc9... (55,407,984 bytes; different inlining in __text, strings identical). With the first build's target dir kept, build-sidecar.sh relinks the node and installs these exact bytes. Stage the uploaded asset, as release.yml does."
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-f6b6f3e451a1",
+          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-28 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-28 (owner-directed, RC52 r1006 restart), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x024ad6062348f2a2962966f83b637c0c, every input except git_sha identical to the d939d4ec and 9a32147e builds. As with 9a32147e, a clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
         }
       },
       "pending": {
