@@ -1,0 +1,208 @@
+# created: 2026-10-26 | branch: rc52/cold-sync | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (RC52 gate G4, app side). Builds the node sidecar from the rev pinned for
+# `citrate-node` in release/components.json with the release build script, then runs
+# scripts/e2e/cold-sync.py against a K6 network profile on Linux x86_64: a cold start in a temp dir,
+# block 0 equal to the profile genesis, the head to the target, and the node on the network RPC's
+# chain (selected-parent ancestry from both heads; eth_getBlockByNumber is not canonical on r1006).
+# Then the negative case: the same profile with another genesis must be refused
+# (the network RPC's block 0 and the node's block 0 both differ from it). Manual only: it builds
+# the node (~25 min) and reads a live network.
+name: cold-sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile_name:
+        description: "Profile in src-tauri/network/profiles.json (empty: its `active`)"
+        required: false
+        default: ""
+      profile_json:
+        description: "Or: one profile object as JSON (overrides profile_name)"
+        required: false
+        default: ""
+      blocks:
+        description: "Bounded run: pass once past this height (empty: sync to the network tip)"
+        required: false
+        default: "5000"
+      timeout:
+        description: "Sync time limit (e.g. 30m, 5h)"
+        required: false
+        default: "60m"
+      every:
+        description: "List every K-th height of the agreeing selected-parent walk in the verdict"
+        required: false
+        default: "1000"
+      negative:
+        description: "Also run the wrong-genesis case and require a refusal"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cold-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cold-sync:
+    name: cold sync on the K6 profile (linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+      IN_PROFILE_NAME: ${{ inputs.profile_name }}
+      IN_PROFILE_JSON: ${{ inputs.profile_json }}
+      IN_BLOCKS: ${{ inputs.blocks }}
+      IN_TIMEOUT: ${{ inputs.timeout }}
+      IN_EVERY: ${{ inputs.every }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # The runner context is not available in job env; set the paths here.
+      - name: Paths
+        run: |
+          echo "OUT=$RUNNER_TEMP/cold-sync" >> "$GITHUB_ENV"
+          echo "CITRATE_COMPONENT_BUILD_ROOT=$RUNNER_TEMP/component-build" >> "$GITHUB_ENV"
+
+      # citrate-chain is public; the token is only used if it is set (if the repo goes private).
+      - name: Authenticate to citrate-chain (read-only)
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned toolchain action
+        with:
+          toolchain: "1.96.0"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install the node's build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev pkg-config libssl-dev protobuf-compiler
+
+      - name: Build the pinned node sidecar (scripts/build-sidecar.sh)
+        id: node
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Full clone: build-component.sh takes the pinned commit from this object store.
+          git clone --quiet https://github.com/CitrateNetwork/citrate-chain.git ../citrate-chain
+          out="$(scripts/build-sidecar.sh --chain ../citrate-chain --print-digest | tail -1)"
+          read -r id triple digest built <<<"$out"
+          [ "$id" = citrate-node ] && [ -f "$built" ] || { echo "::error::unexpected build output: $out"; exit 1; }
+          pin="$(node scripts/component-pins.mjs digest citrate-node "$triple" 2>/dev/null || echo none)"
+          rev="$(node scripts/component-pins.mjs field citrate-node source.rev)"
+          echo "bin=$built" >> "$GITHUB_OUTPUT"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Node sidecar"
+            echo
+            echo "citrate-chain \`$rev\`, $triple, sha256 \`$digest\` (pinned \`$pin\`; a different build root gives a different digest)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve the profile
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          # The profile arguments, one per line (inputs never become shell text).
+          if [ -n "$IN_PROFILE_JSON" ]; then
+            printf '%s' "$IN_PROFILE_JSON" > "$OUT/profile.json"
+            printf '%s\n' --profile "$OUT/profile.json" > "$OUT/profile-args"
+          elif [ -f src-tauri/network/profiles.json ]; then
+            printf '%s\n' --profiles src-tauri/network/profiles.json > "$OUT/profile-args"
+            if [ -n "$IN_PROFILE_NAME" ]; then
+              printf '%s\n' --name "$IN_PROFILE_NAME" >> "$OUT/profile-args"
+            fi
+          else
+            echo "::error::no src-tauri/network/profiles.json on this ref (K6, core #363); pass profile_json"
+            exit 1
+          fi
+
+      - name: Cold sync
+        shell: bash
+        env:
+          NODE_BIN: ${{ steps.node.outputs.bin }}
+          NODE_SHA256: ${{ steps.node.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r l; do args+=("$l"); done < "$OUT/profile-args"
+          args+=(--node-bin "$NODE_BIN" --expect-sha256 "$NODE_SHA256"
+                 --timeout "$IN_TIMEOUT" --every "$IN_EVERY" --out "$OUT/positive")
+          if [ -n "$IN_BLOCKS" ]; then
+            args+=(--blocks "$IN_BLOCKS")
+          fi
+          set +e
+          python3 scripts/e2e/cold-sync.py "${args[@]}"
+          code=$?
+          set -e
+          {
+            echo "### Cold sync (exit $code)"
+            echo
+            echo '```json'
+            python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps({k: v.get(k) for k in ("verdict","reasons","profile","mode","sync")}, indent=1)[:60000])' "$OUT/positive/verdict.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Negative case (wrong genesis must be refused)
+        if: ${{ always() && inputs.negative && steps.node.outcome == 'success' && steps.profile.outcome == 'success' }}
+        shell: bash
+        env:
+          NODE_BIN: ${{ steps.node.outputs.bin }}
+        run: |
+          set -euo pipefail
+          # The same profile and address book with another genesis (last hex digit flipped), so
+          # the run gets past the input checks and both gates are exercised.
+          pargs=()
+          while IFS= read -r l; do pargs+=("$l"); done < "$OUT/profile-args"
+          python3 - "$OUT" "${pargs[@]}" <<'PY'
+          import json, sys
+          out, args = sys.argv[1], sys.argv[2:]
+          path = args[args.index("--profile") + 1] if "--profile" in args else args[args.index("--profiles") + 1]
+          doc = json.load(open(path))
+          if isinstance(doc.get("profiles"), dict):
+              name = args[args.index("--name") + 1] if "--name" in args else doc["active"]
+              doc = doc["profiles"][name]
+          g = doc["genesisHash"].lower()
+          doc["genesisHash"] = g[:-1] + ("0" if g[-1] != "0" else "1")
+          book = json.load(open("src-tauri/" + doc["addressBook"]))
+          book["genesisHash"] = doc["genesisHash"]
+          json.dump(doc, open(f"{out}/wrong-profile.json", "w"))
+          json.dump(book, open(f"{out}/wrong-book.json", "w"))
+          PY
+          set +e
+          python3 scripts/e2e/cold-sync.py --profile "$OUT/wrong-profile.json" --address-book "$OUT/wrong-book.json" \
+            --node-bin "$NODE_BIN" --blocks 100 --timeout 5m --out "$OUT/negative"
+          code=$?
+          set -e
+          python3 - "$OUT/negative/verdict.json" "$code" <<'PY'
+          import json, sys
+          v, code = json.load(open(sys.argv[1])), int(sys.argv[2])
+          st = {r["rule"]: r["status"] for r in v["rules"]}
+          ok = code == 1 and v["verdict"] == "FAIL" and st["endpoint_identity"] == "FAIL" \
+              and st["local_genesis"] == "FAIL" and st["reaches_target"] == "skip"
+          print("negative case:", "REFUSED as required" if ok else "NOT refused", json.dumps(v["reasons"], indent=1))
+          sys.exit(0 if ok else 1)
+          PY
+          echo "### Negative case: wrong genesis refused (endpoint and node)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verdicts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cold-sync-${{ github.run_id }}
+          path: ${{ runner.temp }}/cold-sync
+          if-no-files-found: warn

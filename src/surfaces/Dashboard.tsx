@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
-import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash, validatorWord } from "../shell/chainTruth";
+import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, readStakeSalt, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -11,6 +11,10 @@ import { federationUrl } from "../data/links";
 import { WidgetsPanel } from "../widgets/WidgetsPanel";
 import { DaemonsPanel } from "../daemons/DaemonsPanel";
 import { appWidgetSources } from "../widgets/appSources";
+import { rpcHost } from "../network/profile";
+
+/** The public RPC host this build reads (network profile, K6). */
+const PUBLIC_RPC = rpcHost() ?? "public RPC not set";
 
 const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -79,12 +83,17 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf(pubkey) (UI truth contract §2),
   // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
-  // staked until the bond is activated, and LiquidStakingPool self-stake is not validator stake.
+  // staked until the bond is activated.
   const staked = s.bondedStake;
+  // Unknown is not zero (rule 2): null until a stakeOf read returns this session.
+  const stakeRead = readStakeSalt(s);
+  // RC52: after a genesis switch the stake waits for its first read on the new chain (the grant
+  // read folds `bondedStake`).
+  const stakeUnread = s.netUnread.includes("grant");
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
-  const bondLockedNotStaked = validatorWord(staked, s.validatorActivation, s.hasGrant, s.memberBond) === "Bond locked · not staked";
-  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.memberBond);
+  const bondLockedNotStaked = s.hasGrant && !(staked > 0) && s.bondActivated === false;
+  const validatorStateText = validatorDash(staked, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.
@@ -93,13 +102,13 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   if (s.node === "off") {
     if (heightPending) {
       heightValue = "…";
-      heightSub = "rpc.citrate.ai";
+      heightSub = PUBLIC_RPC;
     } else if (heightError) {
       heightValue = "—";
       heightSub = "rpc unreachable";
     } else {
       heightValue = fmtI(Number(liveHeight));
-      heightSub = "rpc.citrate.ai · live";
+      heightSub = PUBLIC_RPC + " · live";
     }
   } else if (s.height > 0) {
     heightValue = fmtI(s.height);
@@ -123,17 +132,17 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       tip:
         "Registered: ValidatorRegistry.activeCount(), which includes registrations still pending activation. " +
         "Eligible (live registry): activeSet() members with validatorInfo(pubkey).actEpoch <= currentEpoch(); consensus uses the governing epoch snapshot, so it can differ for up to an epoch. " +
-        "Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on rpc.citrate.ai. " +
+        "Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on " + PUBLIC_RPC + ". " +
         CONSENSUS_SET_UNAVAILABLE + ".",
       vsize: "21px",
     },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     {
       label: "Staked",
-      value: staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
-      sub: staked > 0 ? "SALT · stakeOf" : validatorStateText,
+      value: stakeRead == null ? "—" : stakeRead > 0 ? fmtI(stakeRead) : bondLockedNotStaked ? fmtI(stakeRead) : "—",
+      sub: stakeRead == null ? (stakeUnread ? "not read yet on this network" : STAKE_NOT_READ) : stakeRead > 0 ? "SALT · stakeOf" : validatorStateText,
       color: "var(--tx-1)",
-      tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond and LiquidStakingPool deposits are not validator stake.",
+      tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake.",
       vsize: "21px",
     },
     // C1-V V8: the "Today" tile is gone. No contract or RPC gives a per-day reward figure

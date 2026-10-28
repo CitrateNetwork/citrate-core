@@ -25,7 +25,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -50,20 +49,21 @@ const member = (over: Partial<AppState> = {}): AppState => ({
 describe("an already-activated bond with stake 0 is never offered activation again", () => {
   for (const validatorActivation of [null, { isActive: false, status: 0, actEpoch: 0, currentEpoch: 546 }]) {
     it(`onboarding S6 (registry ${validatorActivation ? "status None" : "unread"})`, () => {
-      const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", memberBond: { deployed: true, activated: true, pubkey: "0x" + "44".repeat(32), unlocked: false }, validatorActivation })} />);
-      expect(html).not.toContain("Stake my bond");
+      const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", bondActivated: true, validatorActivation })} />);
+      expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
       expect(html).not.toContain("Bond locked · not staked");
     });
 
     it(`the Node page (registry ${validatorActivation ? "status None" : "unread"})`, () => {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ memberBond: { deployed: true, activated: true, pubkey: "0x" + "44".repeat(32), unlocked: false }, validatorActivation })} />);
+      const html = renderToStaticMarkup(<Node store={stub} s={member({ bondActivated: true, validatorActivation })} />);
       expect(html).not.toContain("Activate validator");
       expect(html).not.toContain("Bond locked · not staked");
     });
   }
 
+  // Join-8 (#354): activation is offered by its own step (S7), so S6 points there; no button in S6.
   it("a bond that never activated is still offered activation", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false }, validatorActivation: null })} />);
-    expect(html).toContain("Stake my bond");
+    const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", bondActivated: false, bondUnlocked: false, validatorActivation: null })} />);
+    expect(html).toContain("next: activate your validator, after the local model below");
   });
 });

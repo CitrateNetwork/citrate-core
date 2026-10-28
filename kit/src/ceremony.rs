@@ -32,6 +32,21 @@
 //! `remove` wins and the second sees `None` → `UnknownCeremony`. One approval →
 //! one signature, always.
 //!
+//! ## Lifetime and chain binding
+//! A pending request is approvable for [`PENDING_TTL`]. Time is measured on both the monotonic
+//! and the wall clock and the larger elapsed value counts, so setting the wall clock back cannot
+//! extend a request and a machine that slept past the TTL finds it expired on wake. Expired
+//! requests are removed (their ids are remembered as expired, so a late approval says so) and
+//! the pending set is never written to disk, so a restart drops every request. Ids start at a
+//! random base per process, so an id from an earlier run names nothing in a later one.
+//!
+//! The chain id on the approval card ([`CeremonyView::chain_id`]) is the request's
+//! [`SignatureIntent::chain_id`], and it is the value the signature commits to: immediately
+//! before each signer call, `ready_to_sign` re-checks the TTL and compares the card's chain id
+//! with every chain id the bytes to be signed name (the EIP-155 chain of a transaction and any
+//! `chainId` in its payload; any `Chain ID:` line of a message). A mismatch, or a value that
+//! cannot be read, refuses with [`CeremonyError::ChainMismatch`] and nothing is signed.
+//!
 //! ## Raw-ack gate (B1.2-ADV-5)
 //! If an intent's calldata cannot be decoded to a human-readable action, its
 //! decoded view is [`DecodedAction::action`] == [`UNRECOGNIZED_ACTION`] and the
@@ -84,7 +99,7 @@
 // quiet exactly like `wallet.rs`/`custody.rs` do for their staged consumers.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -96,6 +111,40 @@ use crate::wallet::{self, WalletError};
 /// HUP-S7.3: the anchor ceremony, a single-purpose signer for the nightly anchor with its own
 /// no-funds key (Rule-3 ADR D5). It never touches the wallet key.
 pub mod anchor;
+
+/// How long a pending signature request stays approvable: 15 minutes.
+///
+/// Nonce and gas are read live at approval, so this bounds only how long a card can wait for the
+/// member. It equals the approval window of the external MCP inbox
+/// (`node_mcp_approvals::REQUEST_TTL_MS` is defined from it), so a request and its card expire
+/// together.
+pub const PENDING_TTL: std::time::Duration = std::time::Duration::from_millis(PENDING_TTL_MS);
+
+/// [`PENDING_TTL`] in milliseconds.
+pub const PENDING_TTL_MS: u64 = 15 * 60 * 1000;
+
+/// One reading of the ceremony clock: monotonic time plus wall-clock epoch ms.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockReading {
+    /// Monotonic time. Never goes back, but may not advance while the machine sleeps.
+    pub mono: std::time::Instant,
+    /// Wall-clock epoch ms. Advances across sleep, but can be set back.
+    pub wall_ms: u64,
+}
+
+/// The ceremony's clock (injected so tests can move time).
+pub type CeremonyClock = Box<dyn Fn() -> ClockReading + Send + Sync>;
+
+/// The system clock: `Instant::now()` and the wall clock (0 if it reads before the epoch).
+pub fn system_clock() -> ClockReading {
+    ClockReading {
+        mono: std::time::Instant::now(),
+        wall_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0),
+    }
+}
 
 /// The action string surfaced when calldata cannot be decoded to a human action.
 /// A ceremony carrying this action is `requires_raw_ack` and cannot be approved
@@ -370,11 +419,28 @@ pub enum CeremonyError {
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
     Broadcast(String),
+    /// Join-8: a signed transaction was held longer than its time-to-live without being sent,
+    /// and was discarded. Nothing was sent.
+    PreparedExpired,
+    /// K6: the network gate refused the signature before the wallet key was read: this build
+    /// has no network set, or the request commits to another chain id. Nothing was signed.
+    WrongNetwork(String),
     /// The signed transaction was handed to the node and may have been accepted, but the outcome
     /// is not known: the node accepted it and the receipt poll then failed, or the send itself
     /// failed in transport (the node may have received it). Carries the tx hash so the member
     /// can look it up before trying again; never reported as "not sent".
     SubmittedOutcomeUnknown { tx_hash: String, reason: String },
+    /// The request was not approved within [`PENDING_TTL`]. It has been removed. Nothing was
+    /// signed.
+    Expired,
+    /// The chain id shown on the approval card is not the chain id the signature would commit
+    /// to. Nothing was signed.
+    ChainMismatch {
+        /// The chain id the card showed.
+        shown: u64,
+        /// The chain id the bytes to be signed name (or why it could not be read).
+        signed: String,
+    },
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -402,9 +468,22 @@ impl std::fmt::Display for CeremonyError {
                 "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
+            CeremonyError::PreparedExpired => write!(
+                f,
+                "ceremony: the signed transaction expired before it was sent; nothing was sent"
+            ),
+            CeremonyError::WrongNetwork(m) => write!(f, "ceremony: {m}; nothing was signed"),
             CeremonyError::SubmittedOutcomeUnknown { tx_hash, reason } => {
                 write!(f, "ceremony: submitted, outcome unknown (tx {tx_hash}): {reason}")
             }
+            CeremonyError::Expired => write!(
+                f,
+                "ceremony: this request expired before it was approved, so nothing was signed; ask again for a fresh request"
+            ),
+            CeremonyError::ChainMismatch { shown, signed } => write!(
+                f,
+                "ceremony: the approval showed chain {shown} but the request is for chain {signed}, so nothing was signed"
+            ),
         }
     }
 }
@@ -429,6 +508,7 @@ impl From<WalletError> for CeremonyError {
         match e {
             WalletError::Custody => CeremonyError::VaultLocked,
             WalletError::NotFound => CeremonyError::NoWallet,
+            WalletError::WrongNetwork(m) => CeremonyError::WrongNetwork(m),
             _ => CeremonyError::SignFailed,
         }
     }
@@ -444,6 +524,197 @@ struct Pending {
     intent: SignatureIntent,
     decoded: DecodedAction,
     requires_raw_ack: bool,
+    /// When the request was opened. Kept on a raw-ack re-insert, so a retry never restarts the
+    /// TTL.
+    created: ClockReading,
+}
+
+/// How many expired ids are remembered (oldest forgotten first). Used to tell "expired" from
+/// "unknown" in a late approval's error. Watched ids are not counted (see [`WATCHED_IDS_KEPT`]).
+const EXPIRED_IDS_KEPT: usize = 4096;
+
+/// How many watched ids ([`SignatureCeremony::request_watched`]) are kept (oldest forgotten
+/// first). A watched id that expired reads as expired however many ordinary ids expire after
+/// it, until this many newer ids are watched. The Hermes bridge, the one watcher, has at most one
+/// request open at a time, so its current one is always the newest.
+const WATCHED_IDS_KEPT: usize = 64;
+
+/// The pending requests, plus the ids that expired unapproved.
+#[derive(Default)]
+struct Book {
+    pending: BTreeMap<u64, Pending>,
+    /// Ordinary ids that expired unapproved (bounded by [`EXPIRED_IDS_KEPT`]).
+    expired: BTreeSet<u64>,
+    /// Ids whose caller must later tell "expired" from "decided" (bounded by
+    /// [`WATCHED_IDS_KEPT`]).
+    watched: BTreeSet<u64>,
+    /// Watched ids that expired unapproved (a subset of `watched`).
+    expired_watched: BTreeSet<u64>,
+}
+
+impl Book {
+    fn remember_expired(&mut self, key: u64) {
+        if self.watched.contains(&key) {
+            self.expired_watched.insert(key);
+            return;
+        }
+        self.expired.insert(key);
+        while self.expired.len() > EXPIRED_IDS_KEPT {
+            self.expired.pop_first();
+        }
+    }
+
+    fn watch(&mut self, key: u64) {
+        self.watched.insert(key);
+        while self.watched.len() > WATCHED_IDS_KEPT {
+            if let Some(old) = self.watched.pop_first() {
+                self.expired_watched.remove(&old);
+            }
+        }
+    }
+
+    fn is_expired(&self, key: u64) -> bool {
+        self.expired.contains(&key) || self.expired_watched.contains(&key)
+    }
+}
+
+/// Join-8: how long a signed, unsent transaction may wait for its send before it is dropped.
+///
+/// Why 120 s. The only caller shows the hash and then sends at once; the durable record is
+/// written in Rust by the send itself (`send_signed`, an fsync'd [`crate::submitted_log`] entry,
+/// milliseconds), so a healthy flow uses a tiny fraction of this. A tx still
+/// unsent after 2 minutes means the webview went away mid-flow; keeping it would let a later
+/// `send_prepared` broadcast a signature the member approved long before, against a nonce and
+/// gas price read at signing time.
+///
+/// Elapsed time is the LONGER of the monotonic clock (`Instant`, which cannot be wound back) and
+/// the wall clock (`SystemTime`, which keeps counting through system sleep, when `Instant` stops
+/// on macOS and Linux). A tx expires when either says 120 s have passed, so expiry fails closed
+/// across both a sleep and a wall-clock change. Because S7's 10-minute "Forget this transaction"
+/// window is wall-clock time, a parked tx has always expired here before the app offers to
+/// forget it.
+pub const PREPARED_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long an expired entry's tombstone is kept so a late send can say "expired, nothing was
+/// sent" rather than "unknown id". The signed raw is dropped at expiry; only the id remains.
+const EXPIRED_TOMBSTONE_KEEP: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The shared map of signed, unsent transactions, behind a private newtype. The raw map is
+/// private to this module, so the COMPILER limits what the rest of the ceremony can do to it:
+/// `park_signed` is the only way in (called once, by `approve_and_sign`), `take_signed` and
+/// `discard_signed` the only ways out, and `sweep` the only expiry. No `insert`, `entry`,
+/// `extend` or direct field access exists outside this module.
+mod prepared_store {
+    use super::Prepared;
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant, SystemTime};
+
+    /// A live signed tx, or the tombstone of one that expired unsent.
+    pub(super) enum Slot {
+        Live {
+            tx: Prepared,
+            at: Instant,
+            wall: SystemTime,
+        },
+        Expired {
+            at: Instant,
+        },
+    }
+
+    #[derive(Default)]
+    pub(super) struct PreparedStore {
+        map: BTreeMap<u64, Slot>,
+    }
+
+    impl PreparedStore {
+        /// The ONLY way a signed tx enters the store.
+        pub(super) fn park_signed(&mut self, key: u64, tx: Prepared) {
+            self.map.insert(
+                key,
+                Slot::Live {
+                    tx,
+                    at: Instant::now(),
+                    wall: SystemTime::now(),
+                },
+            );
+        }
+
+        /// Remove and return the slot for `key` (single-use).
+        pub(super) fn take_signed(&mut self, key: u64) -> Option<Slot> {
+            self.map.remove(&key)
+        }
+
+        /// Drop the slot for `key`; true when there was one.
+        pub(super) fn discard_signed(&mut self, key: u64) -> bool {
+            self.map.remove(&key).is_some()
+        }
+
+        /// How many signed txs are live (not expired).
+        pub(super) fn live_len(&self) -> usize {
+            self.map
+                .values()
+                .filter(|s| matches!(s, Slot::Live { .. }))
+                .count()
+        }
+
+        /// Expire every live slot whose elapsed time (the longer of monotonic and wall clock)
+        /// reached `ttl`: the signed raw is dropped and a tombstone stays for `keep`.
+        pub(super) fn sweep(&mut self, ttl: Duration, keep: Duration) {
+            for slot in self.map.values_mut() {
+                if let Slot::Live { at, wall, .. } = slot {
+                    let mono = at.elapsed();
+                    // A wall clock set backwards reads as zero here, never as extra validity:
+                    // the monotonic leg still counts.
+                    let wall_elapsed = wall.elapsed().unwrap_or(Duration::ZERO);
+                    if mono.max(wall_elapsed) >= ttl {
+                        *slot = Slot::Expired { at: *at };
+                    }
+                }
+            }
+            self.map.retain(|_, s| match s {
+                Slot::Live { .. } => true,
+                Slot::Expired { at } => at.elapsed() < keep,
+            });
+        }
+
+        /// Test seam: move a live slot's wall-clock stamp back by `by` (models a system sleep).
+        #[cfg(test)]
+        pub(super) fn backdate_wall(&mut self, key: u64, by: Duration) {
+            if let Some(Slot::Live { wall, .. }) = self.map.get_mut(&key) {
+                if let Some(earlier) = wall.checked_sub(by) {
+                    *wall = earlier;
+                }
+            }
+        }
+
+        /// Test seam: move a live slot's wall-clock stamp forward by `by` (models the wall clock
+        /// being set backwards: wall elapsed then reads as zero).
+        #[cfg(test)]
+        pub(super) fn forward_date_wall(&mut self, key: u64, by: Duration) {
+            if let Some(Slot::Live { wall, .. }) = self.map.get_mut(&key) {
+                if let Some(later) = wall.checked_add(by) {
+                    *wall = later;
+                }
+            }
+        }
+    }
+}
+use prepared_store::{PreparedStore, Slot};
+
+/// A signed transaction awaiting its send (public facts + the signed raw RLP; no key material).
+struct Prepared {
+    raw: Vec<u8>,
+    /// The signer's address (lower-case hex) and the tx nonce, for the submitted-tx record.
+    sender: String,
+    nonce: u64,
+    /// Whether the app read `nonce` from the node for this send or the requester supplied it.
+    nonce_source: crate::submitted_log::NonceSource,
+    /// What the tx calls (`to` + selector) when it has calldata, so its record can be found
+    /// again (Join-8: the Activate step after a restart).
+    call: Option<crate::submitted_log::CallMeta>,
+    value: u128,
+    to: Option<[u8; 20]>,
+    origin: String,
 }
 
 /// The process-wide SignatureCeremony: the single approval surface. Holds the
@@ -451,15 +722,31 @@ struct Pending {
 /// through [`approve`](Self::approve); no other path in the crate reaches the
 /// gated `wallet::sign_message`.
 pub struct SignatureCeremony {
-    pending: Mutex<BTreeMap<u64, Pending>>,
+    book: Mutex<Book>,
+    /// Join-8: approved + signed transactions not yet sent, keyed by ceremony id. Filled only by
+    /// [`approve_and_sign`](Self::approve_and_sign) (the approval is already consumed), drained by
+    /// [`send_prepared`](Self::send_prepared) or [`reject`](Self::reject). Single-use: one
+    /// approval, one signature, at most one send.
+    prepared: Mutex<PreparedStore>,
+    /// The signed-tx time-to-live in milliseconds ([`PREPARED_TTL`]; tests shorten it).
+    prepared_ttl_ms: AtomicU64,
+    /// Test seam: how many signed txs were parked in `prepared` (inspection only).
+    #[cfg(test)]
+    prepared_parks: std::sync::atomic::AtomicUsize,
     /// keccak256 hashes of the signed transactions this app has handed to
     /// `eth_sendRawTransaction`, persisted across restarts ([`crate::submitted_log`]). A node error
     /// on a RE-submission of the same bytes never proves the tx was refused (the first may have
     /// been accepted and mined), so only a first submission can be "not sent" (contract v1.1 §1).
     submitted: std::sync::Arc<crate::submitted_log::SubmittedTxLog>,
     next_id: AtomicU64,
+    /// The first id this ceremony hands out (random per process).
+    first_id: u64,
     /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
     abis: crate::abi_book::AbiBook,
+    /// How long a pending request stays approvable.
+    ttl: std::time::Duration,
+    /// The clock the TTL is measured with.
+    clock: CeremonyClock,
 }
 
 impl Default for SignatureCeremony {
@@ -470,13 +757,102 @@ impl Default for SignatureCeremony {
 
 impl SignatureCeremony {
     pub fn new() -> Self {
+        Self::with_clock(PENDING_TTL, Box::new(system_clock))
+    }
+
+    /// A ceremony whose pending requests expire after `ttl`, measured with `clock`.
+    pub fn with_clock(ttl: std::time::Duration, clock: CeremonyClock) -> Self {
+        let first_id = random_first_id();
         SignatureCeremony {
-            pending: Mutex::new(BTreeMap::new()),
+            book: Mutex::new(Book::default()),
+            prepared: Mutex::new(PreparedStore::default()),
+            prepared_ttl_ms: AtomicU64::new(PREPARED_TTL.as_millis() as u64),
+            #[cfg(test)]
+            prepared_parks: std::sync::atomic::AtomicUsize::new(0),
             // No record location: uncertain, so no send through it is ever "not sent" (C1-V6).
             submitted: std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::unpersisted()),
-            next_id: AtomicU64::new(1),
+            next_id: AtomicU64::new(first_id),
+            first_id,
             abis: crate::abi_book::AbiBook::default(),
+            ttl,
+            clock,
         }
+    }
+
+    /// Whether `id` named a request that expired unapproved (and was removed).
+    pub fn is_expired(&self, id: &str) -> bool {
+        let Some(key) = Self::parse_id(id) else {
+            return false;
+        };
+        self.live().is_expired(key)
+    }
+
+    /// How many requests this ceremony has opened.
+    pub fn opened(&self) -> u64 {
+        self.next_id.load(Ordering::SeqCst) - self.first_id
+    }
+
+    /// Whether a request opened at `created` has outlived the TTL at `now`. The larger of the
+    /// monotonic and the wall-clock elapsed time counts: a wall clock set back cannot extend a
+    /// request, and sleep (which the monotonic clock may not count) still expires it.
+    fn expired(&self, created: &ClockReading, now: &ClockReading) -> bool {
+        let mono = now.mono.saturating_duration_since(created.mono);
+        let wall = std::time::Duration::from_millis(now.wall_ms.saturating_sub(created.wall_ms));
+        mono.max(wall) >= self.ttl
+    }
+
+    /// Lock the book and remove every expired request first, so nothing below the lock can see
+    /// one. The clock is read under the lock, which orders an expiry against a concurrent
+    /// consume.
+    fn live(&self) -> std::sync::MutexGuard<'_, Book> {
+        let mut book = self.lock();
+        let now = (self.clock)();
+        let stale: Vec<u64> = book
+            .pending
+            .iter()
+            .filter(|(_, p)| self.expired(&p.created, &now))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in stale {
+            book.pending.remove(&key);
+            book.remember_expired(key);
+        }
+        book
+    }
+
+    /// Consume a live request: under one lock, expired requests are removed and then `key` is
+    /// taken out. An expired id answers [`CeremonyError::Expired`]; an unknown or already
+    /// consumed one [`CeremonyError::UnknownCeremony`].
+    fn take_live(&self, key: u64) -> Result<Pending> {
+        let mut book = self.live();
+        if book.is_expired(key) {
+            return Err(CeremonyError::Expired);
+        }
+        book.pending
+            .remove(&key)
+            .ok_or(CeremonyError::UnknownCeremony)
+    }
+
+    /// The last step before a wallet signer is called. Re-checks the TTL (time passes between
+    /// the consume and here, e.g. while the nonce is read) and binds the chain: every chain id
+    /// the bytes to be signed name must equal the chain id the card showed. Returns that chain
+    /// id, which is the one a transaction is signed for. `signer_chain` is the EIP-155 chain id
+    /// the transaction signer would use (`None` for a message).
+    fn ready_to_sign(&self, key: u64, p: &Pending, signer_chain: Option<u64>) -> Result<u64> {
+        if self.expired(&p.created, &(self.clock)()) {
+            self.lock().remember_expired(key);
+            return Err(CeremonyError::Expired);
+        }
+        let shown = p.intent.chain_id;
+        let named = committed_chain(&p.intent, signer_chain)
+            .map_err(|signed| CeremonyError::ChainMismatch { shown, signed })?;
+        if let Some(other) = named.into_iter().find(|c| *c != shown) {
+            return Err(CeremonyError::ChainMismatch {
+                shown,
+                signed: other.to_string(),
+            });
+        }
+        Ok(shown)
     }
 
     /// A ceremony whose first-submission record is `log` (production passes one persisted under
@@ -536,8 +912,48 @@ impl SignatureCeremony {
     /// Lock the pending map, recovering from poison (a panic mid-op must not
     /// brick the signing surface). The only invariant under the lock is the
     /// pending map; a poisoned guard yields it intact.
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Pending>> {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> std::sync::MutexGuard<'_, Book> {
+        self.book.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Test seam: set the signed-tx time-to-live.
+    #[cfg(test)]
+    fn set_prepared_ttl(&self, ttl: std::time::Duration) {
+        self.prepared_ttl_ms
+            .store(ttl.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Test seam: move a parked tx's wall-clock stamp back by `by` (models a system sleep).
+    #[cfg(test)]
+    fn backdate_wall(&self, id: &str, by: std::time::Duration) {
+        if let Some(key) = Self::parse_id(id) {
+            self.lock_prepared().backdate_wall(key, by);
+        }
+    }
+
+    /// Test seam: move a parked tx's wall-clock stamp forward by `by` (models the wall clock
+    /// being set backwards after the tx was signed).
+    #[cfg(test)]
+    fn forward_date_wall(&self, id: &str, by: std::time::Duration) {
+        if let Some(key) = Self::parse_id(id) {
+            self.lock_prepared().forward_date_wall(key, by);
+        }
+    }
+
+    /// Test seam: how many signed txs are held unsent (live, not expired).
+    #[cfg(test)]
+    fn prepared_len(&self) -> usize {
+        self.lock_prepared().live_len()
+    }
+
+    /// Lock the prepared (signed, unsent) map, recovering from poison like [`Self::lock`].
+    /// Every lock first expires what outlived [`PREPARED_TTL`]: the signed raw is dropped and a
+    /// tombstone stays (for [`EXPIRED_TOMBSTONE_KEEP`]) so a late send reports the truth.
+    fn lock_prepared(&self) -> std::sync::MutexGuard<'_, PreparedStore> {
+        let mut store = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        let ttl = std::time::Duration::from_millis(self.prepared_ttl_ms.load(Ordering::SeqCst));
+        store.sweep(ttl, EXPIRED_TOMBSTONE_KEEP);
+        store
     }
 
     /// Parse a `CeremonyId` string back to its numeric key. A malformed id is
@@ -551,9 +967,15 @@ impl SignatureCeremony {
     /// touches no key material. The returned `id` is what a human must later
     /// approve/reject *explicitly* — there is no "approve latest" (B1.2-ADV-6).
     pub fn request(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, false)
+    }
+
+    /// Open a pending request; `watched` marks its id for [`request_watched`](Self::request_watched).
+    fn open(&self, intent: SignatureIntent, watched: bool) -> CeremonyView {
         let decoded = self.decode_with_book(&intent);
         let requires_raw_ack = decoded.action == UNRECOGNIZED_ACTION;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let created = (self.clock)();
         let view = CeremonyView {
             id: id.to_string(),
             origin: intent.origin.clone(),
@@ -562,23 +984,36 @@ impl SignatureCeremony {
             decoded: decoded.clone(),
             requires_raw_ack,
         };
-        self.lock().insert(
+        let mut book = self.live();
+        if watched {
+            book.watch(id);
+        }
+        book.pending.insert(
             id,
             Pending {
                 intent,
                 decoded,
                 requires_raw_ack,
+                created,
             },
         );
         view
+    }
+
+    /// Like [`request`](Self::request), for a caller that must later tell "expired" from
+    /// "decided" for this id with [`is_expired`](Self::is_expired).
+    /// The id stays answerable as expired after any number of ordinary expiries (bounded by
+    /// [`WATCHED_IDS_KEPT`] newer watched ids).
+    pub fn request_watched(&self, intent: SignatureIntent) -> CeremonyView {
+        self.open(intent, true)
     }
 
     /// Re-inspect a pending ceremony without consuming it (for the approval UI to
     /// re-render). `None` if it does not exist / was consumed.
     pub fn status(&self, id: &str) -> Option<CeremonyView> {
         let key = Self::parse_id(id)?;
-        let map = self.lock();
-        let p = map.get(&key)?;
+        let book = self.live();
+        let p = book.pending.get(&key)?;
         Some(CeremonyView {
             id: id.to_string(),
             origin: p.intent.origin.clone(),
@@ -613,17 +1048,16 @@ impl SignatureCeremony {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
 
         // Consume-first (B1.2-ADV-10): remove under the lock so a duplicate
-        // approve cannot find the same ceremony a second time.
-        let pending = {
-            let mut map = self.lock();
-            map.remove(&key).ok_or(CeremonyError::UnknownCeremony)?
-        };
+        // approve cannot find the same ceremony a second time. An expired request
+        // is refused here.
+        let pending = self.take_live(key)?;
 
         // Raw-ack gate (B1.2-ADV-5): undecodable calldata is never approvable as
-        // if benign. On a missing ack, re-insert so the human can retry WITH the
-        // ack — but this call signs nothing.
+        // if benign. On a missing ack, re-insert (with its original creation time,
+        // so the TTL is not restarted) so the human can retry WITH the ack — but
+        // this call signs nothing.
         if pending.requires_raw_ack && !raw_ack {
-            self.lock().insert(key, pending);
+            self.lock().pending.insert(key, pending);
             return Err(CeremonyError::RawAckRequired);
         }
 
@@ -641,7 +1075,10 @@ impl SignatureCeremony {
             // named the fix. A verifier following EIP-191 rejects the old form, and
             // nothing can recover the signer from it, so this was not a signature
             // anyone outside this process could use.
-            IntentKind::PersonalSign => wallet::sign_personal(vault, &bytes)?.to_vec(),
+            IntentKind::PersonalSign => {
+                self.ready_to_sign(key, &pending, None)?;
+                wallet::sign_personal(vault, &bytes)?.to_vec()
+            }
             // PBA-L4-007: TypedData and Transaction are REFUSED here. They used to be
             // signed as SHA-256(raw dApp bytes) with the wallet key — no EIP-712 domain
             // separation, no chain id — under a UI label that said "Sign typed data":
@@ -677,33 +1114,59 @@ impl SignatureCeremony {
     /// calls the lean `sign_eip155_legacy_tx`, zeroizing) → broadcast the raw tx
     /// (`eth_sendRawTransaction`) → poll the receipt for block inclusion.
     ///
+    /// Join-8: this half stops after signing. It stores the signed tx under `id` and
+    /// returns its hash (keccak256 of the signed raw), so the caller can record the
+    /// hash BEFORE anything is sent; [`Self::send_prepared`] sends it.
+    ///
     /// `rpc` is injected so tests mock the transport (Rule 1: the mock is a TEST
     /// transport; production wires [`crate::rpc::RpcClient::citrate`]).
-    pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
+    pub fn approve_and_sign<T: crate::rpc::RpcTransport>(
         &self,
         vault: &CustodyVault,
         rpc: &crate::rpc::RpcClient<T>,
         id: &str,
         raw_ack: bool,
-        cfg: BroadcastConfig,
-    ) -> Result<BroadcastResult> {
-        let BroadcastConfig {
+        chain_id: u64,
+    ) -> Result<String> {
+        let (key, prepared, tx_hash) = self.sign_consumed(
+            vault,
+            rpc,
+            id,
+            raw_ack,
             chain_id,
-            poll_attempts,
-            poll_interval,
-        } = cfg;
+            crate::rpc::network_gate(),
+        )?;
+        #[cfg(test)]
+        self.prepared_parks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.lock_prepared().park_signed(key, prepared);
+        Ok(tx_hash)
+    }
+
+    /// Consume the approval for `id` and sign its transaction, returning the signed tx to the
+    /// CALLER only (never parked in the shared map), with its key and hash. Shared by
+    /// [`Self::approve_and_sign`] (which parks it for a later send) and
+    /// [`Self::approve_and_broadcast`] (which sends it directly, so no concurrent reject or
+    /// send on the same id can take it in between).
+    fn sign_consumed<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        chain_id: u64,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<(u64, Prepared, String)> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
 
         // Consume-first (B1.2-ADV-10): remove under the lock before any signing.
-        let pending = {
-            let mut map = self.lock();
-            map.remove(&key).ok_or(CeremonyError::UnknownCeremony)?
-        };
+        // An expired request is refused here, before any RPC call.
+        let pending = self.take_live(key)?;
 
-        // Raw-ack gate (B1.2-ADV-5): re-insert on a missing ack so the human can
-        // retry WITH it; this call broadcasts nothing.
+        // Raw-ack gate (B1.2-ADV-5): re-insert on a missing ack (keeping its
+        // creation time) so the human can retry WITH it; this call broadcasts nothing.
         if pending.requires_raw_ack && !raw_ack {
-            self.lock().insert(key, pending);
+            self.lock().pending.insert(key, pending);
             return Err(CeremonyError::RawAckRequired);
         }
 
@@ -735,14 +1198,24 @@ impl SignatureCeremony {
             }
         }
 
+        // K6: the endpoint must be the network this build targets before anything is read for
+        // or signed into the transaction. A same-chain-id network with another genesis would
+        // accept the signature, so the block-0 hash is what is checked.
+        if let Some(expected) = gate {
+            rpc.verify_network(expected)
+                .map_err(|e| CeremonyError::Broadcast(format!("{e}; nothing was signed")))?;
+        }
+
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
         // cannot fetch a nonce, so the dApp must have supplied one.
-        let fetched_nonce = match (&parsed.nonce, &parsed.from) {
-            (Some(n), _) => *n,
-            (None, Some(from)) => rpc
-                .pending_nonce(from)
-                .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+        let (fetched_nonce, nonce_source) = match (&parsed.nonce, &parsed.from) {
+            (Some(n), _) => (*n, crate::submitted_log::NonceSource::Supplied),
+            (None, Some(from)) => (
+                rpc.pending_nonce(from)
+                    .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+                crate::submitted_log::NonceSource::Fetched,
+            ),
             (None, None) => return Err(CeremonyError::UndecodableTransaction),
         };
         let fetched_gas_price = match &parsed.gas_price {
@@ -756,10 +1229,68 @@ impl SignatureCeremony {
             .finalize(fetched_nonce, fetched_gas_price)
             .ok_or(CeremonyError::UndecodableTransaction)?;
 
-        // Sign the REAL tx with the vault key (fails closed if locked — the
-        // gated signer reads the sealed entropy via the A2 session gate).
-        let signed = wallet::sign_transaction(vault, &fields, chain_id)?;
+        // Last check, then sign the REAL tx with the vault key (fails closed if
+        // locked — the gated signer reads the sealed entropy via the A2 session
+        // gate). The chain id signed is the one the card showed, after checking it
+        // equals the signer's chain and any chainId the payload names.
+        let bound_chain = self.ready_to_sign(key, &pending, Some(chain_id))?;
+        let signed = wallet::sign_transaction(vault, &fields, bound_chain)?;
+        let tx_hash = format!("0x{}", hex::encode(signed.hash));
+        let sender = wallet::address(vault)?.address;
+        Ok((
+            key,
+            Prepared {
+                raw: signed.raw,
+                sender,
+                nonce: fields.nonce,
+                nonce_source,
+                call: match (parsed.to, parsed.data.get(..4)) {
+                    (Some(to), Some(sel)) => Some(crate::submitted_log::CallMeta {
+                        to: format!("0x{}", hex::encode(to)),
+                        selector: format!("0x{}", hex::encode(sel)),
+                    }),
+                    _ => None,
+                },
+                value: parsed.value,
+                to: parsed.to,
+                origin: pending.intent.origin.clone(),
+            },
+            tx_hash,
+        ))
+    }
 
+    /// **Join-8 — send a prepared transaction.** Takes the signed tx that
+    /// [`approve_and_sign`](Self::approve_and_sign) stored under `id` (single-use: removed
+    /// first), sends it with `eth_sendRawTransaction`, and polls the receipt. Signs nothing.
+    pub fn send_prepared<T: crate::rpc::RpcTransport>(
+        &self,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
+        let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
+        let slot = self
+            .lock_prepared()
+            .take_signed(key)
+            .ok_or(CeremonyError::UnknownCeremony)?;
+        match slot {
+            Slot::Live { tx, .. } => self.send_signed(rpc, tx, cfg, crate::rpc::network_gate()),
+            // Held past its TTL: the signed raw is gone and nothing was sent.
+            Slot::Expired { .. } => Err(CeremonyError::PreparedExpired),
+        }
+    }
+
+    /// Send a signed tx the caller owns and poll its receipt. Signs nothing. The ONE place a
+    /// signed tx reaches `eth_sendRawTransaction` (both the one-call and the prepared path): the
+    /// submission is recorded durably first (#347's fsync'd [`crate::submitted_log`]), and with
+    /// no durable record nothing is sent.
+    fn send_signed<T: crate::rpc::RpcTransport>(
+        &self,
+        rpc: &crate::rpc::RpcClient<T>,
+        tx: Prepared,
+        cfg: BroadcastConfig,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<BroadcastResult> {
         // Broadcast + poll for inclusion. `send_raw_transaction` returns the
         // node-accepted hash; the receipt poll confirms block inclusion.
         //
@@ -769,26 +1300,38 @@ impl SignatureCeremony {
         // an unknown outcome carrying keccak256 of the signed raw tx, which is the tx hash.
         let local_hash = {
             use sha3::{Digest, Keccak256};
-            format!("0x{}", hex::encode(Keccak256::digest(&signed.raw)))
+            format!("0x{}", hex::encode(Keccak256::digest(&tx.raw)))
         };
-        let sender = wallet::address(vault)?.address;
         let first_submission = self
             .submitted
-            .try_record_for(&local_hash, &sender, fields.nonce)
+            .try_record_call(
+                &local_hash,
+                &tx.sender,
+                tx.nonce,
+                tx.nonce_source,
+                tx.call.as_ref(),
+            )
             .map_err(|e| {
                 CeremonyError::Broadcast(format!(
                     "the submission could not be recorded durably, so nothing was sent: {e}"
                 ))
             })?;
-        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+        let tx_hash = match rpc.send_raw_transaction_gated(&tx.raw, gate) {
             Ok(h) => h,
-            // Definitive only for a first submission that no other attempt overlapped (#347 P1).
+            // Definitive only for a first submission that no other attempt overlapped (#347 P1):
+            // once another attempt recorded the same bytes, it may have sent them.
             Err(e)
                 if first_submission
                     && self.submitted.sole_attempt(&local_hash)
                     && is_definitive_send_error(&e) =>
             {
-                return Err(CeremonyError::Broadcast(e.to_string()))
+                // Not sent: the node refused the first submission of these bytes. Take the send
+                // out of recovery (latest_call) durably, so a restart or the next read does not
+                // show it as Pending; the hash stays in the history, so the same bytes are never
+                // a first submission again. A failed write keeps it recoverable (it then shows as
+                // Pending until Forget: fail safe), and the refusal is reported either way.
+                let _ = self.submitted.forget(&local_hash);
+                return Err(CeremonyError::Broadcast(e.to_string()));
             }
             Err(e) => {
                 return Err(CeremonyError::SubmittedOutcomeUnknown {
@@ -797,7 +1340,7 @@ impl SignatureCeremony {
                 })
             }
         };
-        let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
+        let receipt = rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval);
         let mined = match receipt {
             Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
@@ -823,27 +1366,154 @@ impl SignatureCeremony {
                 .as_ref()
                 .and_then(|r| r.effective_gas_price)
                 .map(|p| p.to_string()),
-            value_wei: Some(parsed.value.to_string()),
-            to: parsed.to.map(|a| format!("0x{}", hex::encode(a))),
-            origin: pending.intent.origin.clone(),
+            value_wei: Some(tx.value.to_string()),
+            to: tx.to.map(|a| format!("0x{}", hex::encode(a))),
+            origin: tx.origin,
         })
+    }
+
+    /// **Step 2 (tx) — approve, sign and broadcast in one call.** The same checks as
+    /// [`Self::approve_and_sign`] then the same send as [`Self::send_prepared`], with the
+    /// signed tx kept private between them. One approval, one signature, one send.
+    pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
+        self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())
+    }
+
+    /// [`Self::approve_and_broadcast`] against an explicit network gate (K6). With `Some`, the
+    /// RPC's chain id and block-0 hash are checked after the ceremony is consumed and BEFORE any
+    /// nonce read or signature, and again at the send: on a mismatch, or a gate with no values
+    /// set, nothing is signed.
+    pub fn approve_and_broadcast_gated<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+        gate: Option<&crate::rpc::ExpectedNetwork>,
+    ) -> Result<BroadcastResult> {
+        // Sign and send with the tx held locally the whole time: it never enters the shared
+        // `prepared` map, so a concurrent reject / send_prepared on this id cannot take it.
+        let (_key, prepared, _hash) =
+            self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id, gate)?;
+        self.send_signed(rpc, prepared, cfg, gate)
     }
 
     /// **Step 2' — reject.** Consume the ceremony with no signature. Unknown id
     /// (never created / already consumed) → `UnknownCeremony`.
     pub fn reject(&self, id: &str) -> Result<()> {
         let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
-        let mut map = self.lock();
-        map.remove(&key)
-            .map(|_| ())
-            .ok_or(CeremonyError::UnknownCeremony)
+        // Join-8: a signed-but-unsent transaction is discarded too (never sent).
+        if self.lock_prepared().discard_signed(key) {
+            return Ok(());
+        }
+        self.take_live(key).map(|_| ())
     }
 
     /// Count of currently-pending ceremonies (test/inspection seam).
     #[cfg(test)]
     fn pending_count(&self) -> usize {
-        self.lock().len()
+        self.live().pending.len()
     }
+}
+
+/// A random first id for a new ceremony, so ids from an earlier run (before a restart) never
+/// name a request in this one. Ids stay below 2^53 so they survive a JavaScript number.
+fn random_first_id() -> u64 {
+    use rand::RngCore;
+    let mut b = [0u8; 4];
+    let r = match rand::rngs::OsRng.try_fill_bytes(&mut b) {
+        Ok(()) => u32::from_le_bytes(b),
+        // No OS randomness: fall back to the wall clock, which still differs between runs.
+        Err(_) => (system_clock().wall_ms & 0xffff_ffff) as u32,
+    };
+    // 31 random bits shifted by 20: a base in [2^20, 2^51), with 2^20 ids per run before the
+    // next base could be reached.
+    (u64::from(r >> 1) + 1) << 20
+}
+
+/// Every chain id the bytes to be signed commit to, for [`SignatureCeremony::ready_to_sign`].
+/// `Err` carries a description of a chain value that could not be read or is ambiguous, which
+/// refuses the signature.
+/// - A transaction commits to the EIP-155 chain id the signer uses (`signer_chain`, required)
+///   and to any `chainId` its payload names.
+/// - A `personal_sign` message commits to the chain on any `Chain ID:` line (Sign-In with
+///   Ethereum); a message with none commits to no chain.
+/// - Typed data is never signed here.
+fn committed_chain(
+    intent: &SignatureIntent,
+    signer_chain: Option<u64>,
+) -> std::result::Result<Vec<u64>, String> {
+    match intent.kind {
+        IntentKind::Transaction => {
+            let signer = signer_chain.ok_or_else(|| "unknown (no signer chain)".to_string())?;
+            let mut out = vec![signer];
+            if let Some(named) = payload_chain_id(&intent.raw)? {
+                out.push(named);
+            }
+            Ok(out)
+        }
+        IntentKind::PersonalSign => {
+            let bytes = payload_bytes(&intent.raw).ok_or_else(|| "unreadable".to_string())?;
+            message_chain_ids(&bytes)
+        }
+        IntentKind::TypedData => Err("typed data (not signed here)".to_string()),
+    }
+}
+
+/// The `chainId` a transaction payload names, if any. A number, a `0x` hex string or a decimal
+/// string is read; anything else present under the key is unreadable.
+fn payload_chain_id(raw: &str) -> std::result::Result<Option<u64>, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| "unreadable payload".to_string())?;
+    let Some(v) = json.get("chainId") else {
+        return Ok(None);
+    };
+    let parsed = match v {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(t) => match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))
+        {
+            Some(h) if !h.is_empty() => u64::from_str_radix(h, 16).ok(),
+            Some(_) => None,
+            None => t.parse::<u64>().ok(),
+        },
+        _ => None,
+    };
+    parsed.map(Some).ok_or_else(|| format!("unreadable ({v})"))
+}
+
+/// The chain ids on a message's `Chain ID:` lines (trimmed, case-insensitive; the same rule the
+/// network gate in `wallet` applies to Sign-In with Ethereum messages). A line whose value is not
+/// a decimal u64, or two lines naming different chains, are refused. Non-UTF-8 bytes name no
+/// chain.
+fn message_chain_ids(message: &[u8]) -> std::result::Result<Vec<u64>, String> {
+    let Ok(text) = std::str::from_utf8(message) else {
+        return Ok(Vec::new());
+    };
+    let mut found: Option<u64> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(head) = t.get(..9) else { continue };
+        if !head.eq_ignore_ascii_case("chain id:") {
+            continue;
+        }
+        let value = t[9..].trim();
+        let id = value
+            .parse::<u64>()
+            .map_err(|_| format!("unreadable ({value})"))?;
+        match found {
+            Some(prev) if prev != id => return Err(format!("ambiguous ({prev} and {id})")),
+            _ => found = Some(id),
+        }
+    }
+    Ok(found.into_iter().collect())
 }
 
 /// Decode the hex `raw` payload to bytes. Accepts an optional `0x` prefix. A
@@ -1045,6 +1715,13 @@ impl SignatureCeremony {
         clock: &dyn Fn() -> u64,
     ) -> BudgetedOutcome {
         use crate::web_budget::{FallThrough, RecordStatus, SiweEvalInput};
+        // K6: the same network gate the signer applies, checked before the budget is evaluated so
+        // a refused sign-in reserves nothing and uses no budget. `sign_personal` checks it again.
+        if let Err(e) =
+            crate::rpc::check_wallet_signing(wallet::personal_message_scope(req.message.as_bytes()))
+        {
+            return self.siwe_fall_through(&req, FallThrough::Network(e.to_string()));
+        }
         let mut guard = gate.lock();
         let now = clock();
         let wallet_addr = wallet::address(vault).ok().map(|w| w.address);
@@ -1090,10 +1767,14 @@ impl SignatureCeremony {
                     origin: plan.origin,
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 guard.close(record_id, RecordStatus::NotSigned);
                 drop(guard);
-                self.siwe_fall_through(&req, FallThrough::SignerUnavailable)
+                let why = match e {
+                    WalletError::WrongNetwork(m) => FallThrough::Network(m),
+                    _ => FallThrough::SignerUnavailable,
+                };
+                self.siwe_fall_through(&req, why)
             }
         }
     }
@@ -1128,10 +1809,11 @@ impl SignatureCeremony {
 /// Managed Tauri state: the process-wide SignatureCeremony.
 pub struct CeremonyState(pub SignatureCeremony);
 
-/// Build the managed ceremony state with its first-submission record persisted at `path`.
-pub fn build_ceremony_state_at(path: std::path::PathBuf) -> CeremonyState {
+/// Build the managed ceremony state with its first-submission record persisted at `path`, keyed to
+/// `genesis`, the block-0 hash of the network every send is gated to.
+pub fn build_ceremony_state_at(path: std::path::PathBuf, genesis: &str) -> CeremonyState {
     CeremonyState(SignatureCeremony::with_submitted_log(
-        crate::submitted_log::SubmittedTxLog::open(path),
+        crate::submitted_log::SubmittedTxLog::open(path, genesis),
     ))
 }
 
@@ -1153,6 +1835,9 @@ fn err_str(e: CeremonyError) -> String {
 /// the `eth_sendRawTransaction` errors that prove the node did not accept the tx. Every handler
 /// error uses code -32602, so the MESSAGE decides, matched exactly or by its fixed prefix. Only
 /// meaningful on the first submission of the signed bytes; the caller checks that.
+///
+/// K6: a network-gate refusal, and a gate check that could not read the endpoint (#494), are both
+/// raised before `eth_sendRawTransaction` is called, so they are definitive as well.
 pub(crate) fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
     const EXACT: &[&str] = &[
         "Rate limit exceeded. Try again later.",
@@ -1172,7 +1857,9 @@ pub(crate) fn is_definitive_send_error(e: &crate::rpc::RpcError) -> bool {
         "Failed to submit transaction: NonceTooLow {",
     ];
     match e {
-        crate::rpc::RpcError::RateLimited => true,
+        crate::rpc::RpcError::RateLimited
+        | crate::rpc::RpcError::WrongNetwork(_)
+        | crate::rpc::RpcError::NetworkUnverified(_) => true,
         crate::rpc::RpcError::Node(m) => {
             EXACT.contains(&m.as_str()) || PREFIX.iter().any(|p| m.starts_with(p))
         }
@@ -1322,6 +2009,122 @@ pub fn sign_and_broadcast_sync(
     .map_err(broadcast_err_str)
 }
 
+/// Join-8 — the public result of [`sign_prepare`]: the hash of the signed, not-yet-sent tx.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedTx {
+    #[serde(rename = "txHash")]
+    pub tx_hash: String,
+}
+
+/// **Command — sign_prepare (Join-8).** Approve + sign a pending transaction ceremony bound to
+/// `id`, WITHOUT sending it, and return the tx hash (keccak256 of the signed raw). The caller
+/// records the hash, then calls [`sign_send_prepared`]. Same guards and single-use rules as
+/// [`sign_and_broadcast`]; returns public facts only (I-2).
+#[tauri::command]
+pub async fn sign_prepare(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<PreparedTx, String> {
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_prepare_sync(st0, st1, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_prepare`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_prepare_sync(
+    ceremony: State<'_, CeremonyState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<PreparedTx, String> {
+    let rpc = crate::rpc::RpcClient::citrate();
+    ceremony
+        .0
+        .approve_and_sign(&custody.0, &rpc, &id, raw_ack, crate::rpc::CITRATE_CHAIN_ID)
+        .map(|tx_hash| PreparedTx { tx_hash })
+        .map_err(err_str)
+}
+
+/// **Command — sign_send_prepared (Join-8).** Send the transaction [`sign_prepare`] signed for
+/// `id` (single-use), poll its receipt, tell the broadcast observer, and return the public
+/// [`BroadcastResult`]. Signs nothing.
+#[tauri::command]
+pub async fn sign_send_prepared(
+    app_h: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<BroadcastResult, SendPreparedError> {
+    // The outer layer (state lookup, the blocking pool) can only fail before any send.
+    let outcome = crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        Ok(sign_send_prepared_sync(st0, id))
+    })
+    .await;
+    match outcome {
+        Ok(r) => r,
+        Err(message) => Err(SendPreparedError {
+            code: "failed".to_string(),
+            message,
+        }),
+    }
+}
+
+/// Blocking body of [`sign_send_prepared`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_send_prepared_sync(
+    ceremony: State<'_, CeremonyState>,
+    id: String,
+) -> std::result::Result<BroadcastResult, SendPreparedError> {
+    let rpc = crate::rpc::RpcClient::citrate();
+    let result = ceremony
+        .0
+        .send_prepared(
+            &rpc,
+            &id,
+            BroadcastConfig {
+                chain_id: crate::rpc::CITRATE_CHAIN_ID,
+                poll_attempts: 30,
+                poll_interval: std::time::Duration::from_secs(2),
+            },
+        )
+        .map_err(send_prepared_error)?;
+    notify_broadcast(&result);
+    Ok(result)
+}
+
+/// Join-8 — the structured error of [`sign_send_prepared`]. `code` is a stable machine field
+/// the app branches on (never the prose in `message`): `"signedTxExpired"` means the signed tx
+/// expired in the ceremony and NOTHING was sent; `"failed"` is every other outcome, including a
+/// node error after the send (which may already be in the mempool).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendPreparedError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Map a send error to its structured form. Only [`CeremonyError::PreparedExpired`] (raised
+/// before any send) is `"signedTxExpired"`; everything else, including a node error after the
+/// send whatever its text, is `"failed"`, with the message in [`broadcast_err_str`]'s form (#347):
+/// "not submitted: …" only for a failure established before the node could have received the tx
+/// (e.g. no durable record), "submitted, outcome unknown (tx …)" after.
+pub fn send_prepared_error(e: CeremonyError) -> SendPreparedError {
+    match e {
+        CeremonyError::PreparedExpired => SendPreparedError {
+            code: "signedTxExpired".to_string(),
+            message: e.to_string(),
+        },
+        other => SendPreparedError {
+            code: "failed".to_string(),
+            message: broadcast_err_str(other),
+        },
+    }
+}
+
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.
 /// Unknown/already-consumed id → error.
 #[tauri::command]
@@ -1347,4 +2150,5 @@ pub fn sign_reject_sync(
 mod tests {
     include!("ceremony_tests.rs");
     include!("ceremony_budget_tests.rs");
+    include!("ceremony_expiry_tests.rs");
 }

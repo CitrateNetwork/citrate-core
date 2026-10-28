@@ -1,7 +1,7 @@
 //! citrate-core — BC-1.3: the REAL on-chain membership grant-status read.
 //! @rule8 · T1 money-path surface.
 //!
-//! The S5 onboarding step (grant + stake ceremony) settles ONLY when the
+//! The S5 onboarding step (membership grant ceremony) settles ONLY when the
 //! 32,000-SALT membership grant is genuinely on-chain. This module reads that
 //! truth from the live 40204 RPC via `eth_call` — it NEVER fabricates a settlement
 //! (Rule 1). A fresh/never-granted member honestly reads 0 stake / 0 shares / no
@@ -36,14 +36,14 @@
 //! ## Secret discipline (@rule8 / Rule 3)
 //! This module is a PURE READ. It never sees key material, never signs, and its
 //! `#[tauri::command]` returns only decoded PUBLIC chain data. Coarse, secret-free
-//! errors. Mirrors `staking.rs`'s house style (validate_address,
-//! decode_uint256_word, pinned selectors + keccak drift tests, injectable RpcClient).
+//! errors. House style: validate_address, `agent_sbt::decode_u128`, pinned selectors + keccak
+//! drift tests, injectable RpcClient.
 
 // Some helper surface (calldata builders, selector accessors) is reached only by
-// tests until the full frontend round-trip lands (mirrors staking.rs / earnings.rs).
+// tests until the full frontend round-trip lands (mirrors earnings.rs).
 #![allow(dead_code)]
 
-use crate::staking::decode_uint256_word;
+use crate::agent_sbt::decode_u128;
 
 /// The `MembershipStakeVault` on 40204 (canonical address book:
 /// `contracts/addresses/40204.json`). Lowercase `0x`-hex; the `eth_call` target for
@@ -73,7 +73,7 @@ const ATTRIBUTED_STAKE_SELECTOR: [u8; 4] = [0xb9, 0x2e, 0x7e, 0xcb];
 /// `keccak256("attributedPrincipal(address)")[..4]`. PINNED + drift-tested.
 ///
 /// M-2 (citrate-chain #141) REPLACED `attributedShares` with this. The old name
-/// was an stSALT SHARE COUNT from the pool model; there are no shares under
+/// was a pool SHARE COUNT from the old model; there are no shares under
 /// bonding, so the old selector would hit a function the vault no longer has and
 /// return empty — a drift that reads as "0 shares" rather than as an error.
 const ATTRIBUTED_PRINCIPAL_SELECTOR: [u8; 4] = [0x60, 0xde, 0xc6, 0xe8];
@@ -215,7 +215,7 @@ impl std::error::Error for GrantStatusError {}
 
 /// The on-chain membership grant status the store folds into the S5 settle decision.
 /// Every field is a live chain read (Rule 1). Serde camelCase; wei as decimal
-/// strings (mirrors `staking::PendingWithdrawal`) so a value beyond JS number range
+/// strings so a value beyond JS number range
 /// survives the bridge.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct GrantStatus {
@@ -224,7 +224,7 @@ pub struct GrantStatus {
     #[serde(rename = "attributedStakeWei")]
     pub attributed_stake_wei: String,
     /// `MembershipStakeVault.attributedPrincipal(member)` in wei (decimal string).
-    /// M-2 replaced `attributedShares` (an stSALT share count) with raw bonded
+    /// M-2 replaced `attributedShares` (a pool share count) with raw bonded
     /// principal. A granted member reads `> 0`.
     #[serde(rename = "attributedPrincipalWei")]
     pub attributed_principal_wei: String,
@@ -273,9 +273,8 @@ pub struct GrantStatus {
     /// bond, or the read failed.
     #[serde(rename = "bondPubkey")]
     pub bond_pubkey: Option<String>,
-    /// `MemberBond.isUnlocked()` as read, for the activation window (chain#331: `activate` reverts
-    /// `ActivationWindowClosed` once it is true, MemberBond.sol:219). None = no bond, or the value
-    /// did not decode: unread, never "locked".
+    /// `MemberBond.isUnlocked()` as read (chain#331: `activate` reverts `ActivationWindowClosed`
+    /// once it is true). None = no bond, or the value did not decode: unread, never "locked".
     #[serde(rename = "bondUnlocked")]
     pub bond_unlocked: Option<bool>,
 }
@@ -372,7 +371,7 @@ fn stake_of_call(pubkey_word: &[u8; 32]) -> serde_json::Value {
 }
 
 /// Decode a 32-byte word from an `eth_call` return, or `None` if it is short.
-/// Mirrors `decode_uint256_word`'s input shape (the transport returns raw bytes).
+/// Mirrors `decode_u128`'s input shape (the transport returns raw bytes).
 fn decode_word32(ret: &[u8]) -> Option<[u8; 32]> {
     if ret.len() < 32 {
         return None;
@@ -419,20 +418,17 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let stake_ret = rpc
         .eth_call(attributed_stake_call(&addr))
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-    let attributed_stake =
-        decode_uint256_word(&stake_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+    let attributed_stake = decode_u128(&stake_ret).map_err(GrantStatusError::Decode)?;
 
     let principal_ret = rpc
         .eth_call(attributed_principal_call(&addr))
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-    let attributed_principal =
-        decode_uint256_word(&principal_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+    let attributed_principal = decode_u128(&principal_ret).map_err(GrantStatusError::Decode)?;
 
     let sbt_ret = rpc
         .eth_call(sbt_balance_of_call(&addr))
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-    let sbt_balance =
-        decode_uint256_word(&sbt_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+    let sbt_balance = decode_u128(&sbt_ret).map_err(GrantStatusError::Decode)?;
 
     // The member's bond escrow. CREATE2-deterministic, so this answers even for a
     // member who has never been granted — which is exactly why the address alone is
@@ -458,8 +454,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let bond_deployed = unlock_ret.len() >= 32;
 
     let (unlock_block, bond_unlocked, is_kyc_verified) = if bond_deployed {
-        let unlock = decode_uint256_word(&unlock_ret)
-            .map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+        let unlock = decode_u128(&unlock_ret).map_err(GrantStatusError::Decode)?;
         let unlocked_ret = rpc
             .eth_call(bond_nullary_call(&bond_address, is_unlocked_selector()))
             .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
@@ -469,10 +464,8 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         (
             Some(unlock as u64),
             // Carried as read: an undecodable value is None (unread), never "locked" (chain#331).
-            decode_uint256_word(&unlocked_ret).ok().map(|v| v == 1),
-            decode_uint256_word(&kyc_ret)
-                .map(|v| v == 1)
-                .unwrap_or(false),
+            decode_u128(&unlocked_ret).ok().map(|v| v == 1),
+            decode_u128(&kyc_ret).map(|v| v == 1).unwrap_or(false),
         )
     } else {
         (None, None, false)
@@ -502,7 +495,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
             let bonded_ret = rpc
                 .eth_call(stake_of_call(&pubkey_word))
                 .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-            decode_uint256_word(&bonded_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?
+            decode_u128(&bonded_ret).map_err(GrantStatusError::Decode)?
         } else {
             0
         };
@@ -511,13 +504,14 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         (false, 0)
     };
 
-    // C1-V5: the bond's own activation flag and key. Read last and independently: a failed read
-    // is None (unread), and the reads above still stand.
+    // `MemberBond.activated()` and (C1-V5) `MemberBond.pubkey()`, read last and independently: a
+    // failed read is None (unread), never false or a zero key, and the reads above still stand.
+    // Both outlive an exit, unlike pubkeyOfStaker.
     let (bond_activated, bond_pubkey) = if bond_deployed {
         let activated = rpc
             .eth_call(bond_nullary_call(&bond_address, activated_selector()))
             .ok()
-            .and_then(|r| decode_uint256_word(&r).ok())
+            .and_then(|r| decode_u128(&r).ok())
             .map(|v| v == 1);
         let pubkey = rpc
             .eth_call(bond_nullary_call(&bond_address, bond_pubkey_selector()))
@@ -554,8 +548,9 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
 /// custody EOA. A malformed address fails closed before any node call.
 /// ASYNC + `spawn_blocking` — this MUST NOT run on the main thread.
 ///
-/// `read_grant_status` makes NINE sequential blocking `eth_call`s to the public
-/// 40204 RPC (stake, principal, SBT, bond, unlock, unlocked, KYC, pubkey, bonded).
+/// `read_grant_status` makes up to ELEVEN sequential blocking `eth_call`s to the public
+/// 40204 RPC (stake, principal, SBT, bond, unlock, unlocked, KYC, pubkeyOfStaker, bonded,
+/// MemberBond.activated, MemberBond.pubkey).
 /// At the measured ~240 ms per round trip that is ~2.4 s of work — and `refreshNode`
 /// polls it every 2 s while the member is not yet bonded, i.e. throughout onboarding.
 ///

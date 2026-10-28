@@ -1,6 +1,9 @@
 // C1-P — the membership price comes from core-membership's live price route, read in Rust
 // (no CORS), and is shown only when it was read. On a 503 or any error the app keeps the
 // "See membership pricing" link and shows no number (UI truth contract §5.3).
+// Owner decision 2026-10-27 (a, #576): in onboarding the price shows only at checkout
+// (MembershipCheckout), after the free-node choice. The Commissary seed tabs that carried a
+// "Join · <price>" label were retired on main (K5a: the Store is the signed catalog only).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -16,7 +19,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { S3 } from "../onboarding/Onboarding";
+import { S3, MembershipCheckout } from "../onboarding/Onboarding";
 import { Settings } from "./Settings";
 import { Commissary } from "./Commissary";
 import { membershipPriceLabel, type MembershipPrice } from "../data/membership";
@@ -71,12 +74,20 @@ describe("C1-P — the membership price is read, never assumed", () => {
   });
 
   it("S3 shows the read price, and the link with no number when there is none", () => {
-    const read = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: PRICE })} />);
+    // The checkout step of S3 (MembershipCheckout) is the one onboarding screen with a price.
+    const read = renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: PRICE })} />);
     expect(read).toContain("$48 a year");
     expect(read).toContain("does not buy SALT");
-    const none = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: null })} />);
+    const none = renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: null })} />);
     expect(none).toContain("See membership pricing");
     expect(none).not.toMatch(/\$\s?\d/);
+  });
+
+  it("S3's free-node choice shows no price, even when one was read", () => {
+    const html = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false, membershipPrice: PRICE })} />);
+    expect(html).toContain("Run a node for free");
+    expect(html).not.toContain("$48");
+    expect(html).not.toMatch(/\$\s?\d/);
   });
 
   it("Settings shows the read price on the plan line", () => {
@@ -84,13 +95,11 @@ describe("C1-P — the membership price is read, never assumed", () => {
     expect(html).toContain("$48 a year");
   });
 
-  it("the Commissary join label uses the read price, else 'see pricing'", () => {
-    const read = renderToStaticMarkup(<Commissary store={stub} s={member({ tier: "free", membershipPrice: PRICE })} />);
-    const none = renderToStaticMarkup(<Commissary store={stub} s={member({ tier: "free", membershipPrice: null })} />);
-    expect(none).toContain("Join · see pricing");
-    expect(read).toContain("Join · $48 a year");
-    expect(read).not.toContain("Join · see pricing");
-    expect(none).not.toMatch(/\$\s?\d/);
+  it("the Store (formerly the Commissary) has no join label and states no price", () => {
+    const html = renderToStaticMarkup(<Commissary store={stub} s={member({ tier: "free", membershipPrice: PRICE })} />);
+    expect(html).not.toContain("Join ·");
+    expect(html).not.toContain("$48");
+    expect(html).not.toMatch(/\$\s?\d/);
   });
 
   it("the web build has no price source and never shows a number", async () => {

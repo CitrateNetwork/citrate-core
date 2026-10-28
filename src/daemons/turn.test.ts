@@ -2,7 +2,7 @@
 // the member as an explicit (HIC-required) decision. Sidecar runs use an UNATTENDED session that is
 // closed afterwards.
 import { describe, it, expect, vi } from "vitest";
-import { DAEMON_NEEDS_HERMES, daemonAvailability, daemonToolDecision, DAEMON_TOOLS, runDaemonTurn, type DaemonTurnDeps } from "./turn";
+import { DAEMON_NEEDS_HERMES, daemonAvailability, daemonToolDecision, daemonToolsFor, DAEMON_TOOLS, runDaemonTurn, type DaemonTurnDeps } from "./turn";
 import { TokenMeter } from "./tokenMeter";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall, type ToolCallMeta } from "../agent/harness";
 import type { Claim } from "./api";
@@ -126,5 +126,96 @@ describe("a sidecar daemon turn", () => {
     expect(JSON.parse((sidecar.openUnattended.mock.calls[0] as unknown as [string, string])[1]).map((t: { function: { name: string } }) => t.function.name)).not.toContain("app_navigate");
     expect(d.handled).toEqual([["journal_append", { hic: "required", hicReason: expect.stringContaining("Node digest") }]]);
     expect(sidecar.close).toHaveBeenCalledWith("s1-ab");
+    // The open names the claimed run too, so core can bind the session to it.
+    const args = sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string, string];
+    expect(args[2]).toBe(claim.daemonId);
+    expect(args[3]).toBe(claim.runId);
+  });
+});
+
+describe("a Store daemon's approved permissions bind its tools (deny by default)", () => {
+  const pages = (name: string) => [
+    { events: [{ seq: 1, event: { type: "step_start", step: 1 } }, { seq: 2, event: { type: "tool_call", host: "core", call: { id: "c1", name, arguments: "{}" } } }], lastSeq: 2, busy: true },
+    { events: [{ seq: 3, event: { type: "tool_result", call_id: "c1" } }, { seq: 4, event: { type: "final", content: "ok" } }, { seq: 5, event: { type: "done", outcome: "answered" } }], lastSeq: 5, busy: false },
+  ];
+  const offered = (sc: ReturnType<typeof sidecarFake>) =>
+    JSON.parse((sc.openUnattended.mock.calls[0] as unknown as [string, string])[1]).map((t: { function: { name: string } }) => t.function.name);
+
+  it("a daemon approved with no tools (no permissions, or only local_model) is offered zero tools and runs none", async () => {
+    for (const name of ["memory_recall", "journal_read", "node_status"]) {
+      const sidecar = sidecarFake(pages(name));
+      const d = deps({ providerKind: "sidecar", sidecar });
+      await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), d);
+      expect(offered(sidecar)).toEqual([]);
+      expect(d.handled).toEqual([]);
+      expect(sidecar.toolResult).toHaveBeenCalledWith("s1-ab", "c1", expect.anything(), expect.stringContaining("not available"));
+    }
+  });
+
+  it("a daemon approved for memory reads gets only those: no journal tools", async () => {
+    const allowed = ["memory_recall", "memory_search"];
+    const sidecar = sidecarFake(pages("journal_read"));
+    const d = deps({ providerKind: "sidecar", sidecar });
+    await runDaemonTurn({ ...claim, allowedTools: allowed }, new AbortController().signal, new TokenMeter(100_000, () => undefined), d);
+    expect([...offered(sidecar)].sort()).toEqual(allowed);
+    expect(d.handled).toEqual([]);
+    const ok = sidecarFake(pages("memory_recall"));
+    const d2 = deps({ providerKind: "sidecar", sidecar: ok });
+    await runDaemonTurn({ ...claim, allowedTools: allowed }, new AbortController().signal, new TokenMeter(100_000, () => undefined), d2);
+    expect(d2.handled.map(([n]) => n)).toEqual(["memory_recall"]);
+  });
+
+  it("the decision refuses any tool outside the approved list, even a read-only one", () => {
+    expect(daemonToolDecision(call("memory_recall"), "x", undefined, []).run).toBe(false);
+    expect(daemonToolDecision(call("journal_read"), "x", undefined, ["memory_recall"]).run).toBe(false);
+    expect(daemonToolDecision(call("memory_recall"), "x", undefined, ["memory_recall"]).run).toBe(true);
+    // app_navigate stays refused even if a list names it.
+    expect(daemonToolDecision(call("app_navigate"), "x", undefined, ["app_navigate"]).run).toBe(false);
+  });
+
+  it("a daemon the member wrote (no approved list) keeps the member-daemon tool set", () => {
+    expect(daemonToolsFor(null).length).toBe(DAEMON_TOOLS.length);
+    expect(daemonToolsFor([]).length).toBe(0);
+  });
+});
+
+describe("a Store daemon's prompt carries no app snapshot", () => {
+  it("a Store daemon run's system prompt has no live app context; a member daemon's keeps it", async () => {
+    const done = () => [
+      { events: [{ seq: 1, event: { type: "final", content: "ok" } }, { seq: 2, event: { type: "done", outcome: "answered" } }], lastSeq: 2, busy: false },
+    ];
+    const marked = { ...ctx, walletAddr: "0xfeed5eed000000000000000000000000000000aa" };
+    const snapshotPrompt = () => "You are Hermes.\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(marked);
+    const store = sidecarFake(done());
+    await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar: store, systemPrompt: snapshotPrompt }));
+    const storePrompt = (store.openUnattended.mock.calls[0] as unknown as [string, string])[0];
+    expect(storePrompt).not.toContain("Live app context");
+    expect(storePrompt).not.toContain(marked.walletAddr);
+    expect(storePrompt).toContain("SCHEDULED DAEMON RUN");
+    const mine = sidecarFake(done());
+    await runDaemonTurn(claim, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar: mine, systemPrompt: snapshotPrompt }));
+    expect((mine.openUnattended.mock.calls[0] as unknown as [string, string])[0]).toContain("Live app context");
+  });
+});
+
+describe("a daemon session is opened for its daemon", () => {
+  it("passes the daemon id so core re-checks a Store daemon right before opening", async () => {
+    const done = () => [
+      { events: [{ seq: 1, event: { type: "final", content: "ok" } }, { seq: 2, event: { type: "done", outcome: "answered" } }], lastSeq: 2, busy: false },
+    ];
+    const sidecar = sidecarFake(done());
+    await runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
+    expect((sidecar.openUnattended.mock.calls[0] as unknown as [string, string, string])[2]).toBe("d1");
+  });
+});
+
+describe("an open-time refusal", () => {
+  it("rejects the turn as DaemonNotStarted, so the run is recorded not_started", async () => {
+    const { DaemonNotStarted } = await import("./turn");
+    const sidecar = sidecarFake([]);
+    sidecar.openUnattended.mockRejectedValueOnce(new Error("Not started: the tools Hermes offers changed"));
+    const run = runDaemonTurn({ ...claim, allowedTools: [] }, new AbortController().signal, new TokenMeter(100_000, () => undefined), deps({ providerKind: "sidecar", sidecar }));
+    await expect(run).rejects.toBeInstanceOf(DaemonNotStarted);
+    await expect(run).rejects.toThrow(/Not started/);
   });
 });

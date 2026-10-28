@@ -127,12 +127,22 @@ export interface SigningDomain {
    * real tx hash + block (never key material). Same explicit-id / raw-ack /
    * single-use / fail-closed invariants as `approve`. */
   broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
+  /**
+   * Join-8 — the same approval as `broadcast`, split in two so the caller learns the tx hash
+   * BEFORE anything is sent: `prepare` approves + signs (sends nothing) and returns the hash
+   * (keccak256 of the signed raw); `sendPrepared` sends that signed tx once and polls its receipt.
+   * One approval, one signature, at most one send. Tauri → `sign_prepare` / `sign_send_prepared`.
+   */
+  prepare(id: string, rawAck: boolean): Promise<{ txHash: string }>;
+  sendPrepared(id: string): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }
 
 export interface WalletDomain {
-  balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
+  /** Native liquid SALT (eth_getBalance) and claimable (ContributionAccounting). No self-stake:
+   * staking is through the validator bond (D-9 retired the liquid staking pool). */
+  balances(): Promise<{ liquid: number; claimable: number; address: string }>;
   /** Q-E.2 (C-5) — the indexed tx history. `status` (1 ok / 0 reverted / null
    * pending) + `direction` are passed through from the indexer so a failed tx can
    * be marked (they used to be stripped, making a revert look like a success). */
@@ -142,28 +152,6 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
    * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
   send(to: string, amountWei: string): Promise<CeremonyView>;
-  /** CORE (@rule8) — submit a LiquidStakingPool `deposit()` stake as a PENDING
-   * ceremony and return the decoded view. Signs NOTHING; the human approves via
-   * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
-   * a decimal wei string. Mirrors `send` for the transfer path. */
-  stake(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `requestWithdrawal(shares)`
-   * as a PENDING ceremony (burns stSALT shares into the ~7-day queue). The
-   * SALT→shares conversion is done in Rust from LIVE reads (shares()+balanceOf()),
-   * so `amountWei` is the SALT the user wants to withdraw. Signs NOTHING; approved
-   * via `signing.broadcast`. Mirrors `stake`. */
-  requestWithdrawal(amountWei: string): Promise<CeremonyView>;
-  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `claimWithdrawal(id)` for a
-   * matured request as a PENDING ceremony. The ~7-day (50,400-block) delay is
-   * enforced on-chain; a too-early claim reverts. Signs NOTHING; approved via
-   * `signing.broadcast`. `id` is the decimal request id from `pendingWithdrawals`. */
-  claimWithdrawal(id: string): Promise<CeremonyView>;
-  /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
-   * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-   * Never fabricated (Rule 1). C1-W: `confirmed` is false unless the scan read, through
-   * citrate_getLogs, up to the head the node reports; otherwise withdrawals in unread blocks may be
-   * missing and an empty list is not "none". */
-  pendingWithdrawals(): Promise<PendingWithdrawalsRead>;
   /**
    * Seamlessly device-provision the custody vault and ensure the wallet exists,
    * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
@@ -212,35 +200,6 @@ export interface WalletDomain {
   linkReject(id: string): Promise<void>;
 }
 
-/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
- * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
- * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
-/** C1-W — one pending-withdrawals read: the rows found (each confirmed from contract state);
- * `complete` = it reached the end of what the node serves and read every withdrawal;
- * `confirmed` = also, on evidence, up to the head the node reports; `note` = why not, in words. */
-export interface PendingWithdrawalsRead {
-  withdrawals: PendingWithdrawal[];
-  confirmed: boolean;
-  complete: boolean;
-  note: string | null;
-}
-
-/** C1-W — why a pending-withdrawals read failed (Rust `PendingWithdrawalsError`): `kind` decides
- * when the Wallet reads again; `message` is display only and is never matched. */
-export type PendingReadErrorKind = "scanning" | "indexing" | "failed";
-export interface PendingWithdrawalsError {
-  kind: PendingReadErrorKind;
-  message: string;
-}
-
-export interface PendingWithdrawal {
-  id: string;
-  saltWei: string;
-  requestBlock: number;
-  claimableAtBlock: number;
-  claimable: boolean;
-}
-
 /**
  * Q-A.2/Q-B.2 — one captured line from the supervised node's stdout/stderr. In
  * Tauri this is a REAL line streamed from the node process (e.g.
@@ -282,6 +241,102 @@ export interface NodeStatusView {
   miningHold?: string;
 }
 
+/** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */
+export interface ExitOutcomeView {
+  /**
+   * "returned": the exit escrowed at least the principal, a Withdrawn paid at least that, and no
+   * Slashed was logged under the key before it. "slashed": a Slashed was logged before the payout
+   * (or there is none), or the exit escrowed less than the principal. "notRead": neither shown.
+   */
+  outcome: "returned" | "slashed" | "notRead";
+  exitBlock: number | null;
+  escrowedWei: string | null;
+  paidOutWei: string | null;
+  paidOutBlock: number | null;
+  /** Sum of the Slashed penalties logged up to the payout; null when none was seen. */
+  slashedWei: string | null;
+  scannedFrom: number;
+  scannedTo: number | null;
+  reason: string | null;
+}
+
+/**
+ * Join-8 — everything the "Activate validator" onboarding step reads, in one call. Each field
+ * names its source (UI truth contract v1 §1/§2); a failed read is `null`, never 0 or false.
+ * Wei as decimal strings. Mirrors the Rust `validator_activation::ActivationStatus`.
+ */
+export interface ActivationStatusView {
+  /** `MembershipStakeVault.bondOf(member)` (CREATE2: present even before the bond exists). */
+  bondAddress: string | null;
+  /** Code at `bondAddress`. */
+  bondDeployed: boolean | null;
+  /** `MemberBond.activated()`. */
+  bondActivated: boolean | null;
+  /** `MemberBond.principal()`. */
+  principalWei: string | null;
+  /** `MemberBond.unlockBlock()` / `unlockTimestamp()` (unix seconds). */
+  unlockBlock: number | null;
+  unlockTimestamp: number | null;
+  /** `MemberBond.isUnlocked()` as read (chain#331: activation reverts once true); null = unread. */
+  bondUnlocked: boolean | null;
+  /** `MemberBond.memberTokenId()`. */
+  memberTokenId: string | null;
+  /** `CitrateMemberSBT.isActive(memberTokenId)`. */
+  membershipActive: boolean | null;
+  /** The key the registry reads use: the bond's registered key once activated, else this node's. */
+  validatorPubkey: string | null;
+  pubkeySource: "bond" | "node" | null;
+  /** This node has a proposer key on disk. */
+  nodeKeyReady: boolean;
+  /** This node's proposer key, when it has one. */
+  nodePubkey: string | null;
+  /** `MemberBond.pubkey()`: the key the bond registered with (null before activation). */
+  bondPubkey: string | null;
+  /** `ValidatorRegistry.validatorInfo(pubkey).status`: 0 None, 1 Active, 2 Exiting, 3 Slashed. */
+  registryStatus: 0 | 1 | 2 | 3 | null;
+  /** `validatorInfo(pubkey).bonded`: stake still bonded under the key (wei). */
+  registryBondedWei: string | null;
+  /**
+   * `validatorInfo(pubkey).escrow`: unbonded stake the registry holds until the exit lock ends
+   * (wei). The key stays Exiting after the payout, so bonded and escrow both "0" is what says
+   * the exit paid out.
+   */
+  registryEscrowWei: string | null;
+  /**
+   * How a settled exit ended (Exiting, bonded and escrow both "0"), from the registry's logs under
+   * the key: `UnbondInitiated`/`Evicted` (the exit), `Slashed`, `Withdrawn` (the payout). A
+   * non-Byzantine slash keeps the key Exiting, so bonded and escrow at 0 alone do not say the
+   * bond came back. Null when not a settled exit, or not read.
+   */
+  exitOutcome: ExitOutcomeView | null;
+  /** `validatorInfo(pubkey).actEpoch`. */
+  activationEpoch: number | null;
+  /** `ValidatorRegistry.isActive(pubkey)`. */
+  registryActive: boolean | null;
+  /** `ValidatorRegistry.EPOCH()`. */
+  epochBlocks: number | null;
+  /**
+   * `ValidatorRegistry.currentEpoch()`. `isActive` is already true at registration (chain#319), so
+   * "Validator active" also needs `activationEpoch <= currentEpoch`.
+   */
+  currentEpoch: number | null;
+  /** Public `eth_blockNumber` (`0x0` is read as unknown). */
+  headBlock: number | null;
+  /** Measured: timestamp delta over the last 100 public blocks, in ms per block. */
+  blockTimeMs: number | null;
+  /** This node's `eth_blockNumber` / `eth_syncing` (true while it returns an object). */
+  localBlock: number | null;
+  localSyncing: boolean | null;
+  /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
+  tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
+  /**
+   * The member's latest activation send to this bond as the durable submitted-tx record names it
+   * (written and fsync'd in Rust BEFORE the send; #347). Null when none is recorded, or it was
+   * forgotten. This, not localStorage, is how the step resumes to Pending after a restart.
+   */
+  recordedTx: { hash: string; atMs: number | null } | null;
+}
+
 export interface NodeDomain {
   status(): Promise<NodeStatusView>;
   start(): Promise<void>;
@@ -294,6 +349,19 @@ export interface NodeDomain {
    */
   registerValidator(): Promise<CeremonyView>;
   /**
+   * Join-8 — the Activate-validator step's one read (pure; signs nothing). `memberAddress` is the
+   * member wallet the bond was granted to; `txHash` a sent activation to look up. Tauri →
+   * `validator_activation_status`; the sim shim is honestly Unavailable (no chain, no node).
+   */
+  activationStatus(memberAddress: string, txHash?: string | null): Promise<ActivationStatusView>;
+  /**
+   * Join-8 — Forget a recorded activation send (S7's Forget after 10 minutes unseen, or Try again
+   * after a revert): marks it forgotten in the durable record so a restart does not bring it back.
+   * Resolves true when the record held it; rejects when the write fails. Tauri →
+   * `validator_activation_forget`; the sim shim is honestly Unavailable.
+   */
+  activationForget(txHash: string): Promise<boolean>;
+  /**
    * The most recent supervised-node crash, or null if it has never crashed.
    * Used by the liveness watchdog to name the REAL reason a node stopped.
    */
@@ -304,7 +372,7 @@ export interface NodeDomain {
    * validator honestly returns zeros. This is the CORRECT source for validator
    * earnings; `ContributionAccounting.claimable` is a different accrual.
    */
-  validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
+  validatorEarnings(pubkey?: string): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
   /**
    * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
    * plain follower and never mints its `proposer.key`; arming respawns it with
@@ -392,7 +460,7 @@ export interface AgentDomain {
    * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
    * the sim impl is guarded out of packaged builds and never claims for real.
    */
-  claim(opts?: { validator: boolean }): Promise<ClaimResult>;
+  claim(opts?: { validator: boolean; pubkey?: string | null }): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).
@@ -515,6 +583,13 @@ export interface MemoryDomain {
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
  * id, https baseURL, model, and a `configured` flag — NEVER the API key or the
  * Authorization header (invariant 1). Mirrors the Rust `ProviderStatus`. */
+/** K2: a core-minted, one-time consent to send one held message to a remote provider. */
+export interface ChatConsent {
+  consentId: string;
+  providerId: string;
+  expiresAtMs: number;
+}
+
 export interface AiProviderStatus {
   id: string;
   baseURL: string;
@@ -549,7 +624,20 @@ export interface ChatDomain {
    * completion. The webview can NEVER supply the URL (exfil-binding, invariant 3).
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
-  infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string>;
+  /**
+   * K2 — the app is asking the member whether to send a held message to the gateway. Core mints
+   * the one-time consent that `infer` / `inferTools` need for that message (`chat_consent_prepare`);
+   * a remote send without it is refused in core. The sim impl is honestly Unavailable.
+   */
+  consentPrepare(providerId: string, message: string): Promise<ChatConsent>;
+  /**
+   * K2 — the question for a held message closed without "Send this message to the gateway this
+   * time" (cancelled, stopped, or the local model answers instead). Core drops the consent it
+   * minted for it (`chat_consent_drop`), so it cannot be used later. An id that is no longer open
+   * is not an error. The sim impl has nothing to drop.
+   */
+  consentDrop(consentId: string): Promise<void>;
   /**
    * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
    * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
@@ -562,6 +650,7 @@ export interface ChatDomain {
     messagesJson: string,
     toolsJson: string,
     contextJson: string,
+    consentId: string,
   ): Promise<string>;
   /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
@@ -590,10 +679,33 @@ export interface ChatDomain {
    * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
    */
   inferenceState(gatewayConfigured: boolean): Promise<string>;
+  /** K2: the member's chat route, stored in core (chat_route.rs). An unreadable setting reads as
+   *  `local_only` with `loadError` set (a read error never widens what may leave the device).
+   *  Tauri invokes `chat_route_get`; sim reports the default. */
+  route(): Promise<ChatRouteStatus>;
+  /** K2: store the chat route. Tauri invokes `chat_route_set`; sim is Unavailable. */
+  setRoute(route: ChatRoute): Promise<ChatRouteStatus>;
+}
+
+/** K2: where chat may go. `ask_first` (default): ask before each message goes to the gateway.
+ *  `local_only`: never to the gateway. Mirrors Rust `chat_route::ChatRoute` (snake_case). */
+export type ChatRoute = "local_only" | "ask_first";
+export interface ChatRouteStatus {
+  route: ChatRoute;
+  loadError: string | null;
+}
+/** K2: what the held-message card may offer: start the local model, and/or send this message to
+ *  the gateway this time. */
+export interface RouteAskOptions {
+  restart: boolean;
+  gateway: boolean;
+  /** D-11: the remote the held message offers, when it is the preferred cloud model (absent = the
+   *  gateway preset). */
+  remoteLabel?: string;
 }
 
 /**
- * BC-1.3 — the REAL on-chain membership grant status the S5 (grant + stake)
+ * BC-1.3 — the REAL on-chain membership grant status the S5 (membership grant)
  * ceremony settles from. Every field is a live 40204 read (Rule 1): the vault's
  * `attributedStake`/`attributedShares(member)` (wei as decimal strings, since a
  * 32,000-SALT grant exceeds JS number range) and `CitrateMemberSBT.balanceOf`
@@ -603,7 +715,7 @@ export interface GrantStatus {
   attributedStakeWei: string;
   /**
    * `MembershipStakeVault.attributedPrincipal(member)`. M-2 replaced
-   * `attributedShares` (an stSALT share count) with raw bonded principal —
+   * `attributedShares` (a pool share count) with raw bonded principal —
    * there are no shares under bonding.
    */
   attributedPrincipalWei: string;
@@ -632,12 +744,15 @@ export interface GrantStatus {
    * key's matured rewards. null = no bond, or the read failed. Optional for older backends.
    */
   bondActivated?: boolean | null;
-  /** C1-V5 — `MemberBond.pubkey()` (kept after an exit); null = zero, no bond, or not read. */
+  /**
+   * C1-V5 — `MemberBond.pubkey()`: the validator key the bond activated with, kept after an exit
+   * (unlike `pubkeyOfStaker`). null = not activated, no bond, or the read failed. Optional for
+   * older backends (absent = unread).
+   */
   bondPubkey?: string | null;
   /**
-   * `MemberBond.isUnlocked()` as read, for the activation window (chain#331: `activate` reverts
-   * `ActivationWindowClosed` once it is true, MemberBond.sol:219). null = no bond or not read.
-   * Optional for older backends (absent = not read).
+   * `MemberBond.isUnlocked()` AS READ (chain#331: `activate` reverts once true). null = no bond or
+   * the read did not decode; absent = an older backend. Both are unread, never "locked".
    */
   bondUnlocked?: boolean | null;
   /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
@@ -1020,7 +1135,8 @@ export interface GroupsDomain {
    */
   addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
-  /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
+  /** Change a member's role. Not available yet (#495): the daemon needs a signed role grant and
+   *  nothing signs one, so this rejects with the not-available reason. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
   /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
   offboard(groupId: string, address: string): Promise<void>;
@@ -1509,6 +1625,11 @@ export interface AgentHarnessDomain {
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
   sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
+  /** D-11 (ADR P-5/P-6) — the same session on the member's preferred cloud model (core reads it
+   *  from its own setting, `providers.preferredGet`). The sidecar gets a loopback route to the core
+   *  model proxy, never a key; refused under Local model only, with no preferred model, and when the
+   *  provider is not connected in Settings › Models. Returns the session id. */
+  sessionOpenCloud(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
@@ -1517,7 +1638,9 @@ export interface AgentHarnessDomain {
   sessionStop(id: string): Promise<void>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
-  sessionOpenUnattended(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
+   *  `runId` is the claimed run, which core checks is in flight for that daemon. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string, daemonId?: string, runId?: string): Promise<string>;
   /** HUP-S10.3 — close a session (a finished daemon run). */
   sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
@@ -1891,72 +2014,92 @@ export interface SocialDomain {
  * signature/DTO here requires a serialized spine-PR (01_SCOPE §5.2). Every entry is
  * additive — no existing interface above this block is modified.
  */
-// ── Group claimable invites (ADR-2026-08-30 D4). Invite by @handle without a directory: the owner
-// mints a claimable invite + shares its link over the platform DM; the invitee volunteers their
-// address in a claim (consent); the owner verifies the one-time token and adds them the normal way.
-// Citrate never resolves a handle to an address.
-export interface PendingInvite {
+// ── Group invites (D-12): one flow, request and approve. The inviter makes a one-time link; whoever
+// opens it asks to join; the inviter approves (they are added) or declines. Nothing joins from the
+// link alone. Mirrors src-tauri/src/invites.rs. No private key ever crosses `invoke`.
+/** An invite this device made. */
+export interface InviteView {
+  /** Public id (a hash prefix of the token). */
+  id: string;
   group: string;
-  token: string;
-  forHandle: string;
-  createdAt: number;
-  /** CONNECT-S1 — the full share link (with the sealed-invite key); "" for pre-S1 invites. */
-  link?: string;
-}
-export interface InviteMinted {
-  token: string;
-  /** citrate://invite?g=<group>&t=<token> — the owner DMs this to the @handle on the platform. */
+  /** The link to share: citrate://invite?… */
   link: string;
+  /** Who it's for, a label only ("" when none). */
+  label: string;
+  /** Unix seconds. */
+  createdAt: number;
+  expiresAt: number;
+  /** The requester being added now ("" when none). */
+  approving: string;
 }
-/** #73 — one entry in the device-local referral audit ledger. Mirrors the Rust `ReferralEvent`.
- *  The member's own copy of "invites I minted / groups I joined via one"; the relay's referral tally
- *  is authoritative for airdrop scoring. `tokenHash` (BLAKE3(token) hex) ties a row to that record. */
-export interface ReferralEvent {
-  /** `inviter` (I minted an invite) | `joiner` (I self-admitted via one). */
-  role: string;
-  /** `invited` | `joined` | `revoked`. */
-  event: string;
+/** A request waiting for the inviter. */
+export interface IncomingRequest {
+  inviteId: string;
+  group: string;
+  /** The comms address the request names (lowercase). What the request says: not checked
+   *  against the requester's relay session, so the inviter confirms it's them before approving. */
+  address: string;
+  /** The label of the link it came in on ("" when the link has none). */
+  inviteLabel: string;
+  /** It is being approved now. */
+  approving: boolean;
+}
+/** What checking a held approval against the roster found. */
+export type HeldCheck = "not_held" | "added" | "released" | "expired";
+/** Whether the requester(s) were told about a decline or revoke (best-effort, through the relay). */
+export interface InviteNotice {
+  notified: boolean;
+}
+/** What the "Join <group>?" screen shows for a link. Nothing is sent to read it. */
+export interface InvitePreview {
+  group: string;
+  /** From the link, display only ("" when none). */
+  groupName: string;
+  /** From the link, display only ("" when none). */
+  inviter: string;
+  expiresAt: number;
+  expired: boolean;
+  /** This device already asked to join with this link. */
+  requested: boolean;
+}
+export type InviteRequestState = "waiting" | "joined" | "declined" | "revoked" | "expired";
+/** A request this device sent. */
+export interface MyInviteRequest {
+  id: string;
   group: string;
   groupName: string;
-  tokenHash: string;
-  /** The handle the invite was labelled for (inviter rows only). */
-  forHandle: string;
-  /** Unix seconds. */
-  ts: number;
+  inviter: string;
+  requestedAt: number;
+  expiresAt: number;
+  state: InviteRequestState;
+  /** Why the state couldn't be checked just now ("" when it was). */
+  note: string;
 }
 
 export interface InvitesDomain {
-  /** Mint a single-use, group-bound invite (labelled for a handle) + share link. No address
-   *  resolution. INVITE-S2: publishes BLAKE3(token) + expiry to the relay so the invitee can
-   *  self-admit; fails closed if the relay is unreachable. */
-  create(group: string, forHandle: string): Promise<InviteMinted>;
-  /** INVITE-S2 — INVITEE: SELF-ADMIT into the group from an invite link, in one click. Joins by MLS
-   *  external commit with no owner action (even if the owner is offline). Honest error on a spent/
-   *  expired/revoked token or an unreachable relay. */
-  redeem(link: string): Promise<void>;
-  /** The owner's outstanding invites for a group. */
-  list(group: string): Promise<PendingInvite[]>;
-  /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds
-   *  the volunteered address the normal way. Returns whether the token was valid. (Claim-back path.) */
-  verifyConsume(group: string, token: string): Promise<boolean>;
-  /** Drop an outstanding invite — also revokes it on the relay so a leaked link can no longer redeem. */
-  revoke(group: string, token: string): Promise<void>;
-  /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind
-   *  inbox (the claim-back fallback). The owner then sees it via `pollClaims`. */
-  submitClaim(link: string): Promise<void>;
-  /** CONNECT-S1 — OWNER: poll + open the sealed claims for a group's outstanding invites. */
-  pollClaims(group: string): Promise<InviteClaim[]>;
-  /** #73 — the device-local referral audit ledger (newest last). The member's own copy. */
-  referralLog(): Promise<ReferralEvent[]>;
-  /** #73 — the referral ledger as pretty JSON, for the member to save as their audit copy. */
-  exportReferralLog(): Promise<string>;
-}
-
-/** A volunteered claim recovered from the server-blind inbox (owner-side). */
-export interface InviteClaim {
-  group: string;
-  token: string;
-  address: string;
+  /** Make a one-time invite link for a group (owner or admin). `label` says who it's for (may be
+   *  ""); `inviter` names the inviter on the invitee's screen (may be ""). */
+  create(group: string, label: string, inviter: string): Promise<InviteView>;
+  /** The group's open invites made on this device. Rejects when the saved invites can't be read. */
+  list(group: string): Promise<InviteView[]>;
+  /** Revoke an invite (also Cancel on a held approval): no request under it can be approved any more. */
+  revoke(group: string, id: string): Promise<InviteNotice>;
+  /** The requests waiting on the group's invites. Rejects when the relay can't be asked. */
+  requests(group: string): Promise<IncomingRequest[]>;
+  /** Approve a request: add the requester (Welcome) and use up the invite. */
+  approve(group: string, id: string, address: string): Promise<void>;
+  /** Settle a held approval by the roster (Check again on the invite row). */
+  check(group: string, id: string): Promise<HeldCheck>;
+  /** Decline a request. */
+  decline(group: string, id: string, address: string): Promise<InviteNotice>;
+  /** Read a link for the Join screen. Sends nothing. */
+  preview(link: string): Promise<InvitePreview>;
+  /** Ask to join with a link (the invitee's Join). */
+  request(link: string): Promise<MyInviteRequest>;
+  /** Where this device's requests stand; a request that was approved finishes its join here. */
+  myRequests(): Promise<MyInviteRequest[]>;
+  /** Forget a request this device sent. */
+  dismiss(id: string): Promise<void>;
 }
 
 /** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
@@ -2212,6 +2355,9 @@ export interface EscalationQuote {
   costMicros: number;
   costLabel: string;
   withinBudget: boolean;
+  /** K2: core will ask before this escalation runs whatever the budget (the member's route is
+   *  ask first). Absent from an older core. */
+  asksFirst?: boolean;
   remainingMicros: number;
   capMicros: number;
   maxTokens: number;
@@ -2367,6 +2513,369 @@ export interface ComponentsDomain {
   rollback(name: string): Promise<string>;
 }
 
+// ---- K5a — Store v1: signed catalog, staged installs that arrive paused. Mirrors Rust
+// `store_catalog.rs`. Every catalog call refuses until the catalog key is issued at the key
+// ceremony ("no_key"), before any network or disk access. ----
+
+/** `ready`, or why the catalog is not shown (one honest state each). */
+export type StoreCatalogState =
+  | "ready"
+  | "no_key"
+  | "fetch_failed"
+  | "signature_failed"
+  | "invalid"
+  | "expired"
+  | "rollback"
+  | "desktop_only";
+
+/** Why a Store call did not go ahead. */
+export type StoreRefusalCode =
+  | "no_key"
+  | "fetch_failed"
+  | "signature_failed"
+  | "invalid"
+  | "expired"
+  | "rollback"
+  | "hash_failed"
+  | "tier_locked"
+  | "not_installable"
+  | "not_listed"
+  | "stage_expired"
+  | "changed"
+  | "already_installed"
+  | "not_installed"
+  | "in_use"
+  | "install_running"
+  | "daemon_running"
+  | "install_failed"
+  | "desktop_only";
+
+export interface StoreRefusal {
+  code: StoreRefusalCode;
+  message: string;
+}
+
+/** Exactly one of `ok` / `refused`. */
+export interface StoreOutcome<T> {
+  ok?: T;
+  refused?: StoreRefusal;
+}
+
+export type StoreListingKind = "app" | "daemon" | "widget" | "skill" | "model" | "mcp_server";
+
+export interface StorePermission {
+  id: string;
+  reason: string;
+}
+
+export interface StoreBudget {
+  maxRunsPerDay: number;
+  maxTokensPerDay: number;
+  maxTokensPerRun: number;
+  /** Always "0" in this version. */
+  maxSpendSalt: string;
+}
+
+export interface StoreListing {
+  id: string;
+  kind: StoreListingKind;
+  name: string;
+  summary: string;
+  version: string;
+  publisher: string;
+  firstParty: boolean;
+  tier: "public" | "member" | "enterprise";
+  sizeBytes: number;
+  sha256: string;
+  permissions: StorePermission[];
+  budget: StoreBudget | null;
+  locked: boolean;
+  lockReason: string | null;
+  installable: boolean;
+  installNote: string | null;
+  installed: boolean;
+}
+
+export interface StoreCatalogView {
+  state: StoreCatalogState;
+  message: string | null;
+  catalogUrl: string;
+  keyFingerprint: string | null;
+  sequence: number | null;
+  expiresAt: number | null;
+  listings: StoreListing[];
+}
+
+export interface StoreStaged {
+  stageId: string;
+  listingId: string;
+  kind: StoreListingKind;
+  name: string;
+  version: string;
+  publisher: string;
+  sizeBytes: number;
+  sha256: string;
+  permissions: StorePermission[];
+  budget: StoreBudget | null;
+  /** verified: downloaded and matched now. on_download: checked as it downloads after approval. */
+  hashCheck: "verified" | "on_download";
+  expiresAt: number;
+}
+
+export interface StoreInstalled {
+  listingId: string;
+  kind: StoreListingKind;
+  name: string;
+  version: string;
+  target: string;
+  installedAt: number;
+  /** paused | active (daemon); not_selected (model on disk, not in use); installing; missing. */
+  state: "paused" | "active" | "not_selected" | "installing" | "missing";
+}
+
+export interface StoreDomain {
+  catalog(): Promise<StoreCatalogView>;
+  stage(listingId: string): Promise<StoreOutcome<StoreStaged>>;
+  /** The member approved the install sheet for this stage (HIC). Installs PAUSED. */
+  install(stageId: string, onProgress?: (pct: number) => void): Promise<StoreOutcome<StoreInstalled>>;
+  installed(): Promise<StoreInstalled[]>;
+  remove(listingId: string): Promise<StoreOutcome<string>>;
+}
+
+// ---- services: the K1a-2 registry snapshot (Rust `services.rs`, `services_snapshot`) ----
+// Each row is read from that service's kit supervisor (SPEC-001 lifecycle cell). `observation`
+// says whether a supervisor was read at all; `phase` and everything after it are null unless it
+// was. Readiness is its own axis (SC2): Alive never implies Ready.
+export type ServiceId = "node" | "nodeAgent" | "memory" | "llamaChat" | "llamaEmbed" | "ipfs" | "hermes" | "comms" | "cluster";
+export type ServicePhase = "stopped" | "starting" | "alive" | "backoff" | "failed" | "stopping" | "quarantined";
+export type ServiceReadiness = "notAssessed" | "awaiting" | "ready" | "stale" | "unavailable";
+export interface ServiceEntry {
+  id: ServiceId;
+  label: string;
+  owner: string;
+  prerequisites: string[];
+  probe: string;
+  readySignal: string;
+  logBudgetLines: number;
+  logsCommand: string | null;
+  controls: boolean;
+  observation: "observed" | "notSupervised" | "busy";
+  phase: ServicePhase | null;
+  readiness: ServiceReadiness | null;
+  lastTransition: { from: ServicePhase | null; to: ServicePhase; atUnixMs: number } | null;
+  restarts: number | null;
+  lastCrash: { atUnixMs: number; exit: string; restartAttempt: number } | null;
+  quarantine: string | null;
+}
+export interface ServicesSnapshot {
+  takenAtUnixMs: number;
+  services: ServiceEntry[];
+}
+export interface ServicesDomain {
+  snapshot(): Promise<ServicesSnapshot>;
+}
+
+// ---- D-11 (RC52) — cloud model providers (ADR-2026-10-26). Mirrors Rust `providers_ipc.rs`. ----
+// Keys go in one way (`setKey`) and never come back. Amounts are integer micro-USD; token counts are
+// the vendor's own. Unknown is `null`, never zero.
+
+/** `delegate` is Cognition (Devin): a key and a usage row, never a chat model. `gateway` appears in
+ *  the usage summary only (its key is set in the chat presets). */
+export type ProviderKind = "vendor" | "delegate" | "gateway" | "custom";
+export interface ProviderCaps {
+  dailyTokens: number | null;
+  monthlyTokens: number | null;
+  dailyMicros: number | null;
+  monthlyMicros: number | null;
+}
+export interface ProviderPrice {
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+/** A model core knows for a provider: its price and where the price came from. */
+export interface ProviderModelPrice {
+  id: string;
+  price: ProviderPrice | null;
+  /** `member` (entered in Settings, wins), `published` (the vendor's cited price), or null (unknown). */
+  source: "member" | "published" | null;
+  /** The least core reserves against the caps before one call is sent (empty prompt, the adapter's
+   *  output bound), micro-USD; null when the model has no price. */
+  minReserveMicros: number | null;
+}
+export interface ProviderHalt {
+  /** `member`, `burst`, `unknownModel`, `tokenSpike` or `guardUnreadable`. */
+  kind: string;
+  message: string;
+  atMs: number;
+}
+export interface ProviderStatus {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  /** A governed vendor on its pinned host. Always false for a custom endpoint. */
+  verified: boolean;
+  baseUrl: string;
+  host: string;
+  /** `native` (a governed vendor's own API) or `openai-compatible` (a custom endpoint); null = not available in this build. */
+  adapter: string | null;
+  keyConfigured: boolean;
+  keySetMs: number | null;
+  keyPage: string | null;
+  revokePage: string | null;
+  /** Custom endpoints: whether the member confirmed this exact URL (calls are refused until then). */
+  confirmed: boolean;
+  halt: ProviderHalt | null;
+  caps: ProviderCaps;
+  approvedModels: string[];
+  listedModels: string[];
+  prices: Record<string, ProviderPrice>;
+  /** Every known model with its price source. Under a spending cap an unpriced model is refused. */
+  models: ProviderModelPrice[];
+}
+export interface ProviderPeriodUsage {
+  calls: number;
+  tokens: number;
+  /** Only priced calls; `unpricedCalls` counts the rest (their spend is unknown, not zero). */
+  spendMicros: number;
+  unpricedCalls: number;
+}
+export interface ProviderUsage {
+  id: string;
+  today: ProviderPeriodUsage;
+  month: ProviderPeriodUsage;
+  unsettledCalls: number;
+  caps: ProviderCaps;
+}
+/** One recent cloud call from the signed usage log. Metadata only: the log has no field for content. */
+export interface ProviderRecentCall {
+  atMs: number;
+  provider: string;
+  model: string;
+  /** False for a custom (unverified) endpoint. */
+  verified: boolean;
+  /** `ok`, a coarse failure or refusal code, or null while unsettled (in flight, or cut off by a crash). */
+  outcome: string | null;
+  /** True when the call was refused before anything was sent. */
+  refused: boolean;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  /** null = unknown (no price, or not reported), never zero. */
+  costMicros: number | null;
+}
+export interface ProviderUsageSummary {
+  /** The signed usage log verified; when false every cloud call is refused. */
+  logIntact: boolean;
+  logProblem: string | null;
+  records: number;
+  asOfMs: number;
+  providers: ProviderUsage[];
+  /** The latest calls, newest first (bounded in core). */
+  recentCalls: ProviderRecentCall[];
+  /** Set when this computer's clock reads well before the last record: every call is refused. */
+  clockProblem: string | null;
+}
+export interface ProviderKeyTest {
+  ok: boolean;
+  listedModels: number;
+}
+export interface ProviderCustomEndpoint {
+  id: string;
+  label: string;
+  baseUrl: string;
+  models: string[];
+  confirmed: boolean;
+  verified: false;
+}
+export interface ProvidersDomain {
+  status(): Promise<ProviderStatus[]>;
+  usageSummary(): Promise<ProviderUsageSummary>;
+  setCaps(providerId: string, caps: ProviderCaps): Promise<ProviderStatus>;
+  setPrice(providerId: string, model: string, price: ProviderPrice | null): Promise<ProviderStatus>;
+  halt(providerId: string): Promise<ProviderStatus>;
+  resume(providerId: string): Promise<ProviderStatus>;
+  /** One way: format-checked and tested live with the vendor before it is stored; never returned. */
+  setKey(providerId: string, apiKey: string): Promise<ProviderKeyTest>;
+  testKey(providerId: string): Promise<ProviderKeyTest>;
+  removeKey(providerId: string): Promise<void>;
+  addCustom(label: string, baseUrl: string, models: string[]): Promise<ProviderCustomEndpoint>;
+  /** The member confirms by echoing the exact URL. */
+  confirmCustom(id: string, baseUrl: string): Promise<ProviderCustomEndpoint>;
+  removeCustom(id: string): Promise<void>;
+  /** Only a broken log is reset (archived aside, a new chain started). */
+  resetUsageLog(): Promise<ProviderUsageSummary>;
+  /** D-11 (P-5) — the member's preferred cloud model for Hermes (null = the local model). */
+  preferredGet(): Promise<ProviderPreferredView>;
+  /** The provider must be connected and able to take calls; the model is approved for the anomaly
+   *  halt. `null` clears it. */
+  preferredSet(choice: ProviderPreferredModel | null): Promise<ProviderPreferredView>;
+}
+export interface ProviderPreferredModel {
+  providerId: string;
+  model: string;
+}
+export interface ProviderPreferredView {
+  preferred: ProviderPreferredModel | null;
+  /** The stored setting could not be read (Hermes then uses the local model). */
+  loadError: string | null;
+}
+
+// ---- D-11 (RC52, ADR P-8) — the Cognition (Devin) delegate. Mirrors Rust `cognition.rs`. ----
+// Hermes proposes; core assembles the exact payload from the scope the member approves on a card.
+
+export interface DelegationScope {
+  task: string;
+  /** `owner/name` on the member's Devin-connected git host. */
+  repo: string;
+  files: string[];
+  context: string;
+  /** The Devin spend ceiling for this task (ACUs); absent = core's default (5). */
+  maxAcuLimit?: number;
+}
+export interface DelegationView {
+  delegationId: string;
+  repo: string;
+  files: string[];
+  task: string;
+  context: string;
+  /** The exact text core sends. */
+  prompt: string;
+  scopeHash: string;
+  expiresAtMs: number;
+  destination: string;
+  /** The Devin spend ceiling sent with the session (ACUs), inside the approval hash. */
+  maxAcuLimit: number;
+}
+export interface DelegationStarted {
+  delegationId: string;
+  repo: string;
+  sessionUrl: string | null;
+}
+export interface DelegationPullRequest {
+  url: string;
+  state: string | null;
+}
+/** Every text field is third-party output: fence it before the model sees it. */
+export interface DelegationSession {
+  delegationId: string;
+  repo: string;
+  sessionUrl: string | null;
+  status: string;
+  statusDetail: string | null;
+  pullRequests: DelegationPullRequest[];
+  messages: string[];
+  structuredOutput: string | null;
+  acusConsumed: number | null;
+  untrusted: true;
+}
+export interface DelegationDomain {
+  /** Check a proposal and get the exact prompt to show. Nothing is sent. */
+  prepare(scope: DelegationScope): Promise<DelegationView>;
+  decline(delegationId: string): Promise<void>;
+  /** The member approved the card: send exactly what was prepared (the hash binds it). */
+  approve(delegationId: string, scopeHash: string): Promise<DelegationStarted>;
+  status(delegationId: string): Promise<DelegationSession>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -2383,4 +2892,8 @@ export interface CxBridge {
   social: SocialDomain;
   invites: InvitesDomain;
   components: ComponentsDomain;
+  store: StoreDomain;
+  services: ServicesDomain;
+  providers: ProvidersDomain;
+  delegation: DelegationDomain;
 }

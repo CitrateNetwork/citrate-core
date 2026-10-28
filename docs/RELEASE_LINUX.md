@@ -61,7 +61,7 @@ work/
 ├── citrate-core            # this repo
 ├── citrate-chain           # → citrate node   (bin: citrate)
 ├── citrate-node-agent      # → node-agent
-├── citrate-memories        # → mem-mcp   (0e9d488 or later: implements import-corpus; features rocksdb,transformer)
+├── citrate-memories        # → mem-mcp   (5aeda317 or later: import-corpus and the store key file; features rocksdb,transformer)
 ├── citrate-comms           # → comms-member-daemon
 ├── citrate-cluster         # → cluster-daemon
 └── citrate-agent-runtime   # → hermes (agent-sidecar)
@@ -72,9 +72,16 @@ closed — fetch the exact object, do not `git pull` a pin forward).
 
 ## 2. Build the eight sidecars for `x86_64-unknown-linux-gnu`
 
-Four have wrapper scripts (they run the correct build + provenance stamp). They
-default to the sibling source dir, so with the layout above you only pass
-`--target`. Run each on the Linux host so it produces the Linux triple natively:
+Every one is pinned in `release/components.json` (source rev, toolchain, build command, sha256
+per target). The scripts build that rev, never the checkout's HEAD, and install only bytes whose
+sha256 matches the pin. They default to the sibling source dir, so with the layout above you only
+pass `--target`. Run each on the Linux host so it produces the Linux triple natively. The Linux pins
+were recorded with `--print-digest` by these same scripts: x86_64 on `citrate-core-linux-build`,
+aarch64 on the DGX. If a rebuild on this host does not reproduce them, the script stops; record the
+new digests with `--print-digest` and pin them in a reviewed PR before building with them.
+Build in the default build root (`~/.cache/citrate-components`; do not set
+`CITRATE_COMPONENT_BUILD_ROOT`): the node and hermes embed build-root paths (vendored OpenSSL,
+cranelift's generated sources), so they reproduce only in the root that recorded the pin.
 
 ```bash
 cd citrate-core
@@ -83,11 +90,13 @@ scripts/build-sidecar.sh        --target "$TRIPLE"   # citrate node (gated; --ch
 scripts/build-comms-daemon.sh   --target "$TRIPLE"   # comms-member-daemon (--comms to override)
 scripts/build-cluster-daemon.sh --target "$TRIPLE"   # cluster-daemon      (--cluster to override)
 scripts/build-hermes.sh         --target "$TRIPLE"   # hermes/agent-sidecar (--agent-runtime to override)
+scripts/build-component.sh node-agent --target "$TRIPLE"
+scripts/build-component.sh mem-mcp    --target "$TRIPLE"   # --features rocksdb,transformer (from the manifest)
+scripts/build-component.sh kubo       --target "$TRIPLE"   # upstream Kubo, archive + binary digests checked
 ```
 
-Note `build-sidecar.sh` refuses a host≠target mismatch unless the artefact for
-`$TRIPLE` already exists — which is exactly why you run this ON the Linux box
-(host == target), not cross from a Mac.
+Run these ON the Linux box (host == target): Hermes is pinned stripped, and only a host of the
+target's OS can strip it.
 
 The remaining four are plain `cargo build` / third-party binaries. Copy each with
 the target-triple suffix into `src-tauri/binaries/` (provenance in
@@ -101,7 +110,7 @@ DEST=citrate-core/src-tauri/binaries
 ( cd ../citrate-node-agent && cargo build --release --bin node-agent )
 cp ../citrate-node-agent/target/release/node-agent "$DEST/node-agent-$TRIPLE"
 
-# mem-mcp — from citrate-memories @ 0e9d488 or later (import-corpus), rocksdb+transformer features
+# mem-mcp — from citrate-memories @ 5aeda317 or later (import-corpus, store key file), rocksdb+transformer features
 ( cd ../citrate-memories && cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer )
 cp ../citrate-memories/target/release/mem-mcp "$DEST/mem-mcp-$TRIPLE"
 
@@ -154,8 +163,10 @@ step still packages, with a README-only corpus (first run: `skipped: no-bundle`)
 pinned corpus against **this platform's** `mem-mcp`, then run the pre-bundle check; both refuse
 anything that is not the pinned, verified corpus.
 
-The `mem-mcp` built above must implement `import-corpus` (citrate-memories `0e9d488` or later,
-features `rocksdb,transformer`); the stager refuses an older one.
+The `mem-mcp` built above must implement `import-corpus` and read its store key from the file
+citrate-core names (citrate-memories `5aeda317` or later, features `rocksdb,transformer`); the
+stager refuses one without `import-corpus`, and `node scripts/component-pins.mjs verify-bytes
+mem-mcp <binary>` refuses one without the key file.
 
 ```bash
 cd citrate-core

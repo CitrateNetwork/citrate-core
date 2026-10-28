@@ -61,8 +61,29 @@ fn malformed_bodies_are_refused() {
 
 #[test]
 fn the_route_is_under_the_configured_membership_base() {
-    assert_eq!(price_url("https://membership.citrate.ai"), "https://membership.citrate.ai/api/membership/price");
-    assert_eq!(price_url("https://membership.citrate.ai/"), "https://membership.citrate.ai/api/membership/price");
+    use crate::config::{AppConfig, AppConfigPatch};
+    assert_eq!(
+        AppConfig::default().membership_price_url(),
+        "https://membership.citrate.ai/api/membership/price"
+    );
+    // A pinned preview base with a trailing slash: no doubled slash.
+    let preview = AppConfig::default().apply(AppConfigPatch {
+        core_membership_url: Some("https://core-membership.vercel.app/".into()),
+        ..Default::default()
+    });
+    assert_eq!(
+        preview.membership_price_url(),
+        "https://core-membership.vercel.app/api/membership/price"
+    );
+    // A base outside the host pin is never read from: the price comes from the default host.
+    let hostile = AppConfig {
+        core_membership_url: "https://membership.example.com".into(),
+        ..AppConfig::default()
+    };
+    assert_eq!(
+        hostile.membership_price_url(),
+        "https://membership.citrate.ai/api/membership/price"
+    );
 }
 
 // #379 review P2: the whole display string must match the declared currency's symbol and

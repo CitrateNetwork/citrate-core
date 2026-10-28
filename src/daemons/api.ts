@@ -15,7 +15,7 @@ export interface Budget {
   maxSpendSalt: string;
 }
 
-export type RunOutcome = "answered" | "failed" | "stopped" | "timed_out" | "over_budget";
+export type RunOutcome = "answered" | "failed" | "stopped" | "timed_out" | "over_budget" | "not_started";
 
 export interface DaemonView {
   id: string;
@@ -80,6 +80,9 @@ export interface Claim {
   prompt: string;
   tokensAllowed: number;
   startedMs: number;
+  /** K5a: the only tools this run may be offered and call (a Store daemon's approved
+   *  permissions; empty = none). null/absent = a daemon the member wrote here. */
+  allowedTools?: string[] | null;
 }
 
 export interface DaemonsApi {

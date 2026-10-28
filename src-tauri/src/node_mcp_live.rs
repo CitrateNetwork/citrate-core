@@ -175,15 +175,16 @@ impl NodeBackend for LiveBackend {
     }
 
     fn invites(&self, group: &str) -> Result<Value, String> {
-        let all = crate::invites::load(&self.app);
+        // A store that can't be read is an error here too, never "no invites".
+        let open = crate::invites::open_invites(&self.app, group)?;
         Ok(json!({
-            "invites": all
-                .iter()
-                .filter(|i| i.group == group)
+            "invites": open
+                .into_iter()
                 .map(|i| json!({
-                    "inviteId": invite_id_for(&i.token),
-                    "forHandle": i.for_handle,
+                    "inviteId": i.id,
+                    "forHandle": i.label,
                     "createdAt": i.created_at,
+                    "expiresAt": i.expires_at,
                 }))
                 .collect::<Vec<_>>()
         }))
@@ -328,13 +329,4 @@ pub fn abi_entry_view(address: &str, vs: &crate::contract_reader::VerifiedSource
         o.insert("from".into(), json!("CitrateScan verified sources"));
     }
     v
-}
-
-/// The public id of an invite: the first 16 hex chars of `BLAKE3(token)` (the same hash the relay
-/// already holds). The token itself never leaves the app over MCP.
-pub fn invite_id_for(token: &str) -> String {
-    crate::invites::blake3_token_hash(token)
-        .chars()
-        .take(16)
-        .collect()
 }

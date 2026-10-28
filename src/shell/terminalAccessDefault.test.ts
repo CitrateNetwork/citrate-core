@@ -1,7 +1,8 @@
-// Owner decision 2026-10-04: Hermes may run terminal commands (the sidecar's shell_run) by default.
-// Every command still asks the member first, runs in the OS sandbox and only in shared folders.
-// Installs that saved state before the setting existed are switched on once; a member's later
-// choice is kept. The switch reaches core through `hermes_terminal_set`.
+// Owner decision 2026-10-19 (supersedes 2026-10-04): Hermes terminal commands (the sidecar's
+// shell_run) are OFF by default for new installs. Existing installs keep whatever they stored; only
+// an install with no stored value takes the new default. Every command still asks the member first,
+// runs in the OS sandbox and only in shared folders. The switch reaches core through
+// `hermes_terminal_set`.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadState, STORAGE_KEY } from "./state";
 import {
@@ -15,27 +16,30 @@ import { AGENT_SYSTEM_PROMPT } from "../agent/harness";
 describe("Hermes terminal commands default", () => {
   beforeEach(() => localStorage.clear());
 
-  it("is on for a fresh install", () => {
-    const s = loadState();
-    expect(s.hermesTerminal).toBe(true);
-    expect(s.hermesTerminalDefaultApplied).toBe(true);
+  it("is off for a fresh install", () => {
+    expect(loadState().hermesTerminal).toBe(false);
   });
 
-  it("switches an install saved before the setting existed on, once", () => {
+  it("is off for an install saved before the setting existed (no stored value)", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesSidecarLoop: true, hermesSidecarLoopDefaultApplied: true }));
-    const s = loadState();
-    expect(s.hermesTerminal).toBe(true);
-    expect(s.hermesTerminalDefaultApplied).toBe(true);
+    expect(loadState().hermesTerminal).toBe(false);
   });
 
-  it("switches an install that saved it off without the marker on, once", () => {
+  it("keeps a stored off, with or without the old marker", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesTerminal: false }));
+    expect(loadState().hermesTerminal).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesTerminal: false, hermesTerminalDefaultApplied: true }));
+    expect(loadState().hermesTerminal).toBe(false);
+  });
+
+  it("keeps an existing install's stored on (the 2026-10-04 default or the member's choice)", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesTerminal: true, hermesTerminalDefaultApplied: true }));
     expect(loadState().hermesTerminal).toBe(true);
   });
 
-  it("keeps a member's later choice to turn it off", () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesTerminal: false, hermesTerminalDefaultApplied: true }));
-    expect(loadState().hermesTerminal).toBe(false);
+  it("keeps a stored on that predates the marker", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hermesTerminal: true }));
+    expect(loadState().hermesTerminal).toBe(true);
   });
 });
 
@@ -61,6 +65,7 @@ describe("Hermes terminal commands reach core", () => {
     expect(TERMINAL_ACCESS_HINT).toMatch(/sandbox/i);
     expect(TERMINAL_ACCESS_HINT).toMatch(/folders you've shared/i);
     expect(TERMINAL_ACCESS_HINT).not.toMatch(/—/);
+    expect(TERMINAL_ACCESS_HINT).toMatch(/^Off by default\./);
   });
 
   it("Hermes's prompt tells the model shell_run exists and needs a shared folder", () => {

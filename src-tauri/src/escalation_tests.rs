@@ -55,6 +55,14 @@ fn input() -> EndpointInput {
     }
 }
 
+/// An endpoint on this computer (its key stays in this module; D-11).
+fn local_input() -> EndpointInput {
+    EndpointInput {
+        base_url: "http://127.0.0.1:8081/v1".into(),
+        ..input()
+    }
+}
+
 /// A book with one endpoint and a daily cap of `cap` micro-USD.
 fn book(cap: u64) -> (Book, String) {
     let mut b = Book::new(Ledger::new(cap, T0));
@@ -137,7 +145,7 @@ fn the_destination_names_the_label_and_host_only() {
 fn adding_seals_the_key_in_the_keyring_and_no_record_or_view_carries_it() {
     let kr = MemKeyring::default();
     let mut b = Book::new(Ledger::new(0, T0));
-    let ep = add_endpoint_with_key(&mut b, &kr, &input(), KEY, "ep9".into(), T0).expect("add");
+    let ep = add_endpoint_with_key(&mut b, &kr, &local_input(), KEY, "ep9".into(), T0).expect("add");
     let stored = kr
         .map
         .lock()
@@ -158,7 +166,7 @@ fn a_keyring_failure_adds_nothing() {
         ..Default::default()
     };
     let mut b = Book::new(Ledger::new(0, T0));
-    assert!(add_endpoint_with_key(&mut b, &kr, &input(), KEY, "ep9".into(), T0).is_err());
+    assert!(add_endpoint_with_key(&mut b, &kr, &local_input(), KEY, "ep9".into(), T0).is_err());
     assert!(b.endpoints.is_empty());
 }
 
@@ -166,15 +174,15 @@ fn a_keyring_failure_adds_nothing() {
 fn a_key_with_header_breaking_bytes_is_refused() {
     let kr = MemKeyring::default();
     let mut b = Book::new(Ledger::new(0, T0));
-    assert!(add_endpoint_with_key(&mut b, &kr, &input(), "sk bad\r\n", "e".into(), T0).is_err());
-    assert!(add_endpoint_with_key(&mut b, &kr, &input(), "", "e".into(), T0).is_err());
+    assert!(add_endpoint_with_key(&mut b, &kr, &local_input(), "sk bad\r\n", "e".into(), T0).is_err());
+    assert!(add_endpoint_with_key(&mut b, &kr, &local_input(), "", "e".into(), T0).is_err());
 }
 
 #[test]
 fn removing_an_endpoint_deletes_its_key_and_voids_its_quotes() {
     let kr = MemKeyring::default();
     let mut b = Book::new(Ledger::new(1_000_000, T0));
-    add_endpoint_with_key(&mut b, &kr, &input(), KEY, "ep1".into(), T0).expect("add");
+    add_endpoint_with_key(&mut b, &kr, &local_input(), KEY, "ep1".into(), T0).expect("add");
     let q = quote(&mut b, "ep1", "q1", 64, T0);
     remove_endpoint_with_key(&mut b, &kr, "ep1").expect("remove");
     assert!(kr.map.lock().expect("lock").is_empty());
@@ -510,12 +518,13 @@ fn the_sidecar_body_carries_the_key_and_exact_quoted_text_and_debug_redacts() {
     let a = b
         .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
-    let body = sidecar_body(&a, KEY);
+    // A local endpoint: its own URL and key.
+    let body = sidecar_body(&a, "http://127.0.0.1:8081/v1", KEY);
     let v: serde_json::Value = serde_json::from_str(body.as_str()).expect("json");
     assert_eq!(v["apiKey"], KEY);
     assert_eq!(v["prompt"], "Plan the mint page.");
     assert_eq!(v["reservedMicros"], q.cost_micros);
-    assert_eq!(v["baseUrl"], "https://api.example.com/v1");
+    assert_eq!(v["baseUrl"], "http://127.0.0.1:8081/v1");
     assert_eq!(v["maxTokens"], 64);
     assert_eq!(v["price"]["inputMicrosPerMtok"], 3_000_000);
     assert!(!format!("{a:?}").contains(KEY));
@@ -623,7 +632,11 @@ fn the_escalation_files_are_owner_only() {
     b.add_endpoint(&input(), "ep1".into(), T0).expect("add");
     save_book(&dir, &b).expect("save");
     for f in [LEDGER_FILE, ENDPOINTS_FILE] {
-        let mode = std::fs::metadata(dir.join(f)).expect("meta").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(dir.join(f))
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "{f}");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -653,11 +666,7 @@ fn a_plain_ledger_is_trusted_only_before_the_app_has_sealed_one() {
     let kr = MemKeyring::default();
     let mut l = Ledger::new(10_000, T0);
     l.committed_micros = 4_000;
-    std::fs::write(
-        dir.join(LEDGER_FILE),
-        serde_json::to_vec(&l).expect("json"),
-    )
-    .expect("write");
+    std::fs::write(dir.join(LEDGER_FILE), serde_json::to_vec(&l).expect("json")).expect("write");
     let b = load_book(&dir, T0, &kr);
     assert!(!b.ledger.unreadable);
     assert_eq!(b.ledger.used(), 4_000);
@@ -712,7 +721,10 @@ fn a_pinned_router_turns_on_the_hic1_route_but_never_budgeted_x402() {
     assert!(s.enabled);
     assert!(!s.x402_enabled, "the router has no token entry point");
     assert_eq!(s.payment, "native-salt-hic1");
-    assert_eq!(s.router.as_deref(), Some("0x1111111111111111111111111111111111111111"));
+    assert_eq!(
+        s.router.as_deref(),
+        Some("0x1111111111111111111111111111111111111111")
+    );
     assert!(!s.missing.iter().any(|m| m.contains("not deployed")));
     assert!(s.missing.iter().any(|m| m.contains("native SALT")));
     assert!(s.reason.contains("approval"));
@@ -843,4 +855,197 @@ fn the_run_command_takes_a_confirmation_id_not_a_flag() {
     let acl = include_str!("../permissions/main-window.toml");
     assert!(lib.contains("escalation::escalation_confirm_prepare"));
     assert!(acl.contains("\"escalation_confirm_prepare\""));
+}
+
+// ---------------------------------------------------------------------------
+// K2: the member's chat route applies to escalation (a BYO-key remote route)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn local_only_refuses_escalation_with_the_reason() {
+    let e = escalation_route_gate(crate::chat_route::ChatRoute::LocalOnly).expect_err("refused");
+    assert!(e.contains("Local only"), "{e}");
+    assert!(e.contains("nothing was sent"), "{e}");
+    assert_eq!(
+        escalation_route_gate(crate::chat_route::ChatRoute::AskFirst),
+        Ok(true)
+    );
+}
+
+#[test]
+fn ask_first_asks_for_every_escalation_even_within_budget() {
+    let (mut b, ep) = book(1_000_000);
+    b.ask_each_time = true;
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    assert!(q.asks_first, "the quote says it will ask");
+    let err = b
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
+        .expect_err("asks");
+    match err {
+        EscError::NeedsConfirmation { reason, .. } => {
+            assert!(reason.contains("asks before"), "{reason}")
+        }
+        other => panic!("expected NeedsConfirmation, got {other:?}"),
+    }
+    assert_eq!(
+        b.ledger.reserved_micros, 0,
+        "nothing reserved, nothing sent"
+    );
+    // The member's explicit approval for this one escalation runs it.
+    let id = confirm(&mut b, "q1", q.cost_micros);
+    let a = b
+        .authorize("q1", q.cost_micros, Some(&id), false, T0, "x2".into())
+        .expect("confirmed");
+    assert_eq!(a.mode, Mode::Confirmed);
+}
+
+#[test]
+fn without_ask_first_the_budget_rule_is_unchanged() {
+    let (mut b, ep) = book(1_000_000);
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    assert!(!q.asks_first);
+    let a = b
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
+        .expect("within budget");
+    assert_eq!(a.mode, Mode::Budget);
+}
+
+#[test]
+fn the_escalation_commands_check_the_route_before_any_book_or_network_step() {
+    let src = include_str!("escalation.rs");
+    for f in [
+        "pub async fn escalation_quote(",
+        "pub async fn escalation_confirm_prepare(",
+        "fn escalation_run_sync<",
+    ] {
+        let at = src.find(f).expect(f);
+        let body = &src[at..];
+        let gate = body.find("escalation_route_for_app(").expect("gate");
+        let first_book = body.find("with_book(").expect("with_book");
+        assert!(
+            gate < first_book,
+            "{f}: the route gate runs before the book"
+        );
+        if let Some(net) = body.find("sidecar_escalate(") {
+            assert!(gate < net, "{f}: the route gate runs before the network");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-11: https endpoints go through the core model proxy
+// ---------------------------------------------------------------------------
+
+/// A model proxy over an in-memory keychain and a scripted vendor (shared D-11 fixtures).
+fn proxy_rig(tag: &str) -> (
+    crate::provider_fixtures_tests::TmpDir,
+    std::sync::Arc<crate::provider_fixtures_tests::MemKeyring>,
+    std::sync::Arc<crate::model_proxy::ModelProxy>,
+) {
+    let dir = crate::provider_fixtures_tests::TmpDir::new(tag);
+    let kr = std::sync::Arc::new(crate::provider_fixtures_tests::MemKeyring::default());
+    let vendor = crate::provider_fixtures_tests::ScriptedVendor::new(&["planner-large"], "plan", Some((5, 5)));
+    let proxy = std::sync::Arc::new(crate::model_proxy::ModelProxy::new(dir.0.clone(), kr.clone(), vendor));
+    proxy.set_port(4242);
+    (dir, kr, proxy)
+}
+
+fn openai_input() -> EndpointInput {
+    EndpointInput {
+        base_url: "https://api.openai.com/v1".into(),
+        ..input()
+    }
+}
+
+#[test]
+fn an_https_endpoint_never_keeps_its_key_in_the_escalation_keyring() {
+    let kr = MemKeyring::default();
+    let mut b = Book::new(Ledger::new(0, T0));
+    let r = add_endpoint_with_key(&mut b, &kr, &openai_input(), KEY, "ep9".into(), T0);
+    assert!(matches!(r, Err(EscError::Invalid(_))), "{r:?}");
+    assert!(kr.map.lock().unwrap().is_empty());
+    assert!(b.endpoints.is_empty());
+}
+
+#[test]
+fn an_https_endpoints_key_goes_into_the_proxy_store_tested_and_its_model_approved() {
+    let (_d, pkr, proxy) = proxy_rig("esc-store");
+    let key = crate::provider_fixtures_tests::fake_key("sk-");
+    let pid = store_proxied_key(&proxy, &openai_input(), crate::secret::SecretString::new(key.clone()))
+        .expect("stored");
+    assert_eq!(pid.as_str(), "openai");
+    assert_eq!(pkr.map.lock().unwrap().get("provider-key:openai"), Some(&key));
+    let approved = proxy.with_state(|g, _| g.get("openai").approved_models.clone());
+    assert!(approved.contains("planner-large"));
+}
+
+#[test]
+fn an_unknown_https_endpoint_becomes_an_unconfirmed_custom_endpoint_and_is_refused_until_confirmed() {
+    let (_d, _pkr, proxy) = proxy_rig("esc-custom");
+    let key = crate::provider_fixtures_tests::fake_key("pk-");
+    store_proxied_key(&proxy, &input(), crate::secret::SecretString::new(key)).expect("stored");
+    let mut b = Book::new(Ledger::new(0, T0));
+    let e = b.add_endpoint(&input(), "ep1".into(), T0).unwrap();
+    let kr = MemKeyring::default();
+    let err = proxied_provider(&proxy, &kr, &e).expect_err("unconfirmed");
+    assert!(err.to_string().contains("not been confirmed"), "{err}");
+    let custom = proxy.custom_for_base(&e.base_url).unwrap();
+    proxy.confirm_custom(custom.as_str(), &e.base_url).unwrap();
+    assert_eq!(proxied_provider(&proxy, &kr, &e).unwrap(), custom);
+}
+
+#[test]
+fn an_escalation_key_stored_before_0_5_2_moves_into_the_proxy_and_leaves_the_escalation_keyring() {
+    let (_d, pkr, proxy) = proxy_rig("esc-migrate");
+    let mut b = Book::new(Ledger::new(0, T0));
+    let e = b.add_endpoint(&openai_input(), "ep1".into(), T0).unwrap();
+    let key = crate::provider_fixtures_tests::fake_key("sk-");
+    let kr = MemKeyring::default();
+    kr.map.lock().unwrap().insert(key_account("ep1"), key.clone());
+    let pid = proxied_provider(&proxy, &kr, &e).expect("migrated");
+    assert_eq!(pid.as_str(), "openai");
+    assert_eq!(pkr.map.lock().unwrap().get("provider-key:openai"), Some(&key));
+    assert!(kr.map.lock().unwrap().is_empty(), "the escalation copy is deleted");
+}
+
+#[test]
+fn an_https_endpoint_with_no_connected_key_is_refused_before_anything_is_reserved() {
+    let (_d, _pkr, proxy) = proxy_rig("esc-nokey");
+    let mut b = Book::new(Ledger::new(0, T0));
+    let e = b.add_endpoint(&openai_input(), "ep1".into(), T0).unwrap();
+    let err = proxied_provider(&proxy, &MemKeyring::default(), &e).expect_err("no key");
+    assert!(err.to_string().contains("no key is connected"), "{err}");
+}
+
+#[test]
+fn a_proxied_escalation_body_carries_a_loopback_route_token_and_never_the_vendor_key() {
+    let (_d, _pkr, proxy) = proxy_rig("esc-body");
+    let key = crate::provider_fixtures_tests::fake_key("sk-");
+    let pid = store_proxied_key(&proxy, &openai_input(), crate::secret::SecretString::new(key.clone()))
+        .unwrap();
+    let mut b = Book::new(Ledger::new(1_000_000, T0));
+    b.add_endpoint(&openai_input(), "ep1".into(), T0).unwrap();
+    let q = quote(&mut b, "ep1", "q1", 64, T0);
+    let a = b
+        .authorize("q1", q.cost_micros, None, false, T0, "esc-1".into())
+        .expect("ok");
+    let grant = proxy
+        .mint_route(
+            crate::model_proxy::ProxyRoute {
+                provider: pid,
+                model: a.endpoint.model.clone(),
+                session_id: "esc-1".into(),
+            },
+            _d.0.join("route"),
+        )
+        .unwrap();
+    let body = sidecar_body(&a, &grant.base_url, grant.bearer.expose());
+    assert!(!body.contains(&key), "the vendor key never reaches the sidecar");
+    let v: serde_json::Value = serde_json::from_str(body.as_str()).unwrap();
+    assert_eq!(v["baseUrl"], "http://127.0.0.1:4242/v1");
+    assert!(v["apiKey"].as_str().unwrap().starts_with("cmp_"));
+    assert!(crate::hermes::cloud::ensure_keyless("escalation", body.as_str()).is_ok());
+    // The tripwire refuses the old shape (the vendor key in the body).
+    let old = sidecar_body(&a, &a.endpoint.base_url, &key);
+    assert!(crate::hermes::cloud::ensure_keyless("escalation", old.as_str()).is_err());
 }

@@ -283,29 +283,128 @@ fn adv7_no_secret_in_error_or_debug_output() {
 
 // ----- ADV-8: no invoke command returns secret bytes --------------------
 
+/// ADV-8 boundary: every custody invoke command and the type it returns to the webview. None
+/// returns secret bytes (status, (), slot metadata, or a keyring status string). `custody_get`,
+/// the only API returning bytes, is an in-process pub fn and is not here.
+const ADV8_COMMANDS: &[(&str, &str)] = &[
+    ("custody_status", "CustodyStatus"),
+    ("custody_init", "()"),
+    ("custody_unlock", "()"),
+    ("custody_ensure_unlocked", "CustodyStatus"),
+    ("custody_lock", "()"),
+    ("custody_put", "()"),
+    ("custody_list", "Vec<SlotInfo>"),
+    ("custody_keyring_status", "String"),
+];
+
+/// `(name, Ok type)` of every `#[tauri::command]` defined in custody.rs, read from the source.
+fn custody_commands_in_source() -> Vec<(String, String)> {
+    let src = include_str!("custody.rs");
+    let mut out = Vec::new();
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != "#[tauri::command]" {
+            continue;
+        }
+        let mut sig = String::new();
+        for l in lines.by_ref() {
+            sig.push_str(l.trim());
+            sig.push(' ');
+            if l.contains('{') {
+                break;
+            }
+        }
+        let name: String = sig[sig.find("fn ").expect("command fn") + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let ret = sig.rsplit_once("->").map(|(_, r)| r).unwrap_or("");
+        let ok = ret
+            .split_once("Result<")
+            .map(|(_, r)| r.rsplit_once(", String>").map(|(t, _)| t).unwrap_or(r))
+            .unwrap_or("()")
+            .trim()
+            .to_string();
+        out.push((name, ok));
+    }
+    out
+}
+
 #[test]
 fn adv8_no_invoke_command_returns_secret_bytes() {
-    // The registered custody invoke commands, enumerated. `custody_get` is
-    // deliberately ABSENT — it is an in-process pub fn only. This list mirrors
-    // the invoke_handler registration in lib.rs; the lib.rs test asserts the
-    // handler wires exactly these.
-    const REGISTERED: &[&str] = &[
-        "custody_status",
-        "custody_init",
-        "custody_unlock",
-        "custody_lock",
-        "custody_put",
-        "custody_list",
-        "custody_keyring_status",
-    ];
     assert!(
-        !REGISTERED.contains(&"custody_get"),
+        !ADV8_COMMANDS.iter().any(|(n, _)| *n == "custody_get"),
         "custody_get must NOT be an invoke command (ADV-8 boundary)"
     );
-    // None of the registered commands' return types are secret bytes: status,
-    // (), SlotInfo metadata, or a keyring status string. custody_get — the only
-    // API returning bytes — is not registered. This is asserted structurally by
-    // the lib.rs registration test.
+    for (name, ok) in ADV8_COMMANDS {
+        assert!(
+            ["CustodyStatus", "()", "Vec<SlotInfo>", "String"].contains(ok),
+            "{name} returns {ok}, which is not a metadata/status type"
+        );
+    }
+}
+
+/// The ADV-8 list is the command registry: it must name exactly the custody commands defined in
+/// custody.rs, each with the type it really returns. A new or changed command fails here until it
+/// is reviewed into the list. (src-tauri's lib.rs test checks the handler registers these.)
+#[test]
+fn adv8_list_matches_the_custody_command_registry() {
+    let mut in_source = custody_commands_in_source();
+    in_source.sort();
+    let mut listed: Vec<(String, String)> = ADV8_COMMANDS
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect();
+    listed.sort();
+    assert!(in_source.len() >= 7, "the scan must see the custody commands: {in_source:?}");
+    assert_eq!(
+        listed, in_source,
+        "the ADV-8 list has drifted from the #[tauri::command]s in custody.rs"
+    );
+}
+
+/// The invoke-path write refuses every backend-owned slot: the OAuth connection records
+/// (`connection-*`), the OIDC token and the wallet keystore. A refused write leaves the backend's
+/// secret untouched; an ordinary slot is still writable.
+#[test]
+fn invoke_put_refuses_backend_slots_and_keeps_the_existing_secret() {
+    let (v, _fake, _p) = init_and_unlock(30);
+    for slot in [
+        "connection-notion",
+        "connection-huggingface",
+        "connection-",
+        "oidc-refresh",
+    ] {
+        v.put(slot, &mut b"backend".to_vec()).unwrap();
+        let r = invoke_put(&v, slot, b"planted".to_vec());
+        assert_eq!(r, Err("reserved slot name".to_string()), "{slot} must be refused");
+        assert_eq!(
+            v.custody_get(slot).unwrap().to_vec(),
+            b"backend".to_vec(),
+            "{slot}: the backend secret must be untouched"
+        );
+    }
+    // The wallet keystore: plain `custody_get` never reads a `wallet-` slot (K6), so the stored
+    // key is observed through the wallet's key module: the address it derives is unchanged.
+    let wallet_slot = crate::wallet::WALLET_ENTROPY_SLOT;
+    let before = crate::wallet::import(
+        &v,
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    )
+    .expect("import")
+    .address;
+    let r = invoke_put(&v, wallet_slot, b"planted".to_vec());
+    assert_eq!(r, Err("reserved slot name".to_string()), "{wallet_slot} must be refused");
+    assert_eq!(
+        crate::wallet::address(&v).expect("the wallet still reads").address,
+        before,
+        "{wallet_slot}: the wallet key must be untouched"
+    );
+    assert!(before.eq_ignore_ascii_case("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"));
+    invoke_put(&v, "user-note", b"hello".to_vec()).expect("an ordinary slot is writable");
+    assert_eq!(v.custody_get("user-note").unwrap().to_vec(), b"hello".to_vec());
+    assert!(is_backend_reserved_slot("connection-notion"));
+    assert!(!is_backend_reserved_slot("connections-notes"));
 }
 
 // ----- B1.1-F-3: the custody_put COMMAND is wired to the reservation guard --
@@ -339,13 +438,20 @@ fn f3_custody_put_command_is_wired_to_the_reservation_guard() {
         src[wrapper..].find("custody_put_sync(").is_some_and(|i| i < 600),
         "the custody_put command must delegate to custody_put_sync"
     );
-    let cmd_start = src
+    let sync_start = src
         .find("pub fn custody_put_sync(")
-        .expect("custody_put_sync (the guarded body) must exist");
+        .expect("custody_put_sync must exist");
+    assert!(
+        src[sync_start..].find("invoke_put(").is_some_and(|i| i < 400),
+        "custody_put_sync must delegate to invoke_put"
+    );
+    let cmd_start = src
+        .find("pub fn invoke_put(")
+        .expect("invoke_put (the guarded body) must exist");
     let cmd_body = &src[cmd_start..];
-    let put_call = cmd_body.find("state.0.put(").expect("custody_put must seal via state.0.put");
+    let put_call = cmd_body.find("vault.put(").expect("invoke_put must seal via vault.put");
     let guard = cmd_body
-        .find("is_backend_reserved_slot(&slot)")
+        .find("is_backend_reserved_slot(slot)")
         .expect("custody_put must consult the reservation guard");
     assert!(
         guard < put_call,

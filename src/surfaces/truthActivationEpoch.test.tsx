@@ -38,7 +38,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -109,7 +108,7 @@ describe("#348 — §1 activation epoch", () => {
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
     (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
-    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null });
+    store.setState({ node: "synced", hasGrant: false, bondedStake: 0, validatorActivation: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: KEY });
@@ -121,8 +120,6 @@ describe("#348 — §1 activation epoch", () => {
       bondDeployed: true,
       bondedStakeWei: wei(32000),
       hasValidator: true,
-      bondActivated: true,
-      bondPubkey: KEY,
       unlockBlock: 16_000_000,
       isUnlocked: false,
       isKycVerified: false,
@@ -147,7 +144,7 @@ describe("#348 — §1 activation epoch", () => {
     const html = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: pending })} />);
     expect(html).toContain("Registered · active from epoch 501");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
     const a = renderToStaticMarkup(<Onboarding store={stub} s={member({ stage: "s6", node: "validating", bondedStake: 32_000, validatorActivation: active })} />);
     expect(a).toContain("Validator active");
     expect(a).not.toContain("ValidatorRegistry.isActive) ·");

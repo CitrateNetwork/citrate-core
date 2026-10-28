@@ -10,16 +10,30 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { MemberBondState, ValidatorActivation, ValidatorCounts } from "./chainTruth";
+import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
+import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
 import type { MembershipPrice } from "../data/membership";
-import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
+import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
+import {
+  appendNetArchive,
+  currentNetKey,
+  NET_READS,
+  NET_STAMP_FIELD,
+  readNetArchive,
+  savedNetKey,
+  type ArchivedNetwork,
+  type NetRead,
+  type NetworkNotice,
+  type PersistScope,
+} from "./netScope";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
@@ -213,7 +227,7 @@ export interface CerSpec {
 
 /**
  * Q-E.1 (@rule8, P0) — the PENDING wallet-review state. A money action
- * (send/stake/withdraw-request/withdraw-claim/claim) builds its ceremony via the
+ * (send/stake/claim) builds its ceremony via the
  * bridge and STOPS here: it holds the decoded `CeremonyView` (what will be
  * signed — action / destination / cost, or an undecodable raw-mode warning) for
  * a HUMAN to Approve or Reject. Only an explicit approve calls signing.broadcast
@@ -230,15 +244,10 @@ export interface CeremonyOutcomeUnknown {
 }
 
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
+  kind: "send" | "stake" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
-  /**
-   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
-   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
-   */
-  warning?: string;
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
   /**
@@ -251,11 +260,25 @@ export interface WalletReview {
    * Called after the review resolves (approved=true on a successful broadcast, false on
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
-   * C1-V3: `outcome` is set when the member approved and the transaction was (or may have been)
-   * submitted but its outcome is unknown; `approved` is then false (not confirmed), and the agent
-   * path must report it as submitted with an unknown outcome, never as rejected.
    */
-  onResolved?: (approved: boolean, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
+  /**
+   * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
+   * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
+   * which polls for the receipt before returning). A caller that must survive a quit at any
+   * point after signing (S7 shows the activation tx as Pending) gets the hash here. The durable
+   * record is written in Rust (#347's fsync'd submitted-tx record) by the send itself, before
+   * the tx reaches the node; with no durable record nothing is sent.
+   */
+  onSigned?: (txHash: string) => void;
+  /** Join-8 — with `onSigned`: nothing was sent (the signed tx expired in the ceremony, or the
+   *  backend refused the send before submission, e.g. no durable record). */
+  onNotSent?: () => void;
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
@@ -312,7 +335,7 @@ export interface AppState {
    */
   authExpiresAt: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
-  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
+  stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
   s2: "none" | "pending" | "verified" | "failed" | "review";
   s3: "idle" | "paying" | "settled";
@@ -329,6 +352,17 @@ export interface AppState {
    * the chain; it never re-opens checkout, so it can never double-charge).
    */
   s3PollExhausted: boolean;
+  /**
+   * core#584: the pre-checkout grant check (onS3Pay's money guard) is running. One attempt at a
+   * time: Pay and "Continue free" are disabled until it ends, and Back ends it. Not persisted.
+   */
+  s3Checking: boolean;
+  /**
+   * core#584: Settings › Billing "Become a member" is checking chain 40204 for a grant this account
+   * already holds, before any checkout. One attempt at a time; the button is disabled meanwhile.
+   * Not persisted.
+   */
+  billingChecking: boolean;
   /**
    * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
    * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
@@ -381,6 +415,12 @@ export interface AppState {
    */
   height: number;
   peers: number;
+  /**
+   * 0.5.2 RC52 — sync progress and catch-up ETA (syncProgress.ts): this node's height against the
+   * profile RPC's public head, with the measured net catch-up rate. Folded by Store.refreshNode;
+   * null until the first poll. Observed, never persisted (not in PERSIST_KEYS).
+   */
+  syncProgress: SyncProgress | null;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -407,7 +447,6 @@ export interface AppState {
   peerRows: PeerRow[];
   crashes: Crash[];
   liquid: number;
-  selfStake: number;
   /**
    * The member's REAL validator bond in the `ValidatorRegistry` (SALT), read from
    * live chain state (`pubkeyOfStaker(bond)` → `stakeOf`) via refreshNode / the grant
@@ -421,24 +460,20 @@ export interface AppState {
    */
   bondedStake: number;
   /**
-   * CORE WP2 — the wallet's PENDING (unclaimed) LiquidStakingPool withdrawals,
-   * read from live chain state (getLogs WithdrawalRequested + withdrawals(id) +
-   * block_number) via refreshPendingWithdrawals(). NOT persisted — the source of
-   * truth is chain, re-read on Wallet mount + after a settle. A fresh wallet
-   * honestly reads [] (Rule 1 — never fabricated).
+   * True once a `ValidatorRegistry.stakeOf` read (the grant-status read) has returned THIS
+   * session. Until then `bondedStake` is a default or a persisted value, not a reading, so the
+   * staked figure is shown as "—" (UI truth contract rule 2: unknown is not zero). Not persisted.
    */
-  pendingWithdrawals: PendingWithdrawal[];
-  /**
-   * C1-W — why `pendingWithdrawals` is not a complete chain read: "not read yet" before the first
-   * read, the failed eth_getLogs window, or "still reading chain history" while the first paged scan
-   * runs. null = the list is a complete read. Never shown as an empty queue. Not persisted.
-   */
-  pendingWithdrawalsError: string | null;
-  /** C1-W — the last read gave no evidence of how far the node executed: the rows shown are real,
-   * but withdrawals in blocks the node has not served yet may be missing. Not persisted. */
-  pendingWithdrawalsUnconfirmed: boolean;
-  /** C1-W — why the last read is not confirmed, in words from the scan (null when confirmed). */
-  pendingWithdrawalsNote: string | null;
+  bondedStakeRead: boolean;
+  /** RC52: the chain reads network-scoped values still wait for after a genesis switch. */
+  netUnread: NetRead[];
+  /** RC52: the genesis-switch notice, shown on Node until dismissed. */
+  networkNotice: NetworkNotice | null;
+  /** RC52: previous networks' archived values (read from the archive at load, not persisted). */
+  netArchived: ArchivedNetwork[];
+  /** RC52: the network this state's chain reads belong to (netScope.currentNetKey); every save is
+   *  stamped with it. Not persisted as a field. */
+  netKey: string;
   hasGrant: boolean;
   hasSbt: boolean;
   /**
@@ -448,29 +483,50 @@ export interface AppState {
    * per-day or per-source split: no contract exposes one, so none is shown.
    */
   rewards: { totalWei: string; claimableWei: string } | null;
+  /** #391 — why `rewards` is null when a read was attempted (e.g. not the member's key); null = no error. */
+  rewardsError: string | null;
   /**
    * C1-V (contract v1.1 §1) — this node's key in the registry: `isActive(pubkey)`,
    * `validatorInfo(pubkey)` status + actEpoch, and `currentEpoch()`. The ONLY input to the
-   * validator words; stake amounts and LiquidStakingPool self-stake never are. null = not read
+   * validator words; stake amounts never are. null = not read
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
-  /**
-   * C1-V4/C1-V5 — the member's bond (deployed, activated(), pubkey()); null = grant status not read.
-   * Observed, never persisted. `activated` outlives a full exit or a slash (the registry stake reads
-   * 0, pubkeyOfStaker is cleared), so with the stake it also decides whether `rewardsOf` is read
-   * (#348 review).
-   */
-  memberBond: MemberBondState | null;
   /** C1-P — the membership price read from core-membership; null = not read or unavailable. */
   membershipPrice: MembershipPrice | null;
   /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
   validatorCounts: ValidatorCounts | null;
+  /**
+   * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
+   * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
+   * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
+   */
+  bondActivated: boolean | null;
+  /**
+   * C1-V5 — `MemberBond.pubkey()` from the grant read: the member's validator key once the bond has
+   * activated (kept after an exit). null = not read, not activated, or no bond. Observed, never persisted.
+   */
+  bondPubkey: string | null;
+  /**
+   * `MemberBond.isUnlocked()` from the grant read (owner decision 2026-10-19 / chain#331: activation
+   * only inside the lock). null = not read. Observed, never persisted.
+   */
+  bondUnlocked: boolean | null;
+  /**
+   * Contract v1.2 §1 (#362 B-1) — `MemberBond.isKycVerified()` from the grant read: the gate the bond's
+   * `claimRewards()` checks (reverts KycRequired otherwise). null = not read, or no bond. Observed,
+   * never persisted. The identity provider's kyc_status claim is never a substitute for it.
+   */
+  bondKycVerified: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
   minStakeWei: string | null;
-  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  /**
+   * C1-V — the member's validator key, the one the registry reads and the producer check use (C1-V5):
+   * `MemberBond.pubkey()` once the bond has activated, else this node's `proposer.key`. Observed,
+   * never persisted.
+   */
   validatorPubkey: string | null;
   /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
   producers: { head: number; window: number; proposers: string[] } | null;
@@ -499,7 +555,10 @@ export interface AppState {
    *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
    *  `ask`: the member chooses, for this message only, to restart the local model or send it to
    *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
-  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting" } | null;
+  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
+  /** K2: the member's chat route, read from core (chat_route.rs) and never stored in the browser.
+   *  `ask_first` (default): ask before each message goes to the gateway. `local_only`: never. */
+  chatRoute: ChatRoute;
   chatBackend: "gateway" | "local";
   /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
    *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
@@ -530,8 +589,6 @@ export interface AppState {
   panY: number;
   pollIn: number;
   dl: Record<string, { st: string; pct: number }>;
-  gwKey: string | null;
-  gwKeyFull: string | null;
   rpc: "local" | "public";
   net: "testnet" | "local";
   cpuCap: number;
@@ -604,12 +661,17 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
-  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). On by default (owner
-   * decision 2026-10-04). Every command still needs the member's approval, runs in the OS sandbox,
-   * and only in folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
+  /** D-11 (ADR P-5): the member's preferred cloud model, a mirror of core's setting
+   *  (`providers_preferred_get`, `<app data>/providers/preferred.json`); null = the local model.
+   *  Never persisted here: core is the source. */
+  hermesCloudModel: { providerId: string; model: string } | null;
+  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
+   * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
+   * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
+   * folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
   hermesTerminal: boolean;
-  /** One-time migration marker: the 2026-10-04 default (terminal commands on) has been applied to
-   * this install. After that, the member's own choice is kept. */
+  /** Marker of the retired 2026-10-04 migration (terminal commands switched on once). Kept so
+   * stored states still read; nothing acts on it any more. */
   hermesTerminalDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
@@ -632,6 +694,20 @@ export interface AppState {
   graphQ: string;
   dataReady: boolean;
   s6ready?: boolean;
+  /**
+   * Join-8 (S7 · Activate validator). The hash of a sent MemberBond.activate. NOT persisted here:
+   * the durable record is #347's fsync'd submitted-tx record in Rust, written before the send, and
+   * the activation read returns it (`activation.recordedTx`) so a relaunch resumes to "Pending".
+   * Cleared once the chain shows the bond activated, or by Forget / Try again (which also mark the
+   * durable record forgotten).
+   */
+  s7TxHash: string | null;
+  /** Join-8 — when `s7TxHash` was recorded (ms since epoch; from the durable record after a relaunch). */
+  s7TxAt: number | null;
+  /** Join-8 — the step's last chain read (NOT persisted: chain is the truth, re-read on launch). */
+  activation: ActivationStatusView | null;
+  /** Join-8 — why the last read failed (the last honest read is kept), or null. */
+  activationError: string | null;
   /**
    * CORE-C3 runtime memory graph (NOT persisted). In a Tauri build the Storage
    * surface fetches this from the REAL mcp_serve daemon via
@@ -660,28 +736,17 @@ export interface AppState {
    */
   myGroups: GroupRoleRow[];
   /**
-   * GROW-S1 — an invite handed to the app via the `citrate://join/...` deep-link (the one-tap
-   * cold-start hand-off from the web join page). Carries the display context (cluster + inviter +
-   * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
-   * Cleared once consumed. Null when no deep-link is pending.
-   */
-  /**
    * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
    * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
    * member presses "Pair". Null when none is pending.
    */
   pendingPairLink: string | null;
-  pendingInvite: {
-    url: string;
-    clusterId?: string;
-    clusterName?: string;
-    inviterHandle?: string;
-    goal?: string;
-    /** GROW-S1b — an opaque code is being resolved+verified (show a "resolving…" banner). */
-    resolving?: boolean;
-    /** GROW-S1b — the code couldn't be verified (bad sig / expired / resolver down) — honest error. */
-    unresolved?: boolean;
-  } | null;
+  /**
+   * D-12 — an invite link (`citrate://invite?…`) the OS handed the app or the member pasted, waiting
+   * on the "Join <group>?" screen (Groups and onboarding). Nothing is sent until the member presses
+   * Join. Transient, not persisted.
+   */
+  inviteLink: string | null;
   /**
    * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
    * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
@@ -802,6 +867,8 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    s3Checking: false,
+    billingChecking: false,
     membershipActivating: false,
     agentTabRequest: null,
     s5: "idle",
@@ -823,6 +890,7 @@ export function freshState(pid: string): AppState {
     // No reading until the node is polled (contract rule 2): never a seeded height.
     height: 0,
     peers: 0,
+    syncProgress: null,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
@@ -835,19 +903,23 @@ export function freshState(pid: string): AppState {
     peerRows: [],
     crashes: [],
     liquid: 0,
-    selfStake: 0,
     bondedStake: 0,
-    pendingWithdrawals: [],
-    pendingWithdrawalsError: "not read yet",
-    pendingWithdrawalsUnconfirmed: false,
-    pendingWithdrawalsNote: null,
+    bondedStakeRead: false,
+    netUnread: [],
+    networkNotice: null,
+    netArchived: [],
+    netKey: currentNetKey(),
     hasGrant: false,
     hasSbt: false,
     rewards: null,
+    rewardsError: null,
     validatorActivation: null,
-    memberBond: null,
     membershipPrice: null,
     validatorCounts: null,
+    bondActivated: null,
+    bondPubkey: null,
+    bondUnlocked: null,
+    bondKycVerified: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,
@@ -862,9 +934,14 @@ export function freshState(pid: string): AppState {
     cerStep: 0,
     cerHash: "",
     walletReview: null,
+    s7TxHash: null,
+    s7TxAt: null,
+    activation: null,
+    activationError: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,
+    chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
     chatProviderKind: "demo",
@@ -881,8 +958,6 @@ export function freshState(pid: string): AppState {
     panY: 0,
     pollIn: 20,
     dl: {},
-    gwKey: null,
-    gwKeyFull: null,
     rpc: "local",
     net: "testnet",
     cpuCap: 50,
@@ -918,7 +993,8 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
-    hermesTerminal: true,
+    hermesCloudModel: null,
+    hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
     hermesPersona: null,
@@ -935,7 +1011,7 @@ export function freshState(pid: string): AppState {
     people: [],
     peopleState: "loading",
     myGroups: [],
-    pendingInvite: null,
+    inviteLink: null,
     pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
@@ -1023,22 +1099,19 @@ export function freshState(pid: string): AppState {
       s.peers = 23;
       s.liquid = 142.63;
       s.claimable = 9.41;
-      s.selfStake = 2500;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
-      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Add stake|−2,500.00 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.gwKey = "cgk_9f31•••••••••••••7f2a";
-      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.selfStake = 8000;
-      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Membership grant ceremony|32,000 SALT"]);
     }
     // Packaged app (tauri): never seed the sim persona's name into the greeting.
     // Real identity folds in on sign-in; until then greet neutrally (Rule 1).
@@ -1047,43 +1120,99 @@ export function freshState(pid: string): AppState {
   return s;
 }
 
-// keys persisted (verbatim from design save())
-export const PERSIST_KEYS: (keyof AppState)[] = [
-  "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
+// Every persisted key with its scope (RC52). `network`: read from one chain, so it belongs to that
+// chain's genesis; a save of another genesis has these archived and reset on load (netScope.ts).
+// `device`: this install's own (wallet identity, settings, journal, Hermes), kept across a switch.
+// A new persisted key must be given a scope here; persistScope.test.ts pins the whole table.
+const D = "device" as const;
+const N = "network" as const;
+export const PERSIST_SCOPE = {
+  persona: D, tier: D, org: D, citrateRole: D, entitlement: D, stage: D, s2: D, s3: D,
+  // The grant and the SBT are chain reads (reconciledGrantPatch), so they are the network's.
+  s5: N, s5n: N, hasGrant: N, hasSbt: N,
   // NOTE: the real-identity fields (signedIn/authSub/authEmail/authName/
   // authInitials/authExpiresAt) are DELIBERATELY NOT persisted — HIPAA sign-out-by-default.
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "selfStake", "bondedStake", "claimable", "activity",
-  "nodeIntent", "gwKey", "rpc", "net", "cpuCap", "autolock", "channel",
-  "telemetry", "telemetryConsentVersion", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
-  "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
+  liquid: N, bondedStake: N, claimable: N, activity: N,
+  nodeIntent: D, rpc: D, net: D, cpuCap: D, autolock: D, channel: D,
+  telemetry: D, telemetryConsentVersion: D, storageMode: D, coachDone: D, dataDir: D, coreMembershipUrl: D,
+  s5StakeWei: N, s5BondStatus: N,
+  walletAddr: D, commsAddr: D, socketPath: D, activeModelId: D,
+  kycOutcome: D, chatBackend: D, crashes: D, wTab: D, nTab: D, cTab: D, sSec: D, route: D, deviceId: D,
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
-];
+  pins: D, userSkills: D, jPages: D, jSel: D, connections: D, aiDefault: D, hermesSidecarLoop: D,
+  hermesSidecarLoopDefaultApplied: D, hermesTerminal: D, hermesTerminalDefaultApplied: D, hermesBrief: D,
+  hermesPersona: D, customPersonas: D, hermesReadAloud: D, journalAutoSummary: D, journalAutoSummaryDay: D,
+  sponsorUnits: N, blocksProposed: N,
+  // The reads still owed on this network after a switch, and the switch notice (kept until dismissed).
+  netUnread: N, networkNotice: D,
+} satisfies Partial<Record<keyof AppState, PersistScope>>;
+
+// keys persisted (verbatim from design save(), plus the RC52 network fields)
+export const PERSIST_KEYS = Object.keys(PERSIST_SCOPE) as (keyof typeof PERSIST_SCOPE)[];
+
+/** The persisted keys that belong to one genesis. */
+export const NETWORK_KEYS = PERSIST_KEYS.filter((k) => PERSIST_SCOPE[k] === N);
 
 /** Observed node state: rewritten by every poll, so it is never persisted or restored. */
 export const OBSERVED_NOT_PERSISTED: (keyof AppState)[] = ["node", "syncPct", "peers", "height"];
 
-/** Keys earlier builds persisted that are retired (C1-V V8): dropped from a save when it loads. */
-export const RETIRED_PERSISTED_KEYS = ["earnVal", "earnPin", "earnComp", "earnToday"] as const;
+/** D-11 (P-9d): an older build persisted a gateway key display. Provider keys live only in the OS
+ *  keychain, so these are retired, and a save that still holds them is rewritten without them. */
+const LEGACY_GATEWAY_KEYS = ["gwKey", "gwKeyFull"] as const;
 
-export function loadState(): AppState {
+/** Keys earlier builds persisted that are retired, dropped from a save when it loads:
+ *  - D-9 (2026-10-26): the liquid staking pool is retired, so its self-stake figure is not current.
+ *  - C1-V V8: the off-chain earnings estimates (earnVal / earnPin / earnComp / earnToday).
+ *  - D-11 (P-9d): the gateway key display (`LEGACY_GATEWAY_KEYS`). */
+export const RETIRED_KEYS: readonly string[] = ["selfStake", "earnVal", "earnPin", "earnComp", "earnToday", ...LEGACY_GATEWAY_KEYS];
+
+export function loadState(netKey: string = currentNetKey()): AppState {
   let saved: Partial<AppState> | null = null;
   try {
     saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
   } catch {
     saved = null;
   }
+  if (saved !== null && (typeof saved !== "object" || Array.isArray(saved))) saved = null;
   const base = freshState((saved && saved.persona) || "p1");
+  base.netKey = netKey;
   // C1-V V10: observed node state is never restored from disk. Older builds persisted it, so
   // drop it from a saved state; the first poll is the only source (contract rules 2 and 4).
   if (saved) for (const k of OBSERVED_NOT_PERSISTED) delete saved[k];
-  // Upgrade review: keys older builds persisted that no longer exist (V8 retired the off-chain
-  // earnings estimates). A 0.5.1 save still carries them; never fold them into state.
-  if (saved) for (const k of RETIRED_PERSISTED_KEYS) delete (saved as Record<string, unknown>)[k];
+  // Upgrade review: a 0.5.1 save may still carry retired keys; never fold them into state.
+  // D-11 (P-9d): a save holding a gateway key display is rewritten at once, not at the next save.
+  const hadGatewayKey = !!saved && LEGACY_GATEWAY_KEYS.some((k) => k in (saved as object));
+  if (saved) for (const k of RETIRED_KEYS) delete (saved as Record<string, unknown>)[k];
+  if (saved && hadGatewayKey) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    } catch {
+      /* storage unavailable: the next save writes PERSIST_KEYS only, which never include them */
+    }
+  }
+  // RC52: values read from another genesis's chain are never restored as current. They are
+  // archived under that genesis, reset to "not read yet", and the switch notice is raised.
+  if (saved) {
+    const raw = saved as Record<string, unknown>;
+    const from = savedNetKey(raw);
+    delete raw[NET_STAMP_FIELD];
+    for (const k of ["netKey", "netArchived"]) delete raw[k];
+    if (from !== netKey) {
+      const values: Record<string, unknown> = {};
+      for (const k of NETWORK_KEYS) {
+        if (k in raw) values[k] = raw[k];
+        delete raw[k];
+      }
+      const at = Date.now();
+      const archived = appendNetArchive({ genesis: from, archivedAt: at, values });
+      saved.netUnread = [...NET_READS];
+      saved.networkNotice = { at, from, to: netKey, node: null, archived };
+    }
+  }
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
   // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop
@@ -1099,12 +1228,11 @@ export function loadState(): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
-  // Owner decision 2026-10-04: Hermes may run terminal commands (each one approved by the member,
-  // sandboxed, in shared folders only). Existing installs are switched on once; a member who turns
-  // it off afterwards stays off.
-  if (saved && saved.hermesTerminalDefaultApplied !== true) {
-    base.hermesTerminal = true;
-    base.hermesTerminalDefaultApplied = true;
-  }
+  // D-11: the preferred cloud model is core's setting; a value an older build stored is ignored.
+  base.hermesCloudModel = null;
+  // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
+  // installs. A stored value is kept as it is (on or off); only an install with no stored value
+  // takes the default from freshState. The old switch-on-once migration is retired.
+  base.netArchived = readNetArchive();
   return base;
 }

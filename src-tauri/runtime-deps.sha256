@@ -5,31 +5,33 @@
 #
 # Format: `shasum -a 256` output — "<64 lowercase hex>  <asset name>" (two spaces).
 #
-# OWNER: pinned so far: the BGE GGUF, the four Apple sidecars and skills-bundle.tar.gz (v0.5.0-rc.1,
-# 2026-10-06), and bge-base-en-v1.5.tar.gz + knowledge-corpus.tar.gz (checklist A9, 2026-10-06), all uploaded to
-# `runtime-deps` with these digests; sources in the comment above their lines. The llama runtime
-# (tarball and llama-server) is pinned since v0.5.0-rc.4 (2026-10-11, below). Still unpinned, so
-# the release workflow fails closed until it is uploaded and pinned: the Gemma GGUF. scripts/ci/verify-runtime-deps.sh refuses any manifest without the
-# knowledge-corpus.tar.gz pin.
-# Procedure (docs/RELEASE.md §3):
-#   shasum -a 256 citrate-aarch64-apple-darwin mem-mcp-aarch64-apple-darwin \
-#     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin-<llama> \
-#     llama-runtime-arm64-<llama>.tar.gz gemma-4-E4B-it-Q4_0.gguf bge-base-en-v1.5.tar.gz \
-#     bge-base-en-v1.5-f16.gguf knowledge-corpus.tar.gz >> src-tauri/runtime-deps.sha256
-# then upload exactly those files to `runtime-deps` and open a PR with the pins.
+# Sidecars: release/components.json names, for every bundled component, the source repo, the
+# exact rev and the build command; scripts/build-component.sh builds it at that rev and refuses
+# bytes whose sha256 differs from the pin below. Upload the bytes it installs under the asset name
+# <bin>-<triple>-<rev12> (a new name per rev, so an old pin can never match a new upload).
+# The Gemma model is not a runtime-deps asset: macOS ships bundle-lite and the app downloads Gemma on
+# first run, verified against src-tauri/src/model.rs (its URL and digest are in release/components.json).
+# Procedure (docs/RELEASE.md §3): build, `shasum -a 256 <file>`, upload, open a PR with the pins.
 # HUP-S3.1: knowledge-corpus.tar.gz is the Hermes knowledge corpus (docs/RELEASE.md section 3);
 # the mem-mcp pinned beside it must be a build that implements `import-corpus`.
 # HUP-S1.2 / US-1.4 (pending owner sign-off): the BGE embedding model as GGUF for the embedding
 # llama-server (src-tauri/src/embed_serve.rs pins the same digest). Reproducible from the BAAI
 # weights with scripts/build-bge-gguf.sh, which checks its output against this line.
 fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1.5-f16.gguf
-# v0.5.0-rc.1 Apple sidecars (macOS arm64, built 2026-10-06 on the release Mac): citrate from
-# citrate-chain 2979a157 (scripts/build-sidecar.sh, LZMA_API_STATIC=1); mem-mcp from
-# citrate-memories 0e9d488 (--features rocksdb,transformer, implements import-corpus); node-agent
-# from citrate-node-agent 1d8cb8e.
-9ad56eda5af2dbdd8f1bef44a890f3adb23cdcfba4c75774bb72ea47763736e8  citrate-aarch64-apple-darwin
-315984355eb9652118c457248d907661f877d8516f7fe0193f01dc85e29bf8e6  mem-mcp-aarch64-apple-darwin
-2435a484c54deb2d7c93180d3a8c1534cc68ec825b24719829139e1d3af177c7  node-agent-aarch64-apple-darwin
+# 0.5.2 Apple sidecars (macOS arm64), built 2026-10-23 on the release Mac with
+# scripts/build-component.sh at the revs in release/components.json (the revs 0.5.1 shipped;
+# rustc 1.96.0, --locked, build root ~/.cache/citrate-components). Not yet uploaded: until the
+# owner uploads exactly these bytes, a release run fails closed at the download. mem-mcp is
+# citrate-memories 5aeda317 (#25: reads the store key from the file citrate-core names), not
+# the 0e9d4882 0.5.1 shipped. Uploaded 2026-10-27: mem-mcp only (rebuilt from a clean target dir
+# in the same build root, byte-identical to this pin; the downloaded asset matches it). The other
+# five are not uploaded yet.
+91aab7214c187571d4491f97c8b255e516d356e878856a784175de126d5f445e  citrate-aarch64-apple-darwin-c384fc982882
+250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
+8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369
+192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
+9a1353624efda5218d695fb64e3ac21088a74e168605057bac67bccaace942bc  cluster-daemon-aarch64-apple-darwin-755cf2172260
+cc7e9127aa12e37a65d42524844b5ac50fb9a7b31e4a4dfbfd03ab2157d93738  hermes-aarch64-apple-darwin-626486b8a7db
 # v0.5.0-rc.4 llama runtime for macOS arm64 (2026-10-11, release Mac): llama.cpp tag b10909 (commit
 # a2878d30df0130dde503a7d9ba30d3d21bd71b9f) built from source with upstream's macos-arm64 release
 # options (GGML_METAL_EMBED_LIBRARY, deployment target 13.3, @loader_path rpath, BoringSSL, RPC,

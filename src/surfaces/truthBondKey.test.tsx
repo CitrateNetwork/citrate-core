@@ -1,13 +1,11 @@
-// C1-V4 / C1-V5 — UI truth contract v1.1 §1 Validators (chain#326).
+// C1-V5 — UI truth contract v1.1 §1 Validators (chain#326). The validator key is MemberBond.pubkey()
+// once the bond has activated (it survives an exit, unlike pubkeyOfStaker); this node's proposer key
+// is used only when no bond has activated. The S7 step's read (#354, validator_activation.rs) already
+// keys its registry reads this way; this makes the Node / Dashboard / Wallet words (the store's
+// `validatorActivation`) and the "Producing blocks" check follow the same key.
 //
-//   C1-V4 With validatorInfo.status UNREAD the app must not fall back to stake words: an exiting
-//         member (stake 0, status not read yet) was offered "Stake my bond". Unread is "—" plus the
-//         reason, and no stake or activate action is offered.
-//         "Bond locked · not staked" needs MemberBond.activated() = false; "Not a validator" needs
-//         status None. Status None with a registered stake (or an activated bond) is
-//         "— · registry state inconsistent".
-//   C1-V5 The validator key is MemberBond.pubkey() where the bond defines it (it survives an exit,
-//         unlike pubkeyOfStaker); the node's proposer key is used only when no bond exists.
+// Ported from #366 onto main's bond model: the key is `bondPubkey` from the grant read, beside
+// `bondActivated`; there is no separate bond-state object.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -24,10 +22,8 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Node } from "./Node";
-import { Onboarding } from "../onboarding/Onboarding";
-import { canOfferActivation, validatorDash, validatorWord, type ChainReads, type MemberBondState, type ValidatorActivation } from "../shell/chainTruth";
+import { validatorWord, type ChainReads, type ValidatorActivation } from "../shell/chainTruth";
 import { store, type Store } from "../shell/store";
-import { freshState, type AppState } from "../shell/state";
 import { bridge } from "../bridge";
 import type { GrantStatus } from "../bridge/domains";
 
@@ -40,275 +36,121 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
+  refreshActivation: async () => true,
   linkWallet: () => {},
-  activateValidator: () => {},
+  activateValidator: async () => true,
   toast: () => {},
   identity: () => ({ sub: "sub-1", wallet: "0x" + "0".repeat(40) }),
 } as unknown as Store;
 
-function member(over: Partial<AppState> = {}): AppState {
-  return { ...freshState("p1"), signedIn: true, node: "synced", peers: 3, syncPct: 100, height: 499_058, hasGrant: true, s5StakeWei: wei(32000), ...over };
-}
-
 const none: ValidatorActivation = { isActive: false, status: 0, actEpoch: 0, currentEpoch: 511 };
 const active: ValidatorActivation = { isActive: true, status: 1, actEpoch: 480, currentEpoch: 511 };
-// Still locked (MemberBond.isUnlocked() = false), so activation is offered (owner decision 2026-10-19).
-const notActivated: MemberBondState = { deployed: true, activated: false, pubkey: null, unlocked: false };
-const activatedBond: MemberBondState = { deployed: true, activated: true, pubkey: BOND_KEY };
-const bondUnread: MemberBondState = { deployed: true, activated: null, pubkey: null };
-const noBond: MemberBondState = { deployed: false, activated: null, pubkey: null };
+
+function grant(over: Partial<GrantStatus>): GrantStatus {
+  return {
+    attributedStakeWei: wei(32000),
+    attributedPrincipalWei: wei(32000),
+    hasSbt: true,
+    bondAddress: "0x" + "b".repeat(40),
+    bondDeployed: true,
+    bondedStakeWei: wei(32000),
+    hasValidator: true,
+    unlockBlock: 16_000_000,
+    isUnlocked: false,
+    isKycVerified: false,
+    bondActivated: true,
+    bondPubkey: BOND_KEY,
+    bondUnlocked: false,
+    ...over,
+  };
+}
+
+function reads(activation: ValidatorActivation = active) {
+  const r = {
+    validatorActivation: vi.fn(async () => activation),
+    minStakeWei: async () => 32_000n * WEI,
+    blockSeconds: async () => 2,
+    producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
+    validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
+  };
+  (store as unknown as { chainReads: ChainReads }).chainReads = r as unknown as ChainReads;
+  return r;
+}
+
+async function poll(g: GrantStatus, activation: ValidatorActivation = active) {
+  const r = reads(activation);
+  (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
+  (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
+  (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+  (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
+  store.setState({ node: "synced", stage: "done", hasGrant: false, bondedStake: 0, validatorActivation: null, validatorPubkey: null, bondActivated: null, bondPubkey: null, bondUnlocked: null });
+  vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 511_000, syncPct: 100, miningArmed: true } as never);
+  vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
+  vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
+  vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(g);
+  await store.refreshNode();
+  return r;
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
+  store.setState({ bondActivated: null, bondPubkey: null, bondUnlocked: null, bondedStake: 0, validatorActivation: null, validatorPubkey: null, hasGrant: false });
 });
 
-describe("C1-V4 — an unread status is '—' with the reason, never a stake word", () => {
-  it("status unread with an activated bond (e.g. an exiting member) is unread, not 'Bond locked'", () => {
-    expect(validatorWord(0, null, true, activatedBond)).toBeNull();
-    expect(validatorDash(0, null, true, activatedBond)).toBe("— · registry not read yet");
-    expect(canOfferActivation(0, null, true, activatedBond)).toBe(false);
-  });
-
-  it("status unread and bond state unread is unread", () => {
-    expect(validatorWord(0, null, true, bondUnread)).toBeNull();
-    expect(validatorWord(0, null, true, null)).toBeNull();
-    expect(validatorWord(0, null, false, null)).toBeNull();
-    expect(canOfferActivation(0, null, true, null)).toBe(false);
-  });
-
-  it("'Bond locked · not staked' comes from MemberBond.activated() = false", () => {
-    expect(validatorWord(0, null, true, notActivated)).toBe("Bond locked · not staked");
-    expect(validatorWord(0, none, true, notActivated)).toBe("Bond locked · not staked");
-    expect(canOfferActivation(0, none, true, notActivated)).toBe(true);
-  });
-
-  it("'Not a validator' needs status None and no grant", () => {
-    expect(validatorWord(0, none, false, noBond)).toBe("Not a validator");
-    expect(canOfferActivation(0, none, false, noBond)).toBe(false);
-  });
-
-  it("status None with a registered stake or an activated bond is 'registry state inconsistent'", () => {
-    expect(validatorWord(32_000, none, true, activatedBond)).toBeNull();
-    expect(validatorDash(32_000, none, true, activatedBond)).toBe("— · registry state inconsistent");
-    expect(validatorWord(0, none, true, activatedBond)).toBeNull();
-    expect(validatorDash(0, none, true, activatedBond)).toBe("— · registry state inconsistent");
-  });
-
-  it("status None with the bond state unread says which read is missing", () => {
-    expect(validatorDash(0, none, true, bondUnread)).toBe("— · bond state not read yet");
-  });
-
-  it("onboarding S6 offers no 'Stake my bond' while the status is unread", () => {
-    const html = renderToStaticMarkup(
-      <Onboarding store={stub} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, memberBond: activatedBond })} />,
-    );
-    expect(html).not.toContain("Stake my bond");
-    expect(html).not.toContain("Bond locked · not staked");
-    expect(html).toContain("— · registry not read yet");
-  });
-
-  it("onboarding S6 offers 'Stake my bond' only for a bond that is not activated", () => {
-    const html = renderToStaticMarkup(
-      <Onboarding store={stub} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: none, memberBond: notActivated })} />,
-    );
-    expect(html).toContain("Bond locked · not staked");
-    expect(html).toContain("Stake my bond");
-  });
-
-  it("the Node page offers no activation while the status is unread", () => {
-    const html = renderToStaticMarkup(
-      <Node store={stub} s={member({ bondedStake: 0, validatorActivation: null, memberBond: activatedBond })} />,
-    );
-    expect(html).not.toContain("Activate validator");
-    expect(html).toContain("— · registry not read yet");
-  });
-
-  it("the Node page offers activation for a bond that is not activated", () => {
-    const html = renderToStaticMarkup(
-      <Node store={stub} s={member({ bondedStake: 0, validatorActivation: none, memberBond: notActivated })} />,
-    );
-    expect(html).toContain("Activate validator");
-  });
-
-  it("onboarding never auto-opens activation while the status is unread", async () => {
-    const open = vi.spyOn(store, "activateValidator").mockResolvedValue(true);
-    vi.spyOn(store, "walletIsLinked").mockReturnValue(true);
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    (store as unknown as { autoBondAttempted: boolean }).autoBondAttempted = false;
-    store.setState({ stage: "s6", hasGrant: true, bondedStake: 0, walletReview: null, validatorActivation: null, memberBond: activatedBond });
-    (store as unknown as { maybeAutoBond: () => void }).maybeAutoBond();
-    expect(open).not.toHaveBeenCalled();
-    store.setState({ validatorActivation: none, memberBond: notActivated });
-    (store as unknown as { maybeAutoBond: () => void }).maybeAutoBond();
-    expect(open).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("C1-V5 — the validator key comes from MemberBond.pubkey() where the bond defines it", () => {
-  function grant(over: Partial<GrantStatus>): GrantStatus {
-    return {
-      attributedStakeWei: wei(32000),
-      attributedPrincipalWei: wei(32000),
-      hasSbt: true,
-      bondAddress: "0x" + "b".repeat(40),
-      bondDeployed: true,
-      bondedStakeWei: "0",
-      hasValidator: false,
-      unlockBlock: 16_000_000,
-      isUnlocked: false,
-      isKycVerified: false,
-      bondActivated: true,
-      bondPubkey: BOND_KEY,
-      ...over,
-    };
-  }
-
-  async function poll(g: GrantStatus) {
-    const reads = {
-      validatorActivation: vi.fn(async () => none),
-      minStakeWei: async () => 32_000n * WEI,
-      blockSeconds: async () => 2,
-      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
-      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
-    };
-    (store as unknown as { chainReads: ChainReads }).chainReads = reads as unknown as ChainReads;
-    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
-    store.setState({ node: "synced", stage: "done", hasGrant: false, bondedStake: 0, selfStake: 0, validatorActivation: null, memberBond: null });
-    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
-    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
-    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
-    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(g);
-    await store.refreshNode();
-    return reads;
-  }
-
+describe("C1-V5 — the registry key is MemberBond.pubkey() once the bond has activated", () => {
   it("reads the registry for the bond's key, even when the node holds another key", async () => {
-    const reads = await poll(grant({}));
-    expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
-    expect(reads.validatorActivation).not.toHaveBeenCalledWith(NODE_KEY);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
+    const r = await poll(grant({}));
+    expect(r.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
+    expect(r.validatorActivation).not.toHaveBeenCalledWith(NODE_KEY);
+    expect(store.state.bondPubkey).toBe(BOND_KEY);
   });
 
-  it("falls back to the node's key only when no bond exists", async () => {
-    const reads = await poll(grant({ bondDeployed: false, bondActivated: null, bondPubkey: null, hasSbt: false, attributedStakeWei: "0", attributedPrincipalWei: "0" }));
-    expect(reads.validatorActivation).toHaveBeenCalledWith(NODE_KEY);
+  it("an exited bond (stake 0, still activated) is read under the bond's key, so Exiting shows", async () => {
+    const exiting: ValidatorActivation = { isActive: false, status: 2, actEpoch: 480, currentEpoch: 511 };
+    const r = await poll(grant({ bondedStakeWei: "0", hasValidator: false }), exiting);
+    expect(r.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
+    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.bondActivated, store.state.bondUnlocked)).toBe("Exiting");
   });
 
-  it("a bond that is not activated has no key yet: no registry read, and the word is 'Bond locked · not staked'", async () => {
-    // v1.2 §1: "Bond locked · not staked" while the lock reads as running (isUnlocked() = false).
-    const reads = await poll(grant({ bondActivated: false, bondPubkey: null, bondUnlocked: false }));
-    expect(reads.validatorActivation).not.toHaveBeenCalled();
-    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe(
-      "Bond locked · not staked",
-    );
-  });
-
-  it("an activated bond whose key could not be read is unread, never the node's key", async () => {
-    const reads = await poll(grant({ bondActivated: true, bondPubkey: null }));
-    expect(reads.validatorActivation).not.toHaveBeenCalled();
-    expect(store.state.validatorActivation).toBeNull();
-  });
-
-  // #366 review F1: the chosen registry key (the bond's) is also the key the producer sample is
-  // checked against, so a bonded validator that is producing shows "Producing blocks".
-  it("a bonded validator that is producing shows 'Producing blocks' on the Node page", async () => {
-    await poll(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
-    expect(store.state.validatorPubkey).toBe(BOND_KEY);
-    const html = renderToStaticMarkup(
-      <Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />,
-    );
-    expect(html).toContain("Producing blocks");
-    expect(html).not.toContain("validator key not read yet");
-  });
-
-  it("with no bond the node's key is the one checked for producing", async () => {
-    await poll(grant({ bondDeployed: false, bondActivated: null, bondPubkey: null, hasSbt: false, attributedStakeWei: "0", attributedPrincipalWei: "0" }));
+  it("falls back to the node's key when no bond has activated", async () => {
+    const r = await poll(grant({ bondDeployed: false, bondActivated: null, bondPubkey: null, bondUnlocked: null, hasValidator: false, bondedStakeWei: "0", hasSbt: false, attributedStakeWei: "0", attributedPrincipalWei: "0" }), none);
+    expect(r.validatorActivation).toHaveBeenCalledWith(NODE_KEY);
     expect(store.state.validatorPubkey).toBe(NODE_KEY);
   });
 
-  // Codex on #366: a transient failure reading MemberBond.pubkey() must not stick. A deployed bond
-  // whose key came back null (and is not known to be un-activated) is UNREAD, shown as
-  // "— · reading validator key", and the grant status is read again on the next poll.
-  it("a failed pubkey read on a bonded member is retried on the next poll", async () => {
-    const reads = await poll(grant({ bondedStakeWei: wei(32000), hasValidator: true, bondActivated: true, bondPubkey: null }));
-    expect(reads.validatorActivation).not.toHaveBeenCalled();
-    expect(validatorDash(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe(
-      "— · reading validator key",
-    );
-    // Next poll: the read lands.
-    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
-    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
-    await store.refreshNode();
-    expect(gs).toHaveBeenCalled();
-    expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
-    expect(store.state.memberBond?.pubkey).toBe(BOND_KEY);
+  it("an activated bond whose key could not be read is unread: never the node's key", async () => {
+    const r = await poll(grant({ bondPubkey: null }));
+    expect(r.validatorActivation).not.toHaveBeenCalled();
+    expect(store.state.validatorActivation).toBeNull();
+    expect(store.state.validatorPubkey).not.toBe(NODE_KEY);
   });
 
-  it("an unread activated() flag with no key is also 'reading validator key'", () => {
-    expect(validatorDash(32_000, null, true, { deployed: true, activated: null, pubkey: null })).toBe("— · reading validator key");
+  it("a bonded validator that is producing under the bond's key shows 'Producing blocks'", async () => {
+    await poll(grant({}));
+    expect(store.state.validatorPubkey).toBe(BOND_KEY);
+    const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [BOND_KEY] }, producersError: null }} />);
+    expect(html).toMatch(/>Producing blocks</);
   });
 
-  // Codex P1 on #366: a returning member restores hasGrant=true and bondedStake>=32000 from
-  // PERSIST_KEYS while memberBond starts null (it is observed, never persisted). The poll must still
-  // read the grant status once, fill memberBond, and read the registry for the bond's key.
-  it("a returning member with a restored grant and stake reads the bond and the registry", async () => {
-    const reads = {
-      validatorActivation: vi.fn(async () => active),
-      minStakeWei: async () => 32_000n * WEI,
-      blockSeconds: async () => 2,
-      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
-      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
-    };
-    (store as unknown as { chainReads: ChainReads }).chainReads = reads as unknown as ChainReads;
+  it("a node key that produces does not make the member's bond key 'Producing blocks'", async () => {
+    await poll(grant({}));
+    const html = renderToStaticMarkup(<Node store={stub} s={{ ...store.state, producers: { head: 1, window: 100, proposers: [NODE_KEY] }, producersError: null }} />);
+    expect(html).not.toMatch(/>Producing blocks</);
+    expect(html).toContain("Not seen producing in the last 100 blocks");
+  });
+
+  it("a failed MemberBond.pubkey() read is retried on the next due poll, node stopped or not", async () => {
+    const r = await poll(grant({ bondPubkey: null }));
+    expect(r.validatorActivation).not.toHaveBeenCalled();
+    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false } as never);
+    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({}));
+    gs.mockClear();
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    (store as unknown as { validatorPubkey: string | null }).validatorPubkey = null;
-    // What loadState() restores for a bonded member, with the observed fields at their defaults.
-    store.setState({ node: "synced", stage: "done", hasGrant: true, bondedStake: 32_000, selfStake: 0, validatorActivation: null, memberBond: null });
-    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 499_058, syncPct: 100, miningArmed: true });
-    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
-    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
-    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: wei(32000), hasValidator: true }));
     await store.refreshNode();
     expect(gs).toHaveBeenCalledTimes(1);
-    expect(store.state.memberBond).toEqual({ deployed: true, activated: true, pubkey: BOND_KEY, unlocked: null });
-    expect(reads.validatorActivation).toHaveBeenCalledWith(BOND_KEY);
-    expect(store.state.validatorActivation).toEqual(active);
-  });
-
-  it("an exited member restored with a stale stake still sees the registry status", async () => {
-    const exiting: ValidatorActivation = { isActive: false, status: 2, actEpoch: 480, currentEpoch: 511 };
-    const reads = {
-      validatorActivation: vi.fn(async () => exiting),
-      minStakeWei: async () => 32_000n * WEI,
-      blockSeconds: async () => 2,
-      producerSample: async () => ({ head: 1, window: 100, proposers: [] }),
-      validatorCounts: async () => ({ registered: 5, eligible: 5, pending: 0 }),
-    };
-    (store as unknown as { chainReads: ChainReads }).chainReads = reads as unknown as ChainReads;
-    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
-    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ node: "synced", stage: "done", hasGrant: true, bondedStake: 32_000, validatorActivation: null, memberBond: null });
-    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 511_000, syncPct: 100, miningArmed: true });
-    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
-    vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: "0", claimableWei: "0", proposerPubkey: NODE_KEY });
-    vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ bondedStakeWei: "0", hasValidator: false }));
-    await store.refreshNode();
-    expect(store.state.bondedStake).toBe(0);
-    expect(validatorWord(store.state.bondedStake, store.state.validatorActivation, store.state.hasGrant, store.state.memberBond)).toBe("Exiting");
-  });
-
-  it("an activated validator still reads 'Validator active' through the bond's key", () => {
-    expect(validatorWord(32_000, active, true, activatedBond)).toBe("Validator active");
+    expect(store.state.bondPubkey).toBe(BOND_KEY);
   });
 });

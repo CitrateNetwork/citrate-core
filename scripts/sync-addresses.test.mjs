@@ -27,7 +27,6 @@ const REQUIRED = {
   MembershipStakeVault: addr("02"),
   ValidatorRegistry: addr("03"),
   CitrateWalletFactory: addr("04"),
-  LiquidStakingPool: addr("05"),
   CitratePaymaster: addr("06"),
   IPFSIncentivesV3: addr("07"),
   ModelRegistry: addr("08"),
@@ -136,6 +135,26 @@ describe("optional HUP pins", () => {
   });
 });
 
+// Owner decision D-9 (2026-10-26): the LiquidStakingPool is retired at the r1006 reroll and is not
+// in the genesis contract set. The app neither requires nor pins it.
+describe("retired LiquidStakingPool", () => {
+  it("a book without the pool syncs", async () => {
+    writeBook(book());
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    expect(out.addresses).not.toHaveProperty("LiquidStakingPool");
+  });
+
+  it("a book that still lists the pool syncs without pinning it", async () => {
+    writeBook(book({ ...REQUIRED, ...HUP, LiquidStakingPool: addr("05") }));
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    expect(out.addresses).not.toHaveProperty("LiquidStakingPool");
+  });
+});
+
 describe("fails closed", () => {
   const refused = async (args, pattern) => {
     const r = await sync(...args);
@@ -169,6 +188,18 @@ describe("fails closed", () => {
   it("on two names sharing an address", async () => {
     writeBook(book({ ...REQUIRED, ...HUP, InferenceRouter: HUP.CapsuleRegistry }));
     await refused(["--check"], /share address/);
+  });
+
+  it("on a --genesis or an address with a trailing newline (full-string match)", async () => {
+    writeBook(book());
+    const r = await run(["--book", bookPath, "--genesis", GENESIS + "\n", "--out", outPath]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/--genesis must be 0x \+ 64 hex/);
+    expect(fs.existsSync(outPath)).toBe(false);
+    writeBook(book({ ...REQUIRED, ...HUP, InferenceRouter: HUP.InferenceRouter + "\n" }));
+    await refused(["--check"], /not an address .*contracts\.InferenceRouter/);
+    writeBook(book({ ...REQUIRED, ...HUP, SkillRegistry: REQUIRED.SkillRegistry + "\n" }));
+    await refused([], /not an address .*contracts\.SkillRegistry/);
   });
 
   it("on the wrong chain or genesis", async () => {

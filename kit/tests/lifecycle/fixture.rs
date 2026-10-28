@@ -13,7 +13,9 @@
 // (it runs from `Drop`). It signals a pid only after checking that the pid's current command
 // line still carries the marker, so a pid that was reused by an unrelated process is reported
 // as foreign and left alone. After the recorded pids it sweeps once more for any process that
-// carries the marker (pgrep), so nothing the fixture started can outlive the test.
+// carries the marker (pgrep, matched as a fixed string), so nothing the fixture started can
+// outlive the test. A harness control can turn the sweep off ([`OwnedFixture::without_sweep`]),
+// so the suite proves the recorded-pid kill on its own instead of leaning on the sweep.
 
 #![allow(dead_code)]
 
@@ -83,6 +85,9 @@ pub struct OwnedFixture {
     extra: Mutex<Vec<u32>>,
     children: Mutex<Vec<Child>>,
     cleaned: Mutex<Option<CleanupReport>>,
+    /// Whether cleanup sweeps for marked processes after the recorded pids. Always on except in
+    /// the harness control that proves the recorded-pid kill alone.
+    sweep: bool,
 }
 
 impl OwnedFixture {
@@ -112,7 +117,17 @@ impl OwnedFixture {
             extra: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
             cleaned: Mutex::new(None),
+            sweep: true,
         }
+    }
+
+    /// A fixture whose cleanup kills only the recorded pids and does not sweep for other marked
+    /// processes. It still reports every live marked process as left over. Only the harness
+    /// control for the recorded-pid kill uses it: everywhere else the sweep is the safety net.
+    pub fn without_sweep(tag: &str) -> Self {
+        let mut fx = OwnedFixture::new(tag);
+        fx.sweep = false;
+        fx
     }
 
     pub fn marker(&self) -> &str {
@@ -147,6 +162,22 @@ impl OwnedFixture {
         ))
     }
 
+    /// argv for a long-lived leaf that ignores SIGTERM (the ignore survives `exec`, and it is set
+    /// before the pid is recorded, so a recorded child always ignores it), so a stop
+    /// has to wait out its grace and escalate to SIGKILL. Keeps a teardown in progress long
+    /// enough to race controls against it.
+    pub fn stubborn_leaf_args(&self) -> Vec<String> {
+        self.sh_args(&format!(
+            "trap '' TERM; echo $$ >>\"$1\"; exec {} -f \"$2\"",
+            tail_bin().display()
+        ))
+    }
+
+    /// A supervised long-lived leaf that ignores SIGTERM.
+    pub fn stubborn_leaf_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(name, sh_bin(), self.stubborn_leaf_args())
+    }
+
     /// A supervised long-lived leaf.
     pub fn leaf_spec(&self, name: &str) -> SidecarSpec {
         SidecarSpec::new(name, sh_bin(), self.leaf_args())
@@ -158,6 +189,33 @@ impl OwnedFixture {
             name,
             sh_bin(),
             self.sh_args(&format!("echo $$ >>\"$1\"; exit {code}")),
+        )
+    }
+
+    /// A supervised child that records its pid, stays up for `secs` (a decimal like "0.15"),
+    /// then exits with code 1. Its timer writes nothing to the output pipes, so a teardown in
+    /// the middle leaves no reader held.
+    pub fn crash_after_spec(&self, name: &str, secs: &str) -> SidecarSpec {
+        SidecarSpec::new(
+            name,
+            sh_bin(),
+            self.sh_args(&format!(
+                "echo $$ >>\"$1\"; {} {secs} </dev/null >/dev/null 2>&1; exit 1",
+                sleep_bin().display()
+            )),
+        )
+    }
+
+    /// A supervised child that starts one long-lived descendant (which inherits its output
+    /// pipes), records both pids, then exits with code 3: a crash that leaves its output open.
+    pub fn crash_with_descendant_spec(&self, name: &str) -> SidecarSpec {
+        SidecarSpec::new(
+            name,
+            sh_bin(),
+            self.sh_args(&format!(
+                "echo $$ >>\"$1\"; {} -f \"$2\" & echo $! >>\"$1\"; exit 3",
+                tail_bin().display()
+            )),
         )
     }
 
@@ -296,13 +354,28 @@ impl OwnedFixture {
         }
         // Final sweep: anything still carrying the marker (a recorded pid that raced the pid
         // file, or a process that never got to write it). Repeat until none or the deadline.
+        // A forked shell can be mid-exec (briefly invisible to pgrep) when the sweep looks, so
+        // the sweep ends only after the marker has been absent for several looks in a row.
         let deadline = Deadline::after(Duration::from_secs(5));
+        let mut quiet = 0;
         loop {
+            if !self.sweep {
+                break;
+            }
             let live: Vec<u32> = pgrep(&self.marker)
                 .into_iter()
                 .filter(|p| pid_alive(*p))
                 .collect();
-            if live.is_empty() || deadline.expired() {
+            if live.is_empty() {
+                quiet += 1;
+                if quiet >= 10 || deadline.expired() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            quiet = 0;
+            if deadline.expired() {
                 break;
             }
             for pid in live {
@@ -329,7 +402,24 @@ impl OwnedFixture {
             let unreaped = report.recorded.iter().any(|p| unreaped_child(*p));
             (!running && !unreaped).then_some(())
         });
-        report.leftover = targets.into_iter().filter(|p| pid_alive(*p)).collect();
+        // A last sweep for anything that became visible only now (a shell that was mid-exec
+        // during the sweep above); it is killed and counted as swept, not left over.
+        let late: Vec<u32> = if self.sweep {
+            self.live_marked()
+        } else {
+            Vec::new()
+        };
+        for &pid in &late {
+            if !report.recorded.contains(&pid) && !report.swept.contains(&pid) {
+                report.swept.push(pid);
+            }
+            kill(pid, libc::SIGKILL);
+        }
+        let all: Vec<u32> = targets.into_iter().chain(late).collect();
+        let _ = wait_for(Duration::from_secs(5), Duration::from_millis(20), || {
+            all.iter().all(|p| !pid_alive(*p)).then_some(())
+        });
+        report.leftover = all.into_iter().filter(|p| pid_alive(*p)).collect();
         for &p in &report.recorded {
             if unreaped_child(p) && !report.leftover.contains(&p) {
                 report.leftover.push(p);
@@ -385,11 +475,12 @@ pub fn pid_reaped(pid: u32) -> bool {
 
 /// Whether `pid` exists in any state, a zombie (exited, not yet reaped) included.
 pub fn pid_exists(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(target) = positive_pid(pid) else {
         return false;
-    }
-    // SAFETY: kill(pid, 0) checks existence and permission without delivering a signal.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    };
+    // SAFETY: kill(target, 0) on a positive pid checks existence and permission without
+    // delivering a signal.
+    let rc = unsafe { libc::kill(target, 0) };
     rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
@@ -399,6 +490,12 @@ pub fn unreaped_child(pid: u32) -> bool {
     is_zombie(pid)
         && ps_field(pid, "ppid=").and_then(|s| s.trim().parse::<u32>().ok())
             == Some(std::process::id())
+}
+
+/// `pid` as a positive `pid_t`, or `None` for 0 (the caller's process group) and values above
+/// `i32::MAX` (which would wrap to a negative pid: a group, or every process for -1).
+pub fn positive_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)
 }
 
 fn is_zombie(pid: u32) -> bool {
@@ -424,7 +521,10 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Pids whose full command line contains `pattern` (fixed string), excluding this process.
+/// Pids whose full command line contains `pattern` as a fixed string, excluding this process.
+/// `pgrep -f` matches an extended regular expression, so its candidates are filtered by the
+/// command line `ps` reports: a `.` in `pattern` matches only a `.`, and a process that exited
+/// between the two reads is dropped.
 pub fn pgrep(pattern: &str) -> Vec<u32> {
     let out = match Command::new("pgrep")
         .args(["-f", pattern])
@@ -440,13 +540,32 @@ pub fn pgrep(pattern: &str) -> Vec<u32> {
         .lines()
         .filter_map(|l| l.trim().parse::<u32>().ok())
         .filter(|p| *p != me)
+        .filter(|p| command_line(*p).is_some_and(|c| c.contains(pattern)))
         .collect()
 }
 
-pub fn kill(pid: u32, signal: i32) {
-    // SAFETY: kill(2) with a pid and a signal number has no memory effects. Callers check the
-    // marker first, so only fixture processes are signalled.
-    unsafe {
-        libc::kill(pid as libc::pid_t, signal);
-    }
+/// The direct children of `pid` (`pgrep -P`).
+pub fn children_of(pid: u32) -> Vec<u32> {
+    let out = match Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => panic!("INCONCLUSIVE: pgrep unavailable: {e}"),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
+pub fn kill(pid: u32, signal: i32) -> bool {
+    let Some(target) = positive_pid(pid) else {
+        return false;
+    };
+    // SAFETY: kill(2) with a positive pid and a signal number has no memory effects. Callers
+    // check the marker first, so only fixture processes are signalled.
+    unsafe { libc::kill(target, signal) == 0 }
 }

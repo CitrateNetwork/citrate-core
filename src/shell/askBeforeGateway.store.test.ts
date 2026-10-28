@@ -13,6 +13,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const route = { inference: "local-stopped", gatewayConfigured: true };
+// K2: core mints a one-time consent for each held message the member may send to the gateway.
+const consentPrepareMock = vi.fn(async (providerId: unknown, _message: unknown) => {
+  if (consent.fail) throw new Error("consent unavailable");
+  return { consentId: "cc_" + ++consent.n, providerId, expiresAtMs: 0 };
+});
+const consent = { n: 0, fail: false };
+// K2 (#459): a question that closes without the gateway choice drops the consent in core.
+const consentDropMock = vi.fn(async (_consentId: unknown) => {});
 const inferToolsMock = vi.fn(async (..._a: unknown[]) => JSON.stringify({ role: "assistant", content: "answer from the gateway" }));
 const inferLocalMock = vi.fn(async (..._a: unknown[]) => "answer from the local model");
 const serveStartMock = vi.fn(async () => {
@@ -30,6 +38,8 @@ vi.mock("../bridge", () => ({
       providerStatus: async () => [{ id: "gateway", configured: route.gatewayConfigured }],
       inferenceState: (gw: boolean) => inferenceStateMock(gw),
       inferTools: (...a: unknown[]) => inferToolsMock(...a),
+      consentPrepare: (...a: unknown[]) => consentPrepareMock(...a),
+      consentDrop: (id: unknown) => consentDropMock(id),
       inferLocal: (...a: unknown[]) => inferLocalMock(...a),
     },
     model: {
@@ -125,6 +135,66 @@ describe("SCL-S7.5a: ask before sending to the gateway when the local model is n
     expect(inferToolsMock).toHaveBeenCalledTimes(1);
     store.answerLocalModelAsk("cancel");
     await until(() => store.state.chatStatus === "ready");
+  });
+
+  it('"gateway" carries the consent core minted for that message; without one nothing is sent', async () => {
+    consent.fail = false;
+    consentPrepareMock.mockClear();
+    const store = await freshStore();
+    void store.sendChat("what changed today?");
+    await until(() => store.state.chatRouteHold?.phase === "ask");
+    // Core is asked for the consent when the question opens, for this message and provider.
+    expect(consentPrepareMock).toHaveBeenCalledTimes(1);
+    expect(consentPrepareMock.mock.calls[0]).toEqual(["gateway", "what changed today?"]);
+    store.answerLocalModelAsk("gateway");
+    await until(() => store.state.chatStatus === "ready" && agentReplies(store).length === 1);
+    const minted = "cc_" + consent.n;
+    expect(inferToolsMock).toHaveBeenCalledTimes(1);
+    expect(inferToolsMock.mock.calls[0][4]).toBe(minted);
+
+    // Core could not mint a consent: choosing the gateway sends nothing and says why.
+    consent.fail = true;
+    inferToolsMock.mockClear();
+    void store.sendChat("and tomorrow?");
+    await until(() => store.state.chatRouteHold?.phase === "ask");
+    store.answerLocalModelAsk("gateway");
+    await until(() => store.state.chatStatus === "ready");
+    expect(inferToolsMock).not.toHaveBeenCalled();
+    expect(agentReplies(store).at(-1)?.error).toContain("could not confirm this message");
+    consent.fail = false;
+  });
+
+  it("a question that closes without the gateway choice leaves no consent open in core", async () => {
+    consent.fail = false;
+    consentDropMock.mockClear();
+    const store = await freshStore();
+    const ask = async (text: string): Promise<string> => {
+      void store.sendChat(text);
+      await until(() => store.state.chatRouteHold?.phase === "ask");
+      return "cc_" + consent.n;
+    };
+    // "Send this message to the gateway this time": the consent is carried to core, not dropped.
+    const sent = await ask("send this one");
+    store.answerLocalModelAsk("gateway");
+    await until(() => store.state.chatStatus === "ready" && agentReplies(store).length === 1);
+    expect(inferToolsMock.mock.calls[0][4]).toBe(sent);
+    expect(consentDropMock).not.toHaveBeenCalled();
+    // Cancel.
+    const cancelled = await ask("cancel this one");
+    store.answerLocalModelAsk("cancel");
+    await until(() => store.state.chatStatus === "ready");
+    expect(consentDropMock.mock.calls).toEqual([[cancelled]]);
+    // Stop (the turn's abort signal) while the question is open.
+    const stopped = await ask("stop this one");
+    store.stopAgentTurn();
+    await until(() => store.state.chatStatus === "ready" && store.state.chatRouteHold === null);
+    expect(consentDropMock.mock.calls).toEqual([[cancelled], [stopped]]);
+    // The local model starts instead.
+    const restarted = await ask("restart for this one");
+    store.answerLocalModelAsk("restart");
+    await until(() => store.state.chatStatus === "ready" && inferLocalMock.mock.calls.length === 1);
+    expect(consentDropMock.mock.calls).toEqual([[cancelled], [stopped], [restarted]]);
+    expect(inferToolsMock).toHaveBeenCalledTimes(1);
   });
 
   it('"restart" restarts the local server and answers locally; nothing goes to the gateway', async () => {

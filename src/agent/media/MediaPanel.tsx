@@ -7,6 +7,7 @@
 // build. Every unavailable route says why (Rule 1).
 // =====================================================================
 import { useCallback, useEffect, useState } from "react";
+import { LOCAL_ONLY_MEDIA_NOTE, remoteServiceLine } from "../remoteServices";
 import { MEDIA_DESKTOP_ONLY, baseName, errorMessage, usageLine, type GalleryItem, type MediaIo, type MediaOptions, type MediaSettings } from "./media";
 
 export interface MediaPanelProps {
@@ -15,6 +16,9 @@ export interface MediaPanelProps {
   openPlayer: () => void | Promise<void>;
   /** Tell the pop-out something new exists (injected; the app refreshes the media host). */
   onSaved?: () => void;
+  /** K2: Local model only is on. It covers provider image routes too (owner decision 2026-10-23):
+   * core shows them as not available, and the panel says so. */
+  localOnly?: boolean;
 }
 
 const row = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const };
@@ -26,7 +30,7 @@ const PROVIDERS: [string, string][] = [
   ["custom", "OpenAI-compatible endpoint"],
 ];
 
-export function MediaPanel({ io, openPlayer, onSaved }: MediaPanelProps) {
+export function MediaPanel({ io, openPlayer, onSaved, localOnly = false }: MediaPanelProps) {
   const [x, setX] = useState<MediaIo | null>(null);
   const [opts, setOpts] = useState<MediaOptions | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -81,7 +85,16 @@ export function MediaPanel({ io, openPlayer, onSaved }: MediaPanelProps) {
     setBusy(true);
     setErr(null);
     try {
-      const item = await x.invoke<GalleryItem>("media_generate_image", { route, prompt, size, grantId: target });
+      // K2: a provider route needs the consent core mints for this prompt (core refuses without it).
+      let args: Record<string, unknown> = { route, prompt, size, grantId: target };
+      if (route !== "local") {
+        const consent = await x.invoke<{ consentId: string }>("media_consent_prepare", {
+          providerId: opts.settings.remoteProvider ?? "",
+          prompt,
+        });
+        args = { ...args, consentId: consent.consentId };
+      }
+      const item = await x.invoke<GalleryItem>("media_generate_image", args);
       let dataUrl: string | null = null;
       try {
         dataUrl = await x.invoke<string>("media_read", { id: item.id });
@@ -130,10 +143,20 @@ export function MediaPanel({ io, openPlayer, onSaved }: MediaPanelProps) {
               {r.model ? ` · model ${r.model}` : ""}
             </span>
             {r.reason && <span style={note}>{r.reason}</span>}
+            {r.id !== "local" && (
+              <span style={note} data-testid={`media-remote-${r.kind}-${r.id}`}>
+                {remoteServiceLine(r.destination)}
+              </span>
+            )}
             <span style={note}>Cost: {r.cost}</span>
           </li>
         ))}
       </ul>
+      {localOnly && [...opts.image, ...opts.video].some((r) => r.id !== "local") && (
+        <span style={note} data-testid="media-local-only-note">
+          {LOCAL_ONLY_MEDIA_NOTE}
+        </span>
+      )}
 
       {editing ? (
         <div data-testid="media-settings" style={{ display: "flex", flexDirection: "column", gap: 6 }}>

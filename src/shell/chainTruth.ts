@@ -7,7 +7,7 @@
 // them into those words, so every surface uses the same definition:
 //
 //   - validator state: from ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch and
-//     currentEpoch() (contract v1.1 §1), never stake >= 32k and never LiquidStakingPool self-stake;
+//     currentEpoch() (contract v1.1 §1), never a stake amount such as stake >= 32k;
 //   - validator counts: activeCount() is "registered" (it includes pending activations); eligible
 //     = activeSet() members with actEpoch <= currentEpoch(); no consensus-set number (§2);
 //   - minimum stake: ValidatorRegistry.minStake(), read, never a hard-coded 32,000 (§2);
@@ -19,6 +19,7 @@
 // =====================================================================
 import { createPublicClient, http } from "viem";
 import { citrate } from "../chain";
+import { rpcHost } from "../network/profile";
 import book from "../../src-tauri/addresses/40204.json";
 
 export const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
@@ -110,6 +111,8 @@ export interface ChainReads {
   blockSeconds(): Promise<number | null>;
   /** The distinct `proposerPubkey`s of the last PRODUCER_SAMPLE_BLOCKS blocks (one JSON-RPC batch). */
   producerSample(): Promise<ProducerSample>;
+  /** The public head: eth_blockNumber on the network profile's RPC. null for 0x0 (unknown, not block 0). */
+  publicHead(): Promise<number | null>;
 }
 
 /**
@@ -176,11 +179,37 @@ export function measuredBlockSeconds(latest: BlockStamp, older: BlockStamp): num
   return Number(secs) / Number(blocks);
 }
 
-/** The live reads over the public RPC. */
+/** The error a read gets when the target chain has no RPC url. Nothing is sent. */
+export class NoRpcUrlError extends Error {
+  constructor(read: string) {
+    super(`no RPC url is set for this build, so ${read} was not read`);
+    this.name = "NoRpcUrlError";
+  }
+}
+
+/**
+ * The live reads over the public RPC.
+ *
+ * Building this never touches the transport: the store singleton builds it while its module is
+ * imported, and viem checks the RPC url when a client is built. The client is built on the first
+ * read instead, and when the chain has no RPC url (an incomplete network profile) each read is
+ * refused with NoRpcUrlError and nothing is sent; callers show "—" with that reason.
+ */
 export function createChainReads(): ChainReads {
-  const client = createPublicClient({ chain: citrate, transport: http() });
+  let built: ReturnType<typeof createPublicClient> | null = null;
+  const rpcUrl = (read: string): string => {
+    const url = citrate.rpcUrls.default.http[0];
+    if (!url) throw new NoRpcUrlError(read);
+    return url;
+  };
+  const clientFor = (read: string) => {
+    rpcUrl(read);
+    built ??= createPublicClient({ chain: citrate, transport: http() });
+    return built;
+  };
   return {
     async validatorActivation(pubkey) {
+      const client = clientFor("the validator state");
       const read = <F extends "isActive" | "validatorInfo" | "currentEpoch">(functionName: F, args?: readonly [`0x${string}`]) =>
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName, args } as never);
       const [isActive, info, epoch] = await Promise.all([
@@ -191,6 +220,7 @@ export function createChainReads(): ChainReads {
       return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch) };
     },
     async validatorCounts() {
+      const client = clientFor("the validator counts");
       const [set, epoch] = await Promise.all([
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "activeSet" }),
         client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "currentEpoch" }),
@@ -203,9 +233,11 @@ export function createChainReads(): ChainReads {
       return countEligible(infos.map((i) => Number(i[5])), Number(epoch));
     },
     async minStakeWei() {
+      const client = clientFor("the validator minimum stake");
       return client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "minStake" });
     },
     async blockSeconds() {
+      const client = clientFor("the block time");
       const latest = await client.getBlock({ blockTag: "latest" });
       if (latest.number == null || latest.number < BLOCK_TIME_WINDOW) return null;
       const older = await client.getBlock({ blockNumber: latest.number - BLOCK_TIME_WINDOW });
@@ -213,6 +245,8 @@ export function createChainReads(): ChainReads {
       return measuredBlockSeconds({ number: latest.number, timestamp: latest.timestamp }, { number: older.number, timestamp: older.timestamp });
     },
     async producerSample() {
+      const url = rpcUrl("the producer set");
+      const client = clientFor("the producer set");
       const head = await client.getBlockNumber();
       const n = BigInt(PRODUCER_SAMPLE_BLOCKS);
       const from = head >= n - 1n ? head - (n - 1n) : 0n;
@@ -220,17 +254,21 @@ export function createChainReads(): ChainReads {
       for (let b = from, id = 0; b <= head; b++, id++) {
         batch.push({ jsonrpc: "2.0", id, method: "eth_getBlockByNumber", params: ["0x" + b.toString(16), false] });
       }
-      const res = await fetch(citrate.rpcUrls.default.http[0], {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(batch),
       });
-      if (!res.ok) throw new Error("rpc.citrate.ai answered " + res.status);
+      if (!res.ok) throw new Error((rpcHost() ?? "the public RPC") + " answered " + res.status);
       const body: unknown = await res.json();
-      if (!Array.isArray(body)) throw new Error("rpc.citrate.ai did not answer the batch");
+      if (!Array.isArray(body)) throw new Error((rpcHost() ?? "the public RPC") + " did not answer the batch");
       const blocks = body.map((r) => (r && typeof r === "object" ? (r as { result?: unknown }).result : null)).filter(Boolean);
       if (blocks.length === 0) throw new Error("no blocks came back");
       return { head: Number(head), window: blocks.length, proposers: distinctProposers(blocks) };
+    },
+    async publicHead() {
+      const head = await clientFor("the network head").getBlockNumber({ cacheTime: 0 });
+      return head > 0n ? Number(head) : null;
     },
   };
 }
@@ -266,6 +304,19 @@ export function saltFromWei(wei: string | null | undefined): number | null {
 }
 
 /**
+ * The ONE staked figure as shown (contract §2 "Your stake": ValidatorRegistry.stakeOf), in SALT,
+ * or null until a stakeOf read has returned this session. `bondedStake` starts at 0 and is
+ * persisted, so without the read flag it is a default or a stale value, not a reading (rule 2:
+ * unknown is not zero). Every surface that shows the figure goes through this.
+ */
+export function readStakeSalt(s: { bondedStake: number; bondedStakeRead: boolean }): number | null {
+  return s.bondedStakeRead ? s.bondedStake : null;
+}
+
+/** The caption for a stake that has not been read yet. */
+export const STAKE_NOT_READ = "— · not read yet (ValidatorRegistry.stakeOf)";
+
+/**
  * Whether this member's validator rewards (`ValidatorRegistry.rewardsOf`) are read, shown and
  * claimed through the bond: registered stake, or a bond that activated (`MemberBond.activated()`).
  * After a full exit or a slash the stake reads 0 and pubkeyOfStaker is cleared, but the bond stays
@@ -279,88 +330,62 @@ export function readsValidatorRewards(bondedStake: number, bondActivated: boolea
 export type ValidatorWord = "Not a validator" | "Bond locked · not staked" | "Unlocked · not activated" | `Registered · active from epoch ${number}` | "Validator active" | "Exiting" | "Slashed";
 
 /**
- * The member's bond as the chain reports it (C1-V4/C1-V5): `bondDeployed`, `MemberBond.activated()`
- * and `MemberBond.pubkey()`. `activated` / `pubkey` are null when not read (or no bond / zero key).
- */
-export interface MemberBondState {
-  deployed: boolean;
-  activated: boolean | null;
-  pubkey: string | null;
-  /** `MemberBond.isUnlocked()`; null / absent = not read. */
-  unlocked?: boolean | null;
-}
-
-type WordOrReason = { word: ValidatorWord } | { reason: "registry not read yet" | "reading validator key" | "bond state not read yet" | "registry state inconsistent" | "bond lock not read yet" };
-
-/**
  * Contract v1.2 §1 "Unlocked · not activated": the required detail. requestRelease() and
  * withdrawToMember() revert NotActivated for a bond that was never activated. Nothing more is said
- * about an unactivated grant until the reclaim path (chain#331) is deployed on the network shown.
+ * about an unactivated grant (no "activation window" copy).
  */
 export const UNACTIVATED_WITHDRAW_NOTE = "Only an activated bond can be withdrawn.";
 
 /**
- * The validator state, from the registry and the bond only (contract v1.1 §1 Validators).
+ * The validator state word, from the registry and the bond only (contract v1.1/v1.2 §1 Validators).
  *  - `stakeSalt`: `ValidatorRegistry.stakeOf(pubkey)` for the member's key, in SALT (0 = none).
  *  - `activation`: isActive / validatorInfo / currentEpoch for the key, null when not read.
- *  - `hasGrant`: the membership grant is on chain.
- *  - `bond`: the member's bond state, null when the grant status has not been read.
- * The registry status is branched on first: Exiting / Slashed, then Active (actEpoch, isActive),
- * then None (the bond words). With the status UNREAD nothing falls back to a stake word (C1-V4),
- * except "Bond locked · not staked", which `MemberBond.activated() = false` with no registered
- * stake establishes.
- * Status None with a registered stake or an activated bond is "registry state inconsistent".
+ *  - `hasGrant`: the membership grant is on chain (its bond exists), for the bond-locked word.
+ *  - `bondActivated`: `MemberBond.activated()`; `bondUnlocked`: `MemberBond.isUnlocked()`, both
+ *    as read (null / absent = not read).
+ * "Exiting" / "Slashed" follow `validatorInfo.status` (2 / 3) before any stake check: after a full exit
+ * the stake reads 0. A never-activated bond is "Bond locked · not staked" only while the lock reads
+ * as running (isUnlocked() = false) and "Unlocked · not activated" once it reads open; an unread lock
+ * is "—" (chain#331, owner decision 2026-10-19). "Registered · active from epoch N" shows the real N
+ * (never a promised epoch); "Validator active" needs isActive AND actEpoch <= currentEpoch. Returns
+ * null when the state can't be stated: the caller shows `validatorDash`.
+ * No other stake figure is an input: only the registry makes a validator.
  */
-function validatorState(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond: MemberBondState | null | undefined): WordOrReason {
-  const bondNotActivated = !!bond && bond.deployed && bond.activated === false;
-  // Contract v1.2 §1: "Bond locked · not staked" holds only while the lock runs (isUnlocked() reads
-  // false). Once it reads true the word is "Unlocked · not activated"; unread is "—" (rule 2).
-  const notStaked: WordOrReason =
-    bond?.unlocked === false ? { word: "Bond locked · not staked" } : bond?.unlocked === true ? { word: "Unlocked · not activated" } : { reason: "bond lock not read yet" };
-  if (!activation) {
-    // A registered stake is already staked: with the status unread it is never "Bond locked · not
-    // staked", so no activation is offered for it (#348 review).
-    if (bondNotActivated) return stakeSalt > 0 ? { reason: "registry not read yet" } : notStaked;
-    // A deployed bond with no key read (and not known to be un-activated) is still being read;
-    // the store retries the grant status on the next poll.
-    if (bond?.deployed && !bond.pubkey) return { reason: "reading validator key" };
-    return { reason: "registry not read yet" };
+export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, bondUnlocked?: boolean | null): ValidatorWord | null {
+  // C1-V2: the registry status comes first. A full exit moves the bonded stake to escrow, so
+  // `stakeOf` reads 0 while the status is Exiting (or Slashed); a stake check first would hide it.
+  if (activation?.status === 2) return "Exiting";
+  if (activation?.status === 3) return "Slashed";
+  // #348/#349 review: an activated bond with no registered stake (and no Exiting / Slashed status
+  // read) has left the registry; it is not "Bond locked", and its state can't be stated: "—".
+  if (!(stakeSalt > 0) && bondActivated === true) return null;
+  // #348 review (contract v1.1 §1, rule 2): the bond words need activated() = false; an unread flag
+  // with a grant is "—" (bond state not read yet). Contract v1.2: which bond word follows the lock.
+  if (!(stakeSalt > 0)) {
+    if (bondActivated === false) return bondUnlocked === false ? "Bond locked · not staked" : bondUnlocked === true ? "Unlocked · not activated" : null;
+    return hasGrant ? null : "Not a validator";
   }
-  if (activation.status === 2) return { word: "Exiting" };
-  if (activation.status === 3) return { word: "Slashed" };
-  if (activation.status === 1) {
-    if (activation.actEpoch > activation.currentEpoch) return { word: `Registered · active from epoch ${activation.actEpoch}` };
-    return isValidatorActive(activation) ? { word: "Validator active" } : { reason: "registry state inconsistent" };
-  }
-  if (activation.status !== 0) return { reason: "registry state inconsistent" };
-  // Status None.
-  if (stakeSalt > 0) return { reason: "registry state inconsistent" };
-  if (bondNotActivated) return notStaked;
-  if (bond?.deployed && bond.activated === true) return { reason: "registry state inconsistent" };
-  if (!hasGrant && (!bond || !bond.deployed)) return { word: "Not a validator" };
-  return { reason: "bond state not read yet" };
+  if (!activation) return null;
+  if (activation.actEpoch > activation.currentEpoch) return `Registered · active from epoch ${activation.actEpoch}`;
+  return isValidatorActive(activation) ? "Validator active" : null;
 }
 
-/** The §1 validator word, or null when it can't be stated (the caller shows `validatorDash`). */
-export function validatorWord(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): ValidatorWord | null {
-  const st = validatorState(stakeSalt, activation, hasGrant, bond);
-  return "word" in st ? st.word : null;
-}
-
-/** The word, or "— · <reason>" when the state can't be stated. */
-export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): string {
-  const st = validatorState(stakeSalt, activation, hasGrant, bond);
-  return "word" in st ? st.word : "— · " + st.reason;
+/** The validator word, or "— · <reason>" when it can't be stated (#348 review). */
+export function validatorDash(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bondActivated?: boolean | null, bondUnlocked?: boolean | null): string {
+  const w = validatorWord(stakeSalt, activation, hasGrant, bondActivated, bondUnlocked);
+  if (w) return w;
+  if (!(stakeSalt > 0) && hasGrant && bondActivated == null) return "— · bond state not read yet";
+  if (!(stakeSalt > 0) && bondActivated === false) return "— · bond lock not read yet";
+  if (!(stakeSalt > 0) && bondActivated === true && activation) return "— · registry state inconsistent";
+  return "— · registry not read yet";
 }
 
 /**
- * Stake / activate is offered only for a bond that is not activated, has no registered stake
- * (C1-V4, #348 review) and reads as still locked (isUnlocked() = false). The one gate for onboarding S6, the
- * Node page, maybeAutoBond and activateValidator itself.
+ * Stake / activate is offered only for a bond that reads not activated, with no registered stake,
+ * and whose lock reads as still running (isUnlocked() = false): owner decision 2026-10-19,
+ * activation only inside the lock (chain#331: activate() reverts once unlocked). An unread lock
+ * offers nothing. Exactly when the word is "Bond locked · not staked".
  */
-export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, hasGrant: boolean, bond?: MemberBondState | null): boolean {
-  // "Bond locked · not staked" requires isUnlocked() to read false, so an unlocked or unread lock is
-  // never offered (owner decision 2026-10-19: activation only inside the lock). The UI says only the
-  // word for an unlocked bond, never that activation has closed (contract v1.2 §1).
-  return validatorWord(stakeSalt, activation, hasGrant, bond) === "Bond locked · not staked";
+export function canOfferActivation(stakeSalt: number, activation: ValidatorActivation | null, bondActivated?: boolean | null, bondUnlocked?: boolean | null): boolean {
+  return validatorWord(stakeSalt, activation, false, bondActivated, bondUnlocked) === "Bond locked · not staked";
 }

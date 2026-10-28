@@ -3,8 +3,9 @@
 // `group_invites` returned `Vec<PendingInvite>`, a `Serialize` struct whose `priv_key` field (the
 // invite's ECIES private key) serialized whenever it was non-empty — so the key crossed into the
 // webview. This scan walks the REAL production sources of the app crate and the kit crate and
-// fails if any `#[tauri::command]` return type names a `Serialize` struct that carries a
-// secret-named field that is not `skip_serializing`/`skip`.
+// fails if any `#[tauri::command]` return type names a `Serialize` struct or enum that serializes
+// a secret-named field that is not `skip_serializing`/`skip`, directly or through the serialized
+// fields of the types it contains, at any depth.
 //
 // XR-002 lesson: a source tripwire must never scan its own literals and must prove it can fail.
 // Test files (`*_tests.rs`, this file) are excluded, and `negative_control_*` feeds the scanner a
@@ -63,64 +64,201 @@ fn braced_body(src: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// Names of `Serialize` structs in `src` that carry a serialized secret-named field.
-fn secret_bearing_serialize_structs(src: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut from = 0;
-    while let Some(i) = src[from..].find("struct ") {
-        let at = from + i;
-        from = at + 7;
-        // The derive attribute(s) just above the struct.
-        let mut head_start = at.saturating_sub(400);
-        while !src.is_char_boundary(head_start) {
-            head_start += 1;
+/// One serialized field of a `Serialize` type: its name (empty for a tuple field) and type text.
+struct Field {
+    name: String,
+    ty: String,
+}
+
+/// The body between the `(` at/after `open` and its matching `)`.
+fn paren_body(src: &str, open: usize) -> Option<&str> {
+    let start = open + src[open..].find('(')?;
+    let mut depth = 0usize;
+    for (i, c) in src[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[start + 1..start + i]);
+                }
+            }
+            _ => {}
         }
-        let head = &src[head_start..at];
-        let derive = head.rfind("#[derive(").map(|d| &head[d..]);
-        if !derive.is_some_and(|d| d.contains("Serialize")) {
+    }
+    None
+}
+
+/// Whether the collected `#[...]` attributes skip the field from serialization.
+fn is_skipped(attrs: &str) -> bool {
+    attrs.contains("skip_serializing\"")
+        || attrs.contains("skip_serializing)")
+        || attrs.contains("skip_serializing,")
+        || attrs.contains("skip)")
+        || attrs.contains("skip,")
+}
+
+/// The serialized fields in a struct body, an enum body, or a tuple-struct body. Enum variants
+/// are flattened: a struct variant's named fields and a tuple variant's types all count.
+fn serialized_fields(body: &str) -> Vec<Field> {
+    let mut out = Vec::new();
+    let mut pending_attrs = String::new();
+    // Split at the item separators so `Variant { a: A, b: B }` and `Variant(A)` both yield
+    // their fields; generic arguments may split too, which only adds harmless type pieces.
+    let normalized: String = body
+        .lines()
+        .map(|l| {
+            let t = l.trim();
+            if t.starts_with("//") {
+                ""
+            } else {
+                t
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut piece = String::new();
+    let mut pieces = Vec::new();
+    let mut attr_depth = 0usize;
+    let mut chars = normalized.chars().peekable();
+    while let Some(c) = chars.next() {
+        if attr_depth == 0 && c == '#' && chars.peek() == Some(&'[') {
+            if !piece.trim().is_empty() {
+                pieces.push(std::mem::take(&mut piece));
+            }
+            piece.push(c);
+            attr_depth = 1;
+            chars.next();
+            piece.push('[');
             continue;
         }
-        let name: String = src[at + 7..]
-            .chars()
-            .take_while(|c| is_ident_char(*c))
-            .collect();
-        if name.is_empty() {
+        if attr_depth > 0 {
+            piece.push(c);
+            match c {
+                '[' => attr_depth += 1,
+                ']' => {
+                    attr_depth -= 1;
+                    if attr_depth == 0 {
+                        pieces.push(std::mem::take(&mut piece));
+                    }
+                }
+                _ => {}
+            }
             continue;
         }
-        // Tuple/unit structs have no named fields to leak by name.
-        let rest = &src[at + 7 + name.len()..];
-        if !rest.trim_start().starts_with('{') && !rest.trim_start().starts_with('<') {
+        match c {
+            '{' | '}' | '(' | ')' | ',' | '\n' => {
+                if !piece.trim().is_empty() {
+                    pieces.push(std::mem::take(&mut piece));
+                }
+                piece.clear();
+            }
+            _ => piece.push(c),
+        }
+    }
+    if !piece.trim().is_empty() {
+        pieces.push(piece);
+    }
+    for p in pieces {
+        let t = p.trim();
+        if t.starts_with("#[") {
+            pending_attrs.push_str(t);
             continue;
         }
-        let Some(body) = braced_body(src, at) else {
-            continue;
+        let t = t
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub ");
+        let (name, ty) = match t.split_once(':') {
+            Some((n, ty)) if !n.contains('<') && !ty.starts_with(':') => {
+                (n.trim().to_string(), ty.trim().to_string())
+            }
+            _ => (String::new(), t.to_string()),
         };
-        let mut pending_attrs = String::new();
-        for line in body.lines() {
-            let t = line.trim();
-            if t.starts_with("#[") {
-                pending_attrs.push_str(t);
+        if !is_skipped(&pending_attrs) {
+            out.push(Field { name, ty });
+        }
+        pending_attrs.clear();
+    }
+    out
+}
+
+/// Every `Serialize` struct or enum in `src`, with its serialized fields.
+fn serialize_types(src: &str) -> Vec<(String, Vec<Field>)> {
+    let mut out = Vec::new();
+    for kw in ["struct ", "enum "] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(kw) {
+            let at = from + i;
+            from = at + kw.len();
+            if at > 0 && src[..at].chars().next_back().is_some_and(is_ident_char) {
                 continue;
             }
-            if t.starts_with("//") || t.is_empty() {
+            // The derive attribute(s) just above the item.
+            let mut head_start = at.saturating_sub(400);
+            while !src.is_char_boundary(head_start) {
+                head_start += 1;
+            }
+            let head = &src[head_start..at];
+            let derive = head.rfind("#[derive(").map(|d| &head[d..]);
+            if !derive.is_some_and(|d| d.contains("Serialize")) {
                 continue;
             }
-            let field = t
-                .trim_start_matches("pub(crate) ")
-                .trim_start_matches("pub ");
-            let fname: String = field.chars().take_while(|c| is_ident_char(*c)).collect();
-            let skipped = pending_attrs.contains("skip_serializing\"")
-                || pending_attrs.contains("skip_serializing)")
-                || pending_attrs.contains("skip_serializing,")
-                || pending_attrs.contains("skip)")
-                || pending_attrs.contains("skip,");
-            if SECRET_FIELD_NAMES.contains(&fname.as_str()) && !skipped {
-                out.insert(name.clone());
+            let name: String = src[at + kw.len()..]
+                .chars()
+                .take_while(|c| is_ident_char(*c))
+                .collect();
+            if name.is_empty() {
+                continue;
             }
-            pending_attrs.clear();
+            let rest = src[at + kw.len() + name.len()..].trim_start();
+            let body = if rest.starts_with('(') {
+                paren_body(src, at + kw.len() + name.len())
+            } else if rest.starts_with('{') || rest.starts_with('<') || rest.starts_with("where") {
+                braced_body(src, at)
+            } else {
+                None
+            };
+            if let Some(body) = body {
+                out.push((name, serialized_fields(body)));
+            }
         }
     }
     out
+}
+
+/// Names of `Serialize` types in `sources` that serialize a secret: directly, through a
+/// secret-named field, or through a serialized field of a type that does (at any depth).
+fn secret_bearing_types(sources: &[(String, String)]) -> BTreeSet<String> {
+    let types: Vec<(String, Vec<Field>)> = sources
+        .iter()
+        .flat_map(|(_, src)| serialize_types(src))
+        .collect();
+    let mut secret: BTreeSet<String> = types
+        .iter()
+        .filter(|(_, fields)| {
+            fields
+                .iter()
+                .any(|f| SECRET_FIELD_NAMES.contains(&f.name.as_str()))
+        })
+        .map(|(n, _)| n.clone())
+        .collect();
+    loop {
+        let before = secret.len();
+        for (name, fields) in &types {
+            if secret.contains(name) {
+                continue;
+            }
+            if fields
+                .iter()
+                .any(|f| secret.iter().any(|s| contains_ident(&f.ty, s)))
+            {
+                secret.insert(name.clone());
+            }
+        }
+        if secret.len() == before {
+            return secret;
+        }
+    }
 }
 
 /// `(fn name, return type text)` for every `#[tauri::command]` in `src`.
@@ -153,10 +291,7 @@ fn command_return_types(src: &str) -> Vec<(String, String)> {
 
 /// Violations: commands whose return type names a secret-bearing Serialize struct.
 fn violations(sources: &[(String, String)]) -> Vec<String> {
-    let mut secret_structs = BTreeSet::new();
-    for (_, src) in sources {
-        secret_structs.extend(secret_bearing_serialize_structs(src));
-    }
+    let secret_structs = secret_bearing_types(sources);
     let mut v = Vec::new();
     for (file, src) in sources {
         for (cmd, ret) in command_return_types(src) {
@@ -247,4 +382,420 @@ pub struct View {
 pub fn list() -> Result<Vec<View>, String> { Ok(vec![]) }
 "#;
     assert!(violations(&[("synthetic.rs".into(), fixed.into())]).is_empty());
+}
+
+#[test]
+fn negative_control_a_secret_nested_below_the_return_type_is_flagged() {
+    // The secret-bearing struct is reached through a field (directly, in a Vec, in an Option and
+    // two levels down), and through an enum variant. Each command must be flagged.
+    let nested = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub group: String,
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct Middle {
+    pub label: String,
+    pub inner: Inner,
+}
+#[derive(Serialize)]
+pub struct Outer {
+    pub items: Vec<Middle>,
+}
+#[derive(Serialize)]
+pub struct MaybeOuter {
+    pub one: Option<Inner>,
+}
+#[derive(Serialize)]
+pub enum Event {
+    Plain(String),
+    Leaky { inner: Inner },
+}
+#[tauri::command]
+pub fn direct() -> Result<Middle, String> { todo() }
+#[tauri::command]
+pub fn deep() -> Result<Outer, String> { todo() }
+#[tauri::command]
+pub fn optional() -> Result<MaybeOuter, String> { todo() }
+#[tauri::command]
+pub fn event() -> Result<Vec<Event>, String> { todo() }
+"#;
+    let v = violations(&[("synthetic.rs".into(), nested.into())]);
+    for cmd in ["direct", "deep", "optional", "event"] {
+        assert!(
+            v.iter().any(|m| m.contains(&format!("command `{cmd}`"))),
+            "`{cmd}` reaches a secret through a nested type and must be flagged: {v:?}"
+        );
+    }
+    // A field skipped from serialization does not carry the nested secret across.
+    let skipped = r#"
+#[derive(Serialize)]
+pub struct Inner {
+    pub priv_key: String,
+}
+#[derive(Serialize)]
+pub struct View {
+    pub label: String,
+    #[serde(skip)]
+    pub inner: Inner,
+}
+#[tauri::command]
+pub fn view() -> Result<View, String> { todo() }
+"#;
+    assert!(violations(&[("synthetic.rs".into(), skipped.into())]).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Secret-typed fields and arguments: an API key or OAuth token is held in `SecretString` (wiping
+// buffer, redacted Debug, no Serialize) from the moment it is deserialized — a command argument,
+// a provider response, a sealed record read back — never in a plain `String`.
+// ---------------------------------------------------------------------------
+
+/// Field and argument names that hold a key or token and must not be a plain owned string.
+const SECRET_TYPED_NAMES: &[&str] = &[
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "priv_key",
+    "private_key",
+    "secret_key",
+    "mnemonic",
+    "entropy",
+    "seed",
+    "passphrase",
+    "password",
+    "bearer",
+    "token",
+    "sheet",
+    "phrase",
+];
+
+/// `(file, name)` pairs that keep a plain string on purpose, with the reason.
+const PLAIN_STRING_EXEMPT: &[(&str, &str, &str)] = &[
+    // The cluster group seed is link/QR text naming where to dial (group id + addresses): it is
+    // meant to be shared and carries no key material. The name is the cluster-daemon wire format.
+    ("cluster.rs", "seed", "a shareable locator, not a secret"),
+    // The group invite token is the share secret by design: it rides the invite link the owner
+    // sends, is single-use and revocable, and the webview shows it (`InviteMinted`).
+    (
+        "invites.rs",
+        "token",
+        "the invite link's share token, shown to the member by design",
+    ),
+    // The same raw invite token on its way to the relay daemon for self-admit (`RedeemInvite`).
+    (
+        "comms.rs",
+        "token",
+        "the invite share token forwarded to the relay for self-admit",
+    ),
+    // `Endpoints::token` is the OIDC token endpoint URL from discovery, not a credential.
+    (
+        "oidc.rs",
+        "token",
+        "the token endpoint URL, not a credential",
+    ),
+];
+
+/// `(file, fn name)` pairs whose secret-named return stays a plain string on purpose, with the
+/// reason.
+const PLAIN_RETURN_EXEMPT: &[(&str, &str, &str)] = &[
+    // The OAuth `state` / `nonce`: single-use values that travel in the authorize URL.
+    (
+        "oidc.rs",
+        "random_token",
+        "an OAuth state/nonce carried in the URL, not a credential",
+    ),
+    // A salted hash of an MCP server's fingerprint that the webview passes back to enable it.
+    (
+        "mcp_servers.rs",
+        "review_token",
+        "a salted hash the webview echoes back, not a credential",
+    ),
+];
+
+/// Whether a fn name names a secret: it is one of [`SECRET_TYPED_NAMES`] or ends in `_<name>`.
+fn fn_names_a_secret(name: &str) -> bool {
+    SECRET_TYPED_NAMES
+        .iter()
+        .any(|n| name == *n || name.ends_with(&format!("_{n}")))
+}
+
+/// Whether a return type yields a plain owned string: the type itself, or the first type
+/// argument of an outer `Option<…>` / `Result<…>` (at any nesting).
+fn returns_plain(ty: &str) -> bool {
+    let mut t = ty.trim();
+    loop {
+        if is_plain_owned(t) {
+            return true;
+        }
+        let stripped = ["std::result::Result<", "Result<", "Option<"]
+            .iter()
+            .find_map(|p| t.strip_prefix(p));
+        match stripped {
+            Some(rest) => t = rest.trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// `(file, fn name, signature)` for every non-test fn whose name names a secret and whose
+/// return type is a plain owned string.
+fn plain_secret_returns(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = src[from..].find("fn ") {
+        let at = from + i;
+        from = at + 3;
+        if at > 0 && src[..at].chars().next_back().is_some_and(is_ident_char) {
+            continue;
+        }
+        let line_start = src[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        if src[line_start..at].trim_start().starts_with("//") {
+            continue;
+        }
+        let name: String = src[at + 3..]
+            .chars()
+            .take_while(|c| is_ident_char(*c))
+            .collect();
+        if name.is_empty() || !fn_names_a_secret(&name) {
+            continue;
+        }
+        let end = src[at..]
+            .find(['{', ';'])
+            .map(|e| at + e)
+            .unwrap_or(src.len());
+        let sig = &src[at..end];
+        let sig = sig.split(" where").next().unwrap_or(sig);
+        let Some((_, ret)) = sig.rsplit_once("->") else {
+            continue;
+        };
+        if !returns_plain(ret) {
+            continue;
+        }
+        if PLAIN_RETURN_EXEMPT
+            .iter()
+            .any(|(f, n, _)| *f == file && *n == name)
+        {
+            continue;
+        }
+        let flat: String = sig.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push((file.to_string(), name, flat));
+    }
+    out
+}
+
+/// Types that are a plain owned string or byte buffer.
+fn is_plain_owned(ty: &str) -> bool {
+    let ty = ty.trim_start();
+    ["String", "Option<String>", "Vec<u8>", "Option<Vec<u8>>"]
+        .iter()
+        .any(|p| {
+            ty.strip_prefix(p).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with([',', ')', '>', ' ', '}', '\n', ';'])
+            })
+        })
+}
+
+/// `(file, name, line)` for every struct field or fn parameter named in [`SECRET_TYPED_NAMES`]
+/// whose type is a plain owned string, outside test code. `let` bindings are not scanned.
+fn plain_secret_slots(file: &str, src: &str) -> Vec<(String, String, String)> {
+    let src = crate::vault_slot_reservation_tests::without_test_items(src);
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("//") || t.starts_with("let ") || t.starts_with('#') {
+            continue;
+        }
+        for name in SECRET_TYPED_NAMES {
+            let mut from = 0;
+            while let Some(i) = t[from..].find(name) {
+                let at = from + i;
+                from = at + name.len();
+                let before = t[..at].chars().next_back();
+                if before.is_some_and(is_ident_char) || t[..at].trim_end().ends_with("let") {
+                    continue;
+                }
+                let rest = t[at + name.len()..].trim_start();
+                let Some(ty) = rest.strip_prefix(':') else {
+                    continue;
+                };
+                if ty.starts_with(':') || !is_plain_owned(ty) {
+                    continue;
+                }
+                if PLAIN_STRING_EXEMPT
+                    .iter()
+                    .any(|(f, n, _)| *f == file && n == name)
+                {
+                    continue;
+                }
+                out.push((file.to_string(), name.to_string(), t.to_string()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn no_key_or_token_is_held_in_a_plain_string() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    production_sources(&manifest.join("src"), &mut sources);
+    production_sources(&manifest.join("..").join("kit").join("src"), &mut sources);
+    assert!(sources.len() > 20, "the scan must see the sources");
+    // A file pulled into a test file with `include!` is test code too.
+    let test_only = included_by_tests(&manifest.join("src"));
+    assert!(
+        test_only.contains("hello_mint_e2e_sidecar.rs"),
+        "the include scan must see the test-only includes: {test_only:?}"
+    );
+    let hits: Vec<_> = sources
+        .iter()
+        .filter(|(path, _)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            !test_only.contains(file)
+        })
+        .flat_map(|(path, src)| {
+            let file = Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut v = plain_secret_slots(&file, src);
+            v.extend(plain_secret_returns(&file, src));
+            v
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "hold these in citrate_core_kit::secret::SecretString (or a Zeroizing type):\n{hits:#?}"
+    );
+}
+
+/// File names `include!`d by a test file (`*_tests.rs`, `tests.rs`) under `dir`.
+fn included_by_tests(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let fname = p
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !(fname.ends_with("_tests.rs") || fname == "tests.rs") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for part in src.split("include!(\"").skip(1) {
+            if let Some(name) = part.split('"').next() {
+                out.insert(name.rsplit('/').next().unwrap_or(name).to_string());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn negative_control_secret_named_fns_returning_a_plain_string_are_flagged() {
+    let src = r#"
+pub fn current_node_token(dir: &Path) -> Option<String> { todo() }
+pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> { todo() }
+fn read_sheet<R: Runtime>(
+    app: &AppHandle<R>,
+) -> std::result::Result<Vec<u8>, String> { todo() }
+fn fine_token() -> SecretString { todo() }
+fn wiped_sheet() -> Zeroizing<String> { todo() }
+fn blake3_token_hash(token: &str) -> String { todo() }
+fn tokens_left() -> Result<(), String> { todo() }
+// fn commented_token() -> String {}
+#[cfg(test)]
+mod tests { fn test_token() -> String { todo() } }
+"#;
+    let hits = plain_secret_returns("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["current_node_token", "hermes_token", "read_sheet"],
+        "{hits:#?}"
+    );
+    // The return exemptions hold only in their own files.
+    let rt = "fn random_token() -> String { todo() }\n";
+    assert!(plain_secret_returns("oidc.rs", rt).is_empty());
+    assert_eq!(plain_secret_returns("other.rs", rt).len(), 1);
+    // `sheet` and `phrase` arguments are flagged too.
+    let args = "fn restore(sheet: String, phrase: Option<String>) {}\n";
+    assert_eq!(plain_secret_slots("x.rs", args).len(), 2);
+}
+
+#[test]
+fn negative_control_passphrase_bearer_and_token_names_are_flagged() {
+    let src = r#"
+pub async fn custody_unlock(app_h: tauri::AppHandle, passphrase: String) -> Result<(), String> { todo() }
+struct Login {
+    password: Option<String>,
+    bearer: String,
+}
+struct Target {
+    pub token: String,
+    pub token_hash: String,
+    pub port: u16,
+}
+fn ok(passphrase: SecretString, bearer: &str) {}
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["passphrase", "password", "bearer", "token"],
+        "{hits:#?}"
+    );
+    // The share-token exemptions hold only in their own files.
+    let tok = "struct I {\n    pub token: String,\n}\n";
+    assert!(plain_secret_slots("invites.rs", tok).is_empty());
+    assert!(plain_secret_slots("comms.rs", tok).is_empty());
+    assert_eq!(plain_secret_slots("hermes_mcp.rs", tok).len(), 1);
+}
+
+#[test]
+fn negative_control_plain_string_secrets_are_flagged() {
+    let src = r#"
+struct ProviderConfig {
+    base_url: String,
+    api_key: String,
+}
+pub async fn set(provider_id: String, api_key: String) -> Result<(), String> { todo() }
+pub fn exchange(
+    code: String,
+    refresh_token: Option<String>,
+) {}
+struct Fine {
+    access_token: SecretString,
+    api_key_label: String,
+}
+fn ok() { let api_key: String = String::new(); }
+#[cfg(test)]
+mod tests { struct T { api_key: String } }
+"#;
+    let hits = plain_secret_slots("synthetic.rs", src);
+    let names: Vec<&str> = hits.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["api_key", "api_key", "refresh_token"],
+        "{hits:#?}"
+    );
+    // The exemption applies only to its own file.
+    let seed = "struct S {\n    seed: String,\n}\n";
+    assert!(plain_secret_slots("cluster.rs", seed).is_empty());
+    assert_eq!(plain_secret_slots("other.rs", seed).len(), 1);
 }

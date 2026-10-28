@@ -1,8 +1,9 @@
 //! Social identity — OAuth link + wallet-signed verification (Connections · social discovery).
 //! Privacy model: ADR-2026-08-30.
 //!
-//! LINK (public-client PKCE, no secret): OAuth ownership proof → keyring-sealed token → a
-//! DEVICE-LOCAL, private, UNVERIFIED record. VERIFY (D3): the wallet signs an `IdentityBinding`
+//! LINK (public-client PKCE, no secret): OAuth ownership proof → the access token is used once to
+//! read the handle and then dropped (nothing reads it later, so it is not kept) → a DEVICE-LOCAL,
+//! private, UNVERIFIED record. VERIFY (D3): the wallet signs an `IdentityBinding`
 //! challenge {network, handle, address, nonce} through the Signature Ceremony (Rule 3 — the vault
 //! key signs at `ceremony.approve`, nothing here); the resulting EIP-191 signature IS by the wallet
 //! address by construction, so recording it flips `verified` and gives group members something they
@@ -13,13 +14,13 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
-use zeroize::Zeroize;
 
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 use crate::connections::{capture_public_pkce, random_state, ConnError, OAUTH_REDIRECT_URI};
 use crate::oidc::HttpClient;
+use crate::secret::SecretString;
 
-const CHAIN_ID: u64 = 40204;
+use crate::rpc::CITRATE_CHAIN_ID as CHAIN_ID;
 
 /// A network's OAuth endpoints + PUBLIC client id (safe to embed — no secret).
 struct NetCfg {
@@ -141,8 +142,10 @@ fn save_links(app: &tauri::AppHandle, links: &[StoredLink]) -> Result<(), String
     std::fs::write(p, bytes).map_err(|e| e.to_string())
 }
 
-/// The OS-keyring slot the sealed OAuth token lives in (never leaves the vault).
-fn keyring_slot(network: &str) -> String {
+/// The vault slot earlier builds sealed the OAuth token in. Nothing writes it now; disconnect still
+/// clears it so a token kept by an earlier build is removed, and the invoke path keeps the
+/// `social.` namespace reserved so the webview cannot plant one.
+pub(crate) fn keyring_slot(network: &str) -> String {
     format!("social.{network}")
 }
 
@@ -210,24 +213,10 @@ fn authorize_url(cfg: &NetCfg, state: &str, challenge: &str) -> String {
     )
 }
 
-#[derive(Deserialize)]
+/// The provider's token response: only the access token is read (for the profile request).
+#[derive(Deserialize, Debug)]
 struct TokenResp {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    scope: Option<String>,
-    #[serde(default)]
-    expires_in: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct SealedToken<'a> {
-    access_token: &'a str,
-    refresh_token: Option<&'a str>,
-    scope: Option<&'a str>,
-    expires_at: Option<u64>,
-    linked_at: u64,
+    access_token: SecretString,
 }
 
 #[derive(Deserialize)]
@@ -279,11 +268,7 @@ fn fetch_handle(
     Ok(handle)
 }
 
-fn do_link(
-    app: &tauri::AppHandle,
-    custody: &crate::custody::CustodyVault,
-    network: &str,
-) -> Result<LinkedIdentity, String> {
+fn do_link(app: &tauri::AppHandle, network: &str) -> Result<LinkedIdentity, String> {
     let cfg =
         net_cfg(network).ok_or_else(|| format!("{network} isn't configured for linking yet"))?;
     let http = crate::oidc::UreqClient;
@@ -311,27 +296,16 @@ fn do_link(
         ("redirect_uri", OAUTH_REDIRECT_URI),
         ("code_verifier", verifier.as_str()),
     ];
-    let body = http
-        .post_form(cfg.token, &form)
-        .map_err(|_| "the provider rejected the sign-in (token exchange failed)".to_string())?;
+    // The body holds the token: keep it in a wiping buffer.
+    let body =
+        zeroize::Zeroizing::new(http.post_form(cfg.token, &form).map_err(|_| {
+            "the provider rejected the sign-in (token exchange failed)".to_string()
+        })?);
     let tok: TokenResp =
         serde_json::from_str(&body).map_err(|_| "the token response was unparsable".to_string())?;
 
     let linked_at = now_unix();
-    let expires_at = tok.expires_in.map(|e| linked_at.saturating_add(e));
-    let sealed = SealedToken {
-        access_token: &tok.access_token,
-        refresh_token: tok.refresh_token.as_deref(),
-        scope: tok.scope.as_deref(),
-        expires_at,
-        linked_at,
-    };
-    let mut bytes = serde_json::to_vec(&sealed).map_err(|e| e.to_string())?;
-    let put = custody.put(&keyring_slot(network), &mut bytes);
-    bytes.zeroize();
-    put.map_err(|_| "could not seal the token in the keyring".to_string())?;
-
-    let handle = fetch_handle(&http, network, &cfg, &tok.access_token)?;
+    let handle = fetch_handle(&http, network, &cfg, tok.access_token.expose())?;
     let mut links = load_links(app);
     links.retain(|l| l.network != network);
     let stored = StoredLink {
@@ -456,6 +430,18 @@ fn directory_revoke_statement(platform: &str, handle_key: &str, address: &str) -
     )
 }
 
+/// The `personal_sign` ceremony intent every social and directory signature uses. None of these
+/// texts names a chain, so they are not network-bound; the wallet's network gate still refuses
+/// them while no network is set (K6).
+fn wallet_sign_intent(origin: String, text: &str) -> SignatureIntent {
+    SignatureIntent {
+        origin,
+        kind: IntentKind::PersonalSign,
+        chain_id: CHAIN_ID,
+        raw: hex::encode(text.as_bytes()),
+    }
+}
+
 /// The EIP-191 message the human sees + signs — plain, verbatim at the ceremony.
 fn binding_message(network: &str, handle: &str, address: &str, nonce: &str) -> String {
     format!(
@@ -480,14 +466,13 @@ pub fn social_status_sync(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, 
 }
 
 /// `social_start` — run the public-client OAuth link in the SYSTEM browser (async: the loopback
-/// blocks off the main thread). Returns the unverified, private link; the token seals in the keyring.
+/// blocks off the main thread). Returns the unverified, private link; the token is not kept.
 #[tauri::command]
 pub async fn social_start(
     app: tauri::AppHandle,
-    custody: tauri::State<'_, crate::custody::CustodyState>,
     network: String,
 ) -> Result<LinkedIdentity, String> {
-    do_link(&app, &custody.0, &network)
+    do_link(&app, &network)
 }
 
 /// `social_set_visibility` — set a link's visibility (private | groups). Narrowing takes effect now.
@@ -544,6 +529,7 @@ pub fn social_disconnect_sync(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     network: String,
 ) -> Result<(), String> {
+    // Remove a token an earlier build sealed for this network (see `keyring_slot`).
     let _ = custody.0.clear_slot(&keyring_slot(&network));
     let mut links = load_links(&app);
     links.retain(|l| l.network != network);
@@ -593,12 +579,9 @@ pub fn social_verify_request_sync(
     let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let nonce = random_state();
     let message = binding_message(&network, &handle, &info.address, &nonce);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("social:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(message.as_bytes()),
-    });
+    let view = ceremony
+        .0
+        .request(wallet_sign_intent(format!("social:{network}"), &message));
     bind.0.lock().insert(
         view.id.clone(),
         PendingBind {
@@ -876,12 +859,10 @@ pub fn directory_publish_request_sync(
     let hk = handle_key(&handle);
     let bound_at = now_unix();
     let statement = directory_publish_statement(&network, &hk, &binding.address, bound_at);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("directory:publish:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(statement.as_bytes()),
-    });
+    let view = ceremony.0.request(wallet_sign_intent(
+        format!("directory:publish:{network}"),
+        &statement,
+    ));
     dir.0.lock().insert(
         view.id.clone(),
         PendingDirectory {
@@ -1002,12 +983,10 @@ pub fn directory_unpublish_request_sync(
     let (handle, binding) = verified_binding(&app, &network)?;
     let hk = handle_key(&handle);
     let statement = directory_revoke_statement(&network, &hk, &binding.address);
-    let view = ceremony.0.request(SignatureIntent {
-        origin: format!("directory:revoke:{network}"),
-        kind: IntentKind::PersonalSign,
-        chain_id: CHAIN_ID,
-        raw: hex::encode(statement.as_bytes()),
-    });
+    let view = ceremony.0.request(wallet_sign_intent(
+        format!("directory:revoke:{network}"),
+        &statement,
+    ));
     dir.0.lock().insert(
         view.id.clone(),
         PendingDirectory {
@@ -1156,6 +1135,19 @@ pub fn directory_search_sync(
 
 #[cfg(test)]
 mod tests {
+    /// The provider's token response never prints its token in `Debug`.
+    #[test]
+    fn token_response_debug_carries_no_token() {
+        let tok: super::TokenResp =
+            serde_json::from_str(r#"{"access_token":"FIXTURE-SOCIAL-VALUE","scope":"identify"}"#)
+                .unwrap();
+        let dbg = format!("{tok:?}");
+        assert!(
+            !dbg.contains("FIXTURE-SOCIAL-VALUE"),
+            "token in Debug: {dbg}"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1244,5 +1236,99 @@ mod tests {
             directory_revoke_statement("discord", "dana", addr),
             "citrate-directory-revoke:v1:discord:dana:0xabcdef0000000000000000000000000000000001"
         );
+    }
+
+    // ---- K6: the network gate on the social and directory signatures ----
+
+    #[derive(Default)]
+    struct K6Keyring(std::sync::Mutex<HashMap<String, Vec<u8>>>);
+
+    impl citrate_core_kit::custody::Keyring for K6Keyring {
+        fn get(&self, a: &str) -> Result<Option<Vec<u8>>, citrate_core_kit::custody::CustodyError> {
+            Ok(self.0.lock().unwrap().get(a).cloned())
+        }
+        fn set(&self, a: &str, s: &[u8]) -> Result<(), citrate_core_kit::custody::CustodyError> {
+            self.0.lock().unwrap().insert(a.into(), s.to_vec());
+            Ok(())
+        }
+        fn delete(&self, a: &str) -> Result<(), citrate_core_kit::custody::CustodyError> {
+            self.0.lock().unwrap().remove(a);
+            Ok(())
+        }
+    }
+
+    fn k6_vault(tag: &str) -> (crate::custody::CustodyVault, std::path::PathBuf) {
+        let p = std::env::temp_dir().join(format!(
+            "citrate-core-social-k6-{tag}-{}.enc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let v = crate::custody::CustodyVault::new(Box::new(K6Keyring::default()), p.clone(), 0);
+        v.init(&mut b"correct horse battery staple".to_vec())
+            .expect("init");
+        v.unlock(&mut b"correct horse battery staple".to_vec())
+            .expect("unlock");
+        crate::wallet::import(
+            &v,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("import");
+        (v, p)
+    }
+
+    fn k6_gate(chain_id: Option<u64>) -> crate::rpc::ExpectedNetwork {
+        crate::rpc::ExpectedNetwork {
+            name: "k6-test".into(),
+            chain_id,
+            genesis_hash: chain_id.map(|_| {
+                "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".to_string()
+            }),
+        }
+    }
+
+    /// The social binding and the directory publish/revoke statements go through the same
+    /// ceremony intent the commands build: refused with no network set, signed with one (they
+    /// name no chain, so they are not network-bound).
+    #[test]
+    fn k6_social_and_directory_signatures_need_a_set_network() {
+        let (v, p) = k6_vault("social");
+        let addr = crate::wallet::address(&v).expect("address").address;
+        let texts = [
+            (
+                "social:discord",
+                binding_message("discord", "dana", &addr, "n1"),
+            ),
+            (
+                "directory:publish:x",
+                directory_publish_statement("x", "dana", &addr, 1_700_000_000),
+            ),
+            (
+                "directory:revoke:x",
+                directory_revoke_statement("x", "dana", &addr),
+            ),
+        ];
+        let c = crate::ceremony::SignatureCeremony::new();
+        for (origin, text) in &texts {
+            let view = c.request(wallet_sign_intent(origin.to_string(), text));
+            let r = crate::rpc::with_added_network_gate(k6_gate(None), || {
+                c.approve(&v, &view.id, false)
+            });
+            match r {
+                Err(e) => assert!(e.to_string().contains("no network set"), "{origin}: {e}"),
+                Ok(_) => panic!("{origin}: signed with no network set"),
+            }
+            let view = c.request(wallet_sign_intent(origin.to_string(), text));
+            let sig = crate::rpc::with_added_network_gate(k6_gate(Some(40204)), || {
+                c.approve(&v, &view.id, false)
+            })
+            .expect("signed on a set network");
+            let signer = citrate_core_kit::wallet::recover_personal_hex(
+                text.as_bytes(),
+                &format!("0x{}", sig.sig_hex),
+            )
+            .expect("recovers");
+            assert!(signer.eq_ignore_ascii_case(&addr), "{origin}");
+        }
+        let _ = std::fs::remove_file(p);
     }
 }

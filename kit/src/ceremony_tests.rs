@@ -259,6 +259,7 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     // preserved and hardened, not dropped.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
+        ("wallet_key.rs", include_str!("wallet_key.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
         ("config.rs", include_str!("config.rs")),
@@ -2094,6 +2095,153 @@ fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// K6 network gate on the signing path.
+// ---------------------------------------------------------------------------
+
+const K6_GENESIS: &str = "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1";
+
+fn k6_gate(genesis: Option<&str>) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "test-net".into(),
+        chain_id: Some(40204),
+        genesis_hash: genesis.map(str::to_string),
+    }
+}
+
+/// Same chain id, another block 0: nothing is read for the transaction and nothing is signed or
+/// sent. The ceremony is consumed (single use), as with every other refusal after the approve.
+#[test]
+fn k6_gated_approve_signs_nothing_against_another_genesis() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xhash".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("nothing was signed"), "{m}")
+        }
+        other => panic!("expected a pre-sign refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(methods, vec!["eth_chainId", "eth_getBlockByNumber"]);
+}
+
+/// A gate with no genesis set refuses with no RPC call at all.
+#[test]
+fn k6_gated_approve_fails_closed_when_the_network_is_not_set() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let client = RpcClient::with_transport(MockRpc::new(vec![]));
+    let gate = k6_gate(None);
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "{r:?}");
+    assert!(client.transport.requests.borrow().is_empty());
+}
+
+/// The matching network signs and sends as before; the send is checked again (the endpoint can
+/// change between the two, as a DNS switch at genesis would).
+#[test]
+fn k6_gated_approve_signs_and_sends_on_the_matching_network() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0xhashk6".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let result = c
+        .approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate))
+        .expect("matching network");
+    assert_eq!(result.tx_hash, "0xhashk6");
+    assert_eq!(result.block_number, Some(100));
+}
+
+/// The send-time check refuses (the endpoint changed after the pre-sign check): nothing reached
+/// `eth_sendRawTransaction`, so on a first submission this is a definitive "not sent", not an
+/// unknown outcome.
+#[test]
+fn k6_send_time_network_refusal_on_a_first_submission_is_not_sent() {
+    let (v, _p) = vault_with_wallet();
+    // A record that can prove a first submission (`new()` is unpersisted: every send counts as
+    // a re-send there).
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory());
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(
+            serde_json::json!({ "hash": "0x2222222222222222222222222222222222222222222222222222222222222222" }),
+        ),
+        ok(JsonValue::String("0xhashk6".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("network check refused"), "{m}")
+        }
+        other => panic!("expected a definitive not-sent refusal, got {other:?}"),
+    }
+    let methods: Vec<String> = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+}
+
 // =========================================================================
 // C1-V #347 review (Codex P1): after the node has accepted a transaction, a later failure must
 // report an unknown outcome carrying the tx hash, never a failure that reads as "not sent".
@@ -2337,13 +2485,13 @@ fn a_resend_after_a_restart_is_not_a_first_submission() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&again), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2465,9 +2613,9 @@ fn a_resend_after_the_history_was_truncated_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-evict-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     let (first, _) = send_once(&c, &v, node_error("Failed to submit transaction: Full"));
     assert!(matches!(first, Err(CeremonyError::Broadcast(_))));
     // 256 other submissions push the original out of the window.
@@ -2475,7 +2623,7 @@ fn a_resend_after_the_history_was_truncated_is_unknown() {
         c.submitted_log().record(&format!("0x{n:064x}"));
     }
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (again, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
     assert_eq!(submitted_outcome_unknown(&again), Some(hash), "the original may have been mined");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2486,13 +2634,13 @@ fn a_resend_after_a_corrupt_record_was_rewritten_and_reopened_is_unknown() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-corrupt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
     std::fs::write(&file, b"{not json").expect("corrupt");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone()));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
     c.submitted_log().record(&format!("0x{:064x}", 7));
     drop(c);
-    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let restarted = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let (r, hash) = send_once(&restarted, &v, node_error("Failed to submit transaction: Full"));
     assert_eq!(submitted_outcome_unknown(&r), Some(hash));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2503,10 +2651,10 @@ fn nothing_is_broadcast_when_the_submission_cannot_be_recorded_durably() {
     let dir = std::env::temp_dir().join(format!("citrate-ceremony-nodurable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmp");
-    let file = dir.join("submitted-tx.json");
-    std::fs::create_dir(dir.join(format!(".submitted-tx.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
     let from = canonical_addr_lower();
     let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
     let mock = MockRpc::new(vec![
@@ -2542,43 +2690,882 @@ fn a_ceremony_built_without_a_record_location_is_never_certain() {
     assert_eq!(submitted_outcome_unknown(&first), Some(hash), "never \"not sent\" without a durable record");
 }
 
-// ---- STD tripwire: every eth_sendRawTransaction call site classifies its errors ----
+// ---------------------------------------------------------------------------
+// Join-8 — prepare (approve + sign, no send) then send. The tx hash is known and
+// returned BEFORE anything reaches the network, so a caller can persist it first
+// (a quit during the receipt poll must not lose it). One approval, one signature.
+// ---------------------------------------------------------------------------
 
-/// Every non-test source file that sends a raw transaction must classify the send's errors with
-/// the contract v1.1 allowlist and record the bytes in the shared first-submission record. A new
-/// send path that skips either fails this test.
 #[test]
-fn tripwire_every_raw_send_uses_the_classifier_and_the_first_submission_record() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut dirs = vec![root.join("src"), root.join("../src-tauri/src")];
-    let mut offenders = Vec::new();
-    let mut sites = 0;
-    while let Some(d) = dirs.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-                continue;
+fn join8_prepare_signs_and_returns_the_tx_hash_without_sending() {
+    use sha3::{Digest, Keccak256};
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),        // eth_getTransactionCount
+        ok(JsonValue::String("0x77359400".into())), // eth_gasPrice
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("approve + sign");
+    let methods: Vec<String> = prep_rpc
+        .transport()
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "prepare sends nothing: {methods:?}"
+    );
+    assert_eq!(c.pending_count(), 0, "the approval is consumed at prepare");
+    assert!(hash.starts_with("0x") && hash.len() == 66);
+
+    // The send broadcasts exactly the prepared raw, whose keccak is the returned hash.
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash.clone())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    let result = c
+        .send_prepared(&send_rpc, &view.id, bcfg(2))
+        .expect("send the prepared tx");
+    assert_eq!(result.tx_hash, hash);
+    assert_eq!(result.block_number, Some(100));
+    let sent = send_rpc.transport().requests.borrow()[0].clone();
+    assert_eq!(sent["method"], "eth_sendRawTransaction");
+    let raw_hex = sent["params"][0].as_str().unwrap_or("").trim_start_matches("0x").to_string();
+    let raw = hex::decode(raw_hex).expect("raw hex");
+    assert_eq!(format!("0x{}", hex::encode(Keccak256::digest(&raw))), hash);
+}
+
+#[test]
+fn join8_a_prepared_tx_is_sent_at_most_once() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash)),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    c.send_prepared(&send_rpc, &view.id, bcfg(2)).expect("first send");
+    let again = c.send_prepared(&send_rpc, &view.id, bcfg(2));
+    assert_eq!(again.err(), Some(CeremonyError::UnknownCeremony));
+    // And the approval cannot be reused to sign again.
+    let resign = c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204);
+    assert_eq!(resign.err(), Some(CeremonyError::UnknownCeremony));
+}
+
+#[test]
+fn join8_reject_discards_a_prepared_tx() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.reject(&view.id).expect("reject drops the prepared tx");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::UnknownCeremony)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up — approve_and_broadcast keeps its signed tx PRIVATE. It must
+// never park the tx in the shared `prepared` map (where a concurrent reject or
+// send_prepared on the same id could take it between the sign and the send).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_approve_and_broadcast_never_parks_its_tx_in_the_shared_map() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2))
+        .expect("broadcast");
+    assert_eq!(
+        c.prepared_parks.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the one-call path must not round-trip its tx through the shared prepared map"
+    );
+}
+
+/// A transport that pauses the broadcast INSIDE the signed-but-unsent window: when the
+/// `eth_sendRawTransaction` call arrives the tx is signed and not yet sent. It meets the
+/// rejecting thread at a barrier (A), waits while that thread makes its reject attempts, then
+/// meets it again (B) and only then lets the send proceed. So every reject attempt provably
+/// overlaps the window in which a parked tx would sit in the shared map.
+struct WindowRpc<'a> {
+    inner: MockRpc,
+    gate: &'a std::sync::Barrier,
+}
+impl RpcTransport for WindowRpc<'_> {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        if body["method"] == "eth_sendRawTransaction" {
+            self.gate.wait(); // A: signed, not yet sent
+            self.gate.wait(); // B: the rejecter has finished its attempts
+        }
+        self.inner.call(body)
+    }
+}
+
+#[test]
+fn join8_a_concurrent_reject_cannot_take_an_approve_and_broadcast_tx() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    for round in 0..20 {
+        let view = c.request(tx_intent(
+            &canonical_addr_lower(),
+            "0x3535353535353535353535353535353535353535",
+            "0x1",
+        ));
+        let gate = std::sync::Barrier::new(2);
+        let rpc = RpcClient::with_transport(WindowRpc {
+            inner: MockRpc::new(vec![
+                ok(JsonValue::String("0x7".into())),
+                ok(JsonValue::String("0x77359400".into())),
+                ok(JsonValue::String("0xabc".into())),
+                ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+            ]),
+            gate: &gate,
+        });
+        let (outcome, (attempts, stolen)) = std::thread::scope(|sc| {
+            let rejecter = sc.spawn(|| {
+                gate.wait(); // A: the broadcast is paused between sign and send
+                let mut attempts = 0usize;
+                let mut stolen = 0usize;
+                for _ in 0..50 {
+                    attempts += 1;
+                    if c.reject(&view.id).is_ok() {
+                        stolen += 1;
+                    }
+                }
+                gate.wait(); // B: release the send
+                (attempts, stolen)
+            });
+            let r = c.approve_and_broadcast(&v, &rpc, &view.id, false, bcfg(2));
+            (r, rejecter.join().unwrap_or((0, usize::MAX)))
+        });
+        assert_eq!(attempts, 50, "round {round}: every attempt ran inside the window");
+        assert_eq!(stolen, 0, "round {round}: a concurrent reject took the in-flight tx");
+        assert!(outcome.is_ok(), "round {round}: broadcast lost its tx: {outcome:?}");
+    }
+}
+
+/// Split code into `(fn name, body)` chunks: each `fn NAME` up to the next `fn`.
+fn split_fns(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while let Some(off) = code[i..].find("fn ") {
+        let at = i + off;
+        let before_ok = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        let name: String = code[at + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if before_ok && !name.is_empty() {
+            starts.push((at, name));
+        }
+        i = at + 3;
+    }
+    let mut out = Vec::new();
+    for (k, (at, name)) in starts.iter().enumerate() {
+        let next_fn = starts.get(k + 1).map(|(e, _)| *e).unwrap_or(code.len());
+        // A chunk also ends at the next top-level item (a line starting in column 0 that is
+        // not the closing brace), so a struct or const between functions is not counted.
+        let mut end = next_fn;
+        let mut pos = *at;
+        while let Some(nl) = code[pos..next_fn].find('\n') {
+            let line_start = pos + nl + 1;
+            if line_start >= next_fn {
+                break;
             }
-            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "rpc.rs" {
-                continue;
+            let c = code.as_bytes()[line_start];
+            if c != b' ' && c != b'}' && c != b'\n' && c != b'\t' {
+                end = line_start;
+                break;
             }
-            let src = std::fs::read_to_string(&p).unwrap_or_default();
-            if !src.contains(".send_raw_transaction(") {
-                continue;
+            pos = line_start;
+        }
+        out.push((name.clone(), code[*at..end].to_string()));
+    }
+    out
+}
+
+/// Positions where `tok` occurs as a whole identifier in `body`.
+fn token_at(body: &str, tok: &str) -> Vec<usize> {
+    let b = body.as_bytes();
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(off) = body[i..].find(tok) {
+        let at = i + off;
+        let end = at + tok.len();
+        let before_ok = at == 0 || !is_ident(b[at - 1]);
+        let after_ok = end >= b.len() || !is_ident(b[end]);
+        if before_ok && after_ok {
+            out.push(at);
+        }
+        i = end;
+    }
+    out
+}
+
+/// True when `body` refers to the function `name` in any form (a call in any spelling, a
+/// function pointer, a macro argument), other than its own declaration.
+fn calls(body: &str, name: &str) -> bool {
+    token_at(body, name)
+        .into_iter()
+        .any(|at| !body[..at].ends_with("fn "))
+}
+
+/// True when `body` touches the shared prepared store in any form: the lock helper or the
+/// store's methods named anywhere, the `prepared` field by `.prepared`, or a `prepared:` field
+/// pattern (struct literal or destructuring).
+fn touches_store(body: &str) -> bool {
+    ["lock_prepared", "park_signed", "take_signed", "discard_signed"]
+        .iter()
+        .any(|t| !token_at(body, t).is_empty())
+        || token_at(body, "prepared").into_iter().any(|at| {
+            let after = body[at + "prepared".len()..].trim_start();
+            body[..at].ends_with('.') || after.starts_with(':') && !after.starts_with("::")
+        })
+}
+
+/// Any form of adding to a map.
+fn mutates_map(body: &str) -> bool {
+    [".insert(", "::insert(", ".entry(", ".extend(", ".append(", "or_insert"]
+        .iter()
+        .any(|m| body.contains(m))
+}
+
+/// The STRUCTURAL prepared-map rule (Join-8 follow-up). The compiler enforces most of it (the
+/// map is a private newtype with `park_signed` as its only way in); this scan is the backstop:
+///   * only allow-listed functions touch the store (`lock_prepared`, the store methods, the
+///     `prepared` field, or a `prepared:` pattern);
+///   * no toucher adds to a map in any form, and `park_signed` is called exactly once, from
+///     `approve_and_sign`;
+///   * inside `mod prepared_store`, only `park_signed` adds to the map;
+///   * `approve_and_broadcast` refers to no store-touching function (calls in any spelling,
+///     function pointers and macro arguments included).
+///
+/// Returns one message per violation (empty = clean).
+fn prepared_map_violations(src: &str) -> Vec<String> {
+    // `with_clock` is main's constructor (#436); `new` delegates to it. Both only build the store.
+    const ALLOWED: [&str; 9] = [
+        "new",
+        "with_clock",
+        "lock_prepared",
+        "approve_and_sign",
+        "send_prepared",
+        "reject",
+        "prepared_len",
+        "backdate_wall",
+        "forward_date_wall",
+    ];
+    let src = strip_test_module(src);
+    let code: String = src
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = Vec::new();
+    // The store module: only park_signed may add to the map.
+    let (outside, module) = match code.find("mod prepared_store {") {
+        Some(m) => {
+            let end = code[m..].find("\n}\n").map(|e| m + e + 3).unwrap_or(code.len());
+            (format!("{}{}", &code[..m], &code[end..]), code[m..end].to_string())
+        }
+        None => {
+            out.push("mod prepared_store not found".to_string());
+            (code.clone(), String::new())
+        }
+    };
+    for (name, body) in split_fns(&module) {
+        if name != "park_signed" && mutates_map(&body) {
+            out.push(format!("prepared_store::{name} adds to the map; only park_signed may"));
+        }
+    }
+    let fns = split_fns(&outside);
+    let mut touchers = Vec::new();
+    let mut parks = 0usize;
+    for (name, body) in &fns {
+        let n_parks = token_at(body, "park_signed").len();
+        parks += n_parks;
+        if n_parks > 0 && name != "approve_and_sign" {
+            out.push(format!("fn {name} parks a signed tx; only approve_and_sign may"));
+        }
+        if !touches_store(body) {
+            continue;
+        }
+        touchers.push(name.clone());
+        if !ALLOWED.contains(&name.as_str()) {
+            out.push(format!("fn {name} touches the shared prepared store but is not allow-listed"));
+        }
+        if mutates_map(body) {
+            out.push(format!("fn {name} adds to a map while touching the prepared store"));
+        }
+    }
+    if parks != 1 {
+        out.push(format!("park_signed must be called exactly once (found {parks})"));
+    }
+    if !fns.iter().any(|(n, _)| n == "approve_and_broadcast") {
+        out.push("approve_and_broadcast not found".to_string());
+    }
+    // Reachability from approve_and_broadcast over the crate-local reference graph.
+    let names: Vec<String> = fns.iter().map(|(n, _)| n.clone()).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec!["approve_and_broadcast".to_string()];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur.clone()) {
+            continue;
+        }
+        for (n, body) in fns.iter().filter(|(n, _)| *n == cur) {
+            if n != "new" && touchers.contains(n) {
+                out.push(format!("approve_and_broadcast reaches {n}, which touches the prepared store"));
             }
-            sites += 1;
-            let classifies = src.contains("is_definitive_send_error(") || src.contains("send_refused(&e)");
-            let records = src.contains(".try_record_for(&");
-            if !(classifies && records) {
-                offenders.push(p.display().to_string());
+            for callee in &names {
+                if callee != n && callee != "new" && calls(body, callee) {
+                    stack.push(callee.clone());
+                }
             }
         }
     }
-    assert!(sites >= 1, "the scan found no send site at all; it is not looking in the right place");
-    assert!(offenders.is_empty(), "raw sends without the contract v1.1 classifier: {offenders:?}");
+    out
+}
+
+/// TRIPWIRE: the real source has no prepared-map violation.
+#[test]
+fn join8_tripwire_only_approve_and_sign_parks_a_signed_tx() {
+    let v = prepared_map_violations(include_str!("ceremony.rs"));
+    assert!(v.is_empty(), "prepared-map violations: {v:?}");
+}
+
+/// The tripwire must see through wrappers and call spellings, not match one text form.
+#[test]
+fn join8_tripwire_catches_evasions() {
+    let real = include_str!("ceremony.rs");
+    let marker = "        let (_key, prepared, _hash) =\n            self.sign_consumed(vault, rpc, id, raw_ack, cfg.chain_id, gate)?;\n        self.send_signed(rpc, prepared, cfg, gate)";
+    assert!(real.contains(marker), "fixture anchor present");
+    let anchor = "    /// **Step 2' — reject.**";
+    assert!(real.contains(anchor), "insertion anchor present");
+    // DGX probes (#378 review): each must be flagged.
+    let injected: [(&str, &str, &str); 6] = [
+        (
+            "P1 fn pointer",
+            "        let f = Self::approve_and_sign;\n        f(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
+            "",
+        ),
+        (
+            "P2 field alias",
+            "        self.stash()?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
+            "\n    fn stash(&self) -> Result<()> {\n        let p = &self.prepared;\n        let _ = p;\n        Ok(())\n    }\n",
+        ),
+        (
+            "P3 destructuring",
+            "        self.grab_store()?;\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
+            "\n    fn grab_store(&self) -> Result<()> {\n        let SignatureCeremony { prepared: p, .. } = self;\n        let _ = p;\n        Ok(())\n    }\n",
+        ),
+        (
+            "P4 macro-hidden lock",
+            "        lp!(self, lock_prepared);\n        self.send_signed(rpc, prepared_tx(), cfg, gate)",
+            "",
+        ),
+        (
+            "P6 UFCS insert in an allow-listed fn",
+            "",
+            "\n    fn prepared_len(&self) -> usize {\n        BTreeMap::insert(&mut *self.lock_prepared(), 9, Slot::Expired { at: std::time::Instant::now() });\n        0\n    }\n",
+        ),
+        (
+            "P7 entry().or_insert in an allow-listed fn",
+            "",
+            "\n    fn prepared_len(&self) -> usize {\n        self.lock_prepared().entry(9).or_insert(Slot::Expired { at: std::time::Instant::now() });\n        0\n    }\n",
+        ),
+    ];
+    let mut uncaught = Vec::new();
+    for (name, body, extra) in injected {
+        let mut src = if body.is_empty() { real.to_string() } else { real.replacen(marker, body, 1) };
+        if !extra.is_empty() {
+            let at = src.find(anchor).unwrap_or(0);
+            src.insert_str(at, extra);
+        }
+        if prepared_map_violations(&src).is_empty() {
+            uncaught.push(name);
+        }
+    }
+    assert!(uncaught.is_empty(), "uncaught evasions: {uncaught:?}");
+    let evasions = [
+        // UFCS spelling of the old round-trip.
+        "        Self::approve_and_sign(self, vault, rpc, id, raw_ack, cfg.chain_id)?;\n        Self::send_prepared(self, rpc, id, cfg)".to_string(),
+        // A wrapper that parks the tx, then the public send.
+        "        self.park_then(vault, rpc, id, raw_ack, cfg.chain_id)?;\n        SignatureCeremony::send_prepared(self, rpc, id, cfg)".to_string(),
+    ];
+    let wrapper = "\n    fn park_then<T: crate::rpc::RpcTransport>(&self, vault: &CustodyVault, rpc: &crate::rpc::RpcClient<T>, id: &str, raw_ack: bool, chain_id: u64) -> Result<()> {\n        let (key, prepared, _h) = self.sign_consumed(vault, rpc, id, raw_ack, chain_id, crate::rpc::network_gate())?;\n        let mut m = self.prepared.lock().unwrap_or_else(|e| e.into_inner());\n        m.insert(key, prepared);\n        Ok(())\n    }\n";
+    for (i, ev) in evasions.iter().enumerate() {
+        let mut src = real.replacen(marker, ev, 1);
+        if i == 1 {
+            let at = src.find("    /// **Step 2' — reject.**").unwrap_or(0);
+            src.insert_str(at, wrapper);
+        }
+        assert!(
+            !prepared_map_violations(&src).is_empty(),
+            "evasion {i} was not caught"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up — a signed but unsent tx expires. After its TTL it is dropped
+// from memory and can no longer be sent; the send says truthfully that nothing
+// was sent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_a_prepared_tx_expires_and_is_never_sent_after_its_ttl() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    let r = c.send_prepared(&send_rpc, &view.id, bcfg(2));
+    assert_eq!(r.err(), Some(CeremonyError::PreparedExpired));
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+    assert!(CeremonyError::PreparedExpired.to_string().contains("nothing was sent"));
+}
+
+#[test]
+fn join8_expired_signed_txs_are_dropped_from_memory() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(c.prepared_len(), 0, "an expired signed tx is not kept");
+}
+
+#[test]
+fn join8_a_prepared_tx_within_its_ttl_still_sends() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_secs(60));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    let hash = c
+        .approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String(hash)),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert!(c.send_prepared(&send_rpc, &view.id, bcfg(2)).is_ok());
+}
+
+#[test]
+fn join8_the_default_ttl_is_two_minutes() {
+    assert_eq!(PREPARED_TTL, std::time::Duration::from_secs(120));
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 follow-up 2 — the send error is STRUCTURED, and expiry also counts
+// wall-clock time (Instant pauses during system sleep).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join8_send_errors_are_structured_and_only_expiry_says_nothing_was_sent() {
+    let e = send_prepared_error(CeremonyError::PreparedExpired);
+    assert_eq!(e.code, "signedTxExpired");
+    // A node error AFTER the send that quotes the expiry sentence is still just a failure.
+    let quoted = CeremonyError::Broadcast(format!(
+        "rpc error -32000: {}",
+        CeremonyError::PreparedExpired
+    ));
+    assert_eq!(send_prepared_error(quoted).code, "failed");
+    assert_eq!(send_prepared_error(CeremonyError::UnknownCeremony).code, "failed");
+}
+
+#[test]
+fn join8_expiry_counts_monotonic_time_when_the_wall_clock_goes_back() {
+    // The other half of max(monotonic, wall): a wall clock set backwards after signing makes
+    // wall elapsed read as zero. The monotonic leg must still expire the tx.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_millis(1));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.forward_date_wall(&view.id, std::time::Duration::from_secs(3600));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::PreparedExpired)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+}
+
+#[test]
+fn join8_expiry_counts_wall_clock_time_too() {
+    // Instant does not advance during system sleep (macOS CLOCK_UPTIME_RAW, Linux
+    // CLOCK_MONOTONIC). A tx parked before a long sleep must still expire by wall time.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    c.set_prepared_ttl(std::time::Duration::from_secs(120));
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let prep_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ]));
+    c.approve_and_sign(&v, &prep_rpc, &view.id, false, 40204)
+        .expect("prepare");
+    c.backdate_wall(&view.id, std::time::Duration::from_secs(200));
+    let send_rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0xabc".into())),
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+    assert_eq!(
+        c.send_prepared(&send_rpc, &view.id, bcfg(2)).err(),
+        Some(CeremonyError::PreparedExpired)
+    );
+    assert!(send_rpc.transport().requests.borrow().is_empty(), "nothing was sent");
+}
+
+// ---------------------------------------------------------------------------
+// Join-8 x #347: the activation send is recorded durably (fsync'd SubmittedTxLog) BEFORE it is
+// sent, through the one shared send helper, for the prepared path as well as the one-call path.
+// ---------------------------------------------------------------------------
+
+const BOND: &str = "0x2222222222222222222222222222222222222222";
+
+/// A MemberBond.activate-shaped call (selector 0x4bac89ff) from the canonical wallet to `BOND`.
+fn activate_intent() -> SignatureIntent {
+    let from = canonical_addr_lower();
+    SignatureIntent {
+        origin: "citrate-core://activate-validator".to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({ "from": from, "to": BOND, "value": "0x0", "gas": "0x927c0", "data": format!("0x4bac89ff{}", "00".repeat(32)) })
+            .to_string(),
+    }
+}
+
+fn prep_rpc() -> RpcClient<MockRpc> {
+    RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),        // eth_getTransactionCount
+        ok(JsonValue::String("0x77359400".into())), // eth_gasPrice
+    ]))
+}
+
+fn activate_meta() -> crate::submitted_log::CallMeta {
+    crate::submitted_log::CallMeta { to: BOND.into(), selector: "0x4bac89ff".into() }
+}
+
+/// Wraps a MockRpc; when the send arrives, notes whether the record file already names the hash.
+struct RecordCheckRpc {
+    inner: MockRpc,
+    file: std::path::PathBuf,
+    on_disk_at_send: RefCell<Option<bool>>,
+}
+impl RpcTransport for RecordCheckRpc {
+    fn call(&self, body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        if body["method"] == "eth_sendRawTransaction" {
+            use sha3::{Digest, Keccak256};
+            let raw = body["params"][0].as_str().unwrap_or("");
+            let bytes = hex::decode(raw.trim_start_matches("0x")).unwrap_or_default();
+            let hash = format!("0x{}", hex::encode(Keccak256::digest(&bytes)));
+            let on_disk = std::fs::read_to_string(&self.file).map(|s| s.contains(&hash)).unwrap_or(false);
+            *self.on_disk_at_send.borrow_mut() = Some(on_disk);
+        }
+        self.inner.call(body)
+    }
+}
+
+fn tmp_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "citrate-join8-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&d).expect("tmp");
+    d
+}
+
+#[test]
+fn join8_a_prepared_send_is_on_disk_before_it_reaches_the_node() {
+    // Crash window: the node receives the tx, then the app dies (no receipt). The record must
+    // already be durable when the send arrives, and still name the tx after a restart.
+    let dir = tmp_dir("ondisk");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    let view = c.request(activate_intent());
+    let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let send = RpcClient::with_transport(RecordCheckRpc {
+        inner: MockRpc::new(vec![ok(JsonValue::String(hash.clone()))]), // accepted; the receipt poll then dies
+        file: file.clone(),
+        on_disk_at_send: RefCell::new(None),
+    });
+    let r = c.send_prepared(&send, &view.id, bcfg(1));
+    assert_eq!(*send.transport().on_disk_at_send.borrow(), Some(true), "the record was durable before the send");
+    assert!(r.is_err() || r.is_ok());
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
+    assert_eq!(
+        reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash),
+        Some(hash.clone()),
+        "after a restart the activation send is found again"
+    );
+    assert_eq!(reopened.try_record_for(&hash, &canonical_addr_lower(), 7), Ok(false), "and is not a first submission");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn join8_a_prepared_send_without_a_durable_record_sends_nothing() {
+    let dir = tmp_dir("nodurable");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    std::fs::create_dir(dir.join(format!(".submitted-tx-networks.json.tmp-{}", std::process::id()))).expect("block tmp");
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
+    let view = c.request(activate_intent());
+    c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let send = RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(format!("0x{}", "ab".repeat(32))))]));
+    let r = c.send_prepared(&send, &view.id, bcfg(1));
+    assert!(
+        send.transport().requests.borrow().iter().all(|q| q["method"] != "eth_sendRawTransaction"),
+        "no send without a durable record"
+    );
+    match r {
+        Err(e @ CeremonyError::Broadcast(_)) => {
+            let s = broadcast_err_str(e);
+            assert!(s.starts_with("not submitted: ") && s.contains("nothing was sent"), "{s}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn join8_forget_then_resign_at_the_same_nonce_is_never_not_sent() {
+    // The member's first activation is refused definitively on its FIRST submission: "not sent"
+    // is true. They try again (or forget an unseen one) and the app re-signs at the same nonce:
+    // deterministic ECDSA gives the same bytes. A definitive-looking error on that re-send
+    // (NonceTooLow: the first may have been mined after all) is an unknown outcome.
+    let (v, _p) = vault_with_wallet();
+    let c = certain_ceremony();
+    let full = || MockRpc::new(vec![node_error("Failed to submit transaction: Full")]);
+    let first = c.request(activate_intent());
+    let h1 = c.approve_and_sign(&v, &prep_rpc(), &first.id, false, 40204).expect("sign 1");
+    let r1 = c.send_prepared(&RpcClient::with_transport(full()), &first.id, bcfg(1));
+    assert!(matches!(r1, Err(CeremonyError::Broadcast(_))), "a first definitive refusal is not sent: {r1:?}");
+
+    let again = c.request(activate_intent());
+    let h2 = c.approve_and_sign(&v, &prep_rpc(), &again.id, false, 40204).expect("sign 2");
+    assert_eq!(h1, h2, "same nonce, same bytes");
+    let nonce_low = MockRpc::new(vec![node_error("Failed to submit transaction: NonceTooLow { expected: 8, got: 7 }")]);
+    let r2 = c.send_prepared(&RpcClient::with_transport(nonce_low), &again.id, bcfg(1));
+    assert_eq!(submitted_outcome_unknown(&r2), Some(h2), "a re-send of recorded bytes is never \"not sent\"");
+
+    // The same holds after a transport failure (unknown) and a forget of the activation record.
+    let (v2, _p2) = vault_with_wallet();
+    let c2 = certain_ceremony();
+    let a = c2.request(activate_intent());
+    let ha = c2.approve_and_sign(&v2, &prep_rpc(), &a.id, false, 40204).expect("sign a");
+    let ra = c2.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &a.id, bcfg(1));
+    assert_eq!(submitted_outcome_unknown(&ra), Some(ha.clone()));
+    let _ = c2.submitted_log().forget(&ha);
+    let b = c2.request(activate_intent());
+    let hb = c2.approve_and_sign(&v2, &prep_rpc(), &b.id, false, 40204).expect("sign b");
+    let nonce_low = MockRpc::new(vec![node_error("Failed to submit transaction: NonceTooLow { expected: 8, got: 7 }")]);
+    let rb = c2.send_prepared(&RpcClient::with_transport(nonce_low), &b.id, bcfg(1));
+    assert_eq!(submitted_outcome_unknown(&rb), Some(hb));
+}
+
+/// The body of `fn <name>` in `src` (from its signature to the matching close brace).
+fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let start = src.find(&format!("fn {name}"))?;
+    let open = start + src[start..].find('{')?;
+    let mut depth = 0usize;
+    for (i, ch) in src[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[start..open + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Violations of "every send goes through the durable record" in ceremony.rs's production code.
+fn durable_send_violations(src: &str) -> Vec<String> {
+    let code = strip_test_module(src);
+    let mut out = Vec::new();
+    // K6 (#363): the send goes through the network-gated form; either spelling counts as a send.
+    let sends = code.matches("send_raw_transaction(").count() + code.matches("send_raw_transaction_gated(").count();
+    if sends != 1 {
+        out.push("send_raw_transaction must be called from exactly one place (send_signed)".into());
+    }
+    match fn_body(&code, "send_signed") {
+        Some(body) => {
+            let rec = body.find(".try_record_call(");
+            let send = body.find("send_raw_transaction(").or_else(|| body.find("send_raw_transaction_gated("));
+            if !matches!((rec, send), (Some(r), Some(s)) if r < s) {
+                out.push("send_signed must record durably (try_record_call) before send_raw_transaction".into());
+            }
+            // A definitive first-send refusal is taken out of recovery (Codex P2 at f98f8ae).
+            let refusal = body.find("is_definitive_send_error(");
+            let forget = refusal.and_then(|r| body[r..].find(".forget(&local_hash)"));
+            if forget.is_none() {
+                out.push("send_signed must forget a definitively refused submission from recovery".into());
+            }
+        }
+        None => out.push("fn send_signed not found".into()),
+    }
+    for f in ["approve_and_broadcast", "approve_and_broadcast_gated", "send_prepared", "approve_and_sign"] {
+        if fn_body(&code, f).is_some_and(|b| b.contains("try_record")) {
+            out.push(format!("{f} records on its own; the record belongs to send_signed only"));
+        }
+    }
+    // The prepared send reports through broadcast_err_str, directly or via send_prepared_error.
+    let via_error_map = fn_body(&code, "send_prepared_error(").is_some_and(|b| b.contains("broadcast_err_str"));
+    if !fn_body(&code, "sign_send_prepared_sync").is_some_and(|b| {
+        b.contains("broadcast_err_str") || (b.contains("send_prepared_error") && via_error_map)
+    }) {
+        out.push("sign_send_prepared must mark pre-submission failures \"not submitted\"".into());
+    }
+    out
+}
+
+#[test]
+fn join8_tripwire_every_send_goes_through_the_durable_record() {
+    assert_eq!(durable_send_violations(include_str!("ceremony.rs")), Vec::<String>::new());
+    // Negative controls: a second send site, and a send before the record.
+    let two = "fn send_signed() { x.try_record_call(); rpc.send_raw_transaction(&r) }\nfn other() { rpc.send_raw_transaction(&r) }\nfn sign_send_prepared_sync() { broadcast_err_str }";
+    assert!(!durable_send_violations(two).is_empty());
+    let late = "fn send_signed() { rpc.send_raw_transaction(&r); x.try_record_call(); }\nfn sign_send_prepared_sync() { broadcast_err_str }";
+    assert!(!durable_send_violations(late).is_empty());
+}
+
+#[test]
+fn join8_a_definitively_refused_activation_is_not_recovered_but_stays_in_history() {
+    // Codex P2 at f98f8ae: a first-submission refusal ("not sent") must not come back as the
+    // member's pending activation from the durable record, yet those bytes stay a re-submission.
+    let dir = tmp_dir("refused");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    let view = c.request(activate_intent());
+    let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let refused = MockRpc::new(vec![node_error("Failed to submit transaction: SenderLimitExceeded")]);
+    let r = c.send_prepared(&RpcClient::with_transport(refused), &view.id, bcfg(1));
+    assert!(matches!(r, Err(CeremonyError::Broadcast(_))), "a first definitive refusal is not sent: {r:?}");
+    assert_eq!(c.submitted_log().latest_call(&canonical_addr_lower(), &activate_meta()), None, "not recovered in this run");
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
+    assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()), None, "nor after a restart");
+    assert_eq!(reopened.try_record_for(&hash, &canonical_addr_lower(), 7), Ok(false), "still in the submission history");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn join8_an_unknown_outcome_activation_is_still_recovered() {
+    // The other side: an error that is NOT a definitive first-send refusal keeps the record.
+    let dir = tmp_dir("unknown");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    let view = c.request(activate_intent());
+    let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+    let r = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &view.id, bcfg(1));
+    assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()));
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
+    assert_eq!(reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash), Some(hash));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // #347 Codex P1 (concurrency): two ceremonies can sign identical bytes. A records them first (a
@@ -2665,6 +3652,32 @@ fn tripwire_first_submission_classification_checks_for_overlapping_attempts() {
     assert!(offenders.is_empty(), "first-submission classification without sole_attempt: {offenders:?}");
 }
 
+#[test]
+fn join8_a_prepared_activation_refused_after_another_attempt_recorded_it_is_outcome_unknown() {
+    // #347 Codex P1 on #354's own send helper, through the prepared path: A signs the activation
+    // and sends it; while A's send is in flight B records the same bytes (as B would before its own
+    // broadcast); then A's send is refused definitively. B may have sent those bytes, so A's result
+    // is "outcome unknown" with the hash, never "not sent", and the activation stays recoverable.
+    for refusal in ["Failed to submit transaction: Full", "Failed to submit transaction: SenderLimitExceeded"] {
+        let dir = tmp_dir("raced");
+        let file = dir.join(crate::submitted_log::RECORD_FILE);
+        let (v, _p) = vault_with_wallet();
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+        let view = c.request(activate_intent());
+        let hash = c.approve_and_sign(&v, &prep_rpc(), &view.id, false, 40204).expect("sign");
+        let t = RacedSend { inner: MockRpc::new(vec![]), log: c.submitted_log(), refusal };
+        let r = c.send_prepared(&RpcClient::with_transport(t), &view.id, bcfg(1));
+        assert_eq!(submitted_outcome_unknown(&r), Some(hash.clone()), "{refusal}: {r:?}");
+        let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
+        assert_eq!(
+            reopened.latest_call(&canonical_addr_lower(), &activate_meta()).map(|c| c.hash),
+            Some(hash),
+            "{refusal}: the activation is still recoverable (it may have been sent)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 // #347 Codex P1 (upgrade): an earlier build submitted a tx with an unknown outcome and kept no
 // record. After the upgrade the same signed bytes are re-sent and the node answers with a
 // definitive-looking error (the first copy was mined). That must be "submitted, outcome unknown".
@@ -2675,7 +3688,7 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
     std::fs::create_dir_all(&dir).expect("tmp");
     std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
     let (v, _p) = vault_with_wallet();
-    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join("submitted-tx.json")));
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(dir.join(crate::submitted_log::RECORD_FILE), crate::submitted_log::LEGACY_GENESIS));
     for msg in ["Insufficient funds: account balance 0 < required 21000", "Failed to submit transaction: Full"] {
         let (r, hash) = send_once(&c, &v, node_error(msg));
         assert_eq!(submitted_outcome_unknown(&r), Some(hash), "{msg}: {r:?}");
@@ -2683,11 +3696,95 @@ fn a_resend_after_upgrading_from_a_build_without_the_record_is_outcome_unknown()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn join8_forget_then_resend_then_restart_recovers_the_in_flight_activation() {
+    // Reviewer CR at d737f33: Forget (or a refusal), then the same bytes re-sent, then a restart.
+    // Recovery must find the in-flight send, or Activate is offered a second time.
+    let dir = tmp_dir("forget-resend");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    {
+        let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+        let first = c.request(activate_intent());
+        let h1 = c.approve_and_sign(&v, &prep_rpc(), &first.id, false, 40204).expect("sign 1");
+        let r1 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![])), &first.id, bcfg(1));
+        assert_eq!(submitted_outcome_unknown(&r1), Some(h1.clone()));
+        assert_eq!(c.submitted_log().forget(&h1), Ok(true)); // the member's Forget
+        let again = c.request(activate_intent());
+        let h2 = c.approve_and_sign(&v, &prep_rpc(), &again.id, false, 40204).expect("sign 2");
+        assert_eq!(h1, h2, "same nonce, same bytes");
+        let r2 = c.send_prepared(&RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(h2.clone()))])), &again.id, bcfg(1));
+        assert!(r2.is_ok() || submitted_outcome_unknown(&r2).is_some(), "{r2:?}");
+    }
+    let reopened = crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS);
+    assert!(
+        reopened.latest_call(&canonical_addr_lower(), &activate_meta()).is_some(),
+        "the re-sent activation is recovered after a restart"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// #511: a send history kept on r1005 does not decide the outcome of sends on a new genesis. The
+// install's r1005 record is uncertain (a 0.5.1 wallet with no record); after the switch the new
+// chain is upgrade-bounded, and above the bound a definitive refusal of new bytes is "not sent", while a re-send of the exact bytes
+// broadcast on r1005 (same chain id) is still "submitted, outcome unknown".
+#[test]
+fn after_a_genesis_switch_the_previous_networks_history_does_not_decide_new_sends() {
+    const NEW: &str = "0x2026120100000000000000000000000000000000000000000000000000000c52";
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-xgenesis-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("existing wallet");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    let (on_r1005, r1005_hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&on_r1005), Some(r1005_hash.clone()), "r1005's history is uncertain");
+    drop(r1005);
+    let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
+    // r1005's history is unknown, so the new chain starts upgrade-bounded: the first fetched-nonce
+    // send is unknown, and a later one above it is decided by the new chain's history alone.
+    let (bounded, bounded_hash) = send_at(&switched, &v, "0x1", node_error("Failed to submit transaction: Full"));
+    assert_eq!(submitted_outcome_unknown(&bounded), Some(bounded_hash), "the bound send");
+    let (fresh, fresh_hash) = send_at(&switched, &v, "0x2", node_error("Failed to submit transaction: Full"));
+    assert_ne!(fresh_hash, r1005_hash);
+    assert!(matches!(fresh, Err(CeremonyError::Broadcast(_))), "new bytes refused on the new chain were not sent: {fresh:?}");
+    let (same, same_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(same_hash, r1005_hash, "the same nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&same), Some(same_hash), "bytes broadcast on r1005 may have been mined");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Review of 0cffe02 (lead decision (i)): a send evicted from r1005's section, refused
+// `NonceTooLow` when its identical bytes are sent after the switch, may have been mined: it reads
+// "outcome unknown", never "not sent".
+#[test]
+fn a_send_evicted_on_r1005_then_refused_nonce_too_low_after_a_switch_is_outcome_unknown() {
+    const NEW: &str = "0x2026120100000000000000000000000000000000000000000000000000000c52";
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-xgenesis-evicted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let me = canonical_addr_lower();
+    let r1005 = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file.clone(), crate::submitted_log::LEGACY_GENESIS));
+    // Sent on r1005 (the node's answer doesn't matter here: the bytes are recorded before the send).
+    let (_first, hash) = send_once(&r1005, &v, node_error("Failed to submit transaction: Full"));
+    for n in 1..=(crate::submitted_log::CAPACITY as u64) {
+        r1005.submitted_log().try_record_for(&format!("0x{n:064x}"), &me, n).expect("record");
+    }
+    drop(r1005);
+    let switched = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, NEW));
+    let (again, again_hash) = send_once(&switched, &v, node_error("Failed to submit transaction: NonceTooLow { expected: 1, got: 0 }"));
+    assert_eq!(again_hash, hash, "the same nonce and gas price sign the same bytes");
+    assert_eq!(submitted_outcome_unknown(&again), Some(hash), "may have been mined: {again:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 /// Rule 3 tripwire: the ONLY path that signs without a per-request approval of a CeremonyId is the
 /// budgeted web sign-in (`request_siwe_budgeted`, ADR-2026-09-30). Every gated-signer call in the
-/// production ceremony code must sit inside `approve`, `approve_and_broadcast` (both consume an
-/// explicit CeremonyId the human approved) or `request_siwe_budgeted`. A new function that reaches
+/// production ceremony code must sit inside `approve`, `approve_and_broadcast_gated` (both consume
+/// an explicit CeremonyId the human approved; `approve_and_broadcast` delegates to the latter) or `request_siwe_budgeted`. A new function that reaches
 /// a signer, for example an "allowlisted intent" fast path, fails here.
 #[test]
 fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
@@ -2696,8 +3793,14 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
         "sign_".to_string() + "transaction(",
         "sign_".to_string() + "personal(",
     ];
-    let allowed = ["approve", "approve_and_broadcast", "request_siwe_budgeted"];
+    // Join-8 (#354): the tx signer lives in the PRIVATE `sign_consumed`, shared by
+    // `approve_and_sign` and `approve_and_broadcast_gated` (K6, #363: `approve_and_broadcast`
+    // delegates to it); both consume a CeremonyId the human approved. It is allowed only while it
+    // stays private and is called from exactly those two.
+    let allowed = ["approve", "approve_and_broadcast_gated", "request_siwe_budgeted", "sign_consumed"];
     let src = strip_test_module(include_str!("ceremony.rs"));
+    assert!(src.contains("    fn sign_consumed<") && !src.contains("pub fn sign_consumed"), "sign_consumed stays private");
+    let mut callers: Vec<String> = Vec::new();
     let mut enclosing: Option<String> = None;
     let mut seen = 0;
     for line in src.lines() {
@@ -2718,6 +3821,9 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
                 }
             }
         }
+        if t.contains("self.sign_consumed(") {
+            callers.push(enclosing.clone().unwrap_or_default());
+        }
         if calls.iter().any(|c| t.contains(c.as_str())) && !t.contains("fn sign_") {
             seen += 1;
             let f = enclosing.clone().unwrap_or_default();
@@ -2729,6 +3835,13 @@ fn rule3_tripwire_no_ceremony_bypass_except_budgeted_web_sign_in() {
         }
     }
     assert!(seen >= 3, "positive control: the sanctioned signer calls were found ({seen})");
+    callers.sort();
+    callers.dedup();
+    assert_eq!(
+        callers,
+        vec!["approve_and_broadcast_gated".to_string(), "approve_and_sign".to_string()],
+        "sign_consumed is reached only from the two approval paths"
+    );
 }
 
 /// Rule 3 tripwire: no stored setting decides whether an intent goes through the ceremony. The
@@ -2766,4 +3879,297 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
             "config.rs must carry no signature-policy field ({n})"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// #494: the send-time network check could not READ the endpoint (a transport error or a bad
+// block-0 answer). `eth_sendRawTransaction` was never called, so on a first, sole submission this
+// is "not sent", not "outcome unknown".
+// ---------------------------------------------------------------------------
+
+/// The pre-sign reads (chain id, block 0, nonce, gas price) answer; then the send-time reads get
+/// `send_time`. Returns the result and the methods the endpoint saw.
+fn k6_send_time_read(
+    c: &SignatureCeremony,
+    send_time: Vec<JsonValue>,
+) -> (Result<BroadcastResult>, Vec<String>) {
+    let (v, _p) = vault_with_wallet();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mut script = vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ];
+    script.extend(send_time);
+    let client = RpcClient::with_transport(MockRpc::new(script));
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    let methods = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    (r, methods)
+}
+
+fn first_submission_ceremony() -> SignatureCeremony {
+    SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory())
+}
+
+#[test]
+fn k6_send_time_chain_id_read_failure_on_a_first_submission_is_not_sent() {
+    // No scripted answer for the send-time eth_chainId: the transport fails.
+    let (r, methods) = k6_send_time_read(&first_submission_ceremony(), vec![]);
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("could not be checked"), "{m}");
+            assert!(m.contains("nothing was sent"), "{m}");
+            assert!(m.contains("mock: no scripted response"), "{m}");
+        }
+        other => panic!("expected a definitive not-sent error, got {other:?}"),
+    }
+}
+
+#[test]
+fn k6_send_time_block_zero_read_failure_on_a_first_submission_is_not_sent() {
+    // The send-time eth_chainId answers; block 0 comes back without a hash.
+    let (r, methods) = k6_send_time_read(
+        &first_submission_ceremony(),
+        vec![
+            ok(JsonValue::String("0x9d0c".into())),
+            ok(serde_json::json!({ "number": "0x0" })),
+        ],
+    );
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("nothing was sent"), "{m}");
+            assert!(m.contains("block 0 hash"), "{m}");
+        }
+        other => panic!("expected a definitive not-sent error, got {other:?}"),
+    }
+}
+
+/// The not-sent class reaches the app with the "not submitted: " prefix the webview reads as
+/// "not sent" (broadcastOutcome.ts), carrying the read error as is.
+#[test]
+fn k6_send_time_read_failure_reaches_the_app_as_not_submitted() {
+    let (r, _) = k6_send_time_read(&first_submission_ceremony(), vec![]);
+    let e = r.expect_err("the send-time read fails");
+    let s = broadcast_err_str(e);
+    assert!(s.starts_with("not submitted: "), "{s}");
+    assert!(s.contains("nothing was sent"), "{s}");
+}
+
+/// A re-send of the same signed bytes (an earlier attempt may have reached the node) stays an
+/// unknown outcome with the tx hash, even though THIS attempt never called the send.
+#[test]
+fn k6_send_time_read_failure_on_a_re_send_stays_outcome_unknown() {
+    // `new()` is unpersisted: every send counts as a re-send there.
+    let (r, methods) = k6_send_time_read(&SignatureCeremony::new(), vec![]);
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::SubmittedOutcomeUnknown { tx_hash, reason }) => {
+            assert!(tx_hash.starts_with("0x") && tx_hash.len() == 66, "{tx_hash}");
+            assert!(reason.contains("mock: no scripted response"), "{reason}");
+        }
+        other => panic!("expected an unknown outcome on a re-send, got {other:?}"),
+    }
+}
+
+/// Violations of "every ceremony entry that signs or sends passes the K6 network gate" in
+/// ceremony.rs's production code (#363 review). The gate is process-wide and never installed in
+/// unit tests, so a `None` in any of these paths would leave every behaviour test green.
+fn network_gate_violations(src: &str) -> Vec<String> {
+    let code = strip_test_module(src);
+    let body = |sig: &str| fn_body(&code, sig).map(|b| b.split_whitespace().collect::<String>());
+    let mut out = Vec::new();
+    // The public entries pass the process gate, never `None`.
+    for (entry, call) in [
+        ("approve_and_sign<", "self.sign_consumed("),
+        ("send_prepared<", "self.send_signed("),
+        ("approve_and_broadcast<", "self.approve_and_broadcast_gated("),
+    ] {
+        match body(entry) {
+            Some(b) => {
+                let Some(at) = b.find(call) else {
+                    out.push(format!("{entry} no longer calls {call}"));
+                    continue;
+                };
+                let args = &b[at..at + b[at..].find(";").unwrap_or(b.len() - at)];
+                if !args.contains("crate::rpc::network_gate()") || args.contains("None") {
+                    out.push(format!("{entry} must pass crate::rpc::network_gate() to {call}: {args}"));
+                }
+            }
+            None => out.push(format!("fn {entry} not found")),
+        }
+    }
+    // The gated helpers use their own gate parameter, never `None`.
+    match body("approve_and_broadcast_gated<") {
+        Some(b) => {
+            if !b.contains(",gate)?;") || !b.contains("self.send_signed(rpc,prepared,cfg,gate)") || b.contains("None") {
+                out.push("approve_and_broadcast_gated must sign and send with its own gate".into());
+            }
+        }
+        None => out.push("fn approve_and_broadcast_gated not found".into()),
+    }
+    match body("sign_consumed<") {
+        Some(b) if b.contains("ifletSome(expected)=gate{rpc.verify_network(expected)") => {}
+        _ => out.push("sign_consumed must check verify_network against its gate before signing".into()),
+    }
+    // The Prepared parameter's binding name is not part of the rule (Join-8 calls it `tx`).
+    let gated_send = |b: &str| {
+        b.split("send_raw_transaction_gated(&").skip(1).any(|rest| {
+            rest.split_once(')')
+                .is_some_and(|(args, _)| args.ends_with(".raw,gate") && !args.contains("None"))
+        })
+    };
+    match body("send_signed<") {
+        Some(b) if gated_send(&b) => {}
+        _ => out.push("send_signed must send with send_raw_transaction_gated(.., gate)".into()),
+    }
+    out
+}
+
+#[test]
+fn k6_tripwire_every_signing_and_sending_entry_passes_the_network_gate() {
+    assert_eq!(network_gate_violations(include_str!("ceremony.rs")), Vec::<String>::new());
+    // Negative controls: each public entry with `None` in place of the process gate.
+    let src = include_str!("ceremony.rs");
+    for (needle, replacement) in [
+        ("            crate::rpc::network_gate(),\n        )?;", "            None,\n        )?;"),
+        ("self.send_signed(rpc, tx, cfg, crate::rpc::network_gate())", "self.send_signed(rpc, tx, cfg, None)"),
+        ("send_raw_transaction_gated(&tx.raw, gate)", "send_raw_transaction_gated(&tx.raw, None)"),
+        ("rpc.send_raw_transaction_gated(&tx.raw, gate)", "rpc.send_raw_transaction(&tx.raw)"),
+        ("self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, crate::rpc::network_gate())", "self.approve_and_broadcast_gated(vault, rpc, id, raw_ack, cfg, None)"),
+        ("self.send_signed(rpc, prepared, cfg, gate)", "self.send_signed(rpc, prepared, cfg, None)"),
+    ] {
+        assert_eq!(src.matches(needle).count(), 1, "control needle: {needle}");
+        let mutated = src.replace(needle, replacement);
+        assert!(!network_gate_violations(&mutated).is_empty(), "not caught: {replacement}");
+    }
+}
+
+/// One approval of a 1-wei tx at the node's pending nonce `nonce`, answered with `send`.
+fn send_at_fetched_nonce(c: &SignatureCeremony, v: &CustodyVault, nonce: u64, send: JsonValue) -> Result<BroadcastResult> {
+    let from = canonical_addr_lower();
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let mock = MockRpc::new(vec![ok(JsonValue::String(format!("0x{nonce:x}"))), ok(JsonValue::String("0x1".into())), send]);
+    c.approve_and_broadcast(v, &RpcClient::with_transport(mock), &view.id, false, bcfg(1))
+}
+
+// #443: on a profile upgraded from a build without the submitted-tx record, the first send at an
+// app-read nonce stays "outcome unknown"; a later send at a higher app-read nonce that the node
+// refuses reads "not sent".
+#[test]
+fn an_upgraded_profile_reports_not_sent_again_after_its_first_send() {
+    let dir = std::env::temp_dir().join(format!("citrate-ceremony-upgraded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmp");
+    std::fs::write(dir.join(crate::custody::ENVELOPE_FILE), b"sealed").expect("vault marker");
+    let file = dir.join(crate::submitted_log::RECORD_FILE);
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::open(file, crate::submitted_log::LEGACY_GENESIS));
+    let refused = || node_error("Insufficient funds: account balance 0");
+    let first = send_at_fetched_nonce(&c, &v, 5, refused());
+    assert!(submitted_outcome_unknown(&first).is_some(), "the first send after the upgrade: {first:?}");
+    let later = send_at_fetched_nonce(&c, &v, 6, refused());
+    assert!(matches!(later, Err(CeremonyError::Broadcast(_))), "a refusal at a higher app-read nonce is not sent: {later:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #443 tripwire helper: production ceremony code labels a nonce `Fetched` only where it was
+/// read from the node, in the same match arm as the `pending_nonce` call.
+fn fetched_label_only_on_a_node_read(src: &str) -> bool {
+    let n = src.matches("NonceSource::Fetched").count();
+    let Some(at) = src.find("NonceSource::Fetched") else {
+        return false;
+    };
+    let arm_start = src[..at].rfind("=>").unwrap_or(0);
+    n == 1 && src[arm_start..at].contains(".pending_nonce(")
+}
+
+#[test]
+fn tripwire_only_a_node_read_nonce_is_labelled_fetched() {
+    // Labelling a requester's nonce as fetched would end an upgraded profile's uncertainty for
+    // sends an earlier run may have made.
+    assert!(fetched_label_only_on_a_node_read(
+        "(None, Some(f)) => (rpc.pending_nonce(f)?, NonceSource::Fetched),"
+    ));
+    assert!(!fetched_label_only_on_a_node_read(
+        "(Some(n), _) => (*n, NonceSource::Fetched), (None, Some(f)) => (rpc.pending_nonce(f)?, x),"
+    ));
+    let src = strip_test_module(include_str!("ceremony.rs"));
+    assert!(
+        fetched_label_only_on_a_node_read(&src),
+        "ceremony.rs must label exactly one nonce Fetched, in the arm that reads pending_nonce"
+    );
+    // send_signed records the origin carried with the signed tx, never a fixed label. (#378 names
+    // the parked tx `tx`; the check is on the recorded argument, whatever the binding is called.)
+    let calls: Vec<&str> = src
+        .match_indices(".try_record_call(")
+        .map(|(i, _)| &src[i..src[i..].find(')').map_or(src.len(), |j| i + j)])
+        .collect();
+    assert!(
+        !calls.is_empty() && calls.iter().all(|c| c.contains(".nonce_source,")),
+        "send_signed records the nonce's origin: {calls:?}"
+    );
+}
+
+// ---- STD tripwire: every eth_sendRawTransaction call site classifies its errors ----
+
+/// Every non-test source file that sends a raw transaction must classify the send's errors with
+/// the contract v1.1 allowlist and record the bytes in the shared first-submission record (with
+/// their sender and nonce) before the send. A new send path that skips either fails this test.
+#[test]
+fn tripwire_every_raw_send_uses_the_classifier_and_the_first_submission_record() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![root.join("src"), root.join("../src-tauri/src")];
+    let mut offenders = Vec::new();
+    let mut sites = 0;
+    while let Some(d) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "rpc.rs" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap_or_default();
+            // K6 (#363): the send sites call the network-gated form.
+            if !(src.contains(".send_raw_transaction(") || src.contains(".send_raw_transaction_gated(")) {
+                continue;
+            }
+            sites += 1;
+            let classifies = src.contains("is_definitive_send_error(") || src.contains("send_refused(&e)");
+            let records = src.contains(".try_record_call(") || src.contains(".try_record_for(&");
+            let sole = src.contains(".sole_attempt(");
+            if !(classifies && records && sole) {
+                offenders.push(p.display().to_string());
+            }
+        }
+    }
+    assert!(sites >= 2, "the scan found {sites} send sites; the ceremony and the anchor both send");
+    assert!(offenders.is_empty(), "raw sends without the contract v1.1 classifier and the shared record: {offenders:?}");
 }

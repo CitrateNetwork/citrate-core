@@ -1,9 +1,9 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
 // SETTINGS section). Nine sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
-// API endpoints & keys, Keys & security, Budgets (HUP-S2.3), Memberships & billing,
-// Privacy & recovery (HUP-S10.5), App.
+// Account & RBAC, Connections, Providers & keys, MCP servers (HUP-S4.4), Node configuration,
+// API endpoints & keys, Keys & security, Terminal & folders, Budgets (HUP-S2.3), Personas & voice,
+// Memberships & billing, Privacy & recovery (HUP-S10.5), App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
 //   (a) a REAL working action (config toggles, AI-provider keyring flow,
@@ -24,12 +24,15 @@
 // not the UI.
 // =====================================================================
 import { useEffect, useState } from "react";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import { Store } from "../shell/store";
+import { HermesModelPicker } from "./HermesModelPicker";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { GRANT_DISCLAIMER } from "../data/grantCopy";
 import { PricingLink } from "../components/PricingLink";
-import { citrate } from "../chain";
+import { citrate, readTransport } from "../chain";
+import { ACTIVE_PROFILE, rpcHost as profileRpcHost } from "../network/profile";
+import { NetworkProfilePanel, useNetworkState } from "../network/NetworkPanel";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
@@ -45,6 +48,7 @@ import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
+import { HermesMcpPanel } from "../components/HermesMcpCard";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
@@ -54,6 +58,8 @@ import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
+import { ControlsPanel } from "./hermes/ControlsPanel";
+import { ModelsSettings } from "./providers/ModelsSettings";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -155,14 +161,18 @@ const AI_PRESETS: AiPreset[] = [
 const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
-  ["ai", "AI providers"],
-  ["escalation", "Escalation & spend"],
+  ["hermes", "Hermes controls"],
+  ["models", "Models"],
+  ["ai", "Providers & keys"],
+  ["escalation", "Escalation & spend caps"],
   ["mcp", "MCP servers"],
   ["web", "Web search & decisions"],
+  ["terminal", "Terminal & folders"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
   ["budgets", "Budgets"],
+  ["personas", "Personas & voice"],
   ["billing", "Memberships & billing"],
   ["privacy", "Privacy & recovery"],
   ["app", "App"],
@@ -170,7 +180,13 @@ const SECS: [string, string][] = [
 
 const btnCls = (active: boolean) => "btn btn-sm " + (active ? "btn-secondary" : "btn-ghost");
 
-export function Settings({ store, s }: { store: Store; s: AppState }) {
+/**
+ * Five-place navigation (0.5.2): Settings is composed into three homes. Settings itself shows the
+ * account-level sections; Hermes › Controls and Node › Advanced show the sections that moved there.
+ * `sections` limits the sub-nav to those ids (all sections when omitted); `heading` titles it.
+ */
+export function Settings({ store, s, sections, heading = "Settings" }: { store: Store; s: AppState; sections?: readonly string[]; heading?: string }) {
+  const secs = sections ? SECS.filter(([sid]) => sections.includes(sid)) : SECS;
   // Account & RBAC render the REAL signed-in identity (live /userinfo claims)
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
@@ -379,6 +395,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     },
   }));
 
+  // ---------- Network (K6-3) ----------
+  // Block 0 is read only while Node configuration is open.
+  const networkState = useNetworkState(ACTIVE_PROFILE, s.sSec === "node");
+
   // ---------- API endpoints & keys ----------
   // Q-A.1 (Rule 1) — the RPC health pill traces to a REAL probe, never an
   // unconditional "healthy". We call eth_blockNumber against the SELECTED RPC
@@ -386,15 +406,23 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   // frontend already ships (src/chain.ts). Until the probe resolves the honest
   // baseline is "checking…" (never a fabricated health assertion). The result is
   // reachable (block N) / unreachable — a truthful color + text from real data.
-  type RpcProbe = { phase: "checking" | "up" | "down"; block: number | null; host: string };
-  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : "rpc.citrate.ai";
+  // K6-3: the public RPC is the network profile's (src/network/profile.ts); with no profile RPC
+  // set there is nothing to probe, and the row says so.
+  type RpcProbe = { phase: "checking" | "up" | "down" | "notset"; block: number | null; host: string };
+  const publicRpcHost = profileRpcHost(ACTIVE_PROFILE);
+  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : (publicRpcHost ?? "public RPC");
   const [rpcProbe, setRpcProbe] = useState<RpcProbe>({ phase: "checking", block: null, host: rpcHost });
   useEffect(() => {
     if (s.sSec !== "api") return;
     let live = true;
+    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : ACTIVE_PROFILE?.rpcUrl;
+    if (!url) {
+      setRpcProbe({ phase: "notset", block: null, host: rpcHost });
+      return;
+    }
     setRpcProbe({ phase: "checking", block: null, host: rpcHost });
-    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : "https://rpc.citrate.ai";
-    const client = createPublicClient({ chain: citrate, transport: http(url) });
+    // K6 (P3): readTransport refuses without sending while the network profile is not ready.
+    const client = createPublicClient({ chain: citrate, transport: readTransport(url) });
     client
       .getBlockNumber()
       .then((bn) => {
@@ -409,7 +437,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   }, [s.sSec, s.rpc, rpcHost]);
   const rpcHealthColor = rpcProbe.phase === "up" ? "var(--ok)" : rpcProbe.phase === "down" ? "var(--danger)" : "var(--tx-3)";
   const rpcHealthText =
-    rpcProbe.phase === "checking"
+    s.rpc !== "local" && publicRpcHost === null
+      ? "public RPC not set · this build has no network set"
+      : rpcProbe.phase === "checking"
       ? rpcHost + " · checking…"
       : rpcProbe.phase === "up"
         ? rpcHost + " · reachable · block " + rpcProbe.block
@@ -471,9 +501,14 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         : memExpiry
           ? "expires " + memExpiry
           : "expiry not set";
-  const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
-  const mb =
-    s.entitlement === "active"
+  // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
+  // price is shown only on the checkout itself.
+  const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
+  // A free user has no membership to be "active": a neutral "free" badge, never the green one.
+  const memBadge = freeUser ? "free" : s.entitlement === "active" ? "active" : s.entitlement;
+  const mb = freeUser
+    ? ["var(--srf-2)", "var(--line-1)", "var(--tx-2)"]
+    : s.entitlement === "active"
       ? ["var(--ok-bg)", "var(--ok)", "var(--ok)"]
       : s.entitlement === "lapsed"
         ? ["var(--danger-bg)", "var(--danger)", "var(--danger)"]
@@ -501,14 +536,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     <div style={{ padding: "20px 26px 24px", display: "grid", gridTemplateColumns: "196px minmax(0,1fr)", gap: 22, maxWidth: 1000 }}>
       {/* left sub-nav */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>Settings</span>
-        {SECS.map(([id, label]) => {
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, marginBottom: 12 }}>{heading}</span>
+        {secs.map(([id, label]) => {
           const active = s.sSec === id;
           return (
             <button
               key={id}
-              // HUP-S0.8: Connections has one home — the Connections tab of the Settings hub.
-              onClick={() => (id === "connections" ? store.go("connections") : setSec(id))}
+              // Five-place navigation (0.5.2): every section listed here opens here, Connections
+              // included (its Google services and connection status). The Settings › Connections
+              // tab is the separate Connections page (social identity, MCP, models).
+              onClick={() => setSec(id)}
               style={{
                 fontFamily: "var(--font-sans)",
                 textAlign: "left",
@@ -634,6 +671,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- Models (D-11): governed vendor connections, caps, halts and usage ---------- */}
+        {s.sSec === "models" && <ModelsSettings onOpen={(url) => void store.openExternal(url)} />}
+
         {/* ---------- AI providers (CORE-AI1, @rule8) ---------- */}
         {s.sSec === "ai" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -646,6 +686,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </>
               )}
             </div>
+            <span data-testid="legacy-providers-note" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)" }}>
+              Keys added here are used by chat directly. They are separate from the vendor connections in{" "}
+              <button className="btn btn-ghost btn-sm" onClick={() => setSec("models")}>
+                Models
+              </button>{" "}
+              and are not counted against the caps in Models or recorded in its usage log.
+            </span>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Default model route</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -761,7 +808,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {s.sSec === "escalation" && <EscalationSettings />}
 
         {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
-        {s.sSec === "web" && <WebSearchSettings />}
+        {s.sSec === "web" && <WebSearchSettings localOnly={s.chatRoute === "local_only"} />}
 
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
@@ -777,7 +824,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     store.save();
                   }}
                 >
-                  testnet · 40204
+                  {ACTIVE_PROFILE?.nodeNetwork ?? "not set"} · {ACTIVE_PROFILE?.chainId ?? "not set"}
                 </button>
                 <button
                   className={btnCls(s.net === "local")}
@@ -803,15 +850,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <DisabledControl label="Move…" note="not available in this build" />
               </span>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="lbl">Bootnodes · default set</span>
-              <span
-                className="mono"
-                style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", lineHeight: 1.6 }}
-              >
-                boot1.citrate.ai:30303 · boot2.citrate.ai:30303 · boot-eu1.citrate.ai:30303
-              </span>
-            </div>
+            {/* K6-3: the network this build targets, every value from the network profile. */}
+            <NetworkProfilePanel profile={ACTIVE_PROFILE} status={networkState.status} live={networkState.live} />
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="lbl">Resource cap · CPU</span>
               <span style={{ display: "flex", gap: 8 }}>
@@ -850,7 +890,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     store.save();
                   }}
                 >
-                  rpc.citrate.ai
+                  {publicRpcHost ?? "public RPC · not set"}
                 </button>
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -1055,6 +1095,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </span>
                 <span
                   className="mono"
+                  data-testid="membership-badge"
                   style={{
                     fontSize: 9.5,
                     letterSpacing: ".1em",
@@ -1070,17 +1111,29 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </span>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
-                  Renew ↗
-                </button>
+                {freeUser ? (
+                  // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
+                  // Disabled while the held-grant check runs: one attempt at a time (core#584).
+                  <button className="btn btn-secondary btn-sm" disabled={s.billingChecking} onClick={() => void store.becomeMember()}>
+                    Become a member ↗
+                  </button>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
+                    Renew ↗
+                  </button>
+                )}
                 {/* Q-A.1 (Rule 1) — the Stripe customer-portal link has no backend
                     in this build; honest DISABLED state, not a toast excuse. Renew
-                    (left) is the REAL wired checkout path. */}
-                <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
+                    (left) is the REAL wired checkout path. A free user has nothing to cancel. */}
+                {!freeUser && <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />}
               </div>
-              <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}
-              </p>
+              {!freeUser && (
+                <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
+                  On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours.
+                  {/* The grant sentence only for someone who holds a grant. */}
+                  {s.hasGrant && <> The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}</>}
+                </p>
+              )}
             </div>
             {s.hasSbt && (
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1130,10 +1183,64 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- K2 (0.5.2): Hermes controls, first depth (same settings as the cards here) ---------- */}
+        {s.sSec === "hermes" && <ControlsPanel store={store} s={s} />}
         {/* ---------- MCP servers (HUP-S4.4) ---------- */}
-        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
+        {/* K2: Hermes's connected tools (memory graph, CitrateScan, this node) moved here from the Agent page. */}
+        {s.sSec === "mcp" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <HermesMcpPanel />
+            <McpServersPanel io={desktopMcpIo} />
+          </div>
+        )}
         {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}
         {s.sSec === "privacy" && <PrivacySection io={desktopPrivacyIo} now={() => new Date()} toast={(m) => store.toast(m)} />}
+
+        {/* ---------- Terminal & folders (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "terminal" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
+              <span className="eyebrow">Hermes · terminal commands</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  id="hermes-terminal"
+                  type="checkbox"
+                  checked={!!s.hermesTerminal}
+                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
+                />
+                {TERMINAL_ACCESS_LABEL}
+              </label>
+              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
+            </div>
+            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
+              <span className="eyebrow">Hermes · folder access</span>
+              <GrantsPanel io={desktopGrantsIo} />
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Personas & voice (K2: from App to Hermes › Controls › Details) ---------- */}
+        {s.sSec === "personas" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="eyebrow">Hermes · persona</span>
+              <PersonaPicker
+                api={bridge.agentHarness}
+                chosen={s.hermesPersona}
+                custom={s.customPersonas}
+                onChoose={(p) => store.chooseHermesPersona(p)}
+                onAddCustom={(p) => store.addCustomPersona(p)}
+                onRemoveCustom={(id) => store.removeCustomPersona(id)}
+                readAloud={s.hermesReadAloud}
+                onReadAloud={(on) => store.setHermesReadAloud(on)}
+                speechVoices={browserSpeech().voices()}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
@@ -1155,42 +1262,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 Run Hermes's loop in the agent sidecar
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
+                On by default. Uses the model chosen below (your local model unless you pick a cloud one), and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop on the local model instead.
               </span>
-            </div>
-            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
-              <span className="eyebrow">Hermes · terminal commands</span>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-                <input
-                  id="hermes-terminal"
-                  type="checkbox"
-                  checked={!!s.hermesTerminal}
-                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
-                />
-                {TERMINAL_ACCESS_LABEL}
-              </label>
-              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
-            </div>
-            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
-              <span className="eyebrow">Hermes · folder access</span>
-              <GrantsPanel io={desktopGrantsIo} />
-            </div>
-            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              <span className="eyebrow">Hermes · persona</span>
-              <PersonaPicker
-                api={bridge.agentHarness}
-                chosen={s.hermesPersona}
-                custom={s.customPersonas}
-                onChoose={(p) => store.chooseHermesPersona(p)}
-                onAddCustom={(p) => store.addCustomPersona(p)}
-                onRemoveCustom={(id) => store.removeCustomPersona(id)}
-                readAloud={s.hermesReadAloud}
-                onReadAloud={(on) => store.setHermesReadAloud(on)}
-                speechVoices={browserSpeech().voices()}
-              />
+              {/* D-11 (ADR P-5): the model the loop runs on, local or a connected cloud model. */}
+              <HermesModelPicker value={s.hermesCloudModel} route={s.chatRoute} onChoose={(c) => store.setHermesCloudModel(c)} />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>

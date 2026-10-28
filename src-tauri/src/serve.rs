@@ -200,6 +200,11 @@ pub struct LlamaServerManager {
 }
 
 impl LlamaServerManager {
+    /// This service's supervisor slot, for the services registry's read-only snapshot (K1a-2).
+    pub(crate) fn supervisor_slot(&self) -> &Mutex<Option<Supervisor>> {
+        &self.sup
+    }
+
     /// Build a manager over an explicit binary, model path, crash path, and port.
     /// Production uses [`build_serve_state`]; tests inject a stub binary + a temp
     /// model + a temp crash path.
@@ -750,7 +755,9 @@ pub async fn model_inference_state(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        model_inference_state_sync(st0, st1, gateway_configured)
+        // K2: the member's chat route (an unreadable setting counts as local only).
+        let route = crate::chat_route::effective(&crate::chat_route::route_dir(&app_h)?);
+        model_inference_state_sync(st0, st1, gateway_configured, route)
     })
     .await
 }
@@ -760,6 +767,7 @@ pub fn model_inference_state_sync(
     serve: State<'_, ServeState>,
     model: State<'_, crate::model::ModelState>,
     gateway_configured: bool,
+    route: crate::chat_route::ChatRoute,
 ) -> std::result::Result<String, String> {
     use crate::model::ModelStatus;
     let model_status = model.0.status();
@@ -770,7 +778,7 @@ pub fn model_inference_state_sync(
         downloading,
         gateway_key_configured: gateway_configured,
     };
-    Ok(crate::ai::select_inference_state(inputs)
+    Ok(crate::chat_route::select_route(inputs, route)
         .as_str()
         .to_string())
 }

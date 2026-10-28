@@ -26,11 +26,6 @@ pub struct MembershipPrice {
     pub display_amount: String,
 }
 
-/// `{base}/api/membership/price`.
-pub fn price_url(base: &str) -> String {
-    format!("{}/api/membership/price", base.trim_end_matches('/'))
-}
-
 /// The symbol and minor-unit scale of each currency the app can state (ISO 4217). Any other
 /// currency is refused, and the app shows the pricing link instead.
 fn currency_format(currency: &str) -> Option<(&'static str, u32)> {
@@ -159,7 +154,8 @@ pub async fn membership_price<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> std::result::Result<MembershipPrice, String> {
     let cfg = crate::config::config_read_sync(app)?;
-    let url = price_url(&cfg.core_membership_url);
+    // The pinned membership base (kit config): never the stored field directly.
+    let url = cfg.membership_price_url();
     tauri::async_runtime::spawn_blocking(move || {
         let (status, body) = fetch(&url)?;
         parse_price(status, &body)

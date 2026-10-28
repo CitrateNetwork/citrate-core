@@ -150,6 +150,12 @@ socket2 = { version = "0.6", features = ["all"] }
 # lock (it was a dev-dependency for the ACL tests, which still use it).
 toml = "0.9"
 
+# RC52 G8 — updater end to end. A test build only (K1-L `update-e2e`, docs/UPDATER_E2E.md): the app
+# checks, verifies, installs and restarts by itself once at start-up (src/updater_e2e.rs). No release
+# build enables it; upgrade_updater_feed_tests fails if a release path or `default` names it.
+[features]
+updater-e2e = []
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -157,6 +163,12 @@ libc = "0.2"
 # worker thread with a caller-side deadline, and on expiry `CancelSynchronousIo` aborts the worker's
 # blocked pipe read/write. windows-sys 0.61 is ALREADY in the tree (interprocess depends on it), so
 # naming it directly adds NO new compiled crate. Windows-only.
+# RC52 G8 test-only: run tauri-plugin-updater's own check/download/verify against a loopback feed in a
+# mock app (`test` adds no crates). Not on Windows: a test binary built with tauri's mock runtime there
+# fails to load (STATUS_ENTRYPOINT_NOT_FOUND), and the Windows build ships no updater artifacts.
+[target.'cfg(not(windows))'.dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }
 
@@ -177,3 +189,9 @@ rlp = "0.5"
 # HUP-S6 test-only: the local hello-mint end-to-end test renders the template with the
 # workspace's own renderer crate (templates/renderer, no new third-party crates).
 citrate-templates = { path = "../templates/renderer" }
+# K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
+# prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
+blake2 = "0.10"
+# RC52 G8 test-only: check the golden signatures as `minisign -V` does (minisign-verify is already in
+# Cargo.lock: tauri-plugin-updater and citrate-components use it).
+minisign-verify = "0.2"

@@ -29,15 +29,18 @@ import type {
   DocsIngestReport,
   SeedFacts,
   SeedReport,
-  PendingWithdrawalsRead,
   AiProviderStatus,
+  ChatConsent,
   GrantStatus,
+  ActivationStatusView,
   ModelStatus,
   NodeLogLine,
   NodeStatusView,
   ConnectionInfo,
+  ChatRoute,
+  ChatRouteStatus,
 } from "../domains";
-import { Unavailable } from "../types";
+import { SignedTxExpired, Unavailable } from "../types";
 import { tauriImportKnowledge } from "./knowledge";
 
 function unavailable(domain: string, op: string): never {
@@ -134,21 +137,36 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         // 40204, returning the real tx hash + block. Never returns key material.
         return invoke<BroadcastResult>("sign_and_broadcast", { id, rawAck });
       },
+      // Join-8 — sign without sending (returns the tx hash), then send the signed tx.
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        return invoke<{ txHash: string }>("sign_prepare", { id, rawAck });
+      },
+      async sendPrepared(id: string): Promise<BroadcastResult> {
+        try {
+          return await invoke<BroadcastResult>("sign_send_prepared", { id });
+        } catch (e) {
+          // sign_send_prepared returns a STRUCTURED error ({ code, message }). Only the
+          // "signedTxExpired" code means nothing was sent; the message text never decides.
+          if (e && typeof e === "object" && (e as { code?: unknown }).code === "signedTxExpired") {
+            throw new SignedTxExpired(String((e as { message?: unknown }).message ?? "signed transaction expired"));
+          }
+          if (e instanceof Error) throw e;
+          if (e && typeof e === "object" && "message" in e) throw new Error(String((e as { message: unknown }).message));
+          throw new Error(String(e));
+        }
+      },
       async reject(id: string): Promise<void> {
         await invoke("sign_reject", { id });
       },
     },
     wallet: {
       // CORE — REAL balances: native liquid SALT via eth_getBalance + the real
-      // claimable (ContributionAccounting) + the real self-stake
-      // (LiquidStakingPool.balanceOf) on 40204. `staked` here is the user's OWN
-      // pool position; the vaulted membership grant (32k) is tracked separately in
-      // AppState (hasGrant), so the UI adds it on top. Every field is a live read
-      // (Rule 1) — no `-1` sentinel now that the pool balance is grounded.
-      async balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }> {
-        const b = await invoke<{ liquidWei: string; claimableWei: string; stakedWei: string; address: string }>("wallet_balances");
+      // claimable (ContributionAccounting) on 40204. Every field is a live read
+      // (Rule 1). No self-stake: staking is through the validator bond (D-9).
+      async balances(): Promise<{ liquid: number; claimable: number; address: string }> {
+        const b = await invoke<{ liquidWei: string; claimableWei: string; address: string }>("wallet_balances");
         const toSalt = (wei: string) => Number(BigInt(wei)) / 1e18;
-        return { liquid: toSalt(b.liquidWei), staked: toSalt(b.stakedWei), claimable: toSalt(b.claimableWei), address: b.address };
+        return { liquid: toSalt(b.liquidWei), claimable: toSalt(b.claimableWei), address: b.address };
       },
       // CORE item 4 — REAL indexed 40204 tx history from the CitrateScan `txlist`
       // endpoint (public, no-auth read via the Rust `wallet_activity` command;
@@ -173,29 +191,6 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // the Rust `amount_wei` arg. Mirrors agent.claim's request→broadcast split.
       async send(to: string, amountWei: string): Promise<CeremonyView> {
         return invoke<CeremonyView>("wallet_send", { to, amountWei });
-      },
-      // CORE (@rule8) — build a LiquidStakingPool deposit() stake as a PENDING
-      // ceremony and return its decoded view. Signs NOTHING; the human approves
-      // via signing.broadcast (B1.4 → real 40204 deposit tx). Mirrors send().
-      async stake(amountWei: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_stake", { amountWei });
-      },
-      // CORE WP2 (@rule8) — build a requestWithdrawal(shares) ceremony. The
-      // SALT→shares conversion is done in Rust from live reads; `amountWei` is the
-      // SALT to withdraw. Signs NOTHING; approved via signing.broadcast. Mirrors
-      // stake().
-      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_request_withdrawal", { amountWei });
-      },
-      // CORE WP2 (@rule8) — build a claimWithdrawal(id) ceremony for a matured
-      // request. The 50,400-block delay is enforced on-chain. Signs NOTHING.
-      async claimWithdrawal(id: string): Promise<CeremonyView> {
-        return invoke<CeremonyView>("wallet_claim_withdrawal", { requestId: id });
-      },
-      // CORE WP2 — the wallet's real pending withdrawals from live chain state
-      // (getLogs + withdrawals(id) + block_number). A fresh wallet returns [].
-      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
-        return invoke<PendingWithdrawalsRead>("wallet_pending_withdrawals");
       },
       // Seamless device provisioning + first-run wallet mint (@rule8). Returns
       // ONLY the public address (never key/seed). Idempotent — the Rust command
@@ -240,12 +235,22 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async registerValidator() {
         return invoke<CeremonyView>("node_register_validator");
       },
+      // Join-8 — the Activate-validator step's read (bond, membership, registry, sync, block time).
+      async activationStatus(memberAddress: string, txHash?: string | null) {
+        return invoke<ActivationStatusView>("validator_activation_status", { memberAddress, txHash: txHash ?? null });
+      },
+      async activationForget(txHash: string) {
+        return invoke<boolean>("validator_activation_forget", { txHash });
+      },
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
       },
-      async validatorEarnings() {
+      // #394: `pubkey` is the validator key to read (MemberBond.pubkey() for a deployed bond);
+      // without it Rust reads the node's own proposer key.
+      async validatorEarnings(pubkey?: string) {
         return invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>(
           "node_validator_earnings",
+          pubkey ? { pubkey } : undefined,
         );
       },
       // W1.x — arm the producer once synced (consensus-gated). The respawn mints
@@ -323,9 +328,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // .claimableNow via node_validator_earnings; only a non-validator is checked against
       // ContributionAccounting. Checking ContributionAccounting for a validator told a member with
       // claimable validator rewards that there was nothing to claim.
-      async claim(opts?: { validator: boolean }): Promise<ClaimResult> {
+      // #394: the bond claims for MemberBond.pubkey(), so the pre-check reads that key.
+      async claim(opts?: { validator: boolean; pubkey?: string | null }): Promise<ClaimResult> {
         const claimableWei = opts?.validator
-          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings")).claimableWei
+          ? (await invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>("node_validator_earnings", opts.pubkey ? { pubkey: opts.pubkey } : undefined)).claimableWei
           : (await invoke<{ claimableWei: string; walletAddress: string; contract: string }>("agent_earnings")).claimableWei;
         if (BigInt(claimableWei) === 0n) {
           return { kind: "nothing", claimableWei };
@@ -398,8 +404,16 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async clearProvider(providerId: string): Promise<void> {
         await invoke("ai_clear_provider", { providerId });
       },
-      async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
-        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
+      async infer(providerId: string, messagesJson: string, contextJson: string, consentId: string): Promise<string> {
+        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson, consentId });
+      },
+      // K2 — core mints the one-time consent for one held message (the remote send needs it).
+      async consentPrepare(providerId: string, message: string): Promise<ChatConsent> {
+        return invoke<ChatConsent>("chat_consent_prepare", { providerId, message });
+      },
+      // K2 — drop the consent of a held message the member did not send (core's in-memory book).
+      async consentDrop(consentId: string): Promise<void> {
+        await invoke("chat_consent_drop", { consentId });
       },
       // W3.3 — one agentic turn (tools attached; returns the assistant message
       // JSON with any tool_calls). The webview runs the loop; Rust holds the key.
@@ -408,8 +422,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         messagesJson: string,
         toolsJson: string,
         contextJson: string,
+        consentId: string,
       ): Promise<string> {
-        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson });
+        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson, consentId });
       },
       // BC-3.2 — REAL LOCAL inference. The webview supplies ONLY messages +
       // context; Rust derives the loopback endpoint from the serve manager's
@@ -424,6 +439,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // real model status + serve health + the gateway-key presence.
       async inferenceState(gatewayConfigured: boolean): Promise<string> {
         return invoke<string>("model_inference_state", { gatewayConfigured });
+      },
+      // K2 — the member's chat route, stored in Rust (chat_route.rs).
+      async route(): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_get");
+      },
+      async setRoute(route: ChatRoute): Promise<ChatRouteStatus> {
+        return invoke<ChatRouteStatus>("chat_route_set", { route });
       },
     },
     membership: {

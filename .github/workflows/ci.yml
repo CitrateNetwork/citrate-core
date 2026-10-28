@@ -69,8 +69,16 @@ jobs:
           # below fails if anything else ever pulls a zip older than 9. Remove these ignores
           # when the updater moves to zip >= 9.
           python3 scripts/check-zip-users.py
+          # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6): multiple timing variability issues in
+          # operations intended to be constant-time. EXPIRES 2026-11-09. elliptic-curve 0.13
+          # requires crypto-bigint ^0.5; the fix is in the 0.14 curve line, held back upstream
+          # (revm-precompile, openmls_rust_crypto and bip32 still require the 0.13 line).
+          # Guard: scripts/check-crypto-bigint-users.py.
+          python3 scripts/check-crypto-bigint-users.py --self-test
+          python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
-            --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369
+            --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0387
 
   node:
     name: node (typecheck, build)
@@ -86,6 +94,15 @@ jobs:
       # committed sha256 manifest, verified before anything is staged or signed.
       - name: release pin tripwire
         run: scripts/ci/check-release-pins.sh
+      # Release component pins: release/components.json, the build scripts, the bundle overlays,
+      # src-tauri/runtime-deps.sha256, release.yml (incl. its dry-run guards) and the app's model
+      # pin must agree; a component script that builds outside the pinned engine fails here.
+      - name: release component pins
+        run: node scripts/component-pins.mjs check
+      # K6: every network profile is well formed, an unset value always has a reason, and the
+      # active one is release-ready (the same check release.yml runs as the G0 gate).
+      - name: network profile
+        run: scripts/check-network-profile.sh --release
       - name: typecheck
         run: npm run typecheck
       - name: test

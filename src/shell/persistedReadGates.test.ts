@@ -1,6 +1,6 @@
-// STD tripwire (Codex P1 on #366): a persisted field that gates a chain read can come back from
-// localStorage while the observed state it depends on starts empty, so the read never runs after a
-// restart. Every `const needX = …` read gate in the shell is scanned; any PERSIST_KEYS field it
+// STD tripwire (Codex P1 on #366; ported onto main's bond model): a persisted field that gates a
+// chain read can come back from localStorage while the observed state it depends on (bondActivated,
+// bondPubkey, bondUnlocked) starts empty, so the read never runs after a restart. Every `const needX = …` read gate in the shell is scanned; any PERSIST_KEYS field it
 // reads must have a restart test (a "null after restore" case) named here, or a documented reason.
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -9,8 +9,10 @@ import { PERSIST_KEYS } from "./state";
 
 /** Persisted field → the restart test that covers its read gate (or why none is needed). */
 const RESTART_COVERAGE: Record<string, { test: string } | { reason: string }> = {
-  bondedStake: { test: "a returning member with a restored grant and stake reads the bond and the registry" },
-  hasGrant: { test: "a returning member with a restored grant and stake reads the bond and the registry" },
+  // needBond: a restored stake below the bonded threshold re-reads while the node runs; a restored
+  // full stake no longer needs the bond read, and the bond reads come through needActivation.
+  bondedStake: { test: "with the node stopped and the grant restored from disk, the poll reads an unread activated() flag" },
+  hasGrant: { test: "with the node stopped and the grant restored from disk, the poll reads an unread activated() flag" },
 };
 
 function sources(dir: string): string[] {

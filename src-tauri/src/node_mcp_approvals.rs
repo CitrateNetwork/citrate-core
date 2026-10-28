@@ -15,8 +15,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
-/// How long a request waits for the member before it expires (15 minutes).
-pub const REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
+/// How long a request waits for the member before it expires: the signature ceremony's pending
+/// TTL (15 minutes), so an inbox request and its ceremony expire together.
+pub const REQUEST_TTL_MS: u64 = crate::ceremony::PENDING_TTL_MS;
 /// The most requests that may be pending at once, across all clients.
 pub const MAX_PENDING: usize = 16;
 /// How many requests (pending + decided) are kept for display and polling.
@@ -71,7 +72,7 @@ impl McpAction {
                 format!("Share file {cid} with the cluster of group {group}")
             }
             McpAction::InviteCreate { group, for_handle } => format!(
-                "Create a one-time invite to group {group} for {for_handle}. The agent will receive the invite link."
+                "Create a one-time invite to group {group} for {for_handle}. The agent will receive the invite link. Whoever opens it asks to join; you approve or decline each request in Groups."
             ),
             McpAction::InviteRevoke { group, invite_id } => {
                 format!("Revoke invite {invite_id} for group {group}")

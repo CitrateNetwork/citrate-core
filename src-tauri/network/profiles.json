@@ -1,0 +1,89 @@
+{
+  "_comment": "The network profiles this build knows (K6 network switch). ONE source for chain id, genesis, node network, RPC, explorer, faucet, bootnodes, address book (path and the sha256 of the canonical book it came from) and the minimum node chain rev, read by the Rust side (src-tauri/src/network_profile.rs) and the webview (src/network/profile.ts). `active` is the network this build targets. A value that is not known yet is null and named in `pending` with what sets it; it is never a placeholder. A profile with any null field is not ready, and the app refuses to start a node or sign against it. `genesisProfile` is the `[chain] genesis_profile` the app writes into the node config; it chooses the block 0 the node builds and must be a key of `nodeGenesisProfiles`. `nodeGenesisProfiles` lists the genesis profiles the bundled node (scripts/build-sidecar.sh MIN_CHAIN_REV) builds: `genesisHash` is the block 0 it builds on chain 40204 (a profile naming it must have that genesis), `nodeDefault` says the node also builds it when the config names no genesis profile, and `compiledActivations` says the genesis compiles its ValidatorRegistry and activation height, so the app passes no CITRATE_VALIDATOR_* override (the node refuses one that differs).",
+  "active": "alpha-r1005",
+  "nodeGenesisProfiles": {
+    "testnet_beta": {
+      "genesisHash": "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1",
+      "nodeDefault": true,
+      "compiledActivations": false
+    },
+    "r1006": {
+      "genesisHash": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4",
+      "nodeDefault": false,
+      "compiledActivations": true
+    }
+  },
+  "profiles": {
+    "alpha-r1005": {
+      "label": "Citrate alpha network (r1005 genesis)",
+      "chainId": 40204,
+      "genesisHash": "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1",
+      "genesisProfile": "testnet_beta",
+      "nodeNetwork": "testnet",
+      "rpcUrl": "https://rpc.citrate.ai",
+      "explorerUrl": "https://explorer.citrate.ai",
+      "faucetUrl": "https://faucet.citrate.ai",
+      "bootnodes": [
+        "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+        "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+        "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+        "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
+      ],
+      "addressBook": "addresses/40204.json",
+      "addressBookSha256": "4ae8828a85c23b5a0b0d3652948e20b0705f35c4c1cd8a684be7d2ea8f405419",
+      "minChainRev": "c384fc982882f830306142c70dd643b59fcda1f6",
+      "pending": {}
+    },
+    "r1006": {
+      "label": "Citrate testnet (r1006 reroll, RC52 soak)",
+      "chainId": 40204,
+      "genesisHash": null,
+      "genesisProfile": "r1006",
+      "nodeNetwork": "testnet",
+      "rpcUrl": "https://rpc.citrate.ai",
+      "explorerUrl": "https://explorer.citrate.ai",
+      "faucetUrl": "https://faucet.citrate.ai",
+      "bootnodes": [
+        "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+        "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+        "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+        "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
+      ],
+      "addressBook": "addresses/40204.json",
+      "addressBookSha256": null,
+      "minChainRev": null,
+      "pending": {
+        "genesisHash": "recorded at the r1006 reroll (block 0 of the fleet after fleet_agree.sh); fill with scripts/fill-network-profile.sh",
+        "addressBookSha256": "the canonical address book exported at the r1006 reroll; fill with scripts/fill-network-profile.sh",
+        "minChainRev": "the citrate-chain rev the r1006 fleet runs (WP-S1-REPIN); fill with scripts/fill-network-profile.sh"
+      }
+    },
+    "genesis-2026-12": {
+      "label": "Citrate network (genesis 2026-12-01)",
+      "chainId": null,
+      "genesisHash": null,
+      "genesisProfile": null,
+      "nodeNetwork": null,
+      "rpcUrl": null,
+      "explorerUrl": null,
+      "faucetUrl": null,
+      "bootnodes": null,
+      "addressBook": null,
+      "addressBookSha256": null,
+      "minChainRev": null,
+      "pending": {
+        "chainId": "owner decision D1 in the C2 genesis spec (recommended: keep 40204)",
+        "genesisHash": "recorded at the genesis cut",
+        "genesisProfile": "the citrate-chain genesis profile the genesis node build compiles (chain work item G1), added to nodeGenesisProfiles with its block 0",
+        "nodeNetwork": "the explicit genesis profile name from chain work item G1 (C2 decision D10)",
+        "rpcUrl": "chain team, with the fleet for the new genesis",
+        "explorerUrl": "chain team, with the explorer reindex for the new genesis",
+        "faucetUrl": "chain team, faucet policy D6",
+        "bootnodes": "chain team, from the bootnodes of the new genesis fleet (Join 7)",
+        "addressBook": "the address book generated after the genesis contract deploy (frozen at rehearsal 1)",
+        "addressBookSha256": "the sha256 of the canonical address book frozen at the genesis contract deploy",
+        "minChainRev": "the citrate-chain rev of the node built for the genesis"
+      }
+    }
+  }
+}

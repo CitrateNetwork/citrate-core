@@ -1,26 +1,21 @@
-// CX bridge contract — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back).
+// CX bridge contract — group invites (D-12: one flow, request and approve).
 import { describe, it, expect } from "vitest";
 import { bridge } from "../index";
 
 describe("CX bridge contract — invites", () => {
-  it("exposes the invites domain with its methods", () => {
-    expect(bridge.invites).toBeDefined();
-    for (const m of [
-      "create", "redeem", "list", "verifyConsume", "revoke",
-      "submitClaim", "pollClaims", "referralLog", "exportReferralLog",
-    ] as const) {
-      expect(typeof bridge.invites[m]).toBe("function");
-    }
+  it("exposes exactly the request-and-approve methods", () => {
+    expect(Object.keys(bridge.invites).sort()).toEqual(
+      ["approve", "check", "create", "decline", "dismiss", "list", "myRequests", "preview", "request", "requests", "revoke"],
+    );
   });
-  it("sim is honest — empty lists, verifyConsume rejects, self-admit/create need the desktop (Rule 1)", async () => {
+  it("sim is honest — nothing is made, sent or approved without the desktop app (Rule 1)", async () => {
     if (bridge.mode === "sim") {
       expect(await bridge.invites.list("grp")).toEqual([]);
-      expect(await bridge.invites.verifyConsume("grp", "tok")).toBe(false);
-      expect(await bridge.invites.referralLog()).toEqual([]);
-      expect(await bridge.invites.exportReferralLog()).toBe("[]");
-      // No relay/daemon in the web preview: minting and self-admit throw honestly, never a fake success.
-      await expect(bridge.invites.create("grp", "@x")).rejects.toThrow();
-      await expect(bridge.invites.redeem("citrate://invite?g=grp&t=tok")).rejects.toThrow();
+      expect(await bridge.invites.myRequests()).toEqual([]);
+      await expect(bridge.invites.create("grp", "", "")).rejects.toThrow(/desktop app/);
+      await expect(bridge.invites.requests("grp")).rejects.toThrow(/desktop app/);
+      await expect(bridge.invites.approve("grp", "id", "0xa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.invites.request("citrate://invite?g=grp")).rejects.toThrow(/desktop app/);
     }
   });
 });

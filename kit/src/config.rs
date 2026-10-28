@@ -35,8 +35,26 @@ pub struct AppConfig {
     /// domain. `#[serde(default)]` so a config.json persisted BEFORE this field
     /// existed still deserializes (it takes the prod default) — otherwise a
     /// pre-D3.C on-disk store would fail `config_read`.
-    #[serde(rename = "coreMembershipUrl", default = "default_core_membership_url")]
+    ///
+    /// A stored value is read through the host pin ([`pinned_membership_url`]): one outside
+    /// [`CORE_MEMBERSHIP_HOSTS`] reads back as the default.
+    #[serde(
+        rename = "coreMembershipUrl",
+        default = "default_core_membership_url",
+        deserialize_with = "pinned_membership_url"
+    )]
     pub core_membership_url: String,
+}
+
+/// Deserialize a stored membership URL through the host pin: a value that fails
+/// [`is_valid_core_membership_url`] reads back as the default.
+fn pinned_membership_url<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let v = String::deserialize(d)?;
+    Ok(if is_valid_core_membership_url(&v) {
+        v
+    } else {
+        default_core_membership_url()
+    })
 }
 
 /// The prod core-membership base URL default (also the serde backfill for a
@@ -57,12 +75,21 @@ fn default_core_membership_url() -> String {
 /// PERSISTENTLY. We require:
 ///   * the `https` scheme (never `http`/`file`/`javascript:` — mirrors
 ///     `shell::open_external` and `ai::validate_https_base_url`), and
-///   * a host on the core-membership allowlist: exactly `core-membership.vercel.app`
-///     (prod) OR a `core-membership-*.vercel.app` Vercel preview deploy.
+///   * a host in [`CORE_MEMBERSHIP_HOSTS`], compared exactly. A `core-membership-*` pattern
+///     would also match hosts anyone can register on Vercel (a project named
+///     `core-membership-…` gets `<name>.vercel.app`), so previews are pinned by name too.
 ///
 /// Any other value is rejected so `apply` keeps the previous (trusted) value
 /// rather than persisting a hostile one. The OIDC authority uses the same
 /// pin-don't-trust discipline (`oidc::AuthorityConfig::production`).
+/// The membership hosts the app may open: production (the custom domain and the project's own
+/// Vercel domain) and the preview alias of the project's `main` branch.
+pub(crate) const CORE_MEMBERSHIP_HOSTS: &[&str] = &[
+    "membership.citrate.ai",
+    "core-membership.vercel.app",
+    "core-membership-git-main-saulbuilds-projects.vercel.app",
+];
+
 pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
     let Ok(parsed) = url::Url::parse(candidate) else {
         return false;
@@ -71,11 +98,7 @@ pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
         return false;
     }
     match parsed.host_str() {
-        Some(host) => {
-            host == "membership.citrate.ai"
-                || host == "core-membership.vercel.app"
-                || (host.starts_with("core-membership-") && host.ends_with(".vercel.app"))
-        }
+        Some(host) => CORE_MEMBERSHIP_HOSTS.contains(&host),
         None => false,
     }
 }
@@ -151,19 +174,29 @@ impl AppConfig {
     /// the popup navigates to. Trims a trailing slash on the base so we never
     /// emit a doubled `//checkout`.
     pub fn checkout_url(&self) -> String {
-        format!(
-            "{}/checkout",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/checkout", self.membership_base())
     }
 
     /// The enterprise-lead capture endpoint (`{core_membership_url}/api/enterprise/lead`) — where the
     /// step-3 "Enterprise · Contact us" form POSTs a qualified sales lead. Same base as checkout.
     pub fn enterprise_lead_url(&self) -> String {
-        format!(
-            "{}/api/enterprise/lead",
-            self.core_membership_url.trim_end_matches('/')
-        )
+        format!("{}/api/enterprise/lead", self.membership_base())
+    }
+
+    /// C1-P — the public membership price route (`{core_membership_url}/api/membership/price`) the
+    /// app reads the membership price from. Same pinned base as checkout.
+    pub fn membership_price_url(&self) -> String {
+        format!("{}/api/membership/price", self.membership_base())
+    }
+
+    /// The membership base every membership URL is built from (trailing slash trimmed). It is
+    /// pinned again here, so a value that reached the struct any other way is never used.
+    fn membership_base(&self) -> String {
+        if is_valid_core_membership_url(&self.core_membership_url) {
+            self.core_membership_url.trim_end_matches('/').to_string()
+        } else {
+            default_core_membership_url()
+        }
     }
 }
 
@@ -275,13 +308,15 @@ mod tests {
             "https://membership.citrate.ai/checkout"
         );
         let preview = AppConfig::default().apply(AppConfigPatch {
-            core_membership_url: Some("https://core-membership-preview.vercel.app/".into()),
+            core_membership_url: Some(
+                "https://core-membership-git-main-saulbuilds-projects.vercel.app/".into(),
+            ),
             ..Default::default()
         });
         // Trailing slash on the base does not produce a doubled `//checkout`.
         assert_eq!(
             preview.checkout_url(),
-            "https://core-membership-preview.vercel.app/checkout"
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app/checkout"
         );
     }
 
@@ -366,14 +401,42 @@ mod tests {
         }
     }
 
+    /// Only the exact membership hosts are accepted. A host anyone can register on Vercel by naming
+    /// a project `core-membership-…` (a per-deployment URL, another team's branch alias, a look-alike
+    /// with our team slug in the name) is refused, and the previous value kept.
+    #[test]
+    fn registrable_vercel_hosts_are_rejected() {
+        let prev = AppConfig::default().core_membership_url;
+        for hostile in [
+            "https://core-membership-preview.vercel.app",
+            "https://core-membership-evil.vercel.app",
+            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-attacker.vercel.app",
+            "https://core-membership-x-saulbuilds-projects.vercel.app",
+            "https://core-membership-6afvzy0qh-saulbuilds-projects.vercel.app",
+            "https://core-membership.vercel.app.evil.com",
+            "https://membership.citrate.ai.evil.com",
+            "https://evil-membership.citrate.ai",
+        ] {
+            let merged = AppConfig::default().apply(AppConfigPatch {
+                core_membership_url: Some(hostile.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(
+                merged.core_membership_url, prev,
+                "{hostile:?} must be rejected"
+            );
+        }
+    }
+
     /// CORE-B-004: legitimate prod + Vercel preview hosts are still accepted, and
     /// the derived checkout URL always starts with `https://`.
     #[test]
     fn allowlisted_core_membership_urls_are_accepted_and_checkout_is_https() {
         for ok in [
+            "https://membership.citrate.ai",
             "https://core-membership.vercel.app",
-            "https://core-membership-preview.vercel.app",
-            "https://core-membership-git-main-citrate.vercel.app",
+            "https://core-membership-git-main-saulbuilds-projects.vercel.app",
         ] {
             let merged = AppConfig::default().apply(AppConfigPatch {
                 core_membership_url: Some(ok.to_string()),
@@ -387,6 +450,109 @@ mod tests {
                 merged.checkout_url().starts_with("https://"),
                 "checkout url must always be https"
             );
+        }
+    }
+
+    /// A membership URL already in config.json (stored by an earlier build, or edited on disk) goes
+    /// through the same host pin when it is loaded and when it is used: an unpinned host reads back
+    /// as the default, and no membership URL is ever built from it.
+    #[test]
+    fn a_stored_unpinned_membership_url_is_never_used() {
+        let stored = serde_json::json!({
+            "net": "testnet",
+            "rpc": "local",
+            "dataDir": "~/.citrate/core",
+            "cpuCap": 50,
+            "autolock": 30,
+            "channel": "stable",
+            "telemetry": false,
+            "coreMembershipUrl": "https://core-membership-evil.vercel.app"
+        });
+        let cfg: AppConfig = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            cfg.core_membership_url, "https://membership.citrate.ai",
+            "loaded value"
+        );
+        assert_eq!(cfg.checkout_url(), "https://membership.citrate.ai/checkout");
+        assert_eq!(
+            cfg.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        // A value set in code without `apply` is pinned at use too.
+        let direct = AppConfig {
+            core_membership_url: "http://core-membership.vercel.app".into(),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            direct.checkout_url(),
+            "https://membership.citrate.ai/checkout"
+        );
+        assert_eq!(
+            direct.enterprise_lead_url(),
+            "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        assert_eq!(
+            direct.membership_price_url(),
+            "https://membership.citrate.ai/api/membership/price"
+        );
+        // A pinned stored value is kept.
+        let mut stored_ok = serde_json::to_value(AppConfig::default()).unwrap();
+        stored_ok["coreMembershipUrl"] = "https://core-membership.vercel.app/".into();
+        let ok: AppConfig = serde_json::from_value(stored_ok).unwrap();
+        assert_eq!(
+            ok.checkout_url(),
+            "https://core-membership.vercel.app/checkout"
+        );
+    }
+
+    /// Tripwire: every membership URL is built through `membership_base` (which pins the host), and
+    /// no code outside `config.rs` reads the stored field directly.
+    #[test]
+    fn every_membership_url_goes_through_the_host_pin() {
+        let src = include_str!("config.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("tests")];
+        // Outside `apply` (which writes a value it has pinned) and `membership_base` (which pins it
+        // again), nothing reads the stored field.
+        let body_of = |sig: &str| {
+            let at = prod.find(sig).expect(sig);
+            let rest = &prod[at..];
+            at..at + rest.find("\n    }\n").expect("end")
+        };
+        let allowed = [body_of("pub fn apply("), body_of("fn membership_base(")];
+        let mut at = 0;
+        while let Some(i) = prod[at..].find("self.core_membership_url") {
+            let pos = at + i;
+            assert!(
+                allowed.iter().any(|r| r.contains(&pos)),
+                "the stored membership URL is read outside apply/membership_base at byte {pos}"
+            );
+            at = pos + 1;
+        }
+        let base = &prod[prod.find("fn membership_base(").expect("membership_base")..];
+        let base = &base[..base.find("\n    }\n").expect("end")];
+        assert!(
+            base.contains("is_valid_core_membership_url("),
+            "the base must pin the host"
+        );
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for dir in [manifest.join("src"), manifest.join("../src-tauri/src")] {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "config.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                assert!(
+                    !prod.contains(".core_membership_url"),
+                    "{name} reads the stored membership URL directly; use checkout_url / enterprise_lead_url"
+                );
+            }
         }
     }
 

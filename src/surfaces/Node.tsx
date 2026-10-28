@@ -1,10 +1,15 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, validatorDash, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord } from "../shell/chainTruth";
+import { shortNet } from "../shell/netScope";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { activateValidatorLabel } from "../onboarding/activateValidator";
+import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
+import { bondClaimBlocked, memberKeyRuleKey } from "../shell/store";
+import { CHAIN_ID_TEXT, rpcHost } from "../network/profile";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -60,10 +65,19 @@ export function Node({ store, s }: SurfaceProps) {
   }, [store]);
   // Read again when the reward eligibility changes while the tab is open (the stake or the bond's
   // activated flag reconciles after mount; #348 review).
-  const readsRewards = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null);
+  const readsRewards = readsValidatorRewards(s.bondedStake, s.bondActivated);
+  // fxEARN (Codex P2): the key the rewards are read for (memberKeyRule); a key that resolves after
+  // mount re-reads them.
+  const rewardsKey = memberKeyRuleKey(s);
   useEffect(() => {
     if (s.nTab === "earn") void store.refreshEarnings();
-  }, [store, s.nTab, readsRewards]);
+  }, [store, s.nTab, readsRewards, rewardsKey]);
+  // #406 — read the activation (and the durable record of a sent one) on mount, so a recorded
+  // activation shows here with its way out (Try again / Forget), as on S7.
+  useEffect(() => {
+    if (TAURI && s.hasGrant) void store.refreshActivation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.hasGrant]);
 
   // ----- header / tabs -----
   const ntabs: [string, string][] = [
@@ -120,16 +134,11 @@ export function Node({ store, s }: SurfaceProps) {
   // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
   // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
   const isRegisteredValidator = s.bondedStake > 0;
+  // The stake figure itself only once stakeOf has read this session (unknown is not zero).
+  const stakeRead = readStakeSalt(s);
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
-  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
-  const vDash = validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
-  // C1-V4: activation is offered only when MemberBond.activated() reads false.
-  const offerActivation = canOfferActivation(s.bondedStake, s.validatorActivation, s.hasGrant, s.memberBond);
-  // Contract v1.2 §1: an un-activated bond (no registered stake) outside the lock, or with the lock
-  // unread, is not offered activation; the Node page says the word and, for "Unlocked · not
-  // activated", the required detail. Nothing says activation has closed (chain#331 is not deployed).
-  const activationNotOffered = !offerActivation && !!s.memberBond?.deployed && s.memberBond.activated === false && !(s.bondedStake > 0);
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -152,15 +161,19 @@ export function Node({ store, s }: SurfaceProps) {
   const rClaim = s.rewards ? saltFromWei(s.rewards.claimableWei) : null;
   const rMaturing = rTotal != null && rClaim != null ? Math.max(0, rTotal - rClaim) : null;
   // An activated bond is read whatever its stake: after a full exit it can still claim (#348 review).
-  const rewardsReason = readsValidatorRewards(s.bondedStake, s.memberBond?.activated ?? null) ? "not read yet" : "Not a validator";
+  // #391: a read that failed or wasn't for the member's validator key says why (s.rewardsError).
+  const rewardsReason = readsValidatorRewards(s.bondedStake, s.bondActivated) ? (s.rewardsError ?? "not read yet") : "Not a validator";
   const rewardsSrc = "ValidatorRegistry.rewardsOf(pubkey)";
   const claimDisabled = rClaim == null || rClaim < 5;
+  // #362 B-1: on the bond path Claim is offered only once MemberBond.isKycVerified() reads true (the
+  // bond's claimRewards() reverts otherwise); until then the reason shows instead of the button.
+  const claimBlocked = bondClaimBlocked(s);
   const claimNote =
     rClaim == null
       ? "Validator rewards are paid to the block producer only."
       : rClaim < 5
         ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - rClaim) + " SALT to go."
-        : "Claimable now is above the 5 SALT dust threshold.";
+        : "Claimable now is at or above the 5 SALT dust threshold.";
   // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
   // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
   // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
@@ -173,6 +186,11 @@ export function Node({ store, s }: SurfaceProps) {
   };
   // C1-V V2: there is no heartbeat source. The node does not report one to the app and no
   // slashing contract reads one, so the panel shows the unavailable state, never a seeded age.
+
+  // RC52: the genesis-switch notice stays here until the member dismisses it (a toast is easy to
+  // miss). `switched` is the webview's own finding: its saved chain values were another network's.
+  const notice = s.networkNotice;
+  const switched = notice !== null && notice.from !== notice.to;
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -210,6 +228,33 @@ export function Node({ store, s }: SurfaceProps) {
           </span>
         </span>
       </div>
+
+      {notice && (
+        <div
+          role="status"
+          data-network-notice="switch"
+          className="surface"
+          style={{ padding: "12px 16px", borderLeft: "3px solid var(--warn)", display: "flex", flexDirection: "column", gap: 6 }}
+        >
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>This app is now on a new network</span>
+          {switched && (
+            <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+              Values read on the previous network (genesis {shortNet(notice.from)}): the grant, bond, balances, claimable
+              and transaction history, are not shown as current. Each is read again from this network, and shows
+              &quot;not read yet&quot; until then.{" "}
+              {notice.archived
+                ? "The previous network's values are kept on this device (Wallet, Activity, under Previous network)."
+                : "The previous network's values could not be kept on this device (storage unavailable)."}
+            </span>
+          )}
+          {notice.node && <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{notice.node}</span>}
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={() => store.dismissNetworkNotice()}>
+              Dismiss
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* SCL-S0.6 — the node start was refused: another process holds the chain database or a
           node port. The message (from node.rs) names the holder (pid, path) and what to do. */}
@@ -331,22 +376,22 @@ export function Node({ store, s }: SurfaceProps) {
                 {/* C1-V V5: the one grant-custody explanation (UI truth contract §5.4). */}
                 {s.hasGrant && (
                   <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, lineHeight: 1.5 }}>
-                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.memberBond?.activated ?? null })}
+                    {grantExplanation({ amountSalt: fmtSaltFromWei(s.s5StakeWei), unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated })}
                   </p>
                 )}
                 {/* W1.3 — once the node is synced (proposer.key minted), the member
                     can bond the 32k and become a block producer. staker = the EOA;
                     the tx is approved through the ceremony. Shown only in the
-                    packaged app when synced-but-not-yet-validating. */}
-                {/* C1-V2/C1-V4 and #348 review: only a bond that is not activated, with no registered
-                    stake, is offered activation; an Exiting / Slashed key, a registered stake that
-                    isn't active yet, or an unread status never is (canOfferActivation). */}
-                {TAURI && s.node === "synced" && activationNotOffered && (
-                  <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }} title="MemberBond.isUnlocked() and MemberBond.activated()">
-                    {vWord === "Unlocked · not activated" ? "Unlocked · not activated · " + UNACTIVATED_WITHDRAW_NOTE : "Activation unavailable · " + vDash.replace(/^— · /, "")}
-                  </p>
-                )}
-                {TAURI && s.node === "synced" && offerActivation && (
+                    packaged app when synced-but-not-yet-validating. A registered stake that
+                    isn't active yet (pending, or isActive unread) is already staked: no
+                    activation is offered for it (#348 review). */}
+                {/* C1-V2: an Exiting or Slashed key is not offered activation. */}
+                {/* #348 review: activation only for a bond that reads not activated (activated() = false).
+                    MemberBond.activated() comes from the grant read or, since #408, from the activation
+                    read (refreshActivation on mount); either read counts, an unread one offers nothing.
+                    #406: a recorded activation tx shows its status panel (Try again / Forget) whatever
+                    the offer gate says, so a sent activation is never hidden. */}
+                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null, s.bondUnlocked ?? s.activation?.bondUnlocked ?? null)) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -371,18 +416,21 @@ export function Node({ store, s }: SurfaceProps) {
                           You&rsquo;ll approve a signature that proves you control this wallet. Nothing is spent.
                         </span>
                       </>
+                    ) : hasActivationTxStatus(store, s) ? (
+                      <ActivationTxPanel store={store} s={s} testId="node-activation" />
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                          Your node is synced and this wallet is linked to your identity. Activating stakes your membership
-                          bond in the ValidatorRegistry; the registry sets the epoch your validator becomes active, shown here once registered.
+                          Your node is synced and this wallet is linked to your identity. Activating stakes your
+                          bond&rsquo;s principal in the ValidatorRegistry; the registry sets the epoch your validator
+                          becomes active, shown here once registered. You approve it in the Signature Ceremony.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
-                          onClick={() => void store.activateValidator()}
+                          onClick={() => void store.requestValidatorActivation()}
                         >
-                          Activate validator · stake your bond
+                          {activateValidatorLabel(s.activation)}
                         </button>
                       </>
                     )}
@@ -391,21 +439,25 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
                   <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
-                    {vDash}
+                    {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked)}
                     {vWord === "Validator active" && (
                       <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                    )}
+                    {/* Contract v1.2 §1: the one detail for an unlocked, never-activated bond. */}
+                    {vWord === "Unlocked · not activated" && (
+                      <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{UNACTIVATED_WITHDRAW_NOTE}</span>
                     )}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Your stake</span>
                   <span className="mono tabular" style={{ fontSize: 12 }} title="ValidatorRegistry.stakeOf(pubkey)">
-                    {isRegisteredValidator ? `${fmtI(s.bondedStake)} SALT` : "—"}
+                    {stakeRead != null && stakeRead > 0 ? `${fmtI(stakeRead)} SALT` : stakeRead == null ? "— · not read yet" : "—"}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
-                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · rpc.citrate.ai"}>
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · " + (rpcHost() ?? "public RPC not set")}>
                     {producingStr}
                     {pWord && s.producers && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{producerWindowLabel(s.producers)}</span>}
                   </span>
@@ -476,11 +528,16 @@ export function Node({ store, s }: SurfaceProps) {
                   {v == null ? "—" : fmt2(v)}
                 </span>
                 <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{v == null ? rewardsReason : "SALT · " + rewardsSrc}</span>
-                {label === "Claimable now" && (
-                  <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
-                    Claim
-                  </button>
-                )}
+                {label === "Claimable now" &&
+                  (claimBlocked ? (
+                    <span data-testid="claim-blocked" style={{ fontSize: 11.5, color: "var(--tx-2)", marginTop: 4, lineHeight: 1.45 }}>
+                      {claimBlocked}
+                    </span>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
+                      Claim
+                    </button>
+                  ))}
               </div>
             ))}
           </div>
@@ -509,7 +566,7 @@ export function Node({ store, s }: SurfaceProps) {
               once pin bonds go live. Until then nothing here is bonded.
             </p>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-              source · IPFSIncentivesV3 · address book 40204
+              source · IPFSIncentivesV3 · address book {CHAIN_ID_TEXT}
             </span>
           </div>
         </div>

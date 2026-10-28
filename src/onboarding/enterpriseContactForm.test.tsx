@@ -59,6 +59,11 @@ describe("S3 enterprise custom-pricing form", () => {
     const root = createRoot(host);
     await act(async () => { root.render(<S3 store={store} s={s} />); });
 
+    // S3 opens on the free-node choice (owner decision 2026-10-27); the tiers, Enterprise
+    // included, sit behind "Become a member".
+    const memberBtn = Array.from(host.querySelectorAll("button")).find((b) => /become a member/i.test(b.textContent ?? ""));
+    await act(async () => { memberBtn!.click(); });
+
     // Open the enterprise contact form.
     const contactBtn = Array.from(host.querySelectorAll("button")).find((b) => /contact sales/i.test(b.textContent ?? ""));
     expect(contactBtn).toBeTruthy();

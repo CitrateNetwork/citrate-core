@@ -691,8 +691,8 @@ fn node_healthy_after_is_tuned_longer_than_default() {
 
 // ---------------------------------------------------------------------------
 // WP3 (live) — real citrate-node bounded-sync proof. Heavy (ark/zk build +
-// live testnet). `#[ignore]` so CI stays fast; run explicitly with the proof
-// script (src-tauri/scripts/c1_1_node_sync_proof.sh) or:
+// live testnet). `#[ignore]` so CI stays fast; run explicitly with the cold-sync
+// harness on the K6 profile (scripts/e2e/cold-sync.py, RC52 G4) or:
 //   CITRATE_NODE_BIN=/path/to/citrate \
 //     cargo test --locked node::tests::live_bounded_sync_proof -- --ignored --nocapture
 //
@@ -822,9 +822,16 @@ fn node_spec_never_enables_dag_pruning() {
 /// to dial and sits at height 0 with 0 peers forever — verified on a clean data
 /// dir 2026-08-04, and previously masked on dev machines by the presence of
 /// ~/.citrate/node.toml.
+/// K6: the bootnodes come from the active network profile, so the check runs on the config as
+/// it is written for a member.
+fn rendered_member_config() -> String {
+    let net = crate::network_profile::active_ready().expect("the active profile is ready");
+    crate::network_profile::render_node_network(MEMBER_NODE_CONFIG, &net)
+}
+
 #[test]
 fn member_config_has_bootnodes() {
-    let cfg = include_str!("../config/member-node.toml");
+    let cfg = rendered_member_config();
     assert!(
         cfg.contains("bootstrap_nodes = ["),
         "member config must declare bootstrap_nodes"
@@ -841,7 +848,7 @@ fn member_config_has_bootnodes() {
 /// a member three peers and no way to reach the head.
 #[test]
 fn member_config_includes_the_sequencer_not_just_bootnodes() {
-    let cfg = include_str!("../config/member-node.toml");
+    let cfg = rendered_member_config();
     assert!(
         cfg.contains("@rpc.citrate.ai:30303"),
         "the sequencer must be in bootstrap_nodes — boot1/2/3 advertise height 0 \
@@ -937,7 +944,8 @@ fn ensure_node_config_substitutes_the_data_dir_and_is_idempotent() {
     ));
     let _ = std::fs::remove_dir_all(&tmp);
 
-    let path = ensure_node_config(&tmp).expect("write config");
+    let net = crate::network_profile::active_ready().expect("the active profile is ready");
+    let path = ensure_node_config(&tmp, &net).expect("write config");
     let written = std::fs::read_to_string(&path).expect("read back");
     assert!(
         !written.contains("{{DATA_DIR}}"),
@@ -950,7 +958,7 @@ fn ensure_node_config_substitutes_the_data_dir_and_is_idempotent() {
 
     // Must NOT clobber operator edits on a second call.
     std::fs::write(&path, "# hand-edited\n").expect("simulate an operator edit");
-    let again = ensure_node_config(&tmp).expect("second call");
+    let again = ensure_node_config(&tmp, &net).expect("second call");
     assert_eq!(again, path);
     assert_eq!(
         std::fs::read_to_string(&again).expect("read"),
@@ -1044,6 +1052,217 @@ fn manager_targets_the_address_book_genesis() {
         Some(crate::addresses::genesis_hash())
     );
     assert!(mgr.status().notice.is_none(), "a fresh dir is not a reset");
+}
+
+/// K6: a build whose network profile is not set starts no node and touches nothing: no data dir
+/// change, no marker, no node.toml, no storage key.
+#[test]
+fn k6_start_refuses_when_the_network_is_not_set() {
+    let (mgr, fake, data) = stub_manager("k6-not-set");
+    let not_set = crate::network_profile::profile("genesis-2026-12")
+        .expect("the next-genesis profile exists")
+        .ready();
+    assert!(not_set.is_err(), "the next genesis is not set yet");
+    let mgr = mgr.with_network(not_set);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    let err = mgr.start().expect_err("no network, no node");
+    assert!(matches!(err, NodeError::Network(_)), "{err:?}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not started") && msg.contains("genesisHash"),
+        "{msg}"
+    );
+    assert_eq!(mgr.status().state, "stopped");
+    assert!(data.join("CURRENT").exists(), "data untouched");
+    assert!(!data.join(crate::node_genesis::GENESIS_MARKER_FILE).exists());
+    assert!(!data.join("node.toml").exists(), "no config written");
+    assert!(fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none());
+    // And no spec carries a guessed network.
+    assert!(!mgr
+        .build_spec()
+        .args
+        .iter()
+        .any(|a| a == "--network" || a == "--config"));
+}
+
+/// K6: the node joins the network named by the profile: `--network`, bootnodes and chain id in
+/// the written node.toml all come from it.
+#[test]
+fn k6_the_node_config_is_written_from_the_network_profile() {
+    let (mgr, _fake, data) = stub_manager("k6-profile-config");
+    let mut net = crate::network_profile::active_ready().expect("active profile ready");
+    net.node_network = "k6net".into();
+    net.chain_id = 40205;
+    net.bootnodes = vec![format!("noise_{}@boot.example.org:30303", "ab".repeat(32))];
+    let mgr = mgr.with_network(Ok(net.clone()));
+    let spec = mgr.build_spec();
+    let i = spec
+        .args
+        .iter()
+        .position(|a| a == "--network")
+        .expect("--network");
+    assert_eq!(spec.args[i + 1], "k6net");
+    let cfg = std::fs::read_to_string(data.join("node.toml")).expect("written");
+    assert!(cfg.contains("chain_id = 40205"), "{cfg}");
+    assert!(cfg.contains(&net.bootnodes[0]));
+    assert!(!cfg.contains("{{"), "no placeholder left");
+    assert!(
+        !cfg.contains("boot1.citrate.ai"),
+        "only the profile's bootnodes"
+    );
+    let table: toml::Table = cfg.parse().expect("valid TOML");
+    assert_eq!(table["chain"]["chain_id"].as_integer(), Some(40205));
+    assert_eq!(
+        table["network"]["bootstrap_nodes"]
+            .as_array()
+            .map(|a| a.len()),
+        Some(1)
+    );
+}
+
+/// K6: on a genesis change the previous network's node.toml (old bootnodes) is set aside under
+/// a name that says which network it was for, and the spawn writes a new one from the profile.
+#[test]
+fn k6_a_genesis_change_sets_the_old_node_config_aside_and_writes_a_new_one() {
+    let (mgr, _fake, data) = stub_manager("k6-retire-config");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    std::fs::write(data.join("noise.key"), [9u8; 64]).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    mgr.start().expect("stub node starts after the reset");
+    mgr.stop();
+
+    let kept = data.join("node.toml.0x0f2b567f");
+    assert_eq!(
+        std::fs::read_to_string(&kept).expect("old config kept"),
+        "# old network, hand-edited\n"
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert!(!fresh.contains("hand-edited"));
+    assert_eq!(
+        std::fs::read(data.join("noise.key")).unwrap(),
+        vec![9u8; 64]
+    );
+}
+
+/// K6 (Codex P2 on core#363): a failure setting the old node.toml aside refuses the start
+/// WITHOUT committing the new genesis marker, so the next start retries the migration and
+/// writes a fresh node.toml. The old code committed the marker first; the retry then saw a
+/// matching marker and kept the old network's config.
+#[test]
+fn k6_a_failed_config_set_aside_is_retried_on_the_next_start() {
+    let (mgr, _fake, data) = stub_manager("k6-retire-retry");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::FAIL_RETIRE.with(|f| f.set(true));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::FAIL_RETIRE.with(|f| f.set(false));
+    assert!(first.is_err(), "the start is refused: {first:?}");
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_OLD_GENESIS),
+        "the new marker is not committed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml")).unwrap(),
+        "# old network, hand-edited\n",
+        "no spawn ran with it"
+    );
+
+    mgr.start().expect("the retry completes the migration and starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old network, hand-edited\n"
+    );
+}
+
+/// K6: a crash after the old node.toml was set aside but before the marker was written leaves
+/// the old marker and no node.toml; the next start completes the switch and writes a fresh one.
+#[test]
+fn k6_a_crash_after_the_config_was_set_aside_completes_on_the_next_start() {
+    let (mgr, _fake, data) = stub_manager("k6-retire-crash");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml.0x0f2b567f"), "# old\n").unwrap();
+
+    mgr.start().expect("starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old\n"
+    );
+    assert!(!data.join("node.toml.0x0f2b567f.1").exists());
+}
+
+/// K6: setting aside never overwrites an earlier one, and a missing node.toml is not an error.
+#[test]
+fn k6_retire_node_config_never_overwrites() {
+    let dir = std::env::temp_dir().join(format!(
+        "citrate-core-k6-retire-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(
+        retire_node_config(&dir, Some(REROLL_OLD_GENESIS)).unwrap(),
+        None
+    );
+    std::fs::write(dir.join("node.toml"), "a").unwrap();
+    let first = retire_node_config(&dir, Some(REROLL_OLD_GENESIS))
+        .unwrap()
+        .unwrap();
+    std::fs::write(dir.join("node.toml"), "b").unwrap();
+    let second = retire_node_config(&dir, Some(REROLL_OLD_GENESIS))
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "a");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "b");
+    std::fs::write(dir.join("node.toml"), "c").unwrap();
+    let none = retire_node_config(&dir, None).unwrap().unwrap();
+    assert!(none.ends_with("node.toml.unrecorded"), "{}", none.display());
+    // Not a chain database file: a later genesis reset keeps it.
+    assert!(!crate::node_genesis::is_chain_db_entry(
+        "node.toml.0x0f2b567f"
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,4 +1638,435 @@ fn start_writes_the_key_into_the_runtime_dir_and_stop_removes_it() {
     assert!(path.is_file(), "key file written in the runtime dir");
     mgr.stop();
     assert!(!path.exists(), "key file removed at stop");
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 (Codex P2 on core#363): invariants P2/P5 and M3/M4 through `NodeManager::start`.
+// ---------------------------------------------------------------------------
+
+/// Every file in `dir` with its bytes, for "nothing was touched" checks.
+fn dir_snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().to_string(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+const ROUND3_THIRD_GENESIS: &str =
+    "0x3333330000000000000000000000000000000000000000000000000000000003";
+
+/// P2 + P5 + M3: a migration interrupted mid-delete, then a launch whose profile is not ready
+/// (nothing at all is touched: no wipe, no intent change, no marker, no config, no key), then a
+/// launch for a third genesis, which rolls the migration forward to it.
+#[test]
+fn k6_an_interrupted_migration_is_untouched_while_not_ready_and_completes_for_the_next_profile() {
+    let (mgr, fake, data) = stub_manager("k6-r3-profile-change");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    for f in ["CURRENT", "MANIFEST-000001", "000013.sst", "000014.log"] {
+        std::fs::write(data.join(f), b"old chain").unwrap();
+    }
+    std::fs::write(data.join("noise.key"), [9u8; 64]).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::STOP_WIPE_AFTER.with(|n| n.set(Some(1)));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::STOP_WIPE_AFTER.with(|n| n.set(None));
+    assert!(first.is_err(), "interrupted: {first:?}");
+    assert!(data.join(crate::node_genesis::MIGRATION_INTENT_FILE).exists());
+    assert!(!data.join("CURRENT").exists(), "the delete began");
+
+    // A launch whose profile is not ready: refused, and the data dir is byte-for-byte unchanged.
+    let before = dir_snapshot(&data);
+    let not_set = crate::network_profile::profile("genesis-2026-12")
+        .expect("profile")
+        .ready();
+    let mgr = mgr.with_network(not_set);
+    let err = mgr.start().expect_err("no network, no node");
+    assert!(matches!(err, NodeError::Network(_)), "{err:?}");
+    assert_eq!(dir_snapshot(&data), before, "P2/P5: no migration step ran");
+    assert!(fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none(), "no key");
+    assert_eq!(mgr.status().state, "stopped");
+
+    // The next launch targets a third genesis: the migration rolls forward to it.
+    let mgr = mgr
+        .with_network(crate::network_profile::active_ready())
+        .with_book_genesis(ROUND3_THIRD_GENESIS);
+    mgr.start().expect("the migration completes and the node starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(ROUND3_THIRD_GENESIS)
+    );
+    assert!(!data.join(crate::node_genesis::MIGRATION_INTENT_FILE).exists());
+    assert!(crate::node_genesis::chain_db_entries(&data).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.0x0f2b567f")).unwrap(),
+        "# old network, hand-edited\n",
+        "the old config is kept under the network it came from"
+    );
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(std::fs::read(data.join("noise.key")).unwrap(), vec![9u8; 64]);
+}
+
+/// M4 (the reported case, end to end): a database with no marker is wiped, the run stops before
+/// node.toml is set aside; the next start writes a fresh node.toml from the profile instead of
+/// keeping the previous network's bootnodes.
+#[test]
+fn k6_an_unrecorded_database_interrupted_after_the_wipe_never_keeps_the_old_config() {
+    let (mgr, _fake, data) = stub_manager("k6-r3-unrecorded");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+    std::fs::write(data.join("000013.sst"), b"old chain").unwrap();
+    std::fs::write(data.join("node.toml"), "# old network, hand-edited\n").unwrap();
+
+    crate::node_genesis::test_hooks::STOP_AFTER
+        .with(|s| s.set(Some(crate::node_genesis::Step::DbWiped)));
+    let first = mgr.start();
+    crate::node_genesis::test_hooks::STOP_AFTER.with(|s| s.set(None));
+    assert!(first.is_err(), "interrupted: {first:?}");
+    assert!(crate::node_genesis::chain_db_entries(&data).unwrap().is_empty());
+    assert!(crate::node_genesis::read_marker(&data).unwrap().is_none());
+
+    mgr.start().expect("starts");
+    mgr.stop();
+    let fresh = std::fs::read_to_string(data.join("node.toml")).expect("new config");
+    assert!(!fresh.contains("hand-edited"), "{fresh}");
+    assert!(fresh.contains("bootstrap_nodes = ["), "{fresh}");
+    assert_eq!(
+        std::fs::read_to_string(data.join("node.toml.unrecorded")).unwrap(),
+        "# old network, hand-edited\n"
+    );
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// #391 / #394 — node_validator_earnings reads ValidatorRegistry.rewardsOf(bytes32) for the key the
+// app asks for (MemberBond.pubkey() for a deployed bond), and the node's own proposer key only
+// when no key is given. The mock registry answers each key with its own figures.
+mod validator_earnings_key {
+    use super::super::validator_earnings_for;
+    use crate::rpc::{RpcClient, RpcError, RpcTransport};
+
+    const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
+    const K: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const NODE: &str = "0x2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// rewardsOf(key) → (total, claimable) = (key byte × 10 SALT, key byte × 1 SALT); records calldata.
+    struct Registry(std::cell::RefCell<Vec<String>>);
+    impl RpcTransport for Registry {
+        fn call(&self, body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+            let data = body["params"][0]["data"].as_str().unwrap_or_default().to_string();
+            self.0.borrow_mut().push(data.clone());
+            let key_byte = u8::from_str_radix(data.get(10..12).unwrap_or("00"), 16).unwrap_or(0) as u128;
+            let mut buf = [0u8; 64];
+            buf[16..32].copy_from_slice(&(key_byte * 10 * 10u128.pow(18)).to_be_bytes());
+            buf[48..64].copy_from_slice(&(key_byte * 10u128.pow(18)).to_be_bytes());
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}))
+        }
+    }
+    fn registry() -> RpcClient<Registry> {
+        RpcClient::with_transport(Registry(std::cell::RefCell::new(Vec::new())))
+    }
+
+    #[test]
+    fn the_read_for_key_k_returns_ks_figures() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let e = validator_earnings_for(&rpc, REGISTRY, Some(K), || Ok(NODE.to_string()))?;
+        assert_eq!(e.total_wei, (0x11u128 * 10 * 10u128.pow(18)).to_string());
+        assert_eq!(e.claimable_wei, (0x11u128 * 10u128.pow(18)).to_string());
+        assert_eq!(e.proposer_pubkey, K, "the response names the key it read");
+        Ok(())
+    }
+
+    #[test]
+    fn the_call_is_rewards_of_with_the_requested_key() -> std::result::Result<(), String> {
+        let rpc = registry();
+        validator_earnings_for(&rpc, REGISTRY, Some(K), || Err("node key must not be needed".into()))?;
+        let calls = rpc.transport().0.borrow().clone();
+        assert_eq!(calls, vec![format!("0x187e9c41{}", &K[2..])]);
+        Ok(())
+    }
+
+    #[test]
+    fn no_key_reads_the_nodes_own_proposer_key() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let e = validator_earnings_for(&rpc, REGISTRY, None, || Ok(NODE.to_string()))?;
+        assert_eq!(e.proposer_pubkey, NODE);
+        assert_eq!(e.claimable_wei, (0x22u128 * 10u128.pow(18)).to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn a_requested_key_is_normalised_and_echoed_lowercase() -> std::result::Result<(), String> {
+        let rpc = registry();
+        let upper = format!("0x{}", "AB".repeat(32));
+        let e = validator_earnings_for(&rpc, REGISTRY, Some(&upper), || Ok(NODE.to_string()))?;
+        assert_eq!(e.proposer_pubkey, format!("0x{}", "ab".repeat(32)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_requested_key_is_refused_without_a_read() {
+        for bad in ["", "0x", "11", "0x11", "0xzz11111111111111111111111111111111111111111111111111111111111111", &format!("0x{}", "11".repeat(48)), &format!("0x{}", "11".repeat(31))] {
+            let rpc = registry();
+            let out = validator_earnings_for(&rpc, REGISTRY, Some(bad), || Ok(NODE.to_string()));
+            assert!(out.is_err(), "{bad:?} must be refused");
+            assert!(rpc.transport().0.borrow().is_empty(), "{bad:?}: no eth_call for a refused key");
+        }
+    }
+
+    #[test]
+    fn a_requested_key_never_falls_back_to_the_node_key() {
+        let rpc = registry();
+        let out = validator_earnings_for(&rpc, REGISTRY, Some("0xnope"), || Ok(NODE.to_string()));
+        assert!(out.is_err());
+        assert!(rpc.transport().0.borrow().iter().all(|d| !d.contains(&NODE[2..])));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RC52: the bundled node runs r1006 (genesis profile + activation overrides)
+// ---------------------------------------------------------------------------
+
+/// Block 0 of r1006 (citrate-chain 9a32147e `R1006_GENESIS`).
+const R1006_GENESIS_HASH: &str =
+    "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+/// The shipped r1006 profile with its reroll values filled (what fill-network-profile.sh writes).
+fn r1006_network() -> crate::network_profile::ReadyNetwork {
+    let mut p = crate::network_profile::profile("r1006")
+        .expect("the r1006 profile exists")
+        .clone();
+    p.genesis_hash = Some(R1006_GENESIS_HASH.to_string());
+    p.address_book_sha256 = Some("5c".repeat(32));
+    p.min_chain_rev = Some("9a32147e2aac60d388356ecc67488d717aa84c41".to_string());
+    p.pending.clear();
+    p.ready().expect("filled r1006 is ready")
+}
+
+fn env_of<'a>(spec: &'a SidecarSpec, k: &str) -> Option<&'a str> {
+    spec.env
+        .iter()
+        .find(|(n, _)| n == k)
+        .map(|(_, v)| v.as_str())
+}
+
+fn written_genesis_profile(data: &std::path::Path) -> Option<String> {
+    let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml written");
+    let t: toml::Table = cfg.parse().expect("valid TOML");
+    t["chain"]
+        .get("genesis_profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Red first (RC52): on r1006 the ValidatorRegistry and its activation height are compiled into
+/// the genesis (genesis-keyed activation table, citrate-chain #398), and the node refuses to start
+/// on an env value that differs (r1006 compiles 1000; the app passed r1005's 2000). The app passes
+/// neither override there, and its node config names the r1006 genesis profile.
+#[test]
+fn r1006_spawn_passes_no_validator_override_and_names_the_r1006_genesis() {
+    let (mgr, _fake, data) = stub_manager("r1006-env");
+    let mgr = mgr.with_network(Ok(r1006_network()));
+    let spec = mgr.build_spec();
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
+        None,
+        "the r1006 genesis compiles its activation height; an env value is refused by the node"
+    );
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_REGISTRY_ENV),
+        None,
+        "the r1006 genesis compiles its ValidatorRegistry"
+    );
+    assert_eq!(env_of(&spec, NODE_BLOCK_V2_ENV), Some("1"), "v2 headers stay explicit");
+    assert!(env_of(&spec, NODE_STORAGE_KEY_FILE_ENV).is_some());
+    assert_eq!(written_genesis_profile(&data).as_deref(), Some("r1006"));
+}
+
+/// Control (RC52): the r1005 network keeps its fleet env (activation 2000 and the registry from
+/// the address book), and its config names the genesis profile its block 0 comes from.
+#[test]
+fn r1005_spawn_keeps_its_validator_env_and_names_its_genesis_profile() {
+    let (mgr, _fake, data) = stub_manager("r1005-env");
+    let net = crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .ready()
+        .expect("ready");
+    let mgr = mgr.with_network(Ok(net));
+    let spec = mgr.build_spec();
+    assert_eq!(env_of(&spec, NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV), Some("2000"));
+    assert_eq!(
+        env_of(&spec, NODE_VALIDATOR_REGISTRY_ENV),
+        Some(node_validator_registry_value())
+    );
+    assert_eq!(written_genesis_profile(&data).as_deref(), Some("testnet_beta"));
+}
+
+/// Red first (RC52), fail closed: a node.toml already in the data dir (kept across restarts so
+/// operator edits survive) that names another genesis profile, or none where the node's default
+/// is not the network's genesis, would make the node build another block 0. The start is refused
+/// with an error that names both and what to do; nothing is spawned.
+#[test]
+fn an_existing_node_config_for_another_genesis_profile_refuses_the_start() {
+    for (tag, edit) in [
+        ("other", Some("genesis_profile = \"testnet_beta\"")),
+        ("absent", None),
+    ] {
+        let (mgr, _fake, data) = stub_manager(&format!("r1006-cfg-{tag}"));
+        let mgr = mgr.with_network(Ok(r1006_network()));
+        mgr.start().expect("first start writes node.toml");
+        mgr.stop();
+        let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml");
+        let kept: Vec<&str> = cfg
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("genesis_profile"))
+            .collect();
+        let mut edited = kept.join("\n");
+        if let Some(line) = edit {
+            edited = edited.replacen("[chain]\n", &format!("[chain]\n{line}\n"), 1);
+        }
+        std::fs::write(data.join("node.toml"), &edited).expect("edit node.toml");
+        let second = mgr.start();
+        mgr.stop();
+        let msg = second.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            second.is_err() && msg.contains("genesis_profile") && msg.contains("r1006"),
+            "{tag}: a node.toml for another genesis must refuse the start, got {second:?}"
+        );
+    }
+}
+
+/// Control: on r1005 a node.toml with no genesis_profile (every config written before 0.5.2) is
+/// kept, because the node's chain-id default on 40204 is the r1005 genesis profile.
+#[test]
+fn an_existing_r1005_node_config_without_a_genesis_profile_still_starts() {
+    let (mgr, _fake, data) = stub_manager("r1005-cfg-absent");
+    let net = crate::network_profile::profile("alpha-r1005")
+        .expect("alpha-r1005")
+        .ready()
+        .expect("ready");
+    let mgr = mgr.with_network(Ok(net));
+    mgr.start().expect("first start");
+    mgr.stop();
+    let cfg = std::fs::read_to_string(data.join("node.toml")).expect("node.toml");
+    let kept: Vec<&str> = cfg
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("genesis_profile"))
+        .collect();
+    std::fs::write(data.join("node.toml"), kept.join("\n")).expect("edit");
+    mgr.start().expect("an r1005 config with no genesis_profile still starts");
+    mgr.stop();
+}
+
+/// Tripwire (RC52): for EVERY genesis profile the bundled node builds with compiled activations,
+/// the spawn carries no validator override (the node refuses one that differs from the compiled
+/// table); for every other one the fleet values are still passed. A genesis added to
+/// `nodeGenesisProfiles` is covered without a new test.
+#[test]
+fn no_validator_override_is_passed_on_any_genesis_with_compiled_activations() {
+    let table = crate::network_profile::node_genesis_profiles().expect("table");
+    assert!(table.iter().any(|g| g.compiled_activations), "r1006 at least");
+    for g in table {
+        let (mgr, _fake, _data) = stub_manager(&format!("override-{}", g.name));
+        let mut net = r1006_network();
+        net.node_genesis = g.clone();
+        let spec = mgr.with_network(Ok(net)).build_spec();
+        let has = |k: &str| spec.env.iter().any(|(n, _)| n == k);
+        for k in [NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV, NODE_VALIDATOR_REGISTRY_ENV] {
+            assert_eq!(
+                has(k),
+                !g.compiled_activations,
+                "genesis profile {}: {k} must be passed only without compiled activations",
+                g.name
+            );
+        }
+        assert!(has(NODE_BLOCK_V2_ENV), "{}", g.name);
+    }
+}
+
+/// Tripwire (RC52): the validator overrides are set in one place, `node_consensus_env`, which
+/// gates them on the genesis. A second place that pushes them (the bug class: an override passed
+/// whatever the genesis compiles) fails here.
+#[test]
+fn the_validator_overrides_are_set_only_in_node_consensus_env() {
+    let src = include_str!("node.rs");
+    let body_start = src
+        .find("fn node_consensus_env(")
+        .expect("node_consensus_env exists");
+    let body_end = body_start
+        + src[body_start..]
+            .find("\n}\n")
+            .expect("node_consensus_env ends");
+    let body = &src[body_start..body_end];
+    assert!(body.contains("compiled_activations"), "the overrides are gated on the genesis");
+    for name in [
+        "NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV",
+        "NODE_VALIDATOR_REGISTRY_ENV",
+        "NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE",
+    ] {
+        let uses: Vec<usize> = src
+            .match_indices(&format!("{name}."))
+            .map(|(i, _)| i)
+            .chain(src.match_indices(&format!("{name},")).map(|(i, _)| i))
+            .chain(src.match_indices(&format!("{name})")).map(|(i, _)| i))
+            .collect();
+        assert!(!uses.is_empty(), "{name} is used");
+        for i in uses {
+            assert!(
+                (body_start..body_end).contains(&i),
+                "{name} is used outside node_consensus_env at byte {i}"
+            );
+        }
+    }
+    // Negative control: a copy of node.rs with an ungated push elsewhere is caught.
+    let planted = format!(
+        "{src}\nfn elsewhere() {{ let _ = (NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(), 1); }}\n"
+    );
+    let outside = planted
+        .match_indices("NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.")
+        .any(|(i, _)| !(body_start..body_end).contains(&i));
+    assert!(outside, "the scan sees a use outside the function");
+}
+
+/// RC52: the error a mismatched node.toml gives names both genesis profiles and what to do, and
+/// a node.toml that is not TOML is refused too (never read as "no genesis_profile").
+#[test]
+fn the_node_config_genesis_check_is_honest_and_fails_closed() {
+    let r1006 = r1006_network();
+    let ok = "[chain]\nchain_id = 40204\ngenesis_profile = \"r1006\"\n";
+    assert_eq!(check_node_config_genesis(ok, &r1006), Ok(()));
+    let other = "[chain]\ngenesis_profile = \"testnet_beta\"\n";
+    let e = check_node_config_genesis(other, &r1006).unwrap_err();
+    assert!(e.contains("\"testnet_beta\"") && e.contains("\"r1006\"") && e.contains("move node.toml aside"), "{e}");
+    assert!(e.contains(R1006_GENESIS_HASH), "{e}");
+    let wrong_type = "[chain]\ngenesis_profile = 1006\n";
+    assert!(check_node_config_genesis(wrong_type, &r1006).is_err());
+    assert!(check_node_config_genesis("[chain\n", &r1006).is_err());
+    assert!(check_node_config_genesis("[chain]\n", &r1006).is_err(), "absent on r1006");
+    let alpha = crate::network_profile::profile("alpha-r1005")
+        .unwrap()
+        .ready()
+        .unwrap();
+    assert_eq!(check_node_config_genesis("[chain]\n", &alpha), Ok(()), "absent on r1005");
+    assert!(check_node_config_genesis("[chain]\ngenesis_profile = \"r1006\"\n", &alpha).is_err());
 }

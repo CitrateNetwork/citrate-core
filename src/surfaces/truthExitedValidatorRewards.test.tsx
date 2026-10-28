@@ -42,8 +42,9 @@ function stubStore(over: Record<string, unknown> = {}): Store {
   return {
     walletIsLinked: () => true,
     refreshEarnings: vi.fn(async () => {}),
+    // #408: Node reads the activation (and any recorded activation tx) on mount.
+    refreshActivation: vi.fn(async () => true),
     refreshWallet: () => {},
-    refreshPendingWithdrawals: () => {},
     refreshActivity: () => {},
     refreshChainParams: () => {},
     refreshProducers: () => {},
@@ -61,10 +62,6 @@ function member(over: Partial<AppState> = {}): AppState {
 // Registered this epoch, active from the next (contract v1.1 §1).
 const PENDING = { isActive: true, status: 1, actEpoch: 547, currentEpoch: 546 };
 
-// The member's bond as the grant read reports it (state.memberBond); `activated` outlives the exit.
-// `unlocked: false`: still inside the lock, so activation is open (chain#331, MemberBond.sol:219).
-const bond = (activated: boolean | null) => ({ deployed: true, activated, pubkey: null, unlocked: false });
-
 const exitedGrant: GrantStatus = {
   attributedStakeWei: wei(32000),
   attributedPrincipalWei: wei(32000),
@@ -74,6 +71,9 @@ const exitedGrant: GrantStatus = {
   bondedStakeWei: "0",
   hasValidator: false,
   bondActivated: true,
+  // C1-V5: the bond keeps the key it activated with after the exit.
+  bondPubkey: "0x" + "33".repeat(32),
+  bondUnlocked: true,
   unlockBlock: 16_000_000,
   isUnlocked: true,
   isKycVerified: true,
@@ -81,22 +81,23 @@ const exitedGrant: GrantStatus = {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  store.setState({ bondedStake: 0, memberBond: null, rewards: null });
+  store.setState({ bondedStake: 0, bondActivated: null, bondPubkey: null, rewards: null, rewardsError: null });
 });
 
 describe("#348 review — an exited validator's rewards are read, shown and claimed through the bond", () => {
   it("refreshEarnings reads rewardsOf for an activated bond whose registry stake is 0", async () => {
-    store.setState({ bondedStake: 0, memberBond: bond(true), rewards: null });
+    // #391: the read is for the bond's own validator key (MemberBond.pubkey()), and shown only for it.
+    store.setState({ bondedStake: 0, bondActivated: true, bondPubkey: "0x" + "22".repeat(32), rewards: null });
     const read = vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: wei(30), claimableWei: wei(20), proposerPubkey: "0x" + "22".repeat(32) });
     await store.refreshEarnings();
-    expect(read).toHaveBeenCalled();
+    expect(read).toHaveBeenCalledWith("0x" + "22".repeat(32));
     expect(store.state.rewards).toEqual({ totalWei: wei(30), claimableWei: wei(20) });
   });
 
   it("refreshEarnings reads nothing for a bond that was never activated, or an unread one, with stake 0", async () => {
     const read = vi.spyOn(bridge.node, "validatorEarnings");
-    for (const memberBond of [bond(false), bond(null), null]) {
-      store.setState({ bondedStake: 0, memberBond, rewards: { totalWei: "1", claimableWei: "1" } });
+    for (const bondActivated of [false, null]) {
+      store.setState({ bondedStake: 0, bondActivated, rewards: { totalWei: "1", claimableWei: "1" } });
       await store.refreshEarnings();
       expect(store.state.rewards).toBeNull();
     }
@@ -115,24 +116,25 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
     (store as unknown as { lastActiveReadAt: number }).lastActiveReadAt = 0;
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    store.setState({ node: "synced", hasGrant: true, bondedStake: 0, memberBond: null });
+    store.setState({ node: "synced", hasGrant: true, bondedStake: 0, bondActivated: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "running", peers: 3, height: 546_000, syncPct: 100, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
     await store.refreshNode();
     expect(store.state.bondedStake).toBe(0);
-    expect(store.state.memberBond?.activated).toBe(true);
+    expect(store.state.bondActivated).toBe(true);
   });
 
   it("Node: rewards not read yet for an activated bond say 'not read yet', not 'Not a validator'", () => {
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, memberBond: bond(true), rewards: null })} />);
+    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, rewards: null })} />);
     expect(html).toContain("not read yet");
     expect(html).not.toContain("Not a validator");
   });
 
   it("Node: an exited validator's claimable rewards show and Claim is enabled", () => {
     const html = renderToStaticMarkup(
-      <Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, memberBond: bond(true), rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />,
+      // #362 B-1: the bond path's Claim needs MemberBond.isKycVerified() read true.
+      <Node store={stubStore()} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true, bondKycVerified: true, rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />,
     );
     expect(html).toContain("20.00");
     expect(html).toMatch(/<button[^>]*>\s*Claim/);
@@ -144,7 +146,8 @@ describe("#348 review — an exited validator's rewards are read, shown and clai
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
     const claim = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing", claimableWei: "0" });
     await store.claimRewards();
-    expect(claim).toHaveBeenCalledWith({ validator: true });
+    // #394: the pre-check reads rewardsOf for the bond's own key, the key MemberBond claims for.
+    expect(claim).toHaveBeenCalledWith({ validator: true, pubkey: exitedGrant.bondPubkey });
   });
 
   it("claimRewards keeps the non-validator path for a bond that was never activated, or an unread flag", async () => {
@@ -164,14 +167,14 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
     const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: PENDING })} />);
     expect(html).toContain("Registered · active from epoch 547");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
   });
 
   it("registered stake with the registry unread shows '—' and no 'Stake my bond'", () => {
     const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 32_000, validatorActivation: null })} />);
     expect(html).toContain("—");
     expect(html).not.toContain("Bond locked · not staked");
-    expect(html).not.toContain("Stake my bond");
+    expect(html).not.toContain("next: activate your validator"); // the S7 offer (Join-8 #354)
   });
 
   it("the Node page offers no 'Activate validator' for a registered stake that isn't active yet", () => {
@@ -179,15 +182,16 @@ describe("#348 review — S6 never offers 'Stake my bond' for a registered stake
       const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 32_000, validatorActivation })} />);
       expect(html).not.toContain("Activate validator");
     }
-    // C1-V4: with the registry unread, activation is offered only for a bond that reads not activated.
-    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, memberBond: bond(false) })} />);
+    // A bond that reads not activated (MemberBond.activated() = false) is offered activation.
+    const html = renderToStaticMarkup(<Node store={stubStore()} s={member({ node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
     expect(html).toContain("Activate validator");
   });
 
-  it("a granted bond with no registered stake still gets 'Stake my bond'", () => {
-    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, memberBond: bond(false) })} />);
+  // Join-8 (#354): the activation offer moved to S7; S6 points to it.
+  it("a granted bond with no registered stake is still offered activation (in S7)", () => {
+    const html = renderToStaticMarkup(<Onboarding store={stubStore()} s={member({ stage: "s6", node: "synced", bondedStake: 0, validatorActivation: null, bondActivated: false, bondUnlocked: false })} />);
     expect(html).toContain("Bond locked · not staked");
-    expect(html).toContain("Stake my bond");
+    expect(html).toContain("next: activate your validator, after the local model below");
   });
 });
 
@@ -202,10 +206,10 @@ describe("#348 review — the Wallet reads the validator rewards it shows", () =
     const s0 = stubStore();
     const host = document.createElement("div");
     root = createRoot(host);
-    act(() => root?.render(<Wallet store={s0} s={member({ wTab: "staking", bondedStake: 0, memberBond: null })} />));
+    act(() => root?.render(<Wallet store={s0} s={member({ wTab: "staking", bondedStake: 0, bondActivated: null })} />));
     const calls0 = (s0.refreshEarnings as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
     expect(calls0).toBeGreaterThanOrEqual(1);
-    act(() => root?.render(<Wallet store={s0} s={member({ wTab: "staking", bondedStake: 32_000, memberBond: bond(true) })} />));
+    act(() => root?.render(<Wallet store={s0} s={member({ wTab: "staking", bondedStake: 32_000, bondActivated: true })} />));
     expect((s0.refreshEarnings as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(calls0);
   });
 });
@@ -223,64 +227,46 @@ describe("#348 round 2 — MemberBond.activated() loads after a restart, and Rew
     const s0 = stubStore();
     const host = document.createElement("div");
     root = createRoot(host);
-    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, memberBond: null })} />));
+    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, bondActivated: null })} />));
     const calls = s0.refreshEarnings as unknown as ReturnType<typeof vi.fn>;
     const before = calls.mock.calls.length;
     expect(before).toBeGreaterThanOrEqual(1);
-    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, memberBond: bond(true) })} />));
+    act(() => root?.render(<Node store={s0} s={member({ nTab: "earn", bondedStake: 0, bondActivated: true })} />));
     expect(calls.mock.calls.length).toBeGreaterThan(before);
   });
 
   it("the startup reconcile folds activated() even when onboarding is already settled", async () => {
     vi.spyOn(store, "identity").mockReturnValue({ wallet: "0x" + "1".repeat(40) } as never);
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
-    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 0, memberBond: null });
+    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 0, bondActivated: null });
     await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
-    expect(store.state.memberBond?.activated).toBe(true);
+    expect(store.state.bondActivated).toBe(true);
   });
 
   it("a failed startup read leaves activated() unread, never false", async () => {
     vi.spyOn(store, "identity").mockReturnValue({ wallet: "0x" + "1".repeat(40) } as never);
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...exitedGrant, bondActivated: null });
-    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 0, memberBond: null });
+    store.setState({ hasGrant: true, s3: "settled", s5: "settled", bondedStake: 0, bondActivated: null });
     await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
-    expect(store.state.memberBond?.activated).toBeNull();
+    expect(store.state.bondActivated).toBeNull();
   });
 
   it("with the node stopped and the grant restored from disk, the poll reads an unread activated() flag", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, memberBond: null });
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondActivated: null });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);
     await store.refreshNode();
     expect(gs).toHaveBeenCalled();
-    expect(store.state.memberBond?.activated).toBe(true);
+    expect(store.state.bondActivated).toBe(true);
     await store.refreshEarnings();
-  });
-
-  // #366 Codex P2: activated() failed but pubkey() read, so the bond state has a key and an unread
-  // flag. That flag is still unread: the poll must retry it (node stopped too), and once it reads
-  // true the exited member's rewards are read again.
-  it("an unread activated() flag is retried even when the bond key read", async () => {
-    const KEY = "0x" + "33".repeat(32);
-    (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, rewards: null, memberBond: { deployed: true, activated: null, pubkey: KEY } });
-    vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
-    vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
-    const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue({ ...exitedGrant, bondPubkey: KEY });
-    await store.refreshNode();
-    expect(gs).toHaveBeenCalled();
-    expect(store.state.memberBond?.activated).toBe(true);
-    const read = vi.spyOn(bridge.node, "validatorEarnings").mockResolvedValue({ totalWei: wei(30), claimableWei: wei(20), proposerPubkey: KEY });
-    await store.refreshEarnings();
-    expect(read).toHaveBeenCalled();
-    expect(store.state.rewards).toEqual({ totalWei: wei(30), claimableWei: wei(20) });
   });
 
   it("once activated() has read, a stopped node with a settled grant does not re-read it every poll", async () => {
     (store as unknown as { lastBondReadAt: number }).lastBondReadAt = 0;
-    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, memberBond: bond(false) });
+    // Both reads landed (activated() and, since the stake gate, stakeOf): nothing left to read.
+    store.setState({ node: "off", nodeIntent: "stopped", hasGrant: true, bondedStake: 0, bondedStakeRead: true, bondActivated: false, bondUnlocked: false });
     vi.spyOn(bridge.node, "status").mockResolvedValue({ state: "stopped", peers: 0, height: 0, syncPct: 0, miningArmed: false });
     vi.spyOn(bridge.node, "logs").mockResolvedValue([]);
     const gs = vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(exitedGrant);

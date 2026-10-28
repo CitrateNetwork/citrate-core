@@ -8,14 +8,15 @@ const PAIR = "citrate://pair?c=eyJ2IjoxfQ&s=AAAA";
 
 describe("citrate://pair deep link", () => {
   beforeEach(() => {
-    store.setState({ pendingInvite: null, pendingPairLink: null, route: "home" });
+    store.setState({ inviteLink: null, pendingPairLink: null, route: "home" });
   });
 
   it("goes to the Cluster surface with the link pending, and is not read as a group invite", () => {
     store.handleDeepLink(PAIR);
     expect(store.state.pendingPairLink).toBe(PAIR);
-    expect(store.state.pendingInvite).toBeNull();
-    expect(store.state.route).toBe("cluster");
+    expect(store.state.inviteLink).toBeNull();
+    // Five-place navigation: the old "cluster" id opens Groups › Cluster.
+    expect(store.state.route).toBe("groups/cluster");
   });
 
   it("is cleared once the wizard has taken it", () => {
@@ -27,6 +28,6 @@ describe("citrate://pair deep link", () => {
   it("an oversized pairing link is ignored", () => {
     store.handleDeepLink(`citrate://pair?c=${"A".repeat(3000)}&s=x`);
     expect(store.state.pendingPairLink).toBeNull();
-    expect(store.state.pendingInvite).toBeNull();
+    expect(store.state.inviteLink).toBeNull();
   });
 });

@@ -10,7 +10,10 @@
 //! - **The switch:** `<app local data>/hermes/terminal-settings.json`, written only by
 //!   [`hermes_terminal_set`] from Settings > App > "Let Hermes run terminal commands".
 //!
-//! **On by default** (owner decision 2026-10-04): a missing file counts as on. An unreadable or
+//! **Off by default** for new installs (owner decision 2026-10-19, superseding 2026-10-04): a
+//! missing file counts as off. An install that stored a choice keeps it, and the app sends its
+//! stored choice at every launch (`apply`), so an existing install that was on stays on. An
+//! unreadable or
 //! corrupt file counts as **off** (a permission never widens on a read error). With the switch off
 //! core passes `CITRATE_HERMES_SHELL_RUN` pinned empty, overriding any value inherited from core's
 //! own environment, and the sidecar treats anything but `1` as off.
@@ -40,16 +43,16 @@ pub struct TerminalSettings {
 }
 
 impl Default for TerminalSettings {
-    /// Owner decision 2026-10-04: on.
+    /// Owner decision 2026-10-19 (supersedes 2026-10-04): off for new installs.
     fn default() -> Self {
         TerminalSettings {
-            enabled: true,
+            enabled: false,
             changed_at_ms: None,
         }
     }
 }
 
-/// Read the settings. Missing = the default (on). Unreadable or corrupt is an error; every path
+/// Read the settings. Missing = the default (off). Unreadable or corrupt is an error; every path
 /// that acts on the settings then treats it as off.
 pub fn load(dir: &Path) -> Result<TerminalSettings, String> {
     match std::fs::read_to_string(dir.join(SETTINGS_FILE)) {
@@ -70,14 +73,11 @@ pub fn enabled(dir: &Path) -> bool {
     load(dir).map(|s| s.enabled).unwrap_or(false)
 }
 
-/// Store settings (written to a temp file, then renamed).
+/// Store settings (written to a temp file unique to this write, then renamed).
 pub fn save(dir: &Path, s: &TerminalSettings) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|_| "cannot create the Hermes data folder".to_string())?;
     let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
-    std::fs::write(&tmp, text)
-        .map_err(|_| "cannot write the terminal-commands setting".to_string())?;
-    std::fs::rename(&tmp, dir.join(SETTINGS_FILE))
+    crate::atomic_file::replace(&dir.join(SETTINGS_FILE), text.as_bytes())
         .map_err(|_| "cannot write the terminal-commands setting".to_string())
 }
 
@@ -123,7 +123,7 @@ pub fn apply(
             });
         }
     }
-    // A missing file already means "on"; writing it makes the member's choice explicit.
+    // A missing file means "off"; writing it makes the member's choice explicit.
     let effective_before = current.as_ref().map(|s| s.enabled).unwrap_or(false);
     save(
         dir,

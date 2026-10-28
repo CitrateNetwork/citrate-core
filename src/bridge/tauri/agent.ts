@@ -68,6 +68,11 @@ export const tauriAgentHarness: AgentHarnessDomain = {
     const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
     return invoke<string>("hermes_session_open", { systemPrompt, toolsJson, ...extra });
   },
+  sessionOpenCloud(systemPrompt, toolsJson, persona) {
+    // D-11: the same persona choice; core reads the provider and model from its own setting.
+    const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
+    return invoke<string>("hermes_session_open_cloud", { systemPrompt, toolsJson, ...extra });
+  },
   async sessionSend(id, text) {
     await invoke("hermes_session_send", { id, text });
   },
@@ -80,8 +85,8 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   async sessionStop(id) {
     await invoke("hermes_session_stop", { id });
   },
-  sessionOpenUnattended(systemPrompt, toolsJson) {
-    return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson });
+  sessionOpenUnattended(systemPrompt, toolsJson, daemonId, runId) {
+    return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson, daemonId: daemonId ?? null, runId: runId ?? null });
   },
   async sessionClose(id) {
     await invoke("hermes_session_close", { id });

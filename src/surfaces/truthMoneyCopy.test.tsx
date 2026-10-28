@@ -9,14 +9,15 @@
 //   V13 Community promised referral rewards with no on-chain source, and "settled" (§5.5, §1).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 vi.mock("../bridge/mode", () => ({
   BRIDGE_MODE: "tauri" as const,
   assertSimAllowed: () => {},
 }));
 
-import { Onboarding, S3, S5 } from "../onboarding/Onboarding";
+import { MembershipCheckout, Onboarding, S3, S5 } from "../onboarding/Onboarding";
 import { Community } from "./Community";
 import { MEMBERSHIP_PRICING_URL } from "../data/membership";
 import { Wallet } from "./Wallet";
@@ -27,6 +28,7 @@ import { describeBond, store, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
 import { bridge } from "../bridge";
+import RETIRED_POOL from "../../fixtures/retired/liquid-staking-pool.json";
 
 const WEI = 10n ** 18n;
 const wei = (salt: number) => (BigInt(salt) * WEI).toString();
@@ -35,7 +37,6 @@ const stub = {
   walletIsLinked: () => true,
   refreshEarnings: () => {},
   refreshWallet: () => {},
-  refreshPendingWithdrawals: () => {},
   refreshActivity: () => {},
   refreshChainParams: () => {},
   refreshProducers: () => {},
@@ -59,7 +60,7 @@ const OLD_STORIES = [
   "funds this wallet directly",
   "a staked + time-locked model is in progress",
   "time-locked (about a year), recoverable validator bond",
-  "LiquidStakingPool — your full membership grant",
+  "— your full membership grant, vaulted and attributed to your validator",
   "staked to your validator",
 ];
 
@@ -84,7 +85,8 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("onboarding S3 (membership) uses it", () => {
-    expectOneStory(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />));
+    // #576: S3 opens on the free-node choice; the membership screen is the member checkout.
+    expectOneStory(renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />));
   });
 
   it("onboarding S5 before and after the grant uses it", () => {
@@ -116,7 +118,7 @@ describe("V5 — one grant-custody explanation everywhere", () => {
     expect(note).toContain(GRANT_DISCLAIMER);
   });
 
-  it("the built-in agent's staking reply uses it, with no LiquidStakingPool or mainnet-release story", async () => {
+  it("the built-in agent's staking reply uses it, with no retired-pool or mainnet-release story", async () => {
     vi.useFakeTimers();
     const ctx: AgentContext = { height: 1, peers: 1, nodeState: "synced", staked: 0, liquid: 0, claimable: null, rewardsTotal: null, walletAddr: "0xabc0000000000000000000000000000000000001", tier: "pilot", grant: { amountSalt: 32_000, unlockBlock: 16_000_000, staked: false } };
     let text = "";
@@ -127,7 +129,8 @@ describe("V5 — one grant-custody explanation everywhere", () => {
     await vi.runAllTimersAsync();
     await done;
     for (const old of OLD_STORIES) expect(text).not.toContain(old);
-    expect(text).not.toContain("LiquidStakingPool");
+    // D-9: none of the retired pool's UI words (one list, fixtures/retired/liquid-staking-pool.json).
+    for (const w of RETIRED_POOL.uiCopy) expect(text).not.toContain(w);
     expect(text).not.toContain("mainnet release");
     expect(text).toContain(GRANT_DISCLAIMER);
   });
@@ -146,7 +149,9 @@ describe("V12 — no in-app price until core-membership serves one", () => {
   const PRICE = /\$\s?\d/;
 
   it("S3 shows a 'See membership pricing' link and no price", () => {
-    const html = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />);
+    // #576: the pricing link lives on the member checkout; S3's free-node choice shows no price at all.
+    expect(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />)).not.toMatch(PRICE);
+    const html = renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />);
     expect(html).not.toMatch(PRICE);
     expect(html).toContain("See membership pricing");
     expect(html).toContain(MEMBERSHIP_PRICING_URL);
@@ -218,7 +223,7 @@ describe("#349 review — remaining grant mentions use the one explanation", () 
   });
 
   it("the Hermes context carries the grant facts", () => {
-    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, memberBond: { deployed: true, activated: false, pubkey: null, unlocked: false } });
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, bondActivated: false });
     expect(store.snapshot().grant).toEqual({ amountSalt: 32000, unlockBlock: 16_000_000, staked: false, activated: false });
     store.setState({ hasGrant: false });
     expect(store.snapshot().grant).toBeNull();
@@ -230,7 +235,66 @@ describe("V13 — referrals describe only what is recorded", () => {
     const html = renderToStaticMarkup(<Community store={stub} s={member()} />);
     expect(html.toLowerCase()).not.toMatch(/reward|settle/);
     expect(html).not.toContain("SALT grant to the whole group");
-    expect(html).toContain("recorded");
+  });
+
+  // Owner 10-27: referral credit is deferred (act retroactively later), and #549 removed the
+  // referral log. Nothing records or attributes a join to the member who invited them, so the card
+  // says credit isn't tracked and makes no recording, attribution or SALT claim.
+  it("the Referrals card says credit isn't tracked, and claims no recording or attribution", () => {
+    const html = renderToStaticMarkup(<Community store={stub} s={member()} />).replace(/&#x27;/g, "'");
+    expect(html).toContain("Referral credit isn't tracked yet.");
+    expect(html).toContain("Invite people from Groups.");
+    expect(referralClaims(html)).toEqual([]);
+    expect(html).not.toMatch(/recorded|attribut|inviter/i);
+  });
+});
+
+/**
+ * A referral-attribution claim: that a join through a member's invite is recorded, attributed or
+ * credited to them. False while referral credit is deferred (owner, 10-27; #549 removed the log).
+ */
+function referralClaims(text: string): string[] {
+  const res = [
+    /names you as the inviter/i,
+    /referrals?\b[^.<\n]{0,80}\b(recorded|attributed|credited|counted)\b/i,
+    /\b(recorded|attributed|credited|counted)\b[^.<\n]{0,80}\b(inviter|referrals?)\b/i,
+    /joins?\b[^.<\n]{0,40}\bthrough (your|a one-time) (link|invite)[^.<\n]{0,80}\b(roster|recorded|attributed)\b/i,
+    /recorded joins/i,
+  ];
+  return res.filter((re) => re.test(text)).map((re) => re.source);
+}
+
+describe("V13 tripwire — no referral-attribution claim in the webview", () => {
+  it("the scanner finds each old claim and passes the deferred line (control)", () => {
+    for (const old of [
+      "A join through a one-time invite you send from Groups is recorded in that group's roster as a signed assertion that names you as the inviter.",
+      "That record is all a referral is today; referrals are recorded per group.",
+      "your recorded joins appear here once the indexer lands",
+      "joins through your link land in your group's roster as signed assertions",
+      "Each join is attributed to the inviter.",
+    ]) {
+      expect(referralClaims(old), old).not.toEqual([]);
+    }
+    expect(referralClaims("Invite people from Groups. Referral credit isn't tracked yet.")).toEqual([]);
+  });
+
+  it("no production webview file carries one", () => {
+    const root = join(__dirname, "..");
+    const found: string[] = [];
+    let scanned = 0;
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(name) && !/\.test\.|tripwire|\.d\.ts$/.test(name)) {
+          scanned++;
+          for (const hit of referralClaims(readFileSync(p, "utf8"))) found.push(`${p.slice(root.length + 1)}: ${hit}`);
+        }
+      }
+    };
+    walk(root);
+    expect(scanned, "positive control: the scan reads the webview").toBeGreaterThan(100);
+    expect(found).toEqual([]);
   });
 });
 
@@ -269,5 +333,57 @@ describe("#349 round 2 — the unlock block loads on every launch", () => {
     store.setState({ hasGrant: true, s3: "settled", s5: "settled", s5UnlockBlock: null });
     await (store as unknown as { reconcileOnboardingFromChain(): Promise<void> }).reconcileOnboardingFromChain();
     expect(store.state.s5UnlockBlock).toBeNull();
+  });
+});
+
+// Lead audit of S5 for 0.5.2 on r1006 (2026-10-27). On r1006 the grant lands in a locked MemberBond
+// and is staked only after Activate (S7); the settled figure is MembershipStakeVault.attributedStake,
+// which is the grant, never "staked" (only ValidatorRegistry.stakeOf is, and only once
+// MemberBond.activated() is true); the bond unlocks at MemberBond.unlockBlock, about a year out; and
+// S5 makes no earnings claim. Each claim main's S5 made is named, so a regression says which one.
+export const S5_CLAIMS = [
+  "staked for you",
+  "arrives already staked",
+  "the vault stakes it",
+  "SALT staked · settled",
+  "Staked position",
+  "vaulted principal",
+  "until mainnet release",
+  "earns are yours",
+  "accrue to you",
+  "Grant + stake",
+  "stake ceremony",
+];
+
+describe("S5 on r1006: the grant lands in a locked bond and is staked only after Activate", () => {
+  for (const st of ["idle", "verifying", "settling", "settled"] as const) {
+    it(`S5 ${st} makes none of main's staking, unlock or earnings claims`, () => {
+      const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: st, s5c: 3, s5n: 32000, bondedStake: 0, bondActivated: false })} />);
+      for (const c of S5_CLAIMS) expect(html, c).not.toContain(c);
+      expect(html).not.toMatch(/\bearn|\byours\b|mainnet release/i);
+    });
+  }
+
+  it("S5 settled before Activate: the figure is the grant in the bond, and nothing says it is staked", () => {
+    const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 0, bondActivated: false, s5BondStatus: "Bond locked · not staked · until block 16,000,000" })} />);
+    expect(html).toContain("SALT grant · locked in your bond");
+    expect(html).toContain("until block 16,000,000");
+    expect(html).toContain("It is not staked until you activate the bond.");
+    expect(html).not.toMatch(/Staked\b|is staked/);
+  });
+
+  it("S5 settled after Activate: 'staked' follows stakeOf, never the attributed grant", () => {
+    const html = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 32000, bondActivated: true })} />);
+    expect(html).toContain("staked in the ValidatorRegistry");
+    const unread = renderToStaticMarkup(<S5 store={stub} s={member({ s5: "settled", bondedStake: 0, bondActivated: null })} />);
+    expect(unread).not.toContain("staked in the ValidatorRegistry");
+    expect(unread).toContain("has not been read yet");
+  });
+
+  it("the Hermes context names the locked grant without calling it staked", () => {
+    store.setState({ hasGrant: true, s5StakeWei: wei(32000), s5UnlockBlock: 16_000_000, bondedStake: 0, bondActivated: false });
+    const m = (store.snapshot() as unknown as { membership: Record<string, unknown> }).membership;
+    expect(Object.keys(m).filter((k) => /grant/i.test(k) && /staked/i.test(k))).toEqual([]);
+    expect(m.grantLockedSalt).toBe(32000);
   });
 });

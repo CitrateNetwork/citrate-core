@@ -38,6 +38,7 @@
 //!   claim-derived flags (signedIn / tier / org / role / kycStatus / walletAddr).
 //!   The refresh token is never logged nor placed in any error string (ADV-8/9).
 
+use crate::secret::SecretString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -618,10 +619,10 @@ impl UrlIntoString for url::Url {
 /// struct is confined to the exchange path and never serialized back out.
 #[derive(Deserialize)]
 struct TokenResponse {
-    access_token: String,
+    access_token: SecretString,
     #[serde(default)]
-    refresh_token: Option<String>,
-    id_token: String,
+    refresh_token: Option<SecretString>,
+    id_token: SecretString,
     #[serde(default = "default_expires_in")]
     expires_in: u64,
 }
@@ -1245,14 +1246,18 @@ impl AuthManager {
         let tokens = self.exchange_code(&endpoints, &cb.code, &pkce.verifier, &redirect_uri)?;
 
         // 6. Validate the id_token (nonce/iss/aud/exp/sig — ADV-7).
-        let claims = self.validate_id_token(&endpoints, &tokens.id_token, &nonce)?;
+        let claims = self.validate_id_token(&endpoints, tokens.id_token.expose(), &nonce)?;
 
         // 7. Persist the refresh token in the A2 vault (A3.2); access token in
         //    memory only. The vault must be unlocked — else fail closed.
         if let Some(refresh) = tokens.refresh_token {
             self.store_refresh(vault, refresh)?;
         }
-        self.set_session(&tokens.access_token, tokens.expires_in, claims.clone());
+        self.set_session(
+            tokens.access_token.expose(),
+            tokens.expires_in,
+            claims.clone(),
+        );
 
         Ok(AuthStatus::from_claims(&claims))
     }
@@ -1494,8 +1499,8 @@ impl AuthManager {
     /// Store the rotating refresh token in the A2 vault slot `oidc-refresh`. The
     /// bytes are moved in and zeroized by `custody_put`; they never cross the
     /// invoke boundary and are never logged (ADV-8/9).
-    fn store_refresh(&self, vault: &CustodyVault, refresh: String) -> Result<()> {
-        let mut bytes = refresh.into_bytes();
+    fn store_refresh(&self, vault: &CustodyVault, refresh: SecretString) -> Result<()> {
+        let mut bytes = refresh.expose().as_bytes().to_vec();
         let r = vault.put(REFRESH_SLOT, &mut bytes);
         bytes.zeroize();
         r.map_err(AuthError::from)
@@ -1533,8 +1538,9 @@ impl AuthManager {
             let guard = self.lock();
             guard.as_ref().map(|s| s.claims.sub.clone())
         };
-        if !tokens.id_token.is_empty() {
-            let refreshed = self.validate_id_token_no_nonce(&endpoints, &tokens.id_token)?;
+        if !tokens.id_token.expose().is_empty() {
+            let refreshed =
+                self.validate_id_token_no_nonce(&endpoints, tokens.id_token.expose())?;
             if let Some(prev) = prior_sub.as_deref() {
                 if !prev.is_empty() && !refreshed.sub.is_empty() && refreshed.sub != prev {
                     return Err(AuthError::IdTokenInvalid);
@@ -1548,8 +1554,8 @@ impl AuthManager {
         }
         // A refreshed access token carries fresh claims via /userinfo (federation
         // RP rule); prefer a live /userinfo re-check for entitlement.
-        self.set_session_token(&tokens.access_token, tokens.expires_in);
-        let claims = self.userinfo_inner(&endpoints, &tokens.access_token)?;
+        self.set_session_token(tokens.access_token.expose(), tokens.expires_in);
+        let claims = self.userinfo_inner(&endpoints, tokens.access_token.expose())?;
         // sub continuity also holds against /userinfo.
         if let Some(prev) = prior_sub.as_deref() {
             if !prev.is_empty() && !claims.sub.is_empty() && claims.sub != prev {

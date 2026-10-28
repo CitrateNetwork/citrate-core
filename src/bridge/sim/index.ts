@@ -24,10 +24,14 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawalsRead, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo, ChatRouteStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import book from "../../../src-tauri/addresses/40204.json";
+import { ACTIVE_PROFILE } from "../../network/profile";
+
+/** The chain id the web preview shows on its ceremonies: the network profile's (K6). */
+const SIM_CHAIN_ID = ACTIVE_PROFILE?.chainId ?? 0;
 import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
 
 // The sim MemoryDomain maps the prototype seed GRAPH into the SAME contract the
@@ -107,7 +111,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       id,
       origin: "local-user",
       kind: "transaction",
-      chainId: 40204,
+      chainId: SIM_CHAIN_ID,
       decoded,
       requiresRawAck: false,
     };
@@ -321,6 +325,21 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           "signing.broadcast: the web shim cannot sign or broadcast a real 40204 transaction (no key, no chain). Use the packaged Tauri app.",
         );
       },
+      // No key and no chain in the web preview: it cannot sign or send (Rule 1).
+      async prepare(id: string, rawAck: boolean): Promise<{ txHash: string }> {
+        assertSimAllowed("signing.prepare");
+        const view = simCeremonies.get(id);
+        if (!view) throw new Error("ceremony: unknown or already-consumed id");
+        if (view.requiresRawAck && !rawAck) {
+          throw new Error("ceremony: undecodable calldata requires an explicit raw-mode ack");
+        }
+        simCeremonies.delete(id);
+        throw new Error("signing.prepare: the web shim cannot sign a real 40204 transaction (no key). Use the packaged Tauri app.");
+      },
+      async sendPrepared(): Promise<BroadcastResult> {
+        assertSimAllowed("signing.sendPrepared");
+        throw new Error("signing.sendPrepared: the web shim cannot send a real 40204 transaction (no chain). Use the packaged Tauri app.");
+      },
       async reject(id: string): Promise<void> {
         assertSimAllowed("signing.reject");
         if (!simCeremonies.delete(id)) throw new Error("ceremony: unknown or already-consumed id");
@@ -331,14 +350,8 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async balances() {
         assertSimAllowed("wallet.balances");
         const st = s();
-        // `staked` = the SELF-stake only (the atomic chain fact the tauri bridge
-        // reads via LiquidStakingPool.balanceOf). The vaulted membership grant is
-        // an entitlement the store/UI layers on top (hasGrant ? 32000 : 0), so it
-        // is NOT included here — keeping the field's meaning identical in sim and
-        // tauri (self-stake), which the store folds into AppState.selfStake.
         return {
           liquid: st.liquid,
-          staked: st.selfStake,
           claimable: st.claimable,
           address: st.walletAddr,
         };
@@ -354,18 +367,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async send(to: string, amountWei: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.send");
         return simWalletCeremony({ action: `Send ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: to });
-      },
-      async stake(amountWei: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.stake");
-        return simWalletCeremony({ action: `Stake ${weiToSalt(amountWei)} (LiquidStakingPool deposit)`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
-      },
-      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.requestWithdrawal");
-        return simWalletCeremony({ action: `Request withdrawal of ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
-      },
-      async claimWithdrawal(id: string): Promise<CeremonyView> {
-        assertSimAllowed("wallet.claimWithdrawal");
-        return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
       async deviceId(): Promise<string> {
         // No custody vault in web-dev, so there is no real device key to fingerprint.
@@ -394,12 +395,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async linkReject(): Promise<void> {
         assertSimAllowed("wallet.linkReject");
       },
-      async pendingWithdrawals(): Promise<PendingWithdrawalsRead> {
-        // The web shim reaches no chain — there is no real pending queue to read.
-        // No rows, and not confirmed (Rule 1): nothing was read, so it is not "none".
-        assertSimAllowed("wallet.pendingWithdrawals");
-        return { withdrawals: [], confirmed: false, complete: true, note: "the web preview reaches no chain" };
-      },
     },
 
     node: {
@@ -416,7 +411,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       // W1.3 — no real node/proposer key in the web preview → honest Unavailable
       // (never a fabricated registration ceremony).
-      async validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }> {
+      async validatorEarnings(_pubkey?: string): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }> {
         // No node, no proposer key, no chain — honestly unavailable (Rule 1).
         throw new Unavailable("node", "validatorEarnings");
       },
@@ -428,6 +423,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async registerValidator() {
         assertSimAllowed("node.registerValidator");
         throw new Unavailable("node", "registerValidator");
+      },
+      // No chain and no node in the web preview: the step shows its unavailable state (Rule 1).
+      async activationStatus(): Promise<never> {
+        assertSimAllowed("node.activationStatus");
+        throw new Unavailable("node", "activationStatus");
+      },
+      async activationForget(): Promise<never> {
+        assertSimAllowed("node.activationForget");
+        throw new Unavailable("node", "activationForget");
       },
       // No real node to arm in the web preview → honest no-op (never a fabricated arm).
       async armMining() {
@@ -556,14 +560,14 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         const view = simRequest({
           origin: "agent:node-agent",
           kind: "transaction",
-          chainId: 40204,
+          chainId: SIM_CHAIN_ID,
           // A legible claimRewards() selector-only calldata tx object, so the sim
           // ceremony decodes to a Call (not raw-gated) exactly like the real path.
           raw: JSON.stringify({
             to: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
             value: "0x0",
             data: "0x372500ab",
-            chainId: "0x9d0c",
+            chainId: "0x" + SIM_CHAIN_ID.toString(16),
           }),
         });
         return { kind: "ceremony", view };
@@ -657,6 +661,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // (the store uses the built-in demo agent instead of a fabricated reply).
         throw new Unavailable("chat", "infer");
       },
+      async consentPrepare() {
+        assertSimAllowed("chat.consentPrepare");
+        // No gateway in the web preview, so there is nothing to consent to.
+        throw new Unavailable("chat", "consentPrepare");
+      },
+      async consentDrop() {
+        assertSimAllowed("chat.consentDrop");
+        // `consentPrepare` never mints one in the web preview, so there is nothing to drop.
+      },
       async inferTools() {
         assertSimAllowed("chat.inferTools");
         // No gateway in the web preview — honest Unavailable (the store uses the
@@ -677,6 +690,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("chat.inferenceState");
         // The web preview has no local model + no keyring → the honest demo route.
         return "demo";
+      },
+      async route(): Promise<ChatRouteStatus> {
+        assertSimAllowed("chat.route");
+        // The preview has no core to store it: it reports the default and cannot change it.
+        return { route: "ask_first", loadError: null };
+      },
+      async setRoute(): Promise<ChatRouteStatus> {
+        assertSimAllowed("chat.setRoute");
+        throw new Unavailable("chat", "setRoute");
       },
     },
 
@@ -797,7 +819,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
  */
 function simAuthStatus(st: AppState): AuthStatus {
   const p = PERSONAS[st.persona] || PERSONAS.p1;
-  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6"].includes(st.stage) || st.s1 === "done";
+  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6", "s7"].includes(st.stage) || st.s1 === "done";
   if (!signedIn) return SIGNED_OUT_AUTH;
   const effTier = st.entitlement === "lapsed" ? "free" : st.tier;
   const kyc = st.hasSbt || st.s2 === "verified" ? "verified" : st.s2 === "none" ? "none" : st.s2;
