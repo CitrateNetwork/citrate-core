@@ -92,15 +92,19 @@ describe("tripwire: the member's validator key and the bond lock", () => {
 
   it("every activation entry goes through a gate that reads the lock", () => {
     const store = readFileSync(join("src", "shell", "store.ts"), "utf8");
-    const act = store.slice(store.indexOf("  async activateValidator(hooks?"));
-    expect(act.slice(0, act.indexOf("bridge.node.registerValidator()"))).toContain("activationGate(this.state.activation");
+    // Since #378 the one entry is requestValidatorActivation; activateValidator is private and is
+    // called from nowhere else, so the entry's gate (which has the "lock" check) runs first.
+    expect(store).toMatch(/private async activateValidator\(/);
+    expect(store.match(/this\.activateValidator\(/g)?.length).toBe(1);
+    const act = store.slice(store.indexOf("  async requestValidatorActivation("));
+    expect(act.slice(0, act.indexOf("this.activateValidator("))).toContain("activationGate(this.state.activation");
     const auto = store.slice(store.indexOf("  private maybeAutoBond("));
     expect(auto.slice(0, auto.indexOf("armMining()"))).toMatch(/canOfferActivation\([^)]*bondUnlocked\)/);
     const gate = readFileSync(join("src", "onboarding", "activateValidator.ts"), "utf8");
     expect(gate).toMatch(/key: "lock"/);
     // Every UI file that can start activation also names one of the gates.
     for (const { p, s } of SRC) {
-      if (!/store\.activateValidator\(/.test(s)) continue;
+      if (!/store\.(activateValidator|requestValidatorActivation)\(/.test(s)) continue;
       expect(/canOfferActivation\(|activationGate\(|activationPhase\(/.test(s), p).toBe(true);
     }
   });

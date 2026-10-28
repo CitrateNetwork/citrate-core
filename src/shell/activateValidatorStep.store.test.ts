@@ -1060,10 +1060,11 @@ describe("tripwire (#405): no ceremony build after a fresh read without a gate r
 
 // Port of #366 "activateValidator itself refuses an unlocked bond: no arming, no ceremony" (review on
 // #554). Today's 40204 MemberBond.activate() has no activation-window check, so the app gate is the
-// only guard (owner decision 2026-10-19: activation only inside the lock). Every entry (S7 and the
-// Node button, which calls store.activateValidator directly) must refuse an open or unread lock,
-// with every other condition met, before it arms or builds a ceremony.
-describe("activation only inside the lock: activateValidator itself refuses", () => {
+// only guard (owner decision 2026-10-19: activation only inside the lock). Since #378 the one entry
+// (S7 and the Node button) is requestValidatorActivation; activateValidator is private and is
+// reached only through it (tripwire above). That entry must refuse an open or unread lock, with
+// every other condition met, before it arms or builds a ceremony.
+describe("activation only inside the lock: the activation entry refuses", () => {
   for (const [label, bondUnlocked] of [
     ["an unlocked bond", true],
     ["an unread lock", null],
@@ -1073,7 +1074,7 @@ describe("activation only inside the lock: activateValidator itself refuses", ()
         chain.current = readyStatus({ bondUnlocked });
         const store = memberStore();
         (store as unknown as { validatorArmed: boolean }).validatorArmed = armed;
-        expect(await store.activateValidator()).toBe(false);
+        expect(await store.requestValidatorActivation()).toBe(false);
         expect(armMiningMock).not.toHaveBeenCalled();
         expect(registerValidatorMock).not.toHaveBeenCalled();
         expect(store.state.walletReview).toBeNull();
@@ -1086,7 +1087,7 @@ describe("activation only inside the lock: activateValidator itself refuses", ()
     chain.current = readyStatus({ bondUnlocked: false });
     const store = memberStore();
     (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
-    expect(await store.activateValidator()).toBe(true);
+    expect(await store.requestValidatorActivation()).toBe(true);
     expect(registerValidatorMock).toHaveBeenCalledTimes(1);
   });
 });
