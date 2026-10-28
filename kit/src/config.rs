@@ -183,6 +183,12 @@ impl AppConfig {
         format!("{}/api/enterprise/lead", self.membership_base())
     }
 
+    /// C1-P — the public membership price route (`{core_membership_url}/api/membership/price`) the
+    /// app reads the membership price from. Same pinned base as checkout.
+    pub fn membership_price_url(&self) -> String {
+        format!("{}/api/membership/price", self.membership_base())
+    }
+
     /// The membership base every membership URL is built from (trailing slash trimmed). It is
     /// pinned again here, so a value that reached the struct any other way is never used.
     fn membership_base(&self) -> String {
@@ -484,6 +490,10 @@ mod tests {
         assert_eq!(
             direct.enterprise_lead_url(),
             "https://membership.citrate.ai/api/enterprise/lead"
+        );
+        assert_eq!(
+            direct.membership_price_url(),
+            "https://membership.citrate.ai/api/membership/price"
         );
         // A pinned stored value is kept.
         let mut stored_ok = serde_json::to_value(AppConfig::default()).unwrap();

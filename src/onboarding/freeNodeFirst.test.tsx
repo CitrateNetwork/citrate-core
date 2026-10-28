@@ -63,6 +63,8 @@ function spyStore(linked: boolean) {
     save: vi.fn(),
     recheckMembership: vi.fn(),
     submitEnterpriseLead: vi.fn(),
+    // C1-P (#379): the checkout reads the price from core-membership while it is on screen.
+    watchMembershipPrice: vi.fn(() => () => {}),
   };
 }
 
@@ -132,6 +134,16 @@ describe("S3 — the free node is offered first", () => {
     expect(st.endS3Check).toHaveBeenCalledTimes(1);
     expect(button(host, /Run a node for free/)).toBeTruthy();
     expect(host.textContent ?? "").not.toMatch(PRICE);
+    root.unmount();
+  });
+
+  it("C1-P: the free choice reads no price; only choosing membership starts the price read", async () => {
+    const st = spyStore(false);
+    const { host, root } = await mount(<S3 store={st as unknown as Store} s={at("s3")} />);
+    expect(st.watchMembershipPrice).not.toHaveBeenCalled();
+    const member = button(host, /Become a member/);
+    await act(async () => member!.click());
+    expect(st.watchMembershipPrice).toHaveBeenCalledTimes(1);
     root.unmount();
   });
 

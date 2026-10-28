@@ -1,9 +1,10 @@
-// C1-V V12 — the link every surface shows in place of a membership price (chain-team ruling: no
-// in-app price until core-membership serves one). Opens the membership site in the system browser.
-import { MEMBERSHIP_PRICING_URL, SEE_PRICING, membershipPriceLabel } from "../data/membership";
+// C1-V V12 / C1-P — the membership price as read from core-membership's price route, or, when it
+// was not read (503, error, web preview), the link to the membership site in the system browser.
+import { MEMBERSHIP_PRICING_URL, SEE_PRICING, membershipPriceLabel, type MembershipPrice } from "../data/membership";
 
-export function PricingLink({ open, style }: { open: (url: string) => void; style?: React.CSSProperties }) {
-  const served = membershipPriceLabel();
+// C1-P: shows the price only when it was read from core-membership; otherwise the link.
+export function PricingLink({ open, price, style }: { open: (url: string) => void; price: MembershipPrice | null; style?: React.CSSProperties }) {
+  const served = membershipPriceLabel(price);
   if (served) return <span style={style}>{served}</span>;
   return (
     <a
