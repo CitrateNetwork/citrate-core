@@ -65,7 +65,10 @@ export interface SyncSeries {
   head: HeightPoint[];
   /** The latest public head read failed (error, timeout or 0x0): unknown until one succeeds. */
   headFailed?: boolean;
-  /** The highest public head actually read, at the time it was read. */
+  /**
+   * The highest public head actually read, at the time it was read. A small drop is held at this
+   * value only while it is fresh (HEAD_FRESH_MS); held points never refresh its time.
+   */
   headMax?: HeightPoint;
 }
 
@@ -82,7 +85,10 @@ export function isSmallDrop(last: number, v: number): boolean {
  * - A missing or 0 height (0x0) is not a reading. For the head it is a failed read, so the head is
  *   unknown until the next good read (as on Node › Status).
  * - A small drop of the PUBLIC HEAD (isSmallDrop: a load-balanced backend a few blocks behind) is
- *   noise: it is kept at the head's max, which can only overstate "behind".
+ *   noise: it is kept at the head's max, which can only overstate "behind". The max keeps the time
+ *   it was really read (headMax) and holds only while that read is within HEAD_FRESH_MS, the same
+ *   age at which a head is stale. Once it is older, a sustained lower head (a rollback, or a chain
+ *   reset smaller than 1% of the height) is the real head: the series restarts from it.
  * - Any drop of this node's height (a rollback or reset), and a larger head drop (a different RPC),
  *   restarts that series, so a rate is never measured across the jump and the real height is shown.
  * - A same-time reading is dropped; an earlier time (the clock went back) restarts the series.
@@ -97,13 +103,22 @@ export function observe(series: SyncSeries, which: "local" | "head", t: number, 
   }
   const last = pts[pts.length - 1];
   if (last && t === last.t) return series;
+  const max = which === "head" ? series.headMax : undefined;
+  let real = true;
   if (last && t < last.t) pts = [];
-  // Only the public head gets the noise rule: holding its max overstates "behind" (the safe way).
+  // Only the public head gets the noise rule: holding its max overstates "behind" (the safe way),
+  // and only while the max was really read within HEAD_FRESH_MS.
   // This node's own height is always its real reading, so "behind", Synced and stall stay true.
-  else if (last && which === "head" && isSmallDrop(last.v, v)) v = last.v;
-  else if (last && v < last.v) pts = [];
-  const next = { ...series, [which]: [...prune(pts), { t, v }] };
-  if (which === "head") next.headFailed = false;
+  else if (last && max && isSmallDrop(last.v, v) && t - max.t <= HEAD_FRESH_MS) {
+    v = last.v;
+    real = false;
+  } else if (last && v < last.v) pts = [];
+  const next: SyncSeries = { ...series, [which]: [...prune(pts), { t, v }] };
+  if (which === "head") {
+    next.headFailed = false;
+    // A restart (or the first reading) starts a new max; otherwise a real reading at or above it moves it.
+    if (real && (pts.length === 0 || !max || v >= max.v)) next.headMax = { t, v };
+  }
   return next;
 }
 
