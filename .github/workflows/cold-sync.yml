@@ -2,8 +2,9 @@
 # status: active (RC52 gate G4, app side). Builds the node sidecar from the rev pinned for
 # `citrate-node` in release/components.json with the release build script, then runs
 # scripts/e2e/cold-sync.py against a K6 network profile on Linux x86_64: a cold start in a temp dir,
-# block 0 equal to the profile genesis, the head to the target, every K-th block equal to the
-# network RPC's. Then the negative case: the same profile with another genesis must be refused
+# block 0 equal to the profile genesis, the head to the target, and the node on the network RPC's
+# chain (selected-parent ancestry from both heads; eth_getBlockByNumber is not canonical on r1006).
+# Then the negative case: the same profile with another genesis must be refused
 # (the network RPC's block 0 and the node's block 0 both differ from it). Manual only: it builds
 # the node (~25 min) and reads a live network.
 name: cold-sync
@@ -28,7 +29,7 @@ on:
         required: false
         default: "60m"
       every:
-        description: "Compare every K-th block hash with the network RPC"
+        description: "List every K-th height of the agreeing selected-parent walk in the verdict"
         required: false
         default: "1000"
       negative:

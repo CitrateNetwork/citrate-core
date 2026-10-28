@@ -186,13 +186,13 @@ describe("V4 — validator state comes from ValidatorRegistry.isActive", () => {
 
 describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   it("Wallet: the grant in a locked bond is not 'staked'", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "overview", bondedStake: 0, bondedStakeRead: true, bondActivated: false })} />);
     expect(html).not.toContain("32,000 grant vaulted");
     expect(html).toContain("Bond locked · not staked");
   });
 
   it("Wallet: staked equals the registry stake once activated", () => {
-    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000 })} />);
+    const html = renderToStaticMarkup(<Wallet store={stub} s={member({ wTab: "staking", bondedStake: 32_000, bondedStakeRead: true })} />);
     expect(html).toContain("ValidatorRegistry.stakeOf");
     expect(html).toContain("32,000 SALT");
   });
@@ -205,7 +205,7 @@ describe("V7 — one 'staked': ValidatorRegistry.stakeOf", () => {
   });
 
   it("Dashboard: Staked is stakeOf, never the grant", () => {
-    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondActivated: false })} />);
+    const html = renderToStaticMarkup(<Dashboard store={stub} s={member({ bondedStake: 0, bondedStakeRead: true, bondActivated: false })} />);
     expect(html).not.toContain(">32,000<");
     expect(html).toMatch(/bond locked · not staked/i);
   });
