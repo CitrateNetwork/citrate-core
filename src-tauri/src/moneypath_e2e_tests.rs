@@ -645,17 +645,38 @@ impl World {
         }
     }
 
+    /// Core's activation intent. The signer is core's (`sign_registration_from_data_dir`); the
+    /// test only whitelists the signature on the precompile stand-in as it is made, because core
+    /// then asks the node to estimate the `activate` call, which verifies it.
     fn core_activation_intent(&self) -> Result<SignatureIntent, String> {
         let dir = self.data_dir.clone();
         crate::node::bond_activation_intent(
             &self.chain,
             &self.member,
             &|chain_id, registry, staker, nonce| {
-                crate::validator::sign_registration_from_data_dir(
+                let (pubkey, sig) = crate::validator::sign_registration_from_data_dir(
                     &dir, chain_id, registry, staker, nonce,
-                )
+                )?;
+                self.admit_registration_sig(&pubkey, &sig, chain_id, registry, staker, nonce)?;
+                Ok((pubkey, sig))
             },
         )
+    }
+
+    /// Whether an intent's gas limit is `money_gas`'s margin over what the node estimates for the
+    /// same call now, as the golden records it.
+    fn gas_is_estimate_plus_margin(&self, intent: &SignatureIntent) -> Result<Value, String> {
+        let tx: Value = serde_json::from_str(&intent.raw).map_err(|e| e.to_string())?;
+        let gas = hex_u64(&tx["gas"]).ok_or("the intent has no gas")?;
+        let est = hex_u64(&self.rpc(
+            "eth_estimateGas",
+            json!([{"from": tx["from"], "to": tx["to"], "value": tx["value"], "data": tx["data"]}]),
+        )?)
+        .ok_or("bad gas estimate")?;
+        Ok(match crate::money_gas::with_margin(est) {
+            Ok(want) if want == gas => json!("eth_estimateGas + margin"),
+            other => json!(format!("{gas}, the node estimates {est} ({other:?})")),
+        })
     }
 
     // -------------------------------------------------------------------- chain state
@@ -725,36 +746,34 @@ impl World {
     }
 
     /// Whitelist one ed25519-verify input on the precompile stand-in, after checking it here with
-    /// ed25519-dalek: `pubkey || sig || digest`, the digest being the one core computes.
-    fn admit_registration_sig(&self, intent: &SignatureIntent) -> Result<(), String> {
-        let tx: Value = serde_json::from_str(&intent.raw).map_err(|e| e.to_string())?;
-        let data = hex::decode(
-            tx["data"]
-                .as_str()
-                .ok_or("no data")?
-                .trim_start_matches("0x"),
-        )
-        .map_err(|e| e.to_string())?;
-        let pubkey: [u8; 32] = data
-            .get(4..36)
-            .and_then(|s| s.try_into().ok())
-            .ok_or("no pubkey in activate calldata")?;
-        let sig: [u8; 64] = data
-            .get(100..164)
-            .and_then(|s| s.try_into().ok())
-            .ok_or("no signature in activate calldata")?;
-        let registry: [u8; 20] = crate::validator::parse_address_20(&self.registry)?;
-        let staker: [u8; 20] = crate::validator::parse_address_20(&self.bond)?;
-        let nonce =
-            crate::validator::read_registration_nonce(&self.chain, &self.registry, &staker)?;
+    /// ed25519-dalek: `pubkey || sig || digest`. The digest is computed here from the registry,
+    /// staker and nonce core signed for, and must equal the one the registry computes on chain.
+    fn admit_registration_sig(
+        &self,
+        pubkey: &[u8; 32],
+        sig: &[u8; 64],
+        chain_id: u64,
+        registry: &[u8; 20],
+        staker: &[u8; 20],
+        nonce: u64,
+    ) -> Result<(), String> {
+        if (chain_id, registry, staker)
+            != (
+                CHAIN_ID,
+                &crate::validator::parse_address_20(&self.registry)?,
+                &crate::validator::parse_address_20(&self.bond)?,
+            )
+        {
+            return Err("core signed a registration for another chain, registry or staker".into());
+        }
         let digest =
-            crate::validator::registration_digest(CHAIN_ID, &registry, &staker, &pubkey, nonce);
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pubkey).map_err(|e| e.to_string())?;
-        vk.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&sig))
+            crate::validator::registration_digest(chain_id, registry, staker, pubkey, nonce);
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(pubkey).map_err(|e| e.to_string())?;
+        vk.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(sig))
             .map_err(|e| format!("core's registration signature does not verify: {e}"))?;
         let mut input = Vec::with_capacity(128);
-        input.extend_from_slice(&pubkey);
-        input.extend_from_slice(&sig);
+        input.extend_from_slice(pubkey);
+        input.extend_from_slice(sig);
         input.extend_from_slice(&digest);
         self.rpc(
             "anvil_setStorageAt",
@@ -843,16 +862,17 @@ fn run_membership_activation(w: &mut World) -> Result<Vec<Value>, String> {
     ));
 
     // 2. Activation: core reads, guards, signs the registration digest with the node key and
-    //    builds MemberBond.activate; the member approves it in the ceremony.
+    //    builds MemberBond.activate with the gas the node estimates; the member approves it in
+    //    the ceremony.
     let intent = w.core_activation_intent()?;
-    w.admit_registration_sig(&intent)?;
+    let gas = w.gas_is_estimate_plus_margin(&intent)?;
     let (view, result, receipt) = w.ceremony_send("activate", intent)?;
     steps.push(step(
         "activate",
-        "core builds MemberBond.activate (node key signs the registry digest); the ceremony signs and sends it",
+        "core builds MemberBond.activate (node key signs the registry digest, gas estimated); the ceremony signs and sends it",
         w.events_of(&receipt)?,
         w.chain_state()?,
-        json!({"ceremony": w.norm_core(&view), "broadcast": w.broadcast_json(&result)?,
+        json!({"ceremony": w.norm_core(&view), "gasLimit": gas, "broadcast": w.broadcast_json(&result)?,
                "grantStatus": w.core_grant_status(), "activationStatus": w.core_activation_status()}),
     ));
 
