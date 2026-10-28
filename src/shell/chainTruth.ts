@@ -8,6 +8,8 @@
 //
 //   - validator state: from ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch and
 //     currentEpoch() (contract v1.1 §1), never a stake amount such as stake >= 32k;
+//   - validator counts: activeCount() is "registered" (it includes pending activations); eligible
+//     = activeSet() members with actEpoch <= currentEpoch(); no consensus-set number (§2);
 //   - minimum stake: ValidatorRegistry.minStake(), read, never a hard-coded 32,000 (§2);
 //   - durations in blocks: blocks x the block time measured over the last 100 blocks, never an
 //     assumed 12 s (§2 "Durations given in blocks").
@@ -45,6 +47,16 @@ export const REGISTRY_ABI = [
       { type: "uint256", name: "claimableNow" },
     ],
   },
+  {
+    type: "function",
+    name: "activeSet",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { type: "bytes32[]", name: "pubkeys" },
+      { type: "uint256[]", name: "effStakes" },
+    ],
+  },
 ] as const;
 
 /**
@@ -64,8 +76,24 @@ export function isValidatorActive(a: ValidatorActivation | null): boolean {
   return !!a && a.isActive && a.status === 1 && a.actEpoch <= a.currentEpoch;
 }
 
+/** Registered / eligible / pending counts of the live registry (§2). */
+export interface ValidatorCounts {
+  registered: number;
+  eligible: number;
+  pending: number;
+}
+
+/** Eligible = live active-set members whose activation epoch has been reached (§2). */
+export function countEligible(actEpochs: number[], currentEpoch: number): ValidatorCounts {
+  const eligible = actEpochs.filter((e) => e <= currentEpoch).length;
+  return { registered: actEpochs.length, eligible, pending: actEpochs.length - eligible };
+}
+
 /** The note every "Validator active" carries (§1): consensus follows the epoch snapshot. */
 export const CONSENSUS_LAG_NOTE = "consensus can lag by up to an epoch; Producing blocks is the evidence of participation";
+
+/** §2: no RPC exposes the governing epoch snapshot, so no consensus-set number is shown. */
+export const CONSENSUS_SET_UNAVAILABLE = "Consensus validator set: unavailable until a snapshot RPC exists";
 
 /** How many blocks the block-time measurement spans (contract §2: "the last 100 blocks"). */
 export const BLOCK_TIME_WINDOW = 100n;
@@ -74,12 +102,16 @@ export const BLOCK_TIME_WINDOW = 100n;
 export interface ChainReads {
   /** `isActive(pubkey)`, `validatorInfo(pubkey)` (status, actEpoch) and `currentEpoch()`. */
   validatorActivation(pubkey: `0x${string}`): Promise<ValidatorActivation>;
+  /** `activeSet()` members counted by `validatorInfo(pubkey).actEpoch` against `currentEpoch()`. */
+  validatorCounts(): Promise<ValidatorCounts>;
   /** `ValidatorRegistry.minStake()` in wei. */
   minStakeWei(): Promise<bigint>;
   /** Seconds per block, measured over the last BLOCK_TIME_WINDOW blocks; null when it can't be. */
   blockSeconds(): Promise<number | null>;
   /** The distinct `proposerPubkey`s of the last PRODUCER_SAMPLE_BLOCKS blocks (one JSON-RPC batch). */
   producerSample(): Promise<ProducerSample>;
+  /** The public head: eth_blockNumber on the network profile's RPC. null for 0x0 (unknown, not block 0). */
+  publicHead(): Promise<number | null>;
 }
 
 /**
@@ -186,6 +218,19 @@ export function createChainReads(): ChainReads {
       ]);
       return { isActive, status: Number(info[8]), actEpoch: Number(info[5]), currentEpoch: Number(epoch) };
     },
+    async validatorCounts() {
+      const client = clientFor("the validator counts");
+      const [set, epoch] = await Promise.all([
+        client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "activeSet" }),
+        client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "currentEpoch" }),
+      ]);
+      // One validatorInfo read per active-set member, on each refresh (at most every 5 minutes).
+      // The registry caps the set at MAX_ACTIVE_SET = 100 (ValidatorRegistry.sol), so this is bounded.
+      const infos = await Promise.all(
+        set[0].map((k) => client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "validatorInfo", args: [k] })),
+      );
+      return countEligible(infos.map((i) => Number(i[5])), Number(epoch));
+    },
     async minStakeWei() {
       const client = clientFor("the validator minimum stake");
       return client.readContract({ address: VALIDATOR_REGISTRY, abi: REGISTRY_ABI, functionName: "minStake" });
@@ -219,6 +264,10 @@ export function createChainReads(): ChainReads {
       const blocks = body.map((r) => (r && typeof r === "object" ? (r as { result?: unknown }).result : null)).filter(Boolean);
       if (blocks.length === 0) throw new Error("no blocks came back");
       return { head: Number(head), window: blocks.length, proposers: distinctProposers(blocks) };
+    },
+    async publicHead() {
+      const head = await clientFor("the network head").getBlockNumber({ cacheTime: 0 });
+      return head > 0n ? Number(head) : null;
     },
   };
 }

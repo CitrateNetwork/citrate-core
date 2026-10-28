@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
-import { PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, validatorDash } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
@@ -54,7 +54,8 @@ const nodeColors: Record<string, string> = {
  */
 export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const { data: liveHeight, isPending: heightPending, error: heightError } = useBlockNumber({ watch: true, chainId: citrate.id });
-  // #66 — the active validator set (whole-network, on-chain). Honest "—" until it reads.
+  // #66 — registered validators (contract v1.1 §2): activeCount() includes registrations still
+  // pending activation, so it is labelled "registered", never "active". Honest "—" until it reads.
   const { data: validatorCount } = useReadContract({
     address: VALIDATOR_REGISTRY,
     abi: ACTIVE_COUNT_ABI,
@@ -63,8 +64,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     query: { refetchInterval: 60_000 },
   });
 
-  // The producer sample (cached 5 min in the store): shown next to the active count so the gap
-  // between active and producing validators is visible (contract §2, §4).
+  // The producer sample and the eligible count (both cached 5 min in the store): shown next to the
+  // registered count so the gap between registered, eligible and producing is visible (§2, §4).
   useEffect(() => {
     void store.refreshProducers();
   }, [store]);
@@ -117,7 +118,18 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
     // C1-V V1: checkpoint finality is specified but not running on 40204 (UI truth contract §4).
     { label: "Finality", value: "—", sub: "not running yet", color: "var(--tx-3)", tip: "Checkpoint finality is specified but not running on betanet: the finalized tag still returns the genesis block. A confirmation count is a depth, not finality.", vsize: "21px" },
-    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: (validatorCount != null ? "active · " : "active: reading… · ") + producingSub, color: "var(--tx-1)", tip: "Active: ValidatorRegistry.activeCount(), the active validator set (on-chain, the same from every node). Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on rpc.citrate.ai. Active does not imply producing.", vsize: "21px" },
+    {
+      label: "Registered validators",
+      value: validatorCount != null ? String(validatorCount) : "—",
+      sub: (s.validatorCounts ? s.validatorCounts.eligible + " eligible (live registry)" : "eligible: —") + " · " + producingSub,
+      color: "var(--tx-1)",
+      tip:
+        "Registered: ValidatorRegistry.activeCount(), which includes registrations still pending activation. " +
+        "Eligible (live registry): activeSet() members with validatorInfo(pubkey).actEpoch <= currentEpoch(); consensus uses the governing epoch snapshot, so it can differ for up to an epoch. " +
+        "Producing: distinct proposerPubkey over the last " + PRODUCER_SAMPLE_BLOCKS + " blocks on rpc.citrate.ai. " +
+        CONSENSUS_SET_UNAVAILABLE + ".",
+      vsize: "21px",
+    },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     {
       label: "Staked",
