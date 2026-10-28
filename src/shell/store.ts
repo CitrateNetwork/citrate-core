@@ -61,13 +61,15 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { classifyInviteInput, joinErrorMessage, joinErrorRetryable, parseClaimLink } from "../surfaces/referral";
-import { groupsSlice, refreshGroups } from "./slices/groups";
+import { parseClaimLink } from "../onboarding/claimLink";
+import { isInviteLink } from "../surfaces/inviteLink";
+import { groupsSlice } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -234,17 +236,31 @@ export function describeBond(g: {
   isUnlocked: boolean;
   isKycVerified: boolean;
   hasValidator: boolean;
+  bondActivated?: boolean | null;
 }): string {
-  if (!g.bondDeployed) return "Not yet staked";
+  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
+  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
+  // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
+  // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
+  if (!g.bondDeployed) return "No bond yet";
+  // #349 review: the bond's activation state is MemberBond.activated(); a registry binding
+  // (hasValidator) implies it. After an exit or a slash hasValidator reads false while the bond
+  // stays activated, and an unread flag is not evidence either way.
+  const activated = g.hasValidator ? true : (g.bondActivated ?? null);
   if (!g.isUnlocked) {
-    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString();
-    return `Staked · unlocks at block ${at}`;
+    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
+    if (g.hasValidator) return `Staked · locked until block ${at}`;
+    // "not staked" needs activated() = false (#411's fix); otherwise the plain §1 lock word.
+    return activated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
   }
-  // Unlocked. Owner decision A.5: eligible, never automatic — so "can", not "has".
-  // A.6: KYC supersedes the lock, so an unverified member is NOT told their funds
-  // are available.
-  if (!g.isKycVerified) return "Unlocked · KYC required to withdraw";
-  return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
+  // Unlocked. A never-activated bond can't be released or withdrawn (requestRelease /
+  // withdrawToMember revert NotActivated()), so it gets no identity / withdraw wording (v1.2).
+  if (activated === false) return "Unlocked · not activated";
+  if (activated === null) return "Unlocked · bond state not read yet";
+  // Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
+  // unverified member is NOT told their funds are available.
+  if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
+  return "Unlocked";
 }
 
 /**
@@ -268,6 +284,7 @@ export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
     s5n: 32000,
     s5StakeWei: g.attributedStakeWei,
     s5BondStatus: describeBond(g),
+    s5UnlockBlock: g.unlockBlock,
     hasGrant: true,
     hasSbt: g.hasSbt,
   };
@@ -623,19 +640,6 @@ export function tickPatch(
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
-  /** GROW-S1 task 12 — the resolved code awaiting the member's Join. Kept off AppState (and so off
-   *  every snapshot and save); the link key never reaches the webview at all. */
-  private pendingJoinCode: string | null = null;
-  /** Bumped whenever the waiting invite is replaced or cancelled. A Review, Join or start-up check
-   *  that started on an older value is about an invite that is no longer waiting, so its answer is
-   *  dropped (Rust applies the same rule to the hold itself). */
-  private pendingJoinGen = 0;
-  /** Bumped on every Cancel. A hold (pending_join_set) that was in flight when the member cancelled
-   *  doesn't bring the card back. */
-  private pendingJoinCancels = 0;
-  /** pending_join_set and pending_join_clear run one at a time, in the order they were asked for, so
-   *  Rust never sees a Cancel overtake the store it cancels, or two stores race. */
-  private pendingJoinOps: Promise<unknown> = Promise.resolve();
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -1380,6 +1384,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
+    // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
+    // that is on chain; otherwise the last value stands.
+    if (isGrantOnChain(grant) && grant.unlockBlock != null) this.setState({ s5UnlockBlock: grant.unlockBlock });
     // Onboarding-step reconcile: only needed while the flow is not already settled.
     if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
@@ -2361,12 +2369,11 @@ export class Store {
 
   snapshot() {
     const s = this.state;
-    // The membership grant stakes SALT into a time-locked (≈1yr), recoverable validator bond. That
-    // stake is REAL and locked but is NOT the same as the validator bond (which is 0 until the member
-    // approves the activation ceremony). The model must be able to reconcile "0 spendable but staked",
-    // so expose both figures + the human-readable bond status (which carries the unlock block), rather
-    // than the old single `staked` that only reflected the validator bond and read 0 for a fresh member.
-    const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The membership grant is locked in the member's MemberBond (about a year) and is NOT staked until
+    // the member activates the bond (C1-V V5). The model gets both figures (the locked grant and the
+    // registry stake) plus the bond status (which carries the unlock block), so it can explain a
+    // member with 0 spendable, 0 staked and a locked grant.
+    const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
     return {
       height: s.height,
       peers: s.peers,
@@ -2378,14 +2385,19 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
+      grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
-        grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
-        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Staked · unlocks at block N"
+        grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
+        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
         validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
-        note: "The membership grant stakes SALT into a time-locked (about a year), recoverable validator bond. Locked stake is not spendable and is separate from the liquid balance; the bond only starts validating after the member approves the activation ceremony.",
+        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
+        // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
+        note:
+          grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
+          " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };
   }
@@ -2491,10 +2503,9 @@ export class Store {
   }
 
   /**
-   * GROW-S1 — handle a link handed to the app by the OS. A v2 invite (`citrate://join/<code>#K` or
-   * `https://citrate.ai/join/<code>#K`) goes to Rust to hold until the member acts (task 12); an
-   * app-only `citrate://invite?…` link and a legacy display link land on the Groups banner. A
-   * malformed URL is ignored (no crash, no fabricated invite — Rule 1).
+   * Handle a link handed to the app by the OS: a fleet pairing link, a claim link, or an invite link
+   * (`citrate://invite?…`, D-12), which opens the "Join <group>?" screen. A malformed URL is ignored
+   * (no crash, no fabricated invite — Rule 1). Nothing is sent until the member presses Join.
    */
   handleDeepLink(url: string): void {
     if (!url) return;
@@ -2536,72 +2547,20 @@ export class Store {
       this.save();
       return;
     }
-    const kind = classifyInviteInput(url);
-    // GROW-S1 task 12 — a v2 link (`citrate://join/<code>#K` / `https://citrate.ai/join/<code>#K`): hand
-    // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
-    // setup it waits on the onboarding card; once set up it waits on the Groups banner.
-    if (kind.kind === "v2") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      void this.holdInvite(url).then((ok) => {
-        if (ok && this.state.stage === "done") this.go("groups");
-      });
-      return;
-    }
-    // The app-only relay invite (`citrate://invite?g=&t=`) keeps its one-click Join on Groups.
-    if (kind.kind === "relay") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      this.setState({ pendingInvite: { url } });
-      this.go("groups");
-      return;
-    }
-    // A legacy display link already posted somewhere: context only (it can't join on its own).
-    if (kind.kind === "legacy-referral") {
-      const parts = kind.parts;
-      if (!parts.clusterId && !parts.inviterHandle) return;
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
-      this.setState({
-        pendingInvite: { url, clusterId: parts.clusterId, clusterName: parts.clusterName, inviterHandle: parts.inviterHandle, goal: parts.goal },
-      });
-      this.go("groups");
-    }
+    if (isInviteLink(url)) this.openInviteLink(url);
   }
 
-  /** Run a pending-invite set/clear after the ones already asked for. */
-  private pendingJoinSerial<T>(f: () => Promise<T>): Promise<T> {
-    const run = this.pendingJoinOps.then(f, f);
-    this.pendingJoinOps = run.catch(() => undefined);
-    return run;
+  /** D-12 — show the "Join <group>?" screen for an invite link (deep link or paste). During setup it
+   *  waits on the onboarding screen; once set up, on Groups. Only the step id goes to the join funnel. */
+  openInviteLink(link: string): void {
+    reachedStep("arrive");
+    this.setState({ inviteLink: link.trim() });
+    if (this.state.stage === "done") this.go("groups");
   }
 
-  /** Hand a v2 invite link to Rust (pending_join_set) and record only its status. */
-  private async holdInvite(link: string): Promise<boolean> {
-    const cancels = this.pendingJoinCancels;
-    try {
-      const v = await this.pendingJoinSerial(() => bridge.join.pendingSet(link));
-      // Cancelled while it was being stored: the queued clear wipes it in Rust; don't show it.
-      if (cancels !== this.pendingJoinCancels) return false;
-      this.pendingJoinGen++;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      return true;
-    } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      this.toast(/desktop app/.test(m) ? "Invite links need the desktop app." : "That invite link isn't complete. Ask for the full link, or paste the code.");
-      return false;
-    }
-  }
-
-  /** On start-up: pick up an invite Rust is still holding (status only; not resolved). */
-  async refreshPendingJoin(): Promise<void> {
-    const gen = this.pendingJoinGen;
-    try {
-      const v = await bridge.join.pendingGet();
-      if (gen !== this.pendingJoinGen) return;
-      if (v && !this.state.pendingJoin) this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      if (!v && this.state.pendingJoin?.phase === "waiting") this.setState({ pendingJoin: null });
-    } catch {
-      /* no join client (web preview / older build): nothing waiting */
-    }
+  /** Close the "Join <group>?" screen (joined, cancelled or dismissed). */
+  clearInviteLink(): void {
+    this.setState({ inviteLink: null });
   }
 
   /** Whether setup has reached the point where a Join can run (signed in, wallet ready): the wallet
@@ -2613,97 +2572,9 @@ export class Store {
     return this.state.signedIn && ["s4", "s5", "s6", "s7"].includes(st);
   }
 
-  /** The paste field (onboarding + Groups): the member typed or pasted an invite. A v2 link is held in
-   *  Rust and, if setup allows a Join, reviewed right away (pasting is the member acting). Returns false
-   *  when the text isn't a v2 invite, so the caller can try its own (legacy) path. */
-  async acceptInviteInput(raw: string): Promise<boolean> {
-    if (classifyInviteInput(raw).kind !== "v2") return false;
-    const ok = await this.holdInvite(raw.trim());
-    if (ok && this.canJoinNow()) await this.reviewPendingJoin();
-    return ok;
-  }
-
-  /** The member's Review: resolve + verify the waiting invite in Rust (counts against its resolve limit,
-   *  so it runs only on this click). */
-  async reviewPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    if (!pj || pj.phase === "resolving" || pj.phase === "joining") return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined, retryable: undefined } });
-    try {
-      const r = await bridge.join.pendingResolve();
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = r.actionable ? r.code : null;
-      this.setState({
-        pendingJoin: {
-          ...pj,
-          phase: "ready",
-          error: undefined,
-          retryable: undefined,
-          resolved: {
-            kind: r.kind,
-            clusterName: r.clusterName,
-            goal: r.goal,
-            inviter: r.inviter,
-            inviterVerified: r.inviterVerified,
-            exp: r.exp,
-            actionable: r.actionable,
-            keyMissing: r.keyMissing,
-          },
-        },
-      });
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e), retryable: joinErrorRetryable(e) || undefined } });
-    }
-  }
-
-  /** The member's explicit "Join <cluster>": redeem the reviewed direct invite. Rust wipes the waiting
-   *  invite on success. Never called without that click. */
-  async redeemPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    const code = this.pendingJoinCode;
-    if (!pj || pj.phase !== "ready" || !pj.resolved?.actionable || !code) return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "joining" } });
-    try {
-      await bridge.join.redeem(code);
-      if (gen === this.pendingJoinGen) {
-        this.pendingJoinCode = null;
-        this.setState({ pendingJoin: null });
-      }
-      void refreshGroups().catch(() => {});
-      this.toast(`You're in. Welcome to ${pj.resolved.clusterName || "the group"}.`);
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      // Rust keeps the opened invite after a failed redeem (until it expires), so Join can be retried.
-      this.setState({ pendingJoin: { ...pj, phase: "ready", error: `Couldn't join yet (${joinErrorMessage(e).replace(/\.$/, "")}). You can try again.` } });
-    }
-  }
-
-  /** Cancel / dismiss: wipe the waiting invite in Rust. */
-  async cancelPendingJoin(): Promise<void> {
-    this.pendingJoinGen++;
-    this.pendingJoinCancels++;
-    this.pendingJoinCode = null;
-    this.setState({ pendingJoin: null });
-    try {
-      await this.pendingJoinSerial(() => bridge.join.pendingClear());
-    } catch {
-      // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
-      this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");
-    }
-  }
-
   /** HUP-S8.2 — clear the pending pairing link once the fleet wizard has taken it. */
   clearPendingPairLink(): void {
     this.setState({ pendingPairLink: null });
-  }
-
-  /** Clear the pending deep-link invite once Groups has consumed it. */
-  clearPendingInvite(): void {
-    this.setState({ pendingInvite: null });
   }
 
   /** Clear the pending claim hint once onboarding has surfaced it (or on sign-out). */
@@ -3885,36 +3756,36 @@ export class Store {
         }
       }
     } else if (call.name === "group_invite") {
-      // PBA-L7b-002: an invite link is a one-click, no-approval ADMISSION bearer. The member
-      // approves minting it, and the link goes to the member (clipboard) — never back into the
-      // model context, where an injected instruction could exfiltrate it.
+      // D-12: the same invite the member makes in Groups. Whoever opens the link only ASKS to join;
+      // the member approves or declines each request. The member approves making it, and the link
+      // goes to the member (clipboard), never back into the model context.
       const group = args.group || "";
-      const forHandle = args.forHandle || "shared link";
+      const forHandle = args.forHandle || "";
       const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool group_invite",
-        title: "Mint a one-click invite link",
+        title: "Make an invite link",
         chainless: true,
         rows: [
           { k: "Group", v: group || "(none given)" },
-          { k: "For", v: forHandle },
-          { k: "Effect", v: "whoever opens the link joins the group in one click, with no further approval (14 days)" },
+          { k: "For", v: forHandle || "anyone you send it to" },
+          { k: "Effect", v: "whoever opens the link asks to join; you approve or decline them in Groups (link works 14 days)" },
         ],
         cost: "none — no chain transaction",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle }, "mint a one-click invite link to group " + (group || "(none given)")));
+      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle || "(none)" }, "make an invite link to group " + (group || "(none given)")));
       status = r;
       if (r !== "approved") {
-        result = "the member declined minting an invite link; no link exists.";
+        result = "the member declined making an invite link; no link exists.";
       } else {
         try {
-          const { link } = await bridge.invites.create(group, forHandle);
-          this.copy(link, "Invite link copied — share it with " + forHandle);
+          const made = await bridge.invites.create(group, forHandle, this.identity().name);
+          this.copy(made.link, "Invite link copied. When they open it, approve their request in Groups.");
           result =
-            "Minted a one-click invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard.";
+            "Made an invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard, and that whoever opens it asks to join and appears in Groups for them to approve.";
         } catch (e) {
-          result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+          result = "couldn't make an invite: " + (e instanceof Error ? e.message : String(e));
         }
       }
     } else if (call.name === "directory_find") {

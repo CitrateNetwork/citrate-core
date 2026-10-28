@@ -1,37 +1,6 @@
 // @vitest-environment node
-// GROW-S0 — the legacy display-link parser (links already posted keep rendering) and the claim
-// link parser. The v2 invite links are covered in inviteLink.test.ts.
 import { describe, it, expect } from "vitest";
-import { parseJoinLink, shortInviter, parseClaimLink } from "./referral";
-
-describe("parseJoinLink — GROW-S0", () => {
-  it("reads a legacy display link (already posted) for its display fields", () => {
-    expect(parseJoinLink("https://citrate.ai/join/grp_x?by=dana&c=Aperture&g=inference&ref=0xabc")).toEqual({
-      clusterId: "grp_x",
-      clusterName: "Aperture",
-      goal: "inference",
-      inviter: "0xabc",
-      inviterHandle: "dana",
-    });
-  });
-  it("parses a bare cluster link with no query", () => {
-    expect(parseJoinLink("https://citrate.ai/join/grp_x")).toEqual({ clusterId: "grp_x" });
-  });
-  it("tolerates a scheme-less link", () => {
-    expect(parseJoinLink("citrate.ai/join/grp_x?by=dana").clusterId).toBe("grp_x");
-  });
-  it("returns empty parts for garbage, never throws", () => {
-    expect(parseJoinLink("not a link at all")).toEqual({});
-  });
-});
-
-describe("shortInviter — GROW-S0", () => {
-  it("shortens a long address and defaults to 'someone'", () => {
-    expect(shortInviter("0x90e0b7abc0000000000000000000000000000001")).toBe("0x90e0…0001");
-    expect(shortInviter("")).toBe("someone");
-    expect(shortInviter(null)).toBe("someone");
-  });
-});
+import { parseClaimLink } from "./claimLink";
 
 // PHONEPAY-S4 — the claim/onboard deep-link parser. Params are untrusted display HINTS
 // (A8): a valid email/order shape is surfaced; anything else is dropped; a non-claim link

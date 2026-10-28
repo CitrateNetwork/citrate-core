@@ -271,29 +271,6 @@ export interface WalletReview {
   deployGate?: DeployGateRecord;
 }
 
-/** GROW-S1 task 12 — the waiting v2 invite as the UI sees it. Never the code or the key. */
-export interface PendingJoinUi {
-  phase: "waiting" | "resolving" | "ready" | "joining" | "error";
-  hasKey: boolean;
-  /** false = held in Rust memory only (keyring unreachable), so it won't survive a restart. */
-  persisted: boolean;
-  /** On a failed Review: the failure is temporary and Rust still holds the invite, so Review can run again. */
-  retryable?: boolean;
-  /** Signed display data, after the member's Review. */
-  resolved?: {
-    kind: "direct" | "referral";
-    clusterName: string | null;
-    goal: string | null;
-    inviter: string | null;
-    inviterVerified: boolean;
-    exp: string;
-    actionable: boolean;
-    keyMissing: boolean;
-  };
-  /** Member-facing error text (phase "error"). */
-  error?: string;
-}
-
 export interface AppState {
   persona: string;
   tier: string;
@@ -387,12 +364,14 @@ export interface AppState {
   s5StakeWei: string | null;
   /**
    * M-2.2/M-2.3 — a plain-language description of the member's bond escrow
-   * (`describeBond`), e.g. "Staked · unlocks at block 300,000". Derived ONLY
+   * (`describeBond`), e.g. "Bond locked · not staked · until block 300,000". Derived ONLY
    * from the real grant-status read; `null` until the grant lands. Replaces the
    * hardcoded "mainnet release policy" line, which described a release flag that
    * no longer exists — the member's own lock + KYC gates govern release now.
    */
   s5BondStatus: string | null;
+  /** C1-V V5 — `MemberBond.unlockBlock()` from the grant read; null until the grant lands. */
+  s5UnlockBlock: number | null;
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
@@ -689,29 +668,17 @@ export interface AppState {
    */
   myGroups: GroupRoleRow[];
   /**
-   * GROW-S1 — an app-only `citrate://invite?…` link (Groups offers its one-click Join) or a legacy
-   * display link (context only), handed to the app by the OS. Transient, not persisted. v2 links
-   * never land here: they are held in Rust (`pendingJoin`).
-   */
-  /**
    * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
    * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
    * member presses "Pair". Null when none is pending.
    */
   pendingPairLink: string | null;
-  pendingInvite: {
-    url: string;
-    clusterId?: string;
-    clusterName?: string;
-    inviterHandle?: string;
-    goal?: string;
-  } | null;
   /**
-   * GROW-S1 task 12 — a v2 invite (`citrate.ai/join/<code>#K`) waiting for the member to act. The
-   * link itself (code + one-time key) is held ONLY in Rust (keyring); this is just its status, plus
-   * the signed display data once the member chose Review. Transient, NOT persisted.
+   * D-12 — an invite link (`citrate://invite?…`) the OS handed the app or the member pasted, waiting
+   * on the "Join <group>?" screen (Groups and onboarding). Nothing is sent until the member presses
+   * Join. Transient, not persisted.
    */
-  pendingJoin: PendingJoinUi | null;
+  inviteLink: string | null;
   /**
    * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
    * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
@@ -839,6 +806,7 @@ export function freshState(pid: string): AppState {
     s5n: 0,
     s5StakeWei: null,
     s5BondStatus: null,
+    s5UnlockBlock: null,
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
@@ -964,8 +932,7 @@ export function freshState(pid: string): AppState {
     people: [],
     peopleState: "loading",
     myGroups: [],
-    pendingInvite: null,
-    pendingJoin: null,
+    inviteLink: null,
     pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
@@ -1054,18 +1021,18 @@ export function freshState(pid: string): AppState {
       s.liquid = 142.63;
       s.claimable = 9.41;
       s.crashes = [{ when: "2026-07-06 03:12 · exit 137", note: "OOM under compaction — restarted with backoff in 4s." }];
-      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+12.41 SALT", "Send|−40.00 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p3") {
       s.node = "off";
       s.liquid = 58.02;
       s.claimable = 2.14;
-      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+8.90 SALT", "Membership grant ceremony|32,000 SALT"]);
     } else if (pid === "p4") {
       s.node = "validating";
       s.peers = 26;
       s.liquid = 301.44;
       s.claimable = 18.92;
-      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Grant + stake ceremony|32,000 SALT"]);
+      s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Membership grant ceremony|32,000 SALT"]);
     }
     // Packaged app (tauri): never seed the sim persona's name into the greeting.
     // Real identity folds in on sign-in; until then greet neutrally (Rule 1).

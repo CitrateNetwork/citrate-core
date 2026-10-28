@@ -100,6 +100,7 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
 // K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
 mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
@@ -179,16 +180,11 @@ mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
 mod invite_seal;
+// D-12: group invites, one flow (request and approve).
 mod invites;
-// GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
-mod join;
 mod model_catalog;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
-// GROW-S2 (Join 9): relay rendezvous join, app side (IPC views, tick, join://state).
-mod rendezvous;
-// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
-mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -316,9 +312,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
-        // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
-        // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Register the `citrate://` scheme so an invite, pairing or claim link opens the app. The
+        // frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → store.handleDeepLink.
         // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -407,13 +402,8 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
-            // GROW-S2 (Join 9, M4): tick the relay rendezvous at app start and every 30 s while open
-            // (starts the comms daemon only when this device minted invites or has a join in flight).
-            rendezvous::spawn_ticker(app.handle().clone());
-            // v2 invite links: the join client (pending attaches + opened invites, memory only).
-            app.manage(join::build_join_state());
-            // The pending invite (code + link key) waiting for the member's Join: keyring only.
-            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
+            // D-12: settle invite approvals left held by a crash or a lost answer (roster check).
+            invites::recheck_held_on_start(app.handle().clone());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -421,11 +411,26 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             // Contract v1.1 §1: the first-submission record persists under the app data dir, so
-            // a re-send after a restart is never mistaken for a first submission.
-            app.manage(match app.path().app_data_dir() {
-                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
-                Err(e) => {
+            // a re-send after a restart is never mistaken for a first submission. It has one
+            // section per network, opened on the genesis of the installed network gate (#511):
+            // other networks' sections are archived, read-only, and decide nothing here. With no
+            // gate genesis every send is refused anyway, and the record on disk is left as it is.
+            let gate_genesis = rpc::network_gate()
+                .filter(|g| g.is_set())
+                .and_then(|g| g.genesis_hash.clone());
+            app.manage(match (app.path().app_data_dir(), gate_genesis) {
+                (Ok(dir), Some(genesis)) => {
+                    ceremony::build_ceremony_state_at(
+                        dir.join(citrate_core_kit::submitted_log::RECORD_FILE),
+                        &genesis,
+                    )
+                }
+                (Err(e), _) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+                (Ok(_), None) => {
+                    eprintln!("[ceremony] no network genesis; the submitted-tx record is not opened");
                     ceremony::build_ceremony_state_unpersisted()
                 }
             });
@@ -590,29 +595,16 @@ pub fn run() {
             social::directory_search,
             // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
             invites::group_invite_create,
-            invites::group_invite_redeem,
-            invites::group_invite_submit_claim,
-            invites::group_invite_poll_claims,
             invites::group_invites,
-            invites::group_invite_verify_consume,
             invites::group_invite_revoke,
-            invites::group_referral_log,
-            invites::group_referral_export,
-            // GROW-S2 (Join 9): relay rendezvous views (no secrets cross invoke).
-            rendezvous::rendezvous_tick,
-            rendezvous::rendezvous_cancel,
-            rendezvous::rendezvous_forget,
-            // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
-            join::join_mint,
-            join::join_attach,
-            join::join_redeem,
-            join::join_revoke,
-            join::join_list,
-            join::join_share_qr,
-            pending_join::pending_join_set,
-            pending_join::pending_join_get,
-            pending_join::pending_join_clear,
-            pending_join::pending_join_resolve,
+            invites::group_invite_requests,
+            invites::group_invite_approve,
+            invites::group_invite_check,
+            invites::group_invite_decline,
+            invites::group_invite_preview,
+            invites::group_invite_request,
+            invites::group_invite_my_requests,
+            invites::group_invite_dismiss,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -624,7 +616,7 @@ pub fn run() {
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,
