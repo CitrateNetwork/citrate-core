@@ -81,6 +81,9 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // folded as `bondedStake` from grantStatus. The membership grant sitting in a locked bond is not
   // staked until the bond is activated.
   const staked = s.bondedStake;
+  // RC52: after a genesis switch the stake waits for its first read on the new chain (the grant
+  // read folds `bondedStake`).
+  const stakeUnread = s.netUnread.includes("grant");
   // #348 review: the bond-locked word needs MemberBond.activated() = false; otherwise the one
   // validator state gives the word or "— · <reason>".
   const bondLockedNotStaked = s.hasGrant && !(staked > 0) && s.bondActivated === false;
@@ -130,8 +133,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     {
       label: "Staked",
-      value: staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
-      sub: staked > 0 ? "SALT · stakeOf" : validatorStateText,
+      value: stakeUnread ? "—" : staked > 0 ? fmtI(staked) : bondLockedNotStaked ? "0" : "—",
+      sub: stakeUnread ? "not read yet on this network" : staked > 0 ? "SALT · stakeOf" : validatorStateText,
       color: "var(--tx-1)",
       tip: "ValidatorRegistry.stakeOf(pubkey): the only staked figure. A grant in a locked bond is not validator stake.",
       vsize: "21px",

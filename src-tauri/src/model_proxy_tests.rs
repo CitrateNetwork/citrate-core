@@ -64,9 +64,19 @@ impl Rig {
         }
     }
 
+    /// A chat-route settings folder with nothing stored ("ask first": remote sends allowed).
+    pub(crate) fn gate(&self) -> std::path::PathBuf {
+        self.dir.0.join("route")
+    }
+
     pub(crate) fn log_text(&self) -> String {
         std::fs::read_to_string(log_path(&self.dir.0)).unwrap_or_default()
     }
+}
+
+/// A cancel flag that is not set.
+pub(crate) fn live() -> crate::model_provider::CancelFlag {
+    Arc::new(std::sync::atomic::AtomicBool::new(false))
 }
 
 pub(crate) fn req(model: &str, stream: bool) -> ChatRequest {
@@ -315,7 +325,7 @@ fn keys_are_one_way_and_a_failing_key_is_never_stored() {
             provider: ProviderId::Vendor(Vendor::Xai),
             model: "gpt-known".into(),
             session_id: "s2".into(),
-        })
+        }, rig.gate())
         .unwrap();
     rig.proxy.remove_key("xai").unwrap();
     assert!(!rig.proxy.key_configured(&ProviderId::Vendor(Vendor::Xai)));
@@ -332,7 +342,7 @@ fn keys_are_one_way_and_a_failing_key_is_never_stored() {
 #[test]
 fn routes_bind_one_provider_model_and_session_and_are_not_keys() {
     let rig = Rig::new("proxy-routes");
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     assert_eq!(g.base_url, "http://127.0.0.1:1/v1");
     assert_ne!(g.bearer.expose(), rig.key);
     assert!(!g.bearer.expose().contains(&rig.key));
@@ -344,6 +354,105 @@ fn routes_bind_one_provider_model_and_session_and_are_not_keys() {
     for v in rig.kr.values() {
         assert!(!v.contains("cmp_"));
     }
+}
+
+// ---- D-11 (WP-S1-PROV-AGENT) -------------------------------------------------------------------
+
+#[test]
+fn a_base_url_maps_only_to_a_pinned_vendor_the_gateway_or_a_confirmed_custom_endpoint() {
+    let rig = Rig::new("proxy-base");
+    assert_eq!(rig.proxy.provider_for_base("https://api.openai.com/v1/"), Ok(ProviderId::Vendor(Vendor::OpenAi)));
+    assert_eq!(rig.proxy.provider_for_base("https://api.x.ai/v1"), Ok(ProviderId::Vendor(Vendor::Xai)));
+    assert_eq!(rig.proxy.provider_for_base("https://infer.citrate.ai/v1"), Ok(ProviderId::Gateway));
+    for bad in ["https://api.openai.com.evil.example/v1", "https://attacker.example/v1", "http://api.openai.com/v1"] {
+        assert!(matches!(rig.proxy.provider_for_base(bad), Err(ProxyError::Egress(_))), "{bad}");
+    }
+    let c = rig.proxy.add_custom("Mine", "https://llm.example.org/v1", vec!["m".into()], 1).unwrap();
+    let e = rig.proxy.provider_for_base("https://llm.example.org/v1").unwrap_err();
+    assert!(e.to_string().contains("not been confirmed"), "{e}");
+    rig.proxy.confirm_custom(&c.id, "https://llm.example.org/v1").unwrap();
+    assert_eq!(rig.proxy.provider_for_base("https://llm.example.org/v1"), Ok(ProviderId::Custom(c.id)));
+}
+
+#[test]
+fn the_gateway_is_served_on_its_pinned_host_with_a_cgk_key() {
+    let rig = Rig::new("proxy-gateway");
+    let key = fake_key("cgk_");
+    rig.proxy.set_key("gateway", SecretString::new(key.clone()), 1).unwrap();
+    assert!(rig.proxy.set_key("gateway", SecretString::new(fake_key("sk-")), 1).is_err(), "wrong prefix");
+    rig.proxy.with_state(|g, _| g.set_price("gateway", "gpt-known", Some(RIG_PRICE)).unwrap());
+    let route = ProxyRoute { provider: ProviderId::Gateway, model: "gpt-known".into(), session_id: "g".into() };
+    rig.proxy.call(&route, req("gpt-known", false), None, &mut |_| {}).unwrap();
+    let seen = rig.vendor.seen.lock().unwrap();
+    let chat = seen.iter().rfind(|s| s.url.ends_with("/chat/completions")).unwrap();
+    assert_eq!(chat.url, "https://infer.citrate.ai/v1/chat/completions");
+    assert_eq!(chat.auth, format!("authorization: Bearer {key}"));
+}
+
+#[test]
+fn an_imported_key_keeps_an_existing_one_unless_replaced_and_is_format_checked() {
+    let rig = Rig::new("proxy-import");
+    let other = format!("sk-{}", "W3".repeat(16));
+    let pid = ProviderId::Vendor(Vendor::OpenAi);
+    assert_eq!(rig.proxy.import_key(&pid, SecretString::new(other.clone()), false), Ok(false));
+    assert_eq!(rig.kr.map.lock().unwrap().get("provider-key:openai"), Some(&rig.key));
+    assert_eq!(rig.proxy.import_key(&pid, SecretString::new(other.clone()), true), Ok(true));
+    assert_eq!(rig.kr.map.lock().unwrap().get("provider-key:openai"), Some(&other));
+    assert!(rig.proxy.import_key(&pid, SecretString::new("short".into()), true).is_err());
+    assert!(rig.proxy.import_key(&ProviderId::Cognition, SecretString::new(fake_key("cog_")), true).is_err());
+    // Importing reads nothing from the network.
+    assert_eq!(rig.vendor.seen.lock().unwrap().iter().filter(|s| s.url.ends_with("/models")).count(), 1);
+}
+
+#[test]
+fn a_fixed_path_post_is_a_logged_proxy_call_on_the_pinned_host() {
+    let rig = Rig::new("proxy-fixed");
+    let pid = ProviderId::Vendor(Vendor::OpenAi);
+    let body = serde_json::json!({"prompt": "a lemon tree", "model": "img-1"});
+    rig.proxy.post_fixed(&pid, "img-1", "media", "/images/generations", &body).unwrap();
+    let seen = rig.vendor.seen.lock().unwrap().clone();
+    let post = seen.iter().find(|s| s.url.ends_with("/images/generations")).unwrap();
+    assert_eq!(post.url, "https://api.openai.com/v1/images/generations");
+    assert_eq!(post.auth, format!("authorization: Bearer {}", rig.key));
+    let text = rig.log_text();
+    assert!(text.contains("\"media\"") && text.contains("\"img-1\""), "{text}");
+    assert!(!text.contains("lemon"), "no content in the log");
+    // A halted provider sends nothing.
+    rig.proxy.with_state(|g, _| g.member_halt("openai", 5));
+    let n = rig.vendor.seen.lock().unwrap().len();
+    assert!(matches!(rig.proxy.post_fixed(&pid, "img-1", "media", "/images/generations", &body), Err(ProxyError::Refused(_))));
+    assert_eq!(rig.vendor.seen.lock().unwrap().len(), n);
+}
+
+#[test]
+fn a_route_is_gated_on_local_model_only_per_call() {
+    let rig = Rig::new("proxy-gate");
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
+    rig.proxy.call_routed_until(g.bearer.expose(), req("gpt-known", false), None, live(), &mut |_| {}).unwrap();
+    crate::chat_route::set(&rig.gate(), crate::chat_route::ChatRoute::LocalOnly, 1).unwrap();
+    let before = rig.vendor.calls();
+    let r = rig.proxy.call_routed_until(g.bearer.expose(), req("gpt-known", false), None, live(), &mut |_| {});
+    assert!(matches!(r, Err(ProxyError::Egress(_))), "{r:?}");
+    assert_eq!(rig.vendor.calls(), before);
+    // An unreadable setting counts as local only too.
+    std::fs::write(rig.gate().join(crate::chat_route::ROUTE_FILE), "{").unwrap();
+    assert!(rig.proxy.call_routed_until(g.bearer.expose(), req("gpt-known", false), None, live(), &mut |_| {}).is_err());
+    assert!(matches!(rig.proxy.call_routed_until("cmp_unknown", req("gpt-known", false), None, live(), &mut |_| {}), Err(ProxyError::Unauthorized)));
+}
+
+#[test]
+fn routes_with_a_prefix_are_revoked_together() {
+    let rig = Rig::new("proxy-prefix");
+    let mk = |s: &str| {
+        rig.proxy
+            .mint_route(ProxyRoute { session_id: s.into(), ..rig.route("gpt-known") }, rig.gate())
+            .unwrap()
+    };
+    let (a, b, c) = (mk("hs-1"), mk("hs-2"), mk("esc-1"));
+    rig.proxy.revoke_sessions_with_prefix("hs-");
+    assert!(rig.proxy.route_for(a.bearer.expose()).is_none());
+    assert!(rig.proxy.route_for(b.bearer.expose()).is_none());
+    assert!(rig.proxy.route_for(c.bearer.expose()).is_some());
 }
 
 #[test]
@@ -493,6 +602,25 @@ fn a_caller_that_goes_away_stops_the_vendor_call_and_is_logged_as_cancelled() {
     assert_eq!(ok.map(|r| r.content).ok().as_deref(), Some("hello from the vendor"));
 }
 
+#[test]
+fn revoking_a_route_cuts_off_its_call_in_flight() {
+    let rig = Rig::new("proxy-revoke-inflight");
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
+    let flag = live();
+    // The session closes while the vendor is answering.
+    let (p, f) = (rig.proxy.clone(), flag.clone());
+    *rig.vendor.during_call.lock().unwrap() = Some(Box::new(move || {
+        p.revoke_session("sess-1");
+        assert!(f.load(std::sync::atomic::Ordering::SeqCst), "the call's flag is set on revoke");
+    }));
+    let r = rig
+        .proxy
+        .call_routed_until(g.bearer.expose(), req("gpt-known", true), None, flag.clone(), &mut |_| {});
+    assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(r.is_err(), "a revoked session's streamed call is cut off: {r:?}");
+    assert!(rig.proxy.route_for(g.bearer.expose()).is_none());
+}
+
 fn xai_rig(tag: &str) -> (Rig, ProxyRoute) {
     let rig = Rig::new(tag);
     rig.proxy
@@ -566,6 +694,29 @@ fn a_key_test_keeps_the_date_the_key_was_set() {
         rig.proxy.with_state(|g, _| g.get("openai").key_set_ms),
         Some(set_at + 31 * 86_400_000)
     );
+}
+
+#[test]
+fn a_migrated_key_does_not_restart_the_rotation_clock() {
+    let rig = Rig::new("proxy-import-date");
+    // No proxy key yet for xAI: an imported key has no known creation date (it is not "now").
+    rig.proxy
+        .import_key(&ProviderId::Vendor(Vendor::Xai), SecretString::new(fake_key("xai-")), false)
+        .unwrap();
+    assert_eq!(rig.proxy.with_state(|g, _| g.get("xai").key_set_ms), None);
+    // An existing key and its date are kept when an older copy is migrated over it.
+    let set_at = rig.proxy.with_state(|g, _| g.get("openai").key_set_ms).unwrap();
+    rig.proxy
+        .import_key(&ProviderId::Vendor(Vendor::OpenAi), SecretString::new(fake_key("sk-")), false)
+        .unwrap();
+    assert_eq!(rig.proxy.with_state(|g, _| g.get("openai").key_set_ms), Some(set_at));
+    // A key the member types now (an unconfirmed custom endpoint) is dated now.
+    let c = rig.proxy.add_custom("Box", "https://llm.example.org/v1", vec!["m".into()], 1).unwrap();
+    let before = now_ms();
+    rig.proxy
+        .import_key(&ProviderId::Custom(c.id.clone()), SecretString::new(fake_key("bx-")), true)
+        .unwrap();
+    assert!(rig.proxy.with_state(|g, _| g.get(&c.id).key_set_ms).is_some_and(|t| t >= before));
 }
 
 /// Remove the anchor and every provider file: what "fake a fresh install" would take, short of

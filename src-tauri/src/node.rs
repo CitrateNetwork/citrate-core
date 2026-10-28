@@ -466,7 +466,7 @@ impl NodeManager {
     /// Fails closed on a bad book genesis or when a node still answers on the
     /// local RPC while a reset is needed.
     fn prepare_data_dir_for_genesis(&self) -> Result<()> {
-        use crate::node_genesis::{reconcile_genesis, GenesisOutcome, CHAIN_RESET_NOTICE};
+        use crate::node_genesis::{reconcile_genesis, GenesisOutcome};
         let outcome = reconcile_genesis(&self.data_dir, &self.book_genesis, || {
             self.head_height().is_some()
         })
@@ -496,20 +496,26 @@ impl NodeManager {
                     &crate::node_genesis::kept_entries(&self.data_dir),
                 )
             );
-            *self
-                .chain_reset_notice
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
             // K6: reconcile_genesis set the old node.toml (the old network's bootnodes and
             // chain id) aside BEFORE committing the new marker; the spawn writes a fresh one
-            // from the active profile.
-            if let Some(kept) = retired_config {
+            // from the active profile. A launch finishing an interrupted switch finds it already
+            // set aside. Either way the member is told where it is (RC52 G2: nothing dropped
+            // silently).
+            let kept = retired_config.or_else(|| {
+                crate::node_genesis::set_aside_node_config(&self.data_dir, previous.as_deref())
+            });
+            if let Some(kept) = &kept {
                 eprintln!(
                     "[node] the previous network's node.toml was kept as {}; a new one is written \
                      from the network profile",
                     kept.display()
                 );
             }
+            *self
+                .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some(crate::node_genesis::reset_notice(kept.as_deref()));
         }
         Ok(())
     }
@@ -1538,25 +1544,33 @@ pub async fn node_validator_earnings(
 /// (32,000 SALT). If minStake ever rises above this the register reverts (BadStake)
 /// and the app surfaces the honest revert rather than a fabricated success.
 const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
-/// Explicit gas for `registerValidator` (ed25519-verify precompile + storage
-/// writes + possible eviction). A calldata tx MUST carry explicit gas or the
-/// ceremony rejects it as undecodable.
-const REGISTER_GAS: u64 = 600_000;
-
 /// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
 /// intent consumes for `MemberBond.activate` (the shape `transfer.rs` builds for a send).
 /// `to` is the member's bond CLONE; `value` is 0 — the clone forwards its OWN principal
-/// (the 32k is already inside it), so the member EOA only pays gas.
-fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
+/// (the 32k is already inside it), so the member EOA only pays gas. A calldata tx must
+/// carry explicit gas or the ceremony rejects it as undecodable; `gas` is the node's
+/// estimate plus the margin (`money_gas`), never a fixed limit.
+fn encode_activate_json(from: &str, bond: &str, calldata: &[u8], gas: u64) -> String {
     serde_json::json!({
         "from": from,
         "to": bond,
         "value": "0x0",
         "data": format!("0x{}", hex::encode(calldata)),
-        "gas": format!("0x{REGISTER_GAS:x}"),
+        "gas": format!("0x{gas:x}"),
         "chainId": format!("0x{:x}", 40204u64),
     })
     .to_string()
+}
+
+/// The `MemberBond.activate` tx JSON with the gas the node estimates for it (`money_gas`).
+pub(crate) fn activate_tx_json<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    from: &str,
+    bond: &str,
+    calldata: &[u8],
+) -> std::result::Result<String, String> {
+    let gas = crate::money_gas::estimate(rpc, from, bond, 0, calldata)?;
+    Ok(encode_activate_json(from, bond, calldata, gas))
 }
 
 /// W1.3 (bond-clone model, owner decision 2026-08-05 — reverses ADR-2026-07-27) —
@@ -1649,7 +1663,7 @@ pub(crate) fn bond_activation_intent<T: crate::rpc::RpcTransport>(
     let (pubkey, sig) = sign(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
-    let raw = encode_activate_json(member, &grant.bond_address, &calldata);
+    let raw = activate_tx_json(rpc, member, &grant.bond_address, &calldata)?;
     Ok(crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,

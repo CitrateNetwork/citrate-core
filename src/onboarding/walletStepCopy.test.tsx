@@ -2,7 +2,7 @@
 // did: "Smart wallet · ERC-4337" and a "Passkey validator (WebAuthn P-256)" signer. The wallet is an
 // EVM signing key created on this device, sealed in the custody vault, that signs only through the
 // signature ceremony. #399's wording: "Wallet key on this device"; "EVM signing key · sealed in the
-// custody vault · signs only through the signature ceremony".
+// custody vault"; it signs only through the signature ceremony (since #545 a row of its own).
 import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
@@ -31,7 +31,9 @@ describe("S4 wallet step — the wallet is a key on this device", () => {
   it("uses #399's wording for the key", () => {
     const html = s4();
     expect(html).toContain("Wallet key on this device");
-    expect(html).toContain("EVM signing key · sealed in the custody vault · signs only through the signature ceremony");
+    // Since #545 (core#425) the key and its signing rule are two rows, with the link state on the key row.
+    expect(html).toContain("EVM signing key · sealed in the custody vault · ");
+    expect(html).toContain("Only through the signature ceremony, after you approve");
   });
 
   it("makes no claims about lazy deployment, sponsored gas, guardians or an optional local key", () => {

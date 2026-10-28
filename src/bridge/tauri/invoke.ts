@@ -48,19 +48,24 @@ const UNBOUNDED = new Set<string>([
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
  *  the Rust error (with its real cause) always arrives first and the UI never abandons a live turn. */
 const LONG: Record<string, number> = {
-  // GROW-S2 (Join 9): the rendezvous verbs have a 15 s daemon IPC bound (plus a ≤ 3 s connect).
-  // Create: publish (5 s) + open (15 s) + the group-name read (5 s), plus connects. Revoke: close
-  // (15 s) + the legacy revoke (5 s). Cancel / forget answer, then run one tick (15 s).
-  group_invite_create: 40_000,
+  // D-12 invites: each group-daemon call is bounded at 5 s Rust-side (plus a ≤ 3 s connect).
+  // Create reads the group name; revoke and decline read the inbox, then answer each requester;
+  // approve adds, then (after an error) reads the roster; requests and my-requests make one or
+  // two calls per open invite / request.
+  group_invite_create: 20_000,
   group_invite_revoke: 30_000,
-  // Approving a claim closes the rendezvous and revokes the legacy record first, like revoke.
-  group_invite_verify_consume: 30_000,
-  rendezvous_tick: 20_000,
-  rendezvous_cancel: 40_000,
-  rendezvous_forget: 40_000,
-  // One non-streaming model turn: Rust bounds it at AI_REQUEST_TIMEOUT (300 s).
-  ai_chat: 330_000,
-  ai_chat_tools: 330_000,
+  group_invite_decline: 20_000,
+  group_invite_approve: 20_000,
+  group_invite_check: 20_000,
+  group_invite_request: 20_000,
+  group_invite_requests: 45_000,
+  group_invite_my_requests: 45_000,
+  // One non-streaming model turn. Local: Rust bounds it at AI_REQUEST_TIMEOUT (300 s). Remote (D-11):
+  // a core model proxy call, bounded at provider_egress::CALL_TIMEOUT (600 s); setting a preset
+  // tests its key live through the same transport.
+  ai_chat: 630_000,
+  ai_chat_tools: 630_000,
+  ai_set_provider: 630_000,
   ai_chat_local: 330_000,
   ai_chat_local_tools: 330_000,
   // Loopback control calls to the Hermes sidecar: Rust bounds them at HERMES_CONTROL_TIMEOUT (30 s).
@@ -77,6 +82,11 @@ const LONG: Record<string, number> = {
   hermes_terminal_set: 60_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
+  hermes_session_open_cloud: 45_000,
+  // D-11 (P-8): two calls to Devin's API through the proxy (GET /self then POST /sessions; the
+  // session then its messages), each bounded at provider_egress::CALL_TIMEOUT (600 s).
+  delegation_approve: 1_230_000,
+  delegation_status: 1_230_000,
   // HUP-S8.2: pairing tries up to 6 address hints at 2.5 s each, then a 5 s exchange (Rust-bounded).
   fleet_pair_join: 30_000,
   hermes_session_send: 45_000,
@@ -100,14 +110,6 @@ const LONG: Record<string, number> = {
   agent_grants_reset: 270_000,
   // HUP-S10.1: one image generation; Rust bounds it at 600 s (local server) / 300 s (provider).
   media_generate_image: 630_000,
-  // GROW-S1 task 10: v2 invite links. Each HTTP call is bounded at 15 s Rust-side; mint is
-  // reserve + attach and resolve is resolve + JWKS (two calls each).
-  join_mint: 35_000,
-  join_attach: 20_000,
-  join_revoke: 20_000,
-  join_list: 20_000,
-  // Task 12: resolve of the waiting invite (resolve + JWKS, 15 s each Rust-side).
-  pending_join_resolve: 35_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
   gsheets_read: 20_000,
   gsheets_append: 20_000,
@@ -126,6 +128,10 @@ const LONG: Record<string, number> = {
   mcp_servers_runtime: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
+  // Join-8: the send half of sign_prepare + sign_send_prepared polls the same 60 s receipt budget.
+  sign_send_prepared: 75_000,
+  // Join-8: the activation read is bounded Rust-side by READ_BUDGET (30 s) plus one RPC (6 s).
+  validator_activation_status: 45_000,
   // K4: three sequential eth_calls (BOND, REWARD, ROUNDS), each bounded by the RPC timeout.
   storage_pin_params: 25_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

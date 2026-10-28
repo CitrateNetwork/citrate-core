@@ -52,6 +52,9 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async sessionOpen() {
       throw new Error("the sidecar agent loop needs the desktop app");
     },
+    async sessionOpenCloud() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
     async sessionSend() {
       throw new Error("the sidecar agent loop needs the desktop app");
     },

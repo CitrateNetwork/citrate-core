@@ -72,7 +72,7 @@ impl McpAction {
                 format!("Share file {cid} with the cluster of group {group}")
             }
             McpAction::InviteCreate { group, for_handle } => format!(
-                "Create a one-time invite to group {group} for {for_handle}. The agent will receive the invite link."
+                "Create a one-time invite to group {group} for {for_handle}. The agent will receive the invite link. Whoever opens it asks to join; you approve or decline each request in Groups."
             ),
             McpAction::InviteRevoke { group, invite_id } => {
                 format!("Revoke invite {invite_id} for group {group}")

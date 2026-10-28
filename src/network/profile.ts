@@ -20,6 +20,10 @@ export type NetworkProfile = {
   faucetUrl: string | null;
   bootnodes: string[] | null;
   addressBook: string | null;
+  /** sha256 (64 lowercase hex) of the frozen canonical address book of this genesis. */
+  addressBookSha256: string | null;
+  /** The citrate-chain commit (40 lowercase hex) the bundled node must contain. */
+  minChainRev: string | null;
   pending: Record<string, string>;
 };
 
@@ -36,6 +40,8 @@ const FIELDS = [
   "faucetUrl",
   "bootnodes",
   "addressBook",
+  "addressBookSha256",
+  "minChainRev",
 ] as const;
 
 /** Every profile this build knows. */
@@ -86,6 +92,11 @@ function isHttps(v: unknown): boolean {
   return typeof v === "string" && v.startsWith("https://") && v.length > 8 && !/\s/.test(v);
 }
 
+/** Exactly `len` lowercase hex digits, not all zero (network_profile.rs is_lower_hex_nonzero). */
+function isLowerHexNonZero(v: unknown, len: number): boolean {
+  return typeof v === "string" && v.length === len && /^[0-9a-f]+$/.test(v) && /[1-9a-f]/.test(v);
+}
+
 /**
  * Why the profile is not ready: every unset value, then every malformed one. The same rule as
  * the Rust `NetworkProfile::ready` (src-tauri/src/network_profile.rs), which gates node starts
@@ -107,6 +118,8 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   if (!Array.isArray(p.bootnodes) || p.bootnodes.length === 0) out.push("bootnodes is empty");
   else if (!p.bootnodes.every(isBootnode)) out.push("bootnodes has a malformed entry");
   if (typeof p.addressBook !== "string" || p.addressBook.length === 0) out.push("addressBook is empty");
+  if (!isLowerHexNonZero(p.addressBookSha256, 64)) out.push("addressBookSha256 is not a sha256 digest");
+  if (!isLowerHexNonZero(p.minChainRev, 40)) out.push("minChainRev is not a commit");
   return out;
 }
 
