@@ -15,14 +15,18 @@
 // "not yet downloadable", which is also what the server returns today (409
 // artifact_unreleased for every entry, with ARTIFACT_STORE_BASE unset).
 // =====================================================================
+import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
-import { RANK } from "../shell/state";
+import { RANK, type AppState } from "../shell/state";
 import { federationUrl } from "../data/links";
 import { membershipPriceLabel } from "../data/membership";
 
-// C1-V V12: no in-app price until core-membership serves one (chain-team ruling, contract §5.3).
-const JOIN_LABEL = membershipPriceLabel() ? "Join · " + membershipPriceLabel() : "Join · see pricing";
+// C1-P: the join label states the price only when it was read from core-membership (§5.3).
+const joinLabel = (price: AppState["membershipPrice"]) => {
+  const label = membershipPriceLabel(price);
+  return label ? "Join · " + label : "Join · see pricing";
+};
 
 type BadgeTriple = [string, string, string];
 const badge = (st: string): BadgeTriple =>
@@ -77,6 +81,8 @@ const isRealDigest = (c: string | undefined): boolean =>
 
 export function Commissary({ store, s }: SurfaceProps) {
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
+  // C1-P: the join label's price is read from core-membership (cached in the store).
+  useEffect(() => store.watchMembershipPrice(), [store]);
 
   // NO DOWNLOAD RUNS HERE YET (Rule 1, QA 2026-08-01).
   //
@@ -141,7 +147,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         lockText: "Requires " + (a.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat"),
-        unlockLabel: a.minTier === "pilot" ? JOIN_LABEL : "Contact us",
+        unlockLabel: a.minTier === "pilot" ? joinLabel(s.membershipPrice) : "Contact us",
         onUnlock: () =>
           store.toast(
             a.minTier === "pilot"
@@ -188,7 +194,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         locked,
         unlocked: !locked,
         opacity: locked ? 0.6 : 1,
-        cta: d.minTier === "pilot" ? JOIN_LABEL : "Contact us",
+        cta: d.minTier === "pilot" ? joinLabel(s.membershipPrice) : "Contact us",
         onUnlock: () =>
           store.toast("This doc unlocks with " + (d.minTier === "pilot" ? "Pilot membership" : "an Enterprise seat") + "."),
       };
