@@ -32,6 +32,8 @@ const realProfiles = path.join(repo, "src-tauri", "network", "profiles.json");
 const realSidecar = path.join(here, "build-sidecar.sh");
 
 const GENESIS = "0x" + "6a".repeat(32);
+// Block 0 of r1006: what the bundled node builds for genesis profile r1006 (citrate-chain 9a32147e).
+const R1006_GENESIS = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
 const REV = "1f".repeat(20);
 const addr = (b) => "0x" + b.repeat(20);
 const canonicalBook = (over = {}) => ({
@@ -98,6 +100,8 @@ describe("the shipped r1006 profile", () => {
     expect(p.explorerUrl).toBe("https://explorer.citrate.ai");
     expect(p.bootnodes.length).toBeGreaterThanOrEqual(4);
     expect(p.addressBook).toBe("addresses/40204.json");
+    // RC52: the node builds the r1006 block 0 only when told to (`[chain] genesis_profile`).
+    expect(p.genesisProfile).toBe("r1006");
     const unset = Object.keys(p).filter((k) => p[k] === null).sort();
     expect(unset).toEqual(["addressBookSha256", "genesisHash", "minChainRev"]);
     expect(Object.keys(p.pending).sort()).toEqual(unset);
@@ -275,7 +279,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
   });
 
   it("a filled and activated r1006 passes once the embedded book and MIN_CHAIN_REV follow it", () => {
-    expect(run(fill, fillArgs({ extra: ["--activate"] })).code).toBe(0);
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--activate"] })).code).toBe(0);
     const appDir = path.join(dir, "app");
     fs.mkdirSync(path.join(appDir, "addresses"), { recursive: true });
     const appBook = path.join(appDir, "addresses", "40204.json");
@@ -289,7 +293,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     expect(stale.err).toMatch(/embedded book .* genesis .* != profile/);
     expect(stale.err).toMatch(/MIN_CHAIN_REV .* != profile minChainRev/);
     // Followed through: the generated book for the new genesis, the re-pinned rev.
-    execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", bookPath, "--genesis", GENESIS,
+    execFileSync("python3", ["-I", path.join(here, "sync-addresses.py"), "--book", bookPath, "--genesis", R1006_GENESIS,
       "--out", appBook], { env: env() });
     fs.writeFileSync(sidecar, fs.readFileSync(realSidecar, "utf8").replace(/^MIN_CHAIN_REV="[0-9a-f]{40}"/m,
       `MIN_CHAIN_REV="${REV}"`));
@@ -299,6 +303,17 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     const other = writeBook(canonicalBook({ chainName: "x" }), "other.json");
     expect(run(check, [...opts, "--canonical-book", other]).err).toMatch(/sha256 .* != profile addressBookSha256/);
     expect(run(check, [...opts, "--require-active", "alpha-r1005"]).err).toMatch(/required 'alpha-r1005'/);
+  });
+
+  it("a genesis that is not the block 0 the bundled node builds for the profile's genesis profile fails", () => {
+    // RC52: genesisProfile chooses the block 0 the node builds; the profile's genesisHash must be it.
+    expect(run(fill, fillArgs()).code).toBe(0);
+    const bad = run(check, ["--profiles", profiles]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toMatch(new RegExp(`profile r1006: genesisHash ${GENESIS} is not the block 0 the bundled node builds for genesis profile r1006 \\(${R1006_GENESIS}\\)`));
+    expect(run(fill, fillArgs({ genesis: R1006_GENESIS, extra: ["--replace"] })).code).toBe(0);
+    const ok = run(check, ["--profiles", profiles]);
+    expect(ok.code, ok.err).toBe(0);
   });
 
   it("a stale pending reason next to a set value fails, and so does an unset value with no reason", () => {
@@ -353,6 +368,11 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     [{ minChainRev: REV + "\n" }, "minChainRev is not a commit"],
     [{ minChainRev: " " + REV }, "minChainRev is not a commit"],
     [{ minChainRev: "1F".repeat(20) }, "minChainRev is not a commit"],
+    // RC52: a genesis profile the bundled node does not build (or a malformed name) is refused.
+    [{ genesisProfile: "r9999" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "testnet_beta\n" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    [{ genesisProfile: "Testnet_Beta" }, "genesisProfile is not a genesis profile the bundled node builds"],
   ];
   for (const [patch, why] of malformed) {
     it(`both rules refuse ${JSON.stringify(patch)}`, () => {

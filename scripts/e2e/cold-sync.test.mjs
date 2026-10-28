@@ -38,7 +38,31 @@ vi.setConfig({ testTimeout: 60_000 });
 const GENESIS = "0x" + "ab".repeat(32);
 const OTHER = "0x" + "cd".repeat(32);
 const REGISTRY = "0x1111111111111111111111111111111111111111";
-const hashAt = (seed, h) => (h === 0 ? remote.genesis : "0x" + crypto.createHash("sha256").update(`${seed}:${h}`).digest("hex"));
+const sha = (s) => "0x" + crypto.createHash("sha256").update(s).digest("hex");
+const hashAt = (seed, h) => (h === 0 ? remote.genesis : sha(`${seed}:${h}`));
+// The network's selected-parent chain: block h's parent is the chain block at h - 1. With
+// `decoyEvery`, eth_getBlockByNumber answers a sibling at every multiple (not canonical, as on r1006).
+const isDecoy = (h) => remote.decoyEvery && h > 0 && h % remote.decoyEvery === 0;
+const remoteBlock = (h, decoy) => ({
+  number: "0x" + h.toString(16),
+  hash: decoy ? sha(`decoy:${h}`) : hashAt(remote.seed, h),
+  parentHash: h > 0 ? hashAt(remote.seed, h - 1) : "0x" + "00".repeat(32),
+  selectedParentHash: h > 0 ? hashAt(remote.seed, h - 1) : "0x" + "00".repeat(32),
+});
+const remoteMissing = (h) => remote.missing && remote.missing[0] <= h && h <= remote.missing[1];
+let remoteIndex = null;
+function remoteByHash(hash) {
+  if (!remoteIndex || remoteIndex.head !== remote.head || remoteIndex.seed !== remote.seed || remoteIndex.decoyEvery !== remote.decoyEvery) {
+    const map = new Map();
+    for (let h = 0; h <= remote.head; h++) {
+      map.set(hashAt(remote.seed, h), [h, false]);
+      if (isDecoy(h)) map.set(sha(`decoy:${h}`), [h, true]);
+    }
+    remoteIndex = { head: remote.head, seed: remote.seed, decoyEvery: remote.decoyEvery, map };
+  }
+  const hit = remoteIndex.map.get(String(hash).toLowerCase());
+  return !hit || remoteMissing(hit[0]) ? null : remoteBlock(hit[0], hit[1]);
+}
 
 function py(args, opts = {}) {
   return new Promise((resolve) => {
@@ -49,7 +73,7 @@ function py(args, opts = {}) {
 }
 
 // ── the network RPC stand-in ─────────────────────────────────────────────────────────────────────
-const remote = { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main", missing: null };
+const remote = { chainId: 40204, genesis: GENESIS, head: 1200, seed: "main", missing: null, decoyEvery: null };
 const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -60,9 +84,8 @@ const server = http.createServer((req, res) => {
     else if (method === "eth_blockNumber") result = "0x" + remote.head.toString(16);
     else if (method === "eth_getBlockByNumber") {
       const h = params[0] === "latest" ? remote.head : parseInt(params[0], 16);
-      const gap = remote.missing;
-      result = h > remote.head || (gap && gap[0] <= h && h <= gap[1]) ? null : { number: "0x" + h.toString(16), hash: hashAt(remote.seed, h) };
-    }
+      result = h > remote.head || remoteMissing(h) ? null : remoteBlock(h, isDecoy(h));
+    } else if (method === "eth_getBlockByHash") result = remoteByHash(params[0]);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
   });
@@ -73,7 +96,7 @@ afterAll(() => new Promise((r) => server.close(r)));
 
 let dir;
 beforeEach(() => {
-  Object.assign(remote, { chainId: 40204, genesis: GENESIS, head: 100000, seed: "main", missing: null });
+  Object.assign(remote, { chainId: 40204, genesis: GENESIS, head: 1200, seed: "main", missing: null, decoyEvery: null });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "cold-sync-test-"));
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -93,6 +116,7 @@ function profile(over = {}) {
     faucetUrl: "https://faucet.example",
     bootnodes: BOOTNODES,
     addressBook: "addresses/40204.json",
+    genesisProfile: "testnet_beta",
     pending: {},
     ...over,
   };
@@ -148,6 +172,8 @@ describe("launch spec (NodeManager::build_spec)", () => {
     const nodes = [...config.match(/bootstrap_nodes\s*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(nodes).toEqual(BOOTNODES);
     expect(config).toMatch(/^chain_id = 40204$/m);
+    // RC52: the genesis profile the node must build its block 0 from.
+    expect(config.match(/\[chain\][^[]*?^genesis_profile\s*=\s*"([^"]*)"/ms)?.[1]).toBe("testnet_beta");
     expect(config).toContain(`data_dir = "${dataDir}"`);
     const rpcAddr = config.match(/\[rpc\][^[]*?listen_addr\s*=\s*"([^"]+)"/s)[1];
     expect(rpcAddr).toMatch(/^127\.0\.0\.1:\d+$/);
@@ -175,6 +201,29 @@ describe("launch spec (NodeManager::build_spec)", () => {
     expect(r.v.data_dir_removed).toBe(true);
     expect(status(r.v, "cleanup")).toBe("ok");
   });
+
+  it("RC52: on a genesis with compiled activations (r1006) it names that genesis profile and passes no validator override", async () => {
+    const r = await run({ prof: profile({ genesisProfile: "r1006" }) });
+    expect(r.v.verdict, r.stderr).toBe("PASS");
+    const { env, config } = r.rec;
+    expect(config.match(/\[chain\][^[]*?^genesis_profile\s*=\s*"([^"]*)"/ms)?.[1]).toBe("r1006");
+    // The node refuses an env activation height or registry that differs from the compiled ones.
+    expect(env.CITRATE_VALIDATOR_ACTIVATION_HEIGHT).toBeUndefined();
+    expect(env.CITRATE_VALIDATOR_REGISTRY).toBeUndefined();
+    expect(env.CITRATE_BLOCK_V2).toBe(rsConst("NODE_BLOCK_V2_VALUE"));
+    expect(r.v.node.env).not.toContain("CITRATE_VALIDATOR_ACTIVATION_HEIGHT");
+  });
+
+  for (const [what, gp] of [["a genesis profile the bundled node does not build", "r9999"], ["no genesis profile", null],
+    ["a malformed genesis profile", "r1006\"\nx = 1"]]) {
+    it(`RC52: refuses a profile with ${what}, and starts no node`, async () => {
+      const r = await run({ prof: profile({ genesisProfile: gp }) });
+      expect(r.code).toBe(2);
+      expect(r.rec).toBeNull();
+      expect(r.v.rules[0]).toMatchObject({ rule: "profile", status: "FAIL" });
+      expect(r.v.rules[0].detail).toMatch(/genesisProfile/);
+    });
+  }
 
   it("has no option to point the node at an existing data dir", async () => {
     const r = await py([script, "--help"]);
@@ -287,11 +336,31 @@ describe("sync", () => {
     expect(r.v.sync.final_head).toBeGreaterThanOrEqual(1495);
   });
 
-  it("fails a fork and names the first height that disagrees", async () => {
+  it("fails a fork and names the first height that disagrees (the walks' common ancestor + 1)", async () => {
     const r = await run({ behaviour: { forkAt: 450 } });
     expect(r.code).toBe(1);
     expect(failed(r.v)).toEqual(["agrees"]);
-    expect(r.v.sync.mismatches[0].height).toBe(500);
+    expect(r.v.sync.mismatches[0].height).toBe(450);
+    expect(r.v.sync.common_ancestor).toMatchObject({ height: 449 });
+  });
+
+  // RC52 / chain#421 class: eth_getBlockByNumber is not canonical on r1006, even deep below the tip
+  // (DGX G4, fed#331): by number two sides can name different blocks at a height on the same chain.
+  it("passes when by-number answers differ but the selected-parent chains are the same", async () => {
+    remote.decoyEvery = 100;
+    const r = await run({ blocks: "1000", every: "100", behaviour: { decoyEvery: 300 } });
+    expect(r.code, r.stderr).toBe(0);
+    expect(failed(r.v)).toEqual([]);
+    expect(r.v.sync.mismatches).toEqual([]);
+    expect(r.v.sync.anchor?.height).toBe(Math.min(r.v.sync.final_head, r.v.sync.remote_head) - r.v.sync.lag);
+    expect(r.v.sync.walk?.reaches_genesis).toBe(true);
+  });
+
+  it("fails when the node's chain is another chain, even if by-number answers agree", async () => {
+    const r = await run({ behaviour: { forkAt: 1, forkSeed: "other" } });
+    expect(r.code).toBe(1);
+    expect(failed(r.v)).toEqual(["agrees"]);
+    expect(r.v.sync.mismatches[0].height).toBe(1);
   });
 
   it("fails a head that stalls before the target", async () => {
@@ -331,19 +400,20 @@ describe("sync", () => {
   });
 });
 
-describe("every scheduled height is compared (review round 1, item 1)", () => {
+describe("every height is covered by the selected-parent walk (review round 1, item 1; RC52)", () => {
   for (const side of ["network", "node"]) {
-    it(`fails when the ${side} has no block at scheduled heights below both heads`, async () => {
-      if (side === "network") remote.missing = [1, 1000];
+    it(`fails when the ${side} cannot serve a block on its selected-parent walk`, async () => {
+      remote.head = 2000;
+      if (side === "network") remote.missing = [1300, 1999];
       const r = await run({ blocks: "1500", every: "100", timeout: "4", behaviour: side === "node" ? { missing: [1, 1000] } : {} });
       expect(r.code).toBe(1);
       expect(r.v.verdict).toBe("FAIL");
       expect(failed(r.v)).toEqual(["agrees"]);
-      expect(r.v.sync.missing).toEqual([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+      expect(r.v.sync.walk?.error).toMatch(new RegExp(`the ${side}'s selected-parent walk stopped at height \\d+`));
     });
   }
 
-  it("compares every K-th height up to the last safe height, and that height itself", async () => {
+  it("covers every height up to the last safe height (the anchor), listing every K-th and the anchor", async () => {
     const r = await run({ blocks: "1000", every: "100" });
     expect(r.code).toBe(0);
     const safe = Math.min(r.v.sync.final_head, r.v.sync.remote_head) - r.v.sync.lag;
@@ -351,7 +421,10 @@ describe("every scheduled height is compared (review round 1, item 1)", () => {
     for (let h = 0; h <= safe; h += 100) want.push(h);
     if (want[want.length - 1] !== safe) want.push(safe);
     expect(r.v.sync.checked_heights).toEqual(want);
-    expect(r.v.sync.missing).toEqual([]);
+    // Every height 0..anchor is covered: both walks met at the anchor and the node's reached block 0.
+    expect(r.v.sync.anchor.height).toBe(safe);
+    expect(r.v.sync.walk).toMatchObject({ reaches_genesis: true, error: null });
+    expect(r.v.sync.walk.local_blocks).toBeGreaterThanOrEqual(safe);
   });
 });
 
@@ -432,11 +505,11 @@ describe("a signal stops the node and removes the temp dir (review round 1, item
 
 describe("a node that dies late is not read as alive (#524)", () => {
   // Both heads are capped at 350 and the target is 344 + lag 6 = 350, so the run ends with both
-  // heads at 350 and the last safe height is exactly 344: off the 100-grid, read only in the final
-  // checks. Deterministic (#526 review: an uncapped head could land on the grid).
+  // heads at 350 and the anchor is exactly 344. The node reads blocks by hash only in the final
+  // selected-parent walk, which ends at block 0: it exits right after serving that one (RC52).
   it("fails node_alive when the node exits during the final agreement checks", async () => {
     remote.head = 350;
-    const r = await run({ blocks: "344", every: "100", behaviour: { exitOffGrid: 100, headMax: 350 } });
+    const r = await run({ blocks: "344", every: "100", behaviour: { exitAfterHashOf: 0, headMax: 350 } });
     expect(r.code).toBe(1);
     expect(r.v.verdict).toBe("FAIL");
     expect(r.v.sync.checked_heights).toEqual([0, 100, 200, 300, 344]);
@@ -447,7 +520,7 @@ describe("a node that dies late is not read as alive (#524)", () => {
 
   it("fails node_alive when the node exits right after the liveness probe (caught at cleanup)", async () => {
     remote.head = 350;
-    const r = await run({ blocks: "344", every: "100", behaviour: { exitAfterProbe: 100, headMax: 350 } });
+    const r = await run({ blocks: "344", every: "100", behaviour: { exitAfterProbeAfterHashOf: 0, headMax: 350 } });
     expect(r.code).toBe(1);
     expect(failed(r.v)).toEqual(["node_alive"]);
     expect(r.v.rules.find((x) => x.rule === "node_alive").detail).toMatch(/exited on its own with code 5/);

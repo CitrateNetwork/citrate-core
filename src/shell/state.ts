@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { ValidatorActivation } from "./chainTruth";
+import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
@@ -19,6 +19,7 @@ import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
+import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
 import {
   appendNetArchive,
@@ -389,6 +390,12 @@ export interface AppState {
    */
   height: number;
   peers: number;
+  /**
+   * 0.5.2 RC52 — sync progress and catch-up ETA (syncProgress.ts): this node's height against the
+   * profile RPC's public head, with the measured net catch-up rate. Folded by Store.refreshNode;
+   * null until the first poll. Observed, never persisted (not in PERSIST_KEYS).
+   */
+  syncProgress: SyncProgress | null;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
@@ -452,6 +459,8 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
+  validatorCounts: ValidatorCounts | null;
   /**
    * `MemberBond.activated()` from the grant read (#348 review). After a full exit the registry stake
    * reads 0 but the bond can still claim the key's matured rewards, so this (with the stake) is
@@ -597,6 +606,10 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
+  /** D-11 (ADR P-5): the member's preferred cloud model, a mirror of core's setting
+   *  (`providers_preferred_get`, `<app data>/providers/preferred.json`); null = the local model.
+   *  Never persisted here: core is the source. */
+  hermesCloudModel: { providerId: string; model: string } | null;
   /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
    * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
    * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
@@ -820,6 +833,7 @@ export function freshState(pid: string): AppState {
     // No reading until the node is polled (contract rule 2): never a seeded height.
     height: 0,
     peers: 0,
+    syncProgress: null,
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
@@ -841,6 +855,7 @@ export function freshState(pid: string): AppState {
     hasSbt: false,
     rewards: null,
     validatorActivation: null,
+    validatorCounts: null,
     bondActivated: null,
     blockSecs: null,
     minStakeWei: null,
@@ -915,6 +930,7 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
+    hermesCloudModel: null,
     hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
@@ -1149,6 +1165,8 @@ export function loadState(netKey: string = currentNetKey()): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
+  // D-11: the preferred cloud model is core's setting; a value an older build stored is ignored.
+  base.hermesCloudModel = null;
   // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
   // installs. A stored value is kept as it is (on or off); only an install with no stored value
   // takes the default from freshState. The old switch-on-once migration is retired.
