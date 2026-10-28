@@ -408,6 +408,35 @@ impl GuardBook {
             .or(adapter)
     }
 
+    /// The pre-call check for a call core cannot price in tokens: a remote image, or a step of a
+    /// Cognition delegation (Devin bills its own usage units, which core cannot see beforehand).
+    /// The halt, the unknown-model check and the burst window apply; the token and currency caps
+    /// cannot, so they are not checked (an unknown cost is never counted as zero). The usage log
+    /// still records every such call.
+    pub fn admit_unmetered(
+        &mut self,
+        plan: &CallPlan,
+        adapter_models: &[String],
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        if let Some(h) = self.get(&plan.provider).halt {
+            return Err(Refusal::Halted(h));
+        }
+        if !self.model_known(&plan.provider, &plan.model, adapter_models) {
+            let h = self.halt(
+                &plan.provider,
+                HaltReason::UnknownModel {
+                    model: plan.model.clone(),
+                },
+                now_ms,
+            );
+            return Err(Refusal::Halted(h));
+        }
+        self.burst_check(&plan.provider, now_ms)?;
+        self.entry(&plan.provider).recent_calls.push_back(now_ms);
+        Ok(())
+    }
+
     /// **The pre-call check.** Refuses (and halts, for an anomaly) before anything is sent.
     /// `today` / `month` are what the usage log holds for this provider, unsettled reservations
     /// included.
@@ -587,6 +616,25 @@ impl GuardBook {
         Ok(())
     }
 
+    /// The member named `model` for this provider in a setting (a chat preset, an escalation
+    /// endpoint, the Hermes model picker): it is approved, so the anomaly halt does not stop it.
+    /// A model the member never named still halts.
+    pub fn approve_model(&mut self, provider: &str, model: &str) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+            return Err("enter the model id".into());
+        }
+        let e = self.entry(provider);
+        if e.approved_models.contains(model) {
+            return Ok(());
+        }
+        if e.approved_models.len() >= MAX_APPROVED_MODELS {
+            return Err("too many approved models for this provider".into());
+        }
+        e.approved_models.insert(model.to_string());
+        Ok(())
+    }
+
     pub fn set_caps(&mut self, provider: &str, caps: Caps) -> Result<(), String> {
         caps.validate()?;
         self.entry(provider).caps = caps;
@@ -634,6 +682,11 @@ impl GuardBook {
     /// kept (it drives the rotation reminder).
     pub fn key_tested(&mut self, provider: &str, listed: Vec<String>) {
         self.entry(provider).listed_models = listed;
+    }
+
+    /// A key was moved in from an older store: its creation date is not known.
+    pub fn key_date_unknown(&mut self, provider: &str) {
+        self.entry(provider).key_set_ms = None;
     }
 
     /// The key was removed.

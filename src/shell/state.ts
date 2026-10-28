@@ -597,6 +597,10 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
+  /** D-11 (ADR P-5): the member's preferred cloud model, a mirror of core's setting
+   *  (`providers_preferred_get`, `<app data>/providers/preferred.json`); null = the local model.
+   *  Never persisted here: core is the source. */
+  hermesCloudModel: { providerId: string; model: string } | null;
   /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). Off by default for new
    * installs (owner decision 2026-10-19, superseding 2026-10-04); an install that stored a value
    * keeps it. Every command still needs the member's approval, runs in the OS sandbox, and only in
@@ -915,6 +919,7 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
+    hermesCloudModel: null,
     hermesTerminal: false,
     hermesTerminalDefaultApplied: true,
     hermesBrief: null,
@@ -1149,6 +1154,8 @@ export function loadState(netKey: string = currentNetKey()): AppState {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
   }
+  // D-11: the preferred cloud model is core's setting; a value an older build stored is ignored.
+  base.hermesCloudModel = null;
   // Owner decision 2026-10-19 (supersedes 2026-10-04): terminal commands are off by default for new
   // installs. A stored value is kept as it is (on or off); only an install with no stored value
   // takes the default from freshState. The old switch-on-once migration is retired.

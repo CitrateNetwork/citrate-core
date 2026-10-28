@@ -44,7 +44,7 @@ fn status_of(resp: &str) -> u16 {
 #[test]
 fn a_browser_origin_or_a_foreign_host_is_refused() {
     let rig = Rig::new("http-origin");
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let b = g.bearer.expose();
     let before = rig.vendor.calls();
     for extra in [
@@ -81,7 +81,7 @@ fn a_missing_or_unknown_bearer_is_401() {
 #[test]
 fn a_plain_answer_is_openai_shaped_and_carries_no_key() {
     let rig = Rig::new("http-plain");
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let resp = serve(&rig, &post(g.bearer.expose(), chat_body("gpt-known", false), &[]));
     assert_eq!(status_of(&resp), 200, "{resp}");
     let body: Value = serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
@@ -101,7 +101,7 @@ fn a_plain_answer_is_openai_shaped_and_carries_no_key() {
 #[test]
 fn a_streamed_answer_ends_with_done_only_after_the_usage_record() {
     let rig = Rig::new("http-stream");
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let resp = serve(&rig, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]));
     assert_eq!(status_of(&resp), 200, "{resp}");
     assert!(resp.contains("text/event-stream"));
@@ -121,7 +121,7 @@ fn a_stream_whose_record_cannot_be_written_never_says_done() {
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::create_dir_all(&p);
     }));
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let resp = serve(&rig, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]));
     assert!(!resp.contains("[DONE]"), "{resp}");
     assert!(resp.contains("usage_log_unavailable"), "{resp}");
@@ -132,7 +132,7 @@ fn a_refused_stream_is_a_plain_error_status() {
     let rig = Rig::new("http-refused");
     rig.proxy.with_state(|g, _| g.member_halt("openai", 1));
     let _ = rig.proxy.with_state(|g, _| rig.proxy.save_guard(&mut *g));
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let resp = serve(&rig, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]));
     assert_eq!(status_of(&resp), 423, "{resp}");
     assert!(resp.contains("provider_halted"));
@@ -189,7 +189,7 @@ fn the_server_binds_loopback_and_answers_over_a_socket() {
     let rig = Rig::new("http-socket");
     let port = start(rig.proxy.clone()).unwrap();
     assert_ne!(port, 0);
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     assert_eq!(g.base_url, format!("http://127.0.0.1:{port}/v1"));
     let body = chat_body("gpt-known", false);
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -242,7 +242,7 @@ impl Write for HangsUp {
 #[test]
 fn a_client_that_disconnects_mid_stream_cancels_the_vendor_call() {
     let rig = Rig::new("http-hangup");
-    let g = rig.proxy.mint_route(rig.route("gpt-known")).unwrap();
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
     let mut out = HangsUp { got: Vec::new() };
     serve_one(&rig.proxy, &post(g.bearer.expose(), chat_body("gpt-known", true), &[]), 1, &mut out);
     let got = String::from_utf8_lossy(&out.got).to_string();
