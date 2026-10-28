@@ -64,6 +64,86 @@ fn a_failed_replace_keeps_the_target_and_removes_its_temp() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+/// #477: a file already sitting at a temp name (left by an earlier process that had the same pid,
+/// or planted with a loose mode) is never opened: the stage skips to a free name, so the planted
+/// file's mode can't reach the secret file, and the planted file is left as it was.
+#[cfg(unix)]
+#[test]
+fn a_stale_loose_temp_file_never_lends_its_mode_to_a_staged_secret() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("stale-loose");
+    let target = d.join("pending.json");
+    let planted: Vec<PathBuf> = (0..3)
+        .map(|k| target.with_file_name(format!("pending.json.tmp-1-{k}")))
+        .collect();
+    for p in &planted {
+        std::fs::write(p, b"loose").expect("plant");
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+    let free = target.with_file_name("pending.json.tmp-1-3");
+    let mut names = planted.clone().into_iter().chain([free.clone()]);
+    let staged =
+        stage_secret_with(b"secret", || names.next().expect("a name")).expect("staged");
+    let mode = std::fs::metadata(&staged).expect("staged").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the staged secret is owner-only: {mode:o}");
+    assert_eq!(staged, free, "the stage skipped every taken name");
+    for p in &planted {
+        assert_eq!(std::fs::read(p).expect("planted"), b"loose", "{} was opened", p.display());
+    }
+    commit_staged(&staged, &target).expect("committed");
+    let mode = std::fs::metadata(&target).expect("target").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the secret file is owner-only: {mode:o}");
+    assert_eq!(std::fs::read(&target).expect("target"), b"secret");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// #477: staging a secret keeps its directory owner-only (`0700`), as `fsutil::write_secret_file`
+/// did before pending.json moved to the atomic write.
+#[cfg(unix)]
+#[test]
+fn staging_a_secret_makes_its_directory_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("private-dir");
+    let dir = d.join("invites");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let staged = stage_secret(&dir.join("pending.json"), b"s").expect("staged");
+    let mode = std::fs::metadata(&dir).expect("dir").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the directory is owner-only: {mode:o}");
+    let _ = std::fs::remove_file(staged);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// The real stage draws a fresh unique name, beside the target, owner-only.
+#[cfg(unix)]
+#[test]
+fn a_staged_secret_is_beside_the_target_and_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp_dir("staged");
+    let target = d.join("pending.json");
+    let a = stage_secret(&target, b"a").expect("a");
+    let b = stage_secret(&target, b"b").expect("b");
+    assert_ne!(a, b);
+    assert_eq!(a.parent(), target.parent());
+    let mode = std::fs::metadata(&a).expect("a").permissions().mode();
+    assert_eq!(mode & 0o077, 0, "{mode:o}");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A failed commit (the rename over a non-empty directory) removes the staged file and leaves
+/// the target as it was.
+#[test]
+fn a_failed_commit_removes_the_staged_file_and_keeps_the_target() {
+    let d = tmp_dir("failed-commit");
+    let target = d.join("value.json");
+    std::fs::create_dir_all(target.join("inner")).expect("seed");
+    let staged = stage_secret(&target, b"new").expect("staged");
+    assert!(commit_staged(&staged, &target).is_err());
+    assert!(!staged.exists(), "the staged file is removed");
+    assert!(target.join("inner").is_dir(), "the target is untouched");
+    let _ = std::fs::remove_dir_all(d);
+}
+
 // ---------------------------------------------------------------------------
 // Tripwire: fixed temp-file names in production code.
 // ---------------------------------------------------------------------------
@@ -119,7 +199,7 @@ const KNOWN_FIXED_TEMP_NAMES: &[(&str, usize, &str)] = &[
     ("local_data.rs", 1, "a name in the list of wallet files to remove, not a writer"),
     ("media.rs", 1, "unguarded: GalleryStore::record_item, store built per call; known, follow-up"),
     ("memory.rs", 1, "unguarded: save_seeded_chunks from memory_ingest_docs; known, follow-up"),
-    ("node_genesis.rs", 1, "write_marker runs under the NodeManager.sup Mutex in start()"),
+    ("node_genesis.rs", 1, "durable_tmp: write_durable (genesis marker, K6 migration intent) runs under the NodeManager.sup Mutex in start(); clear_intent removes the same leftover"),
     ("node_mcp_token.rs", 1, "write_private: tokens and faucet saves run under their store locks; node MCP save_config is unguarded; known, follow-up"),
     ("owned_browser.rs", 1, "unguarded: the child-watch thread can race start(); known, follow-up"),
     ("storage.rs", 1, "pins.json: replaced by a unique name under PIN_INDEX_LOCK in the #461 fix (fix/pin-index-writers)"),
@@ -179,4 +259,58 @@ fn tripwire_the_fixed_settings_writers_stay_fixed() {
             "{f} must not be allowlisted"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tripwire (Rule 9, #477): one unique-temp-name writer.
+// ---------------------------------------------------------------------------
+
+/// How many unique temp names (`"<name>.tmp-{pid}-{n}"`) the production part of `src` builds
+/// itself, instead of going through this module.
+fn own_unique_temp_sites(src: &str) -> usize {
+    production_part(src).matches(".tmp-{").count()
+}
+
+/// Files that still build their own unique temp name, with the count and why. A count may go
+/// down (move the writer onto [`replace`] or [`stage_secret`]), never up.
+const KNOWN_OWN_UNIQUE_TEMP_NAMES: &[(&str, usize, &str)] = &[(
+    "storage.rs",
+    1,
+    "pins.json save from #502, written before stage_secret existed; fold into this module in a follow-up",
+)];
+
+#[test]
+fn tripwire_the_scanner_counts_hand_built_unique_temp_names() {
+    assert_eq!(
+        own_unique_temp_sites(r#"let t = p.with_file_name(format!("{name}.tmp-{}-{n}", pid));"#),
+        1
+    );
+    assert_eq!(own_unique_temp_sites("// was: format!(\"{name}.tmp-{}-{n}\")"), 0);
+    assert_eq!(own_unique_temp_sites(r#"stage_secret(&path, &bytes)"#), 0);
+}
+
+#[test]
+fn tripwire_unique_temp_names_are_built_only_here() {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut over: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&src_dir).expect("src dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().expect("name").to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "atomic_file.rs" {
+            continue;
+        }
+        let found = own_unique_temp_sites(&std::fs::read_to_string(&path).expect("read"));
+        let allowed = KNOWN_OWN_UNIQUE_TEMP_NAMES
+            .iter()
+            .find(|(f, _, _)| *f == name)
+            .map_or(0, |(_, n, _)| *n);
+        if found > allowed {
+            over.push(format!("{name}: {found} hand-built temp name(s), {allowed} allowed"));
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "write through atomic_file::replace or atomic_file::stage_secret instead of a second \
+         temp-name scheme: {over:?}"
+    );
 }

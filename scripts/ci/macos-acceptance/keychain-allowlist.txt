@@ -1,0 +1,7 @@
+# created: 2026-10-27 | branch: rc52/macos-acceptance | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (RC52 WP-H-MACOS). Keychain items Citrate Core may leave behind after the app is
+# removed (drag to Trash does not touch the keychain). One service per line: <service> <where>.
+# scripts/ci/macos-acceptance.test.mjs fails if the app code names a keychain service that is not
+# listed here, or if a listed service is no longer used.
+ai.citrate.core          vault master, node storage key, provider and MCP secrets (kit/src/custody.rs, src-tauri/src/node.rs, ai.rs, mcp_servers.rs)
+ai.citrate.core.custody  custody keyring of the app (src-tauri/src/lib.rs CUSTODY_KEYRING_SERVICE)

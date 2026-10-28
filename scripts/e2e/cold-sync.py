@@ -75,6 +75,8 @@ NETWORK_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 RPC_TIMEOUT_S = 10
 # Reads of one scheduled height before it counts as missing (a block below both heads).
 CHECK_ATTEMPTS = 3
+# How long the cleanup waits to see whether a node it did not stop is exiting on its own.
+EXIT_GRACE_S = 1.0
 # Signals that stop a run the way SIGTERM does: the node is stopped, the temp dir (with the
 # storage key) removed and a verdict written. SIGHUP is a closed terminal or a dropped SSH session.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
@@ -461,9 +463,21 @@ def run(a, v):
         # A second signal must not cut the cleanup short.
         for s in STOP_SIGNALS:
             signal.signal(s, signal.SIG_IGN)
+        # Whether the node was still running when the harness came to stop it: a node that exited
+        # on its own, even after the last check, did not survive the run (#524).
+        exited = proc.poll() if proc is not None else None
+        if exited is None and proc is not None and v.rules["node_alive"][0] == "skip":
+            # A node that is exiting has not always been reaped yet: give it a moment (#526 review).
+            try:
+                exited = proc.wait(timeout=EXIT_GRACE_S)
+            except subprocess.TimeoutExpired:
+                exited = None
         stop(proc)
-        if proc is not None and "node_alive" in v.rules and v.rules["node_alive"][0] == "skip":
-            v.set("node_alive", True, "stopped by the harness")
+        if proc is not None and v.rules["node_alive"][0] == "skip":
+            if exited is None:
+                v.set("node_alive", True, "running until stopped by the harness")
+            else:
+                v.set("node_alive", False, f"the node exited on its own with code {exited} before the harness stopped it")
         if tmp is not None:
             try:
                 lines = (tmp / "node.log").read_bytes().decode("utf-8", "replace").splitlines()[-200:]
@@ -621,6 +635,20 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
     v.set("peers", max_peers >= a.min_peers, f"max peers {max_peers} (need >= {a.min_peers})")
     enc = (data / "encryption.meta").is_file()
     v.set("at_rest", enc, "encryption.meta present" if enc else "no encryption.meta: the data dir is not encrypted")
+    # Liveness after the last check (#524): the node must still be running and answering, or a node
+    # that died during the final agreement reads would pass.
+    if v.rules["node_alive"][0] == "skip":
+        if proc.poll() is not None:
+            v.set("node_alive", False, f"the node exited with code {proc.returncode} during the final checks")
+        else:
+            try:
+                rpc_int(local, "eth_blockNumber")
+            except RpcError as e:
+                try:
+                    code = proc.wait(timeout=2)
+                    v.set("node_alive", False, f"the node exited with code {code} during the final checks")
+                except subprocess.TimeoutExpired:
+                    v.set("node_alive", False, f"the node stopped answering after the final checks: {e}")
 
 
 def main(argv=None):
