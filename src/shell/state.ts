@@ -339,6 +339,11 @@ export interface AppState {
    */
   s3PollExhausted: boolean;
   /**
+   * core#584: the pre-checkout grant check (onS3Pay's money guard) is running. One attempt at a
+   * time: Pay and "Continue free" are disabled until it ends, and Back ends it. Not persisted.
+   */
+  s3Checking: boolean;
+  /**
    * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
    * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
    * "Membership activating" notice instead of the red lapse. Never unlocks paid
@@ -810,6 +815,7 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    s3Checking: false,
     membershipActivating: false,
     agentTabRequest: null,
     s5: "idle",
