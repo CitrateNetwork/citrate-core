@@ -227,7 +227,7 @@ describe("what the member sees after the switch", () => {
     const staking = renderToStaticMarkup(<Wallet store={stubStore} s={{ ...s, wTab: "staking" }} />);
     expect(staking).toContain("not read yet");
     // The grant row reads "not read yet" (the page's other 32,000s are the validator minimum).
-    expect(staking).toMatch(/Membership grant · vaulted<\/span><span[^>]*>not read yet on this network</);
+    expect(staking).toMatch(/Membership grant · locked in your bond<\/span><span[^>]*>not read yet on this network</);
   });
 
   it("Wallet keeps the r1005 history under a previous-network label, with no explorer link", () => {

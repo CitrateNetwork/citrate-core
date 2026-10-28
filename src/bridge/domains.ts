@@ -700,7 +700,7 @@ export interface RouteAskOptions {
 }
 
 /**
- * BC-1.3 — the REAL on-chain membership grant status the S5 (grant + stake)
+ * BC-1.3 — the REAL on-chain membership grant status the S5 (membership grant)
  * ceremony settles from. Every field is a live 40204 read (Rule 1): the vault's
  * `attributedStake`/`attributedShares(member)` (wei as decimal strings, since a
  * 32,000-SALT grant exceeds JS number range) and `CitrateMemberSBT.balanceOf`
