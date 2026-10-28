@@ -6,6 +6,8 @@
 // Only the newest refreshEarnings call writes, and only while the member-key rule still names the key
 // it read.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const validatorEarnings = vi.fn();
 vi.mock("../bridge", () => ({
@@ -158,5 +160,33 @@ describe("#556 Codex P2 — an outstanding rewards read never overwrites a newer
     await store.refreshEarnings();
     expect(store.state.rewards).toEqual(OLD);
     expect(store.state.rewardsError).toBeNull();
+  });
+});
+
+// Tripwire (STD): the class is "a write after an await that doesn't ask whether it is still current".
+// refreshEarnings starts a generation before any return, and after its await nothing writes state or
+// raises a toast except through the commit that checks the generation and re-reads the key rule.
+describe("tripwire — refreshEarnings writes after its read only through the generation-checked commit", () => {
+  const s = readFileSync(join(process.cwd(), "src/shell/store.ts"), "utf8");
+  const start = s.indexOf("async refreshEarnings(");
+  const body = s.slice(start, s.indexOf("\n  }\n", start));
+
+  it("the generation is taken before any early return", () => {
+    const gen = body.indexOf("++this.earningsGen");
+    expect(gen).toBeGreaterThan(-1);
+    expect(gen).toBeLessThan(body.search(/\n\s+(?:if \(.*\) )?return\b/));
+  });
+
+  it("the commit checks the generation and re-reads the key rule before it writes", () => {
+    const commit = body.slice(body.indexOf("const commit"), body.indexOf("this.setState(patch)"));
+    expect(commit).toMatch(/gen !== this\.earningsGen\) return/);
+    expect(commit).toMatch(/this\.earningsGate\(\)/);
+    expect(commit).toMatch(/ruleKey !== ruleKey/);
+  });
+
+  it("after the read's await there is no direct state write or toast", () => {
+    const after = body.slice(body.indexOf("await "));
+    expect(body.indexOf("await ")).toBeGreaterThan(-1);
+    expect(after).not.toMatch(/this\.setState\(|this\.toast\(|this\.snap\b/);
   });
 });
