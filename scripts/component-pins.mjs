@@ -306,6 +306,11 @@ export function check(root) {
       if (!b.package || !b.bin) err(`'${c.id}': cargo build needs package and bin`);
     }
     if (b.kind === "download" && !src.version) err(`'${c.id}': download source needs version`);
+    if ("toolchain" in b && !/^\d+\.\d+\.\d+$/.test(String(b.toolchain))) err(`'${c.id}': build.toolchain must be an exact x.y.z version`);
+    if ("reproducible" in b) {
+      if (typeof b.reproducible !== "boolean") err(`'${c.id}': build.reproducible must be true or false`);
+      else if (b.kind !== "cargo") err(`'${c.id}': build.reproducible applies only to cargo builds`);
+    }
     if (b.kind === "manual" && !(b.doc && fs.existsSync(path.join(root, b.doc.split("#")[0])))) err(`'${c.id}': manual build needs an existing build.doc`);
     if (b.script && !fs.existsSync(path.join(root, b.script))) err(`'${c.id}': build.script ${b.script} does not exist`);
     const arts = c.artifacts || {};
