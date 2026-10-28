@@ -793,6 +793,8 @@ export class Store {
   private validatorArmed = false;
   // Join-8 — the generation of the newest activation read; older responses are ignored.
   private activationGen = 0;
+  // #556 — the generation of the newest refreshEarnings call; an older rewards read never writes.
+  private earningsGen = 0;
   // Join-8 — a read is in flight (the 15 s poll does not start another meanwhile).
   private activationInFlight = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
@@ -4847,41 +4849,70 @@ export class Store {
    * no longer shown as rewards. A failed read keeps `rewards` null (unknown is not zero) and says so.
    */
   async refreshEarnings(): Promise<void> {
-    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
-      this.setState({ rewards: null, rewardsError: null });
+    // #556: every call starts a new generation, so a read still in flight from an earlier call never
+    // writes over what this call (or a later one) decides, early returns included.
+    const gen = ++this.earningsGen;
+    const gate = this.earningsGate();
+    if (gate.kind === "skip") {
+      this.setState(gate.patch);
       return;
     }
-    // #394 / #391: read rewardsOf for the member's validator key (C1-V5): MemberBond.pubkey() once
-    // the bond has activated, the node's own key (no key sent) when none has. An unread key reads
-    // nothing, and only an answer for that key is shown.
-    const rule = memberKeyRule(this.state);
-    if (rule.kind === "unread") {
-      this.setState({ rewards: null, rewardsError: rule.reason });
-      return;
-    }
-    const key = rule.kind === "bond" ? rule.key : undefined;
+    const { key, ruleKey } = gate;
+    // A result is committed only while this is the newest call and the member-key rule, read again
+    // now, still names the key that was read. Otherwise the current rule decides what is shown.
+    const commit = (patch: Pick<AppState, "rewards" | "rewardsError">, toast?: string) => {
+      if (gen !== this.earningsGen) return;
+      const now = this.earningsGate();
+      if (now.kind === "skip") {
+        this.setState(now.patch);
+        return;
+      }
+      if (now.ruleKey !== ruleKey) {
+        this.setState({ rewards: null, rewardsError: "your validator key changed while its rewards were being read, so those figures aren't shown" });
+        return;
+      }
+      this.setState(patch);
+      if (toast) this.toast(toast);
+    };
     // Contract rule 2: an empty or malformed figure is unknown, never 0.
     const dec = (w: unknown): string | null => (typeof w === "string" && /^[0-9]+$/.test(w) ? BigInt(w).toString() : null);
     try {
       const v = await bridge.node.validatorEarnings(key);
       const keyMismatch = earningsKeyCheck(key, v.proposerPubkey);
       if (keyMismatch) {
-        this.setState({ rewards: null, rewardsError: keyMismatch });
+        commit({ rewards: null, rewardsError: keyMismatch });
         return;
       }
       const totalWei = dec(v.totalWei);
       const claimableWei = dec(v.claimableWei);
       if (totalWei == null || claimableWei == null) {
-        this.setState({ rewards: null, rewardsError: "node_validator_earnings returned a figure that isn't a number" });
+        commit({ rewards: null, rewardsError: "node_validator_earnings returned a figure that isn't a number" });
         return;
       }
-      this.setState({ rewards: { totalWei, claimableWei }, rewardsError: null });
+      commit({ rewards: { totalWei, claimableWei }, rewardsError: null });
     } catch (err) {
       const msg = String((err as Error).message ?? err);
-      this.setState({ rewards: null, rewardsError: msg });
-      this.toast("Validator rewards unavailable — " + msg);
+      commit({ rewards: null, rewardsError: msg }, "Validator rewards unavailable — " + msg);
     }
   }
+
+  /**
+   * #394 / #391 / #556 — what the rewards read may do in the current state. No registered stake and
+   * no activated bond: no validator rewards (`rewards` null, no reason). An unread key reads nothing
+   * and says why. Otherwise read rewardsOf for the member's validator key (C1-V5):
+   * MemberBond.pubkey() once the bond has activated, the node's own key (no key sent) when none has.
+   */
+  private earningsGate():
+    | { kind: "skip"; patch: Pick<AppState, "rewards" | "rewardsError"> }
+    | { kind: "read"; key: string | undefined; ruleKey: string } {
+    if (!readsValidatorRewards(this.state.bondedStake, this.state.bondActivated)) {
+      return { kind: "skip", patch: { rewards: null, rewardsError: null } };
+    }
+    const rule = memberKeyRule(this.state);
+    if (rule.kind === "unread") return { kind: "skip", patch: { rewards: null, rewardsError: rule.reason } };
+    return { kind: "read", key: rule.kind === "bond" ? rule.key : undefined, ruleKey: memberKeyRuleKey(this.state) };
+  }
+
 
   /**
    * CORE-C2-F-1 (@rule8) — the REAL Claim. This REPLACES the old sim-ceremony
