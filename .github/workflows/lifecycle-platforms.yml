@@ -37,9 +37,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            expected: 45
+            expected: 46
           - os: macos-14
-            expected: 69
+            expected: 70
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:

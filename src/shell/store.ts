@@ -30,7 +30,7 @@ import {
 import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
-import { broadcastFailure } from "./broadcastOutcome";
+import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
@@ -242,6 +242,16 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
  * withdrawable while KYC is outstanding — the chain enforces both gates, and the UI
  * must not imply otherwise.
  */
+/**
+ * The bond reads the app keeps from a grant read (observed, never persisted): `MemberBond.activated()`,
+ * `pubkey()` (C1-V5) and `isUnlocked()` as read (chain#331). No bond, or a field an older backend
+ * does not send, is null (unread).
+ */
+export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> {
+  if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null };
+  return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null };
+}
+
 export function describeBond(g: {
   bondDeployed: boolean;
   unlockBlock: number | null;
@@ -699,6 +709,8 @@ export class Store {
   private lastActiveReadAt = 0;
   /** C1-V V4 — this node's validator key (`proposer.key`), cached once read. */
   private validatorPubkey: `0x${string}` | null = null;
+  /** C1-V3 — agent payments submitted with an unknown outcome this session: effect key → tx hash. */
+  private unknownAgentPayments = new Map<string, string | null>();
   /** C1-V — when the producer set was last sampled (refreshed at most every 5 minutes). */
   private lastProducersAt = 0;
   /** C1-V — the catalogued public-RPC reads (UI truth contract §2). Replaced in tests. */
@@ -1462,7 +1474,7 @@ export class Store {
     // #348 review: the bond's activated flag is observed, never persisted. Fold it from this
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
-    this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    this.setState(bondReadsFromGrant(grant));
     // The same read carries ValidatorRegistry.stakeOf for the bond's key: fold it, so the staked
     // figure is a reading from launch, even with the node stopped (unknown is not zero).
     const stakeSalt = saltFromStakeWei(grant.bondedStakeWei);
@@ -1480,29 +1492,49 @@ export class Store {
   }
 
   /**
-   * C1-V (contract v1.1 §1) — this node's key in the registry: isActive, validatorInfo (status,
-   * actEpoch) and currentEpoch, the only source of the validator words. Read for this node's key
-   * whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
+   * C1-V (contract v1.1 §1) — the member's validator key in the registry: isActive, validatorInfo
+   * (status, actEpoch) and currentEpoch, the only source of the validator words. The key is
+   * `memberValidatorKey()` (C1-V5), read whether or not it has registered stake (C1-V2). Re-read at most every 60 s; between reads the last reading stands. A failed
    * read is null (unknown), which is never shown as active.
    */
   private async readValidatorActivation(nodeRunning: boolean): Promise<ValidatorActivation | null> {
-    // C1-V2: read whenever this node's key is known, whatever the registry stake. A full exit sets
+    // C1-V2: read whenever the member's key is known, whatever the registry stake. A full exit sets
     // `stakeOf` to 0 while `validatorInfo.status` is Exiting (2) or Slashed (3), so gating the read
     // on stake > 0 would make those words unreachable. A key the registry never saw reads status 0.
     const ACTIVE_READ_MS = 60_000;
     if (!nodeRunning || Date.now() - this.lastActiveReadAt < ACTIVE_READ_MS) return this.state.validatorActivation;
     this.lastActiveReadAt = Date.now();
     try {
-      if (!this.validatorPubkey) {
-        const v = await bridge.node.validatorEarnings();
-        if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
-        this.validatorPubkey = v.proposerPubkey as `0x${string}`;
-        this.setState({ validatorPubkey: this.validatorPubkey.toLowerCase() });
+      const key = await this.memberValidatorKey();
+      if (!key) {
+        // No member key yet: nothing is checked for producing under a stale key either.
+        if (this.state.validatorPubkey !== null) this.setState({ validatorPubkey: null });
+        return null;
       }
-      return await this.chainReads.validatorActivation(this.validatorPubkey);
+      // #366 F1: the chosen key is also the key the producer sample is checked against.
+      if (this.state.validatorPubkey !== key) this.setState({ validatorPubkey: key });
+      return await this.chainReads.validatorActivation(key as `0x${string}`);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * C1-V5 — the member's validator key, the same rule as the S7 read (#354, validator_activation.rs):
+   * `MemberBond.pubkey()` once the bond has activated (it survives an exit, unlike pubkeyOfStaker),
+   * else this node's proposer key. An activated bond whose key did not read, or a grant whose bond
+   * state is unread, has NO key yet: never the node's, which may be another key. null = no key.
+   */
+  private async memberValidatorKey(): Promise<string | null> {
+    const s = this.state;
+    if (s.bondPubkey && /^0x[0-9a-fA-F]{64}$/.test(s.bondPubkey)) return s.bondPubkey.toLowerCase();
+    if (s.bondActivated === true || (s.hasGrant && s.bondActivated === null)) return null;
+    if (!this.validatorPubkey) {
+      const v = await bridge.node.validatorEarnings();
+      if (!/^0x[0-9a-fA-F]{64}$/.test(v.proposerPubkey)) return null;
+      this.validatorPubkey = v.proposerPubkey as `0x${string}`;
+    }
+    return this.validatorPubkey.toLowerCase();
   }
 
   /**
@@ -1600,13 +1632,18 @@ export class Store {
       let grantPatch: Partial<AppState> | null = null;
       let grantRead = false;
       let bondActivated = this.state.bondActivated;
+      let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked"> | null = null;
       let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
       // from disk and the node stopped, the gates above are both closed, so an unread flag gets its
       // own read (whatever the node is doing) until it lands.
-      const needActivation = this.state.hasGrant && bondActivated === null;
+      // C1-V5: an activated bond whose MemberBond.pubkey() did not read is unread too (its registry
+      // reads wait for the key), and chain#331: so is an un-activated bond's lock, which gates the
+      // activation offer. Both are retried on the next due poll until they land.
+      const needActivation =
+        this.state.hasGrant && (bondActivated === null || (bondActivated === true && this.state.bondPubkey === null) || (bondActivated === false && this.state.bondUnlocked === null));
       // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
       // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
       const needStake = !stakeRead;
@@ -1622,7 +1659,8 @@ export class Store {
             stakeRead = true;
           }
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
-          bondActivated = g.bondActivated ?? null;
+          bondReads = bondReadsFromGrant(g);
+          bondActivated = bondReads.bondActivated;
           // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
           // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
           // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
@@ -1633,6 +1671,8 @@ export class Store {
       }
       // C1-V (contract v1.1 §1) — the validator words come ONLY from the registry: isActive,
       // validatorInfo (status, actEpoch) and currentEpoch, read at most every ACTIVE_READ_MS.
+      // The key the registry is read for depends on the bond reads just folded (C1-V5).
+      if (bondReads) this.setState(bondReads);
       const validatorActivation = await this.readValidatorActivation(st.state === "running");
       void this.refreshProducers();
       // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
@@ -1663,7 +1703,7 @@ export class Store {
         syncPct: st.syncPct,
         bondedStake: bonded,
         bondedStakeRead: stakeRead,
-        bondActivated,
+        ...(bondReads ?? { bondActivated }),
         validatorActivation,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
@@ -1758,7 +1798,7 @@ export class Store {
     // #348/#349 review: a bond that already activated (then exited or was slashed) never re-opens
     // activation, and neither does an Exiting / Slashed key.
     // #348 review: only a bond that reads not activated (activated() = false); unread never opens it.
-    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated)) return;
+    if (!canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated, s.bondUnlocked)) return;
 
     // ARM the producer so the node mints `proposer.key` (the validator identity activation
     // needs). The node runs as a plain follower and NEVER mints the key on its own; arming
@@ -3901,7 +3941,7 @@ export class Store {
         const a = this.state.validatorActivation;
         result = JSON.stringify({
           ...(await bridge.node.status()),
-          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated),
+          validator: validatorWord(this.state.bondedStake, a, this.state.hasGrant, this.state.bondActivated, this.state.bondUnlocked),
           validatorActivation: a,
         });
       } catch (e) {
@@ -5251,9 +5291,9 @@ export class Store {
     view: CeremonyView,
     spendSummary?: string,
     onResolved?: WalletReview["onResolved"],
-    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord },
+    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord; warning?: string },
   ): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.warning ? { warning: extra.warning } : {}), ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
   }
 
   /**
@@ -5289,6 +5329,26 @@ export class Store {
       }
       onDone?.();
     };
+    // C1-V3: the member approved and the payment was submitted, but its outcome is unknown. Release
+    // the sidecar call as submitted with the tx hash (never through reject, which the agent reads as
+    // "rejected"), and remember it so an identical proposal names this tx. Nothing retries it.
+    const settleUnknown = async (key: string | null, txHash: string | null) => {
+      if (key !== null) this.unknownAgentPayments.set(key, txHash);
+      try {
+        await bridge.agentHarness.resolveOutcomeUnknown(ap.id, txHash);
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (msg.startsWith("STALE_APPROVAL")) {
+          this.toast(
+            "Your transaction was submitted, outcome unknown" +
+              (txHash ? " (tx " + txHash + ")" : "") +
+              ", but the agent had already stopped waiting for it and was not told. Check it on the block explorer before approving a retry.",
+          );
+        }
+        /* otherwise best-effort: the sidecar head unblocks on its own timeout if this fails */
+      }
+      onDone?.();
+    };
     if (ap.kind === "chain") {
       let view: CeremonyView | null = null;
       try {
@@ -5305,7 +5365,24 @@ export class Store {
       }
       if (view) {
         // approved === true here means the ceremony signed AND broadcast the transaction.
-        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved, approved));
+        // C1-V3: an identical payment whose earlier submission has an unknown outcome is named on
+        // the new review, so the member checks that tx before approving this one.
+        const key = agentEffectKey(ap.to, ap.data);
+        const prior = key !== null && this.unknownAgentPayments.has(key) ? (this.unknownAgentPayments.get(key) ?? null) : undefined;
+        const warning =
+          prior === undefined
+            ? undefined
+            : "an identical payment was submitted earlier, outcome unknown" +
+              (prior ? " (tx " + prior + ")" : "") +
+              ": check it on the block explorer before approving this one";
+        this.openWalletReview(
+          "agent",
+          ap.summary,
+          view,
+          undefined,
+          (approved, _txHash, outcome) => (outcome?.kind === "outcome-unknown" ? settleUnknown(key, outcome.txHash) : settle(approved, approved)),
+          { warning },
+        );
         return;
       }
       // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.
@@ -5579,8 +5656,10 @@ export class Store {
             ").",
         );
       }
-      // Not confirmed → the sidecar effect does not proceed.
-      await r.onResolved?.(false);
+      // Not confirmed → the sidecar effect does not proceed. C1-V3: an unknown outcome says so, so
+      // an agent's payment is reported as submitted with an unknown outcome, never as rejected.
+      if (failure.kind === "not-sent") await r.onResolved?.(false);
+      else await r.onResolved?.(false, undefined, { kind: "outcome-unknown", txHash: failure.txHash, reason: failure.reason });
       return;
     }
     this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);

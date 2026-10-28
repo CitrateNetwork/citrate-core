@@ -255,6 +255,7 @@ commands.allow = [
   "hermes_track_workflow_run",
   "hermes_bridge_pending",
   "hermes_resolve",
+  "hermes_resolve_outcome_unknown",
   "hermes_mcp_settings",
   "hermes_mcp_set",
   "hermes_workers",

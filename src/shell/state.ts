@@ -234,6 +234,14 @@ export interface CerSpec {
  * `spendSummary` is an optional plain-language line the caller can pass (the
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
+/** C1-V3 — a signed transaction that was (or may have been) submitted, with no known outcome. */
+export interface CeremonyOutcomeUnknown {
+  kind: "outcome-unknown";
+  /** The tx hash when the ceremony knows it; null when the failure carried none. */
+  txHash: string | null;
+  reason: string;
+}
+
 export interface WalletReview {
   kind: "send" | "stake" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
@@ -252,7 +260,12 @@ export interface WalletReview {
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
-  onResolved?: (approved: boolean, txHash?: string) => void | Promise<void>;
+  onResolved?: (approved: boolean, txHash?: string, outcome?: CeremonyOutcomeUnknown) => void | Promise<void>;
+  /**
+   * #366 F2 — a caution the member must see before approving, rendered as an alert on the review
+   * (e.g. an identical payment submitted earlier with an unknown outcome, and its tx hash).
+   */
+  warning?: string;
   /**
    * Join-8 — when set, approval signs FIRST without sending (`signing.prepare`), calls this
    * SYNCHRONOUSLY with the signed tx's hash, and only then sends it (`signing.sendPrepared`,
@@ -484,11 +497,25 @@ export interface AppState {
    * what decides whether `rewardsOf` is read. null = not read. Observed, never persisted.
    */
   bondActivated: boolean | null;
+  /**
+   * C1-V5 — `MemberBond.pubkey()` from the grant read: the member's validator key once the bond has
+   * activated (kept after an exit). null = not read, not activated, or no bond. Observed, never persisted.
+   */
+  bondPubkey: string | null;
+  /**
+   * `MemberBond.isUnlocked()` from the grant read (owner decision 2026-10-19 / chain#331: activation
+   * only inside the lock). null = not read. Observed, never persisted.
+   */
+  bondUnlocked: boolean | null;
   /** C1-V V6 — seconds per block measured over the last 100 blocks (contract §2); null = unmeasured. */
   blockSecs: number | null;
   /** C1-V V7 — `ValidatorRegistry.minStake()` in wei (contract §2: read it, never hard-code 32,000). */
   minStakeWei: string | null;
-  /** C1-V — this node's validator key (`proposer.key`), once read. Observed, never persisted. */
+  /**
+   * C1-V — the member's validator key, the one the registry reads and the producer check use (C1-V5):
+   * `MemberBond.pubkey()` once the bond has activated, else this node's `proposer.key`. Observed,
+   * never persisted.
+   */
   validatorPubkey: string | null;
   /** C1-V — distinct proposer keys sampled over the last 100 blocks (chainTruth); null = not sampled. */
   producers: { head: number; window: number; proposers: string[] } | null;
@@ -877,6 +904,8 @@ export function freshState(pid: string): AppState {
     validatorActivation: null,
     validatorCounts: null,
     bondActivated: null,
+    bondPubkey: null,
+    bondUnlocked: null,
     blockSecs: null,
     minStakeWei: null,
     validatorPubkey: null,

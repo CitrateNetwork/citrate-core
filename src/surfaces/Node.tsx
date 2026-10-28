@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { shortNet } from "../shell/netScope";
-import { CONSENSUS_LAG_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -133,7 +133,7 @@ export function Node({ store, s }: SurfaceProps) {
   const stakeRead = readStakeSalt(s);
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
-  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated);
+  const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
   const pWord = producingWord(s.producers, s.validatorPubkey);
   const producingStr = !isRegisteredValidator
     ? "— · not a registered validator"
@@ -382,7 +382,7 @@ export function Node({ store, s }: SurfaceProps) {
                     read (refreshActivation on mount); either read counts, an unread one offers nothing.
                     #406: a recorded activation tx shows its status panel (Try again / Forget) whatever
                     the offer gate says, so a sent activation is never hidden. */}
-                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null)) && (
+                {TAURI && s.node === "synced" && (hasActivationTxStatus(store, s) || canOfferActivation(s.bondedStake, s.validatorActivation, s.bondActivated ?? s.activation?.bondActivated ?? null, s.bondUnlocked ?? s.activation?.bondUnlocked ?? null)) && (
                   <>
                     {/* The bond is paid to the address the AUTHORITY serves as
                         `wallet_address`, but the self-bond is sent from THIS
@@ -430,9 +430,13 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Status</span>
                   <span className="mono tabular" style={{ fontSize: 12, color: vWord === "Validator active" ? "var(--ok)" : "var(--tx-3)" }} title="ValidatorRegistry.isActive(pubkey), validatorInfo(pubkey).actEpoch, currentEpoch() and stakeOf(pubkey)">
-                    {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated)}
+                    {validatorDash(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked)}
                     {vWord === "Validator active" && (
                       <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{CONSENSUS_LAG_NOTE}</span>
+                    )}
+                    {/* Contract v1.2 §1: the one detail for an unlocked, never-activated bond. */}
+                    {vWord === "Unlocked · not activated" && (
+                      <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{UNACTIVATED_WITHDRAW_NOTE}</span>
                     )}
                   </span>
                 </div>

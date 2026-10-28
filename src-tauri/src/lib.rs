@@ -114,6 +114,8 @@ mod node;
 mod node_genesis;
 mod node_holder;
 mod node_withdrawn;
+// C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
+mod broadcast_outcome;
 pub(crate) mod provider_anthropic;
 pub(crate) mod provider_chat_vendors;
 pub(crate) mod provider_egress;
@@ -846,6 +848,7 @@ pub fn run() {
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes::hermes_resolve_outcome_unknown,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
