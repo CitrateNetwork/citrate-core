@@ -732,7 +732,7 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
               </button>
               {s.s3Checking && (
                 <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: "8px 0 0" }}>
-                  Checking chain 40204 for a membership this account already holds…
+                  Checking chain {CHAIN_ID_TEXT} for a membership this account already holds…
                 </p>
               )}
             </>
