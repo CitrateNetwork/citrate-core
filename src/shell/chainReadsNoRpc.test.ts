@@ -52,6 +52,7 @@ describe("chain reads with no RPC url (import never constructs a transport)", ()
       reads.minStakeWei(),
       reads.blockSeconds(),
       reads.producerSample(),
+      reads.publicHead(),
     ]);
     for (const r of results) {
       expect(r.status).toBe("rejected");

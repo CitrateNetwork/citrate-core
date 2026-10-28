@@ -15,6 +15,7 @@ import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
 import { PricingLink } from "../components/PricingLink";
 import { HaveAnInvite } from "../surfaces/HaveAnInvite";
+import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -885,10 +886,10 @@ function SettleRow({ k, v, accent }: { k: string; v: string; accent?: boolean })
 }
 
 function S6({ store, s }: { store: Store; s: AppState }) {
-  const syncPct = s.syncPct | 0;
-  // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a
-  // "catching up" number off the 0/100 stub — a fabricated height (Rule 1). With a
-  // real syncPct there is nothing to estimate: show what the node actually has.
+  // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a "catching up" number
+  // off the 0/100 stub, a fabricated height (Rule 1). Show what the node actually has; progress is
+  // the measured sync line (syncProgress.ts: blocks behind the public head, rate and ETA only once
+  // measured), never a percentage (contract §1).
   // C1-V V10: 0 is "no reading yet" (eth_blockNumber returns 0x0 on error), never a height.
   const heightStr = s.height > 0 ? fmtI(s.height) : "—";
   return (
@@ -946,14 +947,9 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         )}
         {s.node === "syncing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
-              <div className="mono tabular" style={{ fontSize: 13, color: "var(--accent-text)" }}>
-                {syncPct}%
-              </div>
-            </div>
-            <div style={{ height: 6, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-              <div style={{ height: "100%", background: "var(--accent)", width: syncPct + "%", transition: "width .5s var(--ease-standard)" }}></div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
+            <div className="mono tabular" title={SYNC_SOURCE} style={{ fontSize: 13, color: "var(--accent-text)" }}>
+              {syncLine(s.syncProgress)}
             </div>
             <div style={{ display: "flex", gap: 20 }}>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
