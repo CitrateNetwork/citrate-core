@@ -14,6 +14,16 @@
 //! `choices[0].message.content`). Nothing is fabricated; a failed call surfaces an
 //! honest, secret-free error.
 //!
+//! ## D-11 (RC52): every remote call goes through the core model proxy (ADR P-6)
+//! Remote chat (`ai_chat`, `ai_chat_tools`) and remote image posts no longer use an HTTP client of
+//! their own. The member's chat choice here is `{baseURL, model}` only; the key lives in the model
+//! proxy's store (`model_proxy`), and each send is a proxy call: the base URL must resolve to a
+//! pinned vendor, the Citrate gateway or a custom endpoint the member confirmed in
+//! Settings › Models; the transport is https only, follows no redirect and ignores the proxy
+//! environment variables; the caps, the anomaly halt and the signed usage log apply. A key a
+//! member set before 0.5.2 is moved into the proxy's store on first use
+//! ([`AiManager::migrate_key`]); nobody re-enters a key. Local (loopback) inference is unchanged.
+//!
 //! ## Security invariants (@rule8 — the review attacks these)
 //! 1. **No key egress to the webview (I-2).** NO `#[tauri::command]` returns the
 //!    API key or the `Authorization` header. `ai_provider_status` returns only
@@ -37,10 +47,10 @@
 #![allow(dead_code)]
 
 use crate::chat_consent::{ChatConsentState, RemoteSendPermit};
+use crate::model_proxy::ModelProxy;
 use crate::secret::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use zeroize::Zeroize;
 
 /// OS keyring service for AI provider configs (shared with the rest of the app's
 /// keyring namespace, distinct accounts per provider id).
@@ -369,8 +379,10 @@ struct ProviderConfig {
     #[serde(rename = "baseURL")]
     base_url: String,
     model: String,
-    #[serde(rename = "apiKey", serialize_with = "crate::secret::serialize_exposed")]
-    api_key: SecretString,
+    /// A key stored here before 0.5.2 (read only to move it into the proxy's store; never written
+    /// back: the blob holds no key once migrated).
+    #[serde(rename = "apiKey", default, skip_serializing)]
+    api_key: Option<SecretString>,
 }
 
 // AI-06: redact the api key from any `{:?}`/dbg!/tracing output — no key ever
@@ -566,35 +578,116 @@ impl AiManager {
     /// (invariant 1 — never returns the key).
     fn set_provider(
         &self,
+        proxy: &ModelProxy,
         provider_id: &str,
         base_url: &str,
         model: &str,
         api_key: &str,
-    ) -> Result<()> {
-        validate_provider_id(provider_id)?;
-        let base_url = validate_https_base_url(base_url)?;
+    ) -> std::result::Result<(), String> {
+        validate_provider_id(provider_id).map_err(|e| e.to_string())?;
+        let base_url = validate_https_base_url(base_url).map_err(|e| e.to_string())?;
         // A key is required and must not be trivially empty/whitespace.
         if api_key.trim().is_empty() {
-            return Err(AiError::BadKey);
+            return Err(AiError::BadKey.to_string());
         }
         let model = model.trim();
         if model.is_empty() {
-            return Err(AiError::BadKey);
+            return Err(AiError::BadKey.to_string());
         }
-        let cfg = ProviderConfig {
-            base_url,
-            model: model.to_string(),
-            api_key: SecretString::new(api_key.to_string()),
-        };
-        let mut blob = serde_json::to_string(&cfg).map_err(|_| AiError::KeyringUnavailable)?;
-        let result = self.keyring.set(&account_for(provider_id), &blob);
-        blob.zeroize(); // scrub the transient serialized copy (it holds the key)
-        result?;
+        // D-11: the key goes into the model proxy's store (tested live where the endpoint is
+        // pinned or confirmed); only {baseURL, model} stays here.
+        let pid = proxy_provider_for(proxy, provider_id, &base_url, model)?;
+        let key = SecretString::new(api_key.to_string());
+        if proxy.resolves(&pid) {
+            proxy
+                .set_key(pid.as_str(), key, crate::model_proxy::now_ms())
+                .map_err(|e| e.to_string())?;
+        } else {
+            // An endpoint the member has not confirmed yet: stored without a live test (no call
+            // may go there before the confirmation); a key entered now replaces an older one.
+            proxy
+                .import_key(&pid, key, true)
+                .map_err(|e| e.to_string())?;
+        }
+        proxy
+            .approve_model(&pid, model)
+            .map_err(|e| e.to_string())?;
+        self.write_config(provider_id, &base_url, model)
+            .map_err(|e| e.to_string())?;
         // First-configured provider becomes the default route (non-secret id).
-        if self.keyring.get(KEYRING_DEFAULT_ACCOUNT)?.is_none() {
-            self.keyring.set(KEYRING_DEFAULT_ACCOUNT, provider_id)?;
+        let default = self
+            .keyring
+            .get(KEYRING_DEFAULT_ACCOUNT)
+            .map_err(|e| e.to_string())?;
+        if default.is_none() {
+            self.keyring
+                .set(KEYRING_DEFAULT_ACCOUNT, provider_id)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Write the member's chat choice (no key).
+    fn write_config(&self, provider_id: &str, base_url: &str, model: &str) -> Result<()> {
+        let cfg = ProviderConfig {
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            api_key: None,
+        };
+        let blob = serde_json::to_string(&cfg).map_err(|_| AiError::KeyringUnavailable)?;
+        self.keyring.set(&account_for(provider_id), &blob)
+    }
+
+    /// D-11 migration: a key stored in this preset before 0.5.2 moves into the model proxy's
+    /// store (the provider its base URL maps to; a custom URL becomes an unconfirmed custom
+    /// endpoint the member confirms once in Settings › Models), its model is approved, and the
+    /// preset is rewritten without the key. When the proxy already holds a key for that provider,
+    /// that key is kept and this copy is dropped. Idempotent; a preset with no key is left alone.
+    /// A key that fails the vendor's format check stays where it is (and is not used).
+    pub(crate) fn migrate_key(
+        &self,
+        proxy: &ModelProxy,
+        provider_id: &str,
+    ) -> std::result::Result<(), String> {
+        let cfg = match self.read_config(provider_id) {
+            Ok(c) => c,
+            Err(AiError::NotConfigured) => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let Some(key) = cfg.api_key else {
+            return Ok(());
+        };
+        let pid = proxy_provider_for(proxy, provider_id, &cfg.base_url, &cfg.model)?;
+        proxy
+            .import_key(&pid, key, false)
+            .map_err(|e| e.to_string())?;
+        proxy
+            .approve_model(&pid, &cfg.model)
+            .map_err(|e| e.to_string())?;
+        self.write_config(provider_id, &cfg.base_url, &cfg.model)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The proxy provider and model a preset's sends go to (after migrating its key).
+    fn route_for(
+        &self,
+        proxy: &ModelProxy,
+        provider_id: &str,
+    ) -> std::result::Result<crate::model_proxy::ProxyRoute, String> {
+        // D-11: the member's preferred cloud model (`provider_preferred`), set in Settings.
+        if provider_id == crate::provider_preferred::PREFERRED_ID {
+            return crate::provider_preferred::route(proxy.dir(), CHAT_SESSION);
+        }
+        self.migrate_key(proxy, provider_id)?;
+        let cfg = self.read_config(provider_id).map_err(|e| e.to_string())?;
+        let provider = proxy
+            .provider_for_base(&cfg.base_url)
+            .map_err(|e| e.to_string())?;
+        Ok(crate::model_proxy::ProxyRoute {
+            provider,
+            model: cfg.model,
+            session_id: CHAT_SESSION.to_string(),
+        })
     }
 
     /// Read (and DECODE) the sealed config for `provider_id`. In-process only — the
@@ -619,25 +712,29 @@ impl AiManager {
         Ok(self.read_config(provider_id)?.base_url.clone())
     }
 
-    /// HUP-S10.1: POST `body` to `{stored baseURL}{path}` with the sealed key (media generation).
-    /// Invariant 3 holds: the base URL is the stored one and `path` is a fixed `'static` path
-    /// chosen by core (`/images/generations`), never a caller-supplied URL.
+    /// HUP-S10.1: POST `body` to the preset's provider at `path` (media generation), through the
+    /// model proxy (D-11): the pinned or confirmed endpoint, the guard, the usage log, the proxy's
+    /// key. `path` is a fixed `'static` path chosen by core (`/images/generations`).
     pub(crate) fn post_to_provider(
         &self,
+        proxy: &ModelProxy,
         permit: &RemoteSendPermit,
         provider_id: &str,
         path: &'static str,
         body: &Value,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, String> {
         if permit.provider_id() != provider_id {
-            return Err(AiError::NotConfirmed);
+            return Err(AiError::NotConfirmed.to_string());
         }
-        if !path.starts_with('/') || path.contains("..") || path.contains(['?', '#', '@']) {
-            return Err(AiError::BadBaseUrl);
-        }
-        let cfg = self.read_config(provider_id)?;
-        let url = format!("{}{path}", cfg.base_url);
-        self.http.post_json(&url, cfg.api_key.expose(), body)
+        let route = self.route_for(proxy, provider_id)?;
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(&route.model)
+            .to_string();
+        proxy
+            .post_fixed(&route.provider, &model, MEDIA_SESSION, path, body)
+            .map_err(|e| e.to_string())
     }
 
     /// The current default provider id, if one is set.
@@ -649,7 +746,7 @@ impl AiManager {
     /// configured, isDefault}` — NEVER the key (invariant 1). An unconfigured id
     /// is reported `configured:false` with empty metadata rather than erroring, so
     /// the frontend can render the preset row honestly.
-    fn provider_status(&self, ids: &[&str]) -> Result<Vec<ProviderStatus>> {
+    fn provider_status(&self, proxy: &ModelProxy, ids: &[&str]) -> Result<Vec<ProviderStatus>> {
         let default = self.default_provider()?;
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
@@ -660,11 +757,18 @@ impl AiManager {
                     let blob = zeroize::Zeroizing::new(blob);
                     let cfg: ProviderConfig =
                         serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
+                    // Configured = a key is ready for this preset's provider (in the proxy's store,
+                    // or still here waiting to be moved there on first use).
+                    let configured = cfg.api_key.is_some()
+                        || proxy
+                            .provider_for_base(&cfg.base_url)
+                            .or_else(|_| proxy.custom_for_base(&cfg.base_url))
+                            .is_ok_and(|pid| proxy.key_configured(&pid));
                     out.push(ProviderStatus {
                         id: id.to_string(),
                         base_url: cfg.base_url.clone(),
                         model: cfg.model.clone(),
-                        configured: true,
+                        configured,
                         is_default: default.as_deref() == Some(id),
                     });
                 }
@@ -699,20 +803,21 @@ impl AiManager {
     /// Non-streaming. Errors are coarse + secret-free (invariant 5).
     fn chat(
         &self,
+        proxy: &ModelProxy,
         permit: &RemoteSendPermit,
         provider_id: &str,
         messages_json: &str,
         context_json: &str,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, String> {
         if permit.provider_id() != provider_id {
-            return Err(AiError::NotConfirmed);
+            return Err(AiError::NotConfirmed.to_string());
         }
-        let cfg = self.read_config(provider_id)?;
         // INVARIANT 3: the endpoint comes from the STORED config, never the caller.
-        let url = format!("{}/chat/completions", cfg.base_url);
-        let body = build_chat_body(&cfg.model, messages_json, context_json)?;
-        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
-        parse_completion(&resp)
+        let route = self.route_for(proxy, provider_id)?;
+        let body = build_chat_body(&route.model, messages_json, context_json)
+            .map_err(|e| e.to_string())?;
+        let resp = proxy_send(proxy, &route, &body)?;
+        parse_completion(&resp).map_err(|e| e.to_string())
     }
 
     /// W3.3 — one turn of the agentic loop: POST the tool-enabled body to the
@@ -722,20 +827,22 @@ impl AiManager {
     /// holds: the URL is derived from the stored config, never the caller.
     fn chat_tools(
         &self,
+        proxy: &ModelProxy,
         permit: &RemoteSendPermit,
         provider_id: &str,
         messages_json: &str,
         tools_json: &str,
         context_json: &str,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, String> {
         if permit.provider_id() != provider_id {
-            return Err(AiError::NotConfirmed);
+            return Err(AiError::NotConfirmed.to_string());
         }
-        let cfg = self.read_config(provider_id)?;
-        let url = format!("{}/chat/completions", cfg.base_url);
-        let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json)?;
-        let resp = self.http.post_json(&url, cfg.api_key.expose(), &body)?;
-        parse_chat_message(&resp)
+        let route = self.route_for(proxy, provider_id)?;
+        let body =
+            build_chat_body_with_tools(&route.model, messages_json, tools_json, context_json)
+                .map_err(|e| e.to_string())?;
+        let resp = proxy_send(proxy, &route, &body)?;
+        parse_chat_message(&resp).map_err(|e| e.to_string())
     }
 
     /// **BC-3.2 — LOCAL inference (F-1 hardened).** POST the OpenAI chat body to
@@ -793,6 +900,37 @@ impl AiManager {
         let resp = self.http.post_json(&url, api_key, &body)?;
         parse_chat_message(&resp)
     }
+}
+
+/// The usage-log session labels of webview chat and media sends.
+pub(crate) const CHAT_SESSION: &str = "webview-chat";
+pub(crate) const MEDIA_SESSION: &str = "media";
+
+/// The proxy provider a preset's base URL maps to: a pinned vendor or the gateway, else a custom
+/// endpoint (added unconfirmed for this URL when there is none yet).
+fn proxy_provider_for(
+    proxy: &ModelProxy,
+    provider_id: &str,
+    base_url: &str,
+    model: &str,
+) -> std::result::Result<crate::model_provider::ProviderId, String> {
+    proxy
+        .provider_or_custom(&format!("Chat preset ({provider_id})"), base_url, model)
+        .map_err(|e| e.to_string())
+}
+
+/// One OpenAI-shaped body through the proxy; the answer in the chat-completions shape the parsers
+/// read.
+fn proxy_send(
+    proxy: &ModelProxy,
+    route: &crate::model_proxy::ProxyRoute,
+    body: &Value,
+) -> std::result::Result<String, String> {
+    let req = crate::model_proxy_http::from_openai_body(body)?;
+    let resp = proxy
+        .call(route, req, None, &mut |_| {})
+        .map_err(|e| e.to_string())?;
+    Ok(crate::model_proxy_http::completion_json(&route.model, &resp).to_string())
 }
 
 /// Build the OpenAI `/v1/chat/completions` request body: the tool-less real system
@@ -1063,7 +1201,8 @@ pub async fn ai_set_provider(
     crate::blocking::off_main(move || {
         let st4 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_set_provider_sync(provider_id, base_url, model, api_key, st4)
+        let proxy = proxy_for_app(&app_h)?;
+        ai_set_provider_sync(provider_id, base_url, model, api_key, st4, &proxy)
     })
     .await
 }
@@ -1075,9 +1214,18 @@ pub fn ai_set_provider_sync(
     model: String,
     api_key: SecretString,
     ai: tauri::State<'_, AiState>,
+    proxy: &ModelProxy,
 ) -> std::result::Result<(), String> {
-    ai.0.set_provider(&provider_id, &base_url, &model, api_key.expose())
-        .map_err(|e| e.to_string())
+    ai.0.set_provider(proxy, &provider_id, &base_url, &model, api_key.expose())
+}
+
+/// The model proxy (opened on first use) for a command.
+pub(crate) fn proxy_for_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<std::sync::Arc<ModelProxy>, String> {
+    tauri::Manager::try_state::<crate::providers_ipc::ModelProxyState>(app)
+        .ok_or_else(|| "internal: model proxy state unavailable".to_string())?
+        .get(app)
 }
 
 /// **Command — ai_provider_status (@rule8).** Non-secret status for the preset
@@ -1091,7 +1239,8 @@ pub async fn ai_provider_status(
     crate::blocking::off_main(move || {
         let st0 = tauri::Manager::try_state::<AiState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ai_provider_status_sync(st0)
+        let proxy = proxy_for_app(&app_h)?;
+        ai_provider_status_sync(st0, &proxy)
     })
     .await
 }
@@ -1099,8 +1248,9 @@ pub async fn ai_provider_status(
 /// Blocking body of [`ai_provider_status`]; reached only through [`crate::blocking::off_main`].
 pub fn ai_provider_status_sync(
     ai: tauri::State<'_, AiState>,
+    proxy: &ModelProxy,
 ) -> std::result::Result<Vec<ProviderStatus>, String> {
-    ai.0.provider_status(STATUS_PROVIDER_IDS)
+    ai.0.provider_status(proxy, STATUS_PROVIDER_IDS)
         .map_err(|e| e.to_string())
 }
 
@@ -1149,8 +1299,10 @@ pub async fn ai_chat(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let proxy = proxy_for_app(&app_h)?;
         ai_chat_sync(
             &st3.0,
+            &proxy,
             &consents,
             &route_dir,
             crate::ceremony::system_clock(),
@@ -1169,6 +1321,7 @@ pub async fn ai_chat(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ai_chat_sync(
     ai: &AiManager,
+    proxy: &ModelProxy,
     consents: &ChatConsentState,
     route_dir: &std::path::Path,
     now: crate::ceremony::ClockReading,
@@ -1185,8 +1338,7 @@ pub(crate) fn ai_chat_sync(
         messages_json,
         now,
     )?;
-    ai.chat(&permit, provider_id, messages_json, context_json)
-        .map_err(|e| e.to_string())
+    ai.chat(proxy, &permit, provider_id, messages_json, context_json)
 }
 
 /// **Command — ai_chat_tools (W3.3, @rule8).** One turn of the AGENTIC loop: read
@@ -1213,8 +1365,10 @@ pub async fn ai_chat_tools(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let consents = tauri::Manager::try_state::<ChatConsentState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let proxy = proxy_for_app(&app_h)?;
         ai_chat_tools_sync(
             &st4.0,
+            &proxy,
             &consents,
             &route_dir,
             crate::ceremony::system_clock(),
@@ -1233,6 +1387,7 @@ pub async fn ai_chat_tools(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ai_chat_tools_sync(
     ai: &AiManager,
+    proxy: &ModelProxy,
     consents: &ChatConsentState,
     route_dir: &std::path::Path,
     now: crate::ceremony::ClockReading,
@@ -1251,13 +1406,13 @@ pub(crate) fn ai_chat_tools_sync(
         now,
     )?;
     ai.chat_tools(
+        proxy,
         &permit,
         provider_id,
         messages_json,
         tools_json,
         context_json,
     )
-    .map_err(|e| e.to_string())
 }
 
 /// **Command — ai_chat_local (BC-3.2, F-1 hardened).** REAL LOCAL inference

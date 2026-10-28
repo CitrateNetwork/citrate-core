@@ -929,8 +929,10 @@ pub async fn media_generate_image(
                 .ok_or("internal: managed state unavailable")?;
             let consents = tauri::Manager::try_state::<crate::chat_consent::ChatConsentState>(&app)
                 .ok_or("internal: managed state unavailable")?;
+            let proxy = crate::ai::proxy_for_app(&app)?;
             remote_image_post(
                 &ai.0,
+                &proxy,
                 &consents,
                 &route_dir,
                 crate::ceremony::system_clock(),
@@ -968,6 +970,7 @@ pub(crate) fn with_remote_blocked(mut routes: Vec<Route>, blocked: Option<String
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn remote_image_post(
     ai: &crate::ai::AiManager,
+    proxy: &crate::model_proxy::ModelProxy,
     consents: &crate::chat_consent::ChatConsentState,
     route_dir: &Path,
     now: crate::ceremony::ClockReading,
@@ -984,8 +987,7 @@ pub(crate) fn remote_image_post(
         prompt,
         now,
     )?;
-    ai.post_to_provider(&permit, provider_id, "/images/generations", body)
-        .map_err(|e| e.to_string())
+    ai.post_to_provider(proxy, &permit, provider_id, "/images/generations", body)
 }
 
 /// **media_gallery** — saved items, newest first, each marked whether its file is still there.

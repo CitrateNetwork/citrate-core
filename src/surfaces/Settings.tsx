@@ -26,6 +26,7 @@
 import { useEffect, useState } from "react";
 import { createPublicClient } from "viem";
 import { Store } from "../shell/store";
+import { HermesModelPicker } from "./HermesModelPicker";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { GRANT_DISCLAIMER } from "../data/grantCopy";
 import { PricingLink } from "../components/PricingLink";
@@ -1233,8 +1234,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 Run Hermes's loop in the agent sidecar
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
+                On by default. Uses the model chosen below (your local model unless you pick a cloud one), and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop on the local model instead.
               </span>
+              {/* D-11 (ADR P-5): the model the loop runs on, local or a connected cloud model. */}
+              <HermesModelPicker value={s.hermesCloudModel} route={s.chatRoute} onChoose={(c) => store.setHermesCloudModel(c)} />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
