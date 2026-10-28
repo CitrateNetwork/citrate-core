@@ -4,8 +4,7 @@
 // verified only in userinfo is not offered Claim, and is told why. The non-bond path keeps the live
 // identity check.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync, readdirSync } from "node:fs";
 
 vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri" as const, assertSimAllowed: () => {} }));
 vi.mock("wagmi", () => ({
@@ -19,7 +18,7 @@ vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 import { store, type Store } from "./store";
 import { freshState, type AppState } from "./state";
 import { bridge } from "../bridge";
-import { Node } from "../surfaces/Node";
+import { renderRewards } from "../surfaces/node/nodePage.fixture";
 import type { ChainReads } from "./chainTruth";
 import type { GrantStatus } from "../bridge/domains";
 
@@ -52,7 +51,6 @@ const member = (over: Partial<AppState> = {}): AppState => ({
   bondedStake: 32_000,
   bondActivated: true,
   bondPubkey: KEY,
-  nTab: "earn",
   rewards: { totalWei: wei(30), claimableWei: wei(20) },
   ...over,
 });
@@ -86,20 +84,20 @@ afterEach(() => {
 
 describe("#362 B-1 — Node › Earning: Claim on the bond path needs MemberBond.isKycVerified()", () => {
   it("verified in userinfo but not on chain: no Claim button, and the reason names the on-chain flag", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondKycVerified: false })} />);
+    const html = renderRewards(stub, member({ bondKycVerified: false }));
     expect(html).not.toMatch(claimButton);
     expect(html).toContain("MemberBond.isKycVerified()");
     expect(html).toMatch(/identity verification on chain/i);
   });
 
   it("the on-chain flag unread: no Claim button, and it says the flag isn't read yet", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondKycVerified: null })} />);
+    const html = renderRewards(stub, member({ bondKycVerified: null }));
     expect(html).not.toMatch(claimButton);
     expect(html).toContain("not read yet");
   });
 
   it("verified on chain: the Claim button is there", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondKycVerified: true })} />);
+    const html = renderRewards(stub, member({ bondKycVerified: true }));
     expect(html).toMatch(claimButton);
   });
 });
@@ -186,7 +184,7 @@ describe("#362 B-1 — a false (or unread) on-chain flag folds as such and block
     vi.spyOn(bridge.membership, "grantStatus").mockResolvedValue(grant({ isKycVerified: false }));
     await store.refreshNode();
     expect(store.state.bondKycVerified).toBe(false);
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ ...store.state, nTab: "earn", rewards: { totalWei: wei(30), claimableWei: wei(20) } })} />);
+    const html = renderRewards(stub, member({ ...store.state, rewards: { totalWei: wei(30), claimableWei: wei(20) } }));
     expect(html).toContain('data-testid="claim-blocked"');
     expect(html).toContain("isKycVerified() reads false");
     expect(html).not.toMatch(claimButton);
@@ -209,9 +207,9 @@ describe("#362 B-1 — a false (or unread) on-chain flag folds as such and block
 });
 
 // Review D-1 on #556 (dust rule): Claim is offered only at or above 5 SALT claimable now.
-describe("Node › Earning: the 5 SALT dust rule", () => {
+describe("Node › Rewards: the 5 SALT dust rule", () => {
   const at = (salt: string) =>
-    renderToStaticMarkup(<Node store={stub} s={member({ bondKycVerified: true, rewards: { totalWei: (50n * WEI).toString(), claimableWei: salt } })} />);
+    renderRewards(stub, member({ bondKycVerified: true, rewards: { totalWei: (50n * WEI).toString(), claimableWei: salt } }));
   it("below 5 SALT the Claim button is disabled", () => {
     expect(at((49n * WEI) / 10n + "")).toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
     expect(at("0")).toMatch(/<button[^>]*disabled=""[^>]*>\s*Claim/);
@@ -233,7 +231,10 @@ describe("tripwire — the bond path's Claim follows MemberBond.isKycVerified(),
 
   it("every surface that offers Claim (calls store.claimRewards) gates it with bondClaimBlocked", () => {
     const offenders: string[] = [];
-    for (const f of ["src/surfaces/Node.tsx", "src/surfaces/Wallet.tsx", "src/surfaces/Dashboard.tsx"]) {
+    // K3: every surface file, the Node page's tabs in surfaces/node included, so a new tab can't slip past.
+    const surfaces = (readdirSync("src/surfaces", { recursive: true }) as string[]).filter((f) => /\.tsx$/.test(f) && !/\.(test|fixture)\.tsx$/.test(f)).map((f) => "src/surfaces/" + f);
+    expect(surfaces).toContain("src/surfaces/node/NodeRewards.tsx");
+    for (const f of surfaces) {
       const s = src(f);
       if (/store\.claimRewards\(/.test(s) && !/bondClaimBlocked\(/.test(s)) offenders.push(f);
     }

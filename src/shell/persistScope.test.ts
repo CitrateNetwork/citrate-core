@@ -23,7 +23,8 @@ const SCOPES: Record<string, "network" | "device"> = {
   coachDone: "device", dataDir: "device", coreMembershipUrl: "device",
   s5StakeWei: "network", s5BondStatus: "network",
   walletAddr: "device", commsAddr: "device", socketPath: "device", activeModelId: "device",
-  kycOutcome: "device", chatBackend: "device", crashes: "device", wTab: "device", nTab: "device",
+  kycOutcome: "device", chatBackend: "device", wTab: "device",
+  // K3 (#563): nTab and crashes are retired (RETIRED_KEYS), so they are not persisted.
   cTab: "device", sSec: "device", route: "device", deviceId: "device",
   pins: "device", userSkills: "device", jPages: "device", jSel: "device", connections: "device",
   aiDefault: "device", hermesSidecarLoop: "device", hermesSidecarLoopDefaultApplied: "device",

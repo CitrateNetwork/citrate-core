@@ -22,7 +22,7 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Wallet } from "./Wallet";
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
 import { resolveQuery } from "../widgets/catalog";
 import { SALT_BALANCE_CAPTION } from "../widgets/gallery";
@@ -283,8 +283,8 @@ describe("review round 2 (#555): every other place the stake reaches", () => {
   }
 
   function nodeStake(s: AppState): string {
-    const html = renderToStaticMarkup(<Node store={stub} s={{ ...s, nTab: "ops" }} />);
-    const m = /Your stake<\/span><span[^>]*>([^<]*)<\/span>/.exec(html);
+    const html = renderStatus(stub, s);
+    const m = /data-testid="your-stake"[^>]*>([^<]*)<\/span>/.exec(html);
     expect(m, "Your stake row").not.toBeNull();
     return m![1];
   }
