@@ -65,6 +65,8 @@ export interface SyncSeries {
   head: HeightPoint[];
   /** The latest public head read failed (error, timeout or 0x0): unknown until one succeeds. */
   headFailed?: boolean;
+  /** The highest public head actually read, at the time it was read. */
+  headMax?: HeightPoint;
 }
 
 export const emptySeries = (): SyncSeries => ({ local: [], head: [] });
