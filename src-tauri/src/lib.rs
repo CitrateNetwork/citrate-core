@@ -100,10 +100,13 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
 // K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
 mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
 // internal format, and the pinned egress table.
+// D-11 (RC52) — the Cognition (Devin) remote-agent delegate (ADR P-8).
+pub(crate) mod cognition;
 pub(crate) mod model_provider;
 pub(crate) mod model_proxy;
 pub(crate) mod model_proxy_http;
@@ -118,8 +121,10 @@ pub(crate) mod provider_egress;
 mod provider_fixtures_tests;
 pub(crate) mod provider_gemini;
 pub(crate) mod provider_guard;
+// D-11 (P-5) — the member's preferred cloud model for Hermes (agent loop and chat).
 pub(crate) mod provider_openai;
 pub(crate) mod provider_openai_compat;
+pub(crate) mod provider_preferred;
 #[cfg(test)]
 mod provider_tripwire_tests;
 pub(crate) mod provider_usage_log;
@@ -410,11 +415,26 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             // Contract v1.1 §1: the first-submission record persists under the app data dir, so
-            // a re-send after a restart is never mistaken for a first submission.
-            app.manage(match app.path().app_data_dir() {
-                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
-                Err(e) => {
+            // a re-send after a restart is never mistaken for a first submission. It has one
+            // section per network, opened on the genesis of the installed network gate (#511):
+            // other networks' sections are archived, read-only, and decide nothing here. With no
+            // gate genesis every send is refused anyway, and the record on disk is left as it is.
+            let gate_genesis = rpc::network_gate()
+                .filter(|g| g.is_set())
+                .and_then(|g| g.genesis_hash.clone());
+            app.manage(match (app.path().app_data_dir(), gate_genesis) {
+                (Ok(dir), Some(genesis)) => {
+                    ceremony::build_ceremony_state_at(
+                        dir.join(citrate_core_kit::submitted_log::RECORD_FILE),
+                        &genesis,
+                    )
+                }
+                (Err(e), _) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+                (Ok(_), None) => {
+                    eprintln!("[ceremony] no network genesis; the submitted-tx record is not opened");
                     ceremony::build_ceremony_state_unpersisted()
                 }
             });
@@ -428,6 +448,8 @@ pub fn run() {
             // D-11 — the core model proxy for cloud providers (opened, and its loopback endpoint
             // started, on first use off the main thread).
             app.manage(providers_ipc::ModelProxyState::default());
+            // D-11 (P-8) — Cognition delegations: approvals shown and sessions started (memory).
+            app.manage(cognition::DelegationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
@@ -600,7 +622,7 @@ pub fn run() {
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,
@@ -703,6 +725,13 @@ pub fn run() {
             providers_ipc::providers_custom_confirm,
             providers_ipc::providers_custom_remove,
             providers_ipc::providers_usage_log_reset,
+            providers_ipc::providers_preferred_get,
+            providers_ipc::providers_preferred_set,
+            // D-11 (P-8) — the Cognition delegate: per-task approval of the exact scope.
+            cognition::delegation_prepare,
+            cognition::delegation_decline,
+            cognition::delegation_approve,
+            cognition::delegation_status,
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
@@ -789,6 +818,8 @@ pub fn run() {
             hermes::hermes_pending_approvals,
             hermes::hermes_stop,
             hermes::hermes_session_open,
+            // D-11 (P-5, P-6) — the agent loop on a cloud model through the core proxy.
+            hermes::hermes_session_open_cloud,
             hermes::hermes_session_send,
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,

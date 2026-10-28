@@ -40,9 +40,11 @@ describe("ALF surface — honest compute seam (Rule 1)", () => {
     expect(html).toContain("alf.citrate.ai/dashboard");
   });
 
-  it("shows the real node status, honestly (syncing % / synced height), never a fabricated block", () => {
-    const syncing = renderToStaticMarkup(<ALF store={noopStore} s={member({ node: "syncing", syncPct: 42 })} />);
-    expect(syncing).toContain("syncing 42%");
+  it("shows the real node status, honestly (sync line / synced height), never a fabricated block or a %", () => {
+    // 0.5.2 RC52: blocks behind the public head (syncProgress.ts), never "syncing N%" (contract §1).
+    const syncing = renderToStaticMarkup(<ALF store={noopStore} s={member({ node: "syncing", syncPct: 42, syncProgress: { kind: "unknown", missing: "head" } })} />);
+    expect(syncing).toContain("Sync unknown · network head unavailable");
+    expect(syncing).not.toContain("42%");
   });
 
   it("a signed-in non-member gets an honest prompt, not the workbench", () => {

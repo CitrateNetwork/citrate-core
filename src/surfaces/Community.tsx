@@ -5,8 +5,10 @@
 // and the growth leaderboard need an indexer + a rewards planset before they carry real numbers, so
 // this surface shows the STRUCTURE with honest-pending live data (never fabricated counts, Rule 1):
 //   • Network stats + leaderboard → "—" / "lands with the indexer" (no invented figures).
-//   • The 2,000-run milestone program → real program FACTS (100 / 500 / 2,000 thresholds + reward
-//     tiers, settled through the ceremony) — design, not live data, so honest to show.
+//   • Referrals → credit is deferred (owner, 10-27) and #549 removed the referral log, so the card
+//     says credit isn't tracked yet and claims nothing about a join being kept or credited.
+//     C1-V V13 (UI truth contract §5.5, §1): the milestone reward promises ("founding-roster SALT
+//     grant", "growth reward", "settled to every member") had no on-chain source and are removed.
 //   • Inviting someone is done in Groups (one invite flow, D-12): a link they open to ask to join.
 // The whole surface carries a "pending backend · illustrative" flag.
 // =====================================================================
@@ -17,12 +19,6 @@ const STATS: { label: string; sub: string }[] = [
   { label: "Groups", sub: "from signed roster assertions" },
   { label: "Members", sub: "no self-reported numbers" },
   { label: "Files co-pinned", sub: "held across group clusters" },
-];
-
-const MILESTONES: { at: string; reward: string }[] = [
-  { at: "100", reward: "founding-roster SALT grant to the whole group" },
-  { at: "500", reward: "growth reward + a featured slot in the directory" },
-  { at: "2,000", reward: "the full 2,000-run reward, settled to every member" },
 ];
 
 export function Community({ store }: SurfaceProps) {
@@ -59,25 +55,13 @@ export function Community({ store }: SurfaceProps) {
           </p>
         </div>
 
-        {/* the 2,000-run program, and where inviting happens */}
+        {/* referral credit (not tracked yet), and where inviting happens */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
-            <span className="eyebrow">The 2,000 run</span>
+          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <span className="eyebrow">Referrals</span>
             <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-              Grow a group and the network rewards the whole roster at each milestone. Milestones settle
-              each epoch through your ceremony — nothing is paid without your signature.
+              Invite people from Groups. Referral credit isn&apos;t tracked yet.
             </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {MILESTONES.map((cm) => (
-                <div key={cm.at} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <span className="mono tabular" style={{ width: 44, flexShrink: 0, fontSize: 12, fontWeight: 600, color: "var(--accent-text)", paddingTop: 1 }}>{cm.at}</span>
-                  <span style={{ flex: 1, fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-2)" }}>{cm.reward}</span>
-                </div>
-              ))}
-            </div>
-            <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-              your group's standing appears here once the indexer lands — no progress bar is drawn from numbers we don't have yet
-            </span>
           </div>
 
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>

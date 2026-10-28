@@ -226,3 +226,96 @@ fn every_vendor_answers_only_its_exact_endpoint_paths() {
         Ok("https://api.deepseek.com/chat/completions".to_string())
     );
 }
+
+// ---- D-11 (WP-S1-PROV-AGENT): the gateway, remote images and the Cognition delegate ----------
+
+#[test]
+fn the_gateway_answers_chat_models_and_images_only() {
+    let ep = resolve_gateway().unwrap();
+    for ok in ["/chat/completions", "/models", "/images/generations"] {
+        assert!(join_checked(&ep, ok).is_ok(), "{ok}");
+    }
+    for bad in ["/responses", "/v1/chat/completions", "/images/edits", "/models/x"] {
+        assert!(join_checked(&ep, bad).is_err(), "{bad}");
+    }
+    assert_eq!(
+        join_checked(&ep, "/images/generations").unwrap().as_str(),
+        "https://infer.citrate.ai/v1/images/generations"
+    );
+}
+
+#[test]
+fn openai_and_a_custom_endpoint_take_remote_image_posts() {
+    let oa = resolve_vendor(Vendor::OpenAi).unwrap();
+    assert_eq!(
+        join_checked(&oa, "/images/generations").unwrap().as_str(),
+        "https://api.openai.com/v1/images/generations"
+    );
+    let c = CustomEndpoint {
+        id: "custom-box".into(),
+        label: "Box".into(),
+        base_url: "https://llm.example.org/v1".into(),
+        models: vec!["m".into()],
+        confirmed: true,
+        created_ms: 1,
+    };
+    let ep = resolve_custom(&c).unwrap();
+    assert!(join_checked(&ep, "/images/generations").is_ok());
+    // xAI, DeepSeek and Meta stay chat-only.
+    assert!(join_checked(&resolve_vendor(Vendor::Xai).unwrap(), "/images/generations").is_err());
+}
+
+#[test]
+fn the_delegate_answers_exactly_its_v3_session_paths() {
+    let ep = resolve_delegate().unwrap();
+    let ok = [
+        "/self",
+        "/organizations/org-abc123/sessions",
+        "/organizations/org-abc123/sessions/devin-xyz789",
+        "/organizations/org-abc123/sessions/devin-xyz789/messages?first=200",
+        "/organizations/org-abc123/sessions/devin-xyz789/messages?first=200&after=Y3Vyc29yLTE_",
+    ];
+    for p in ok {
+        assert!(join_checked(&ep, p).is_ok(), "{p}");
+    }
+    assert_eq!(
+        join_checked(&ep, ok[3]).unwrap().as_str(),
+        "https://api.devin.ai/v3/organizations/org-abc123/sessions/devin-xyz789/messages?first=200"
+    );
+}
+
+#[test]
+fn delegate_ids_cannot_carry_a_separator_a_climb_or_an_escape() {
+    let ep = resolve_delegate().unwrap();
+    for bad in [
+        "/organizations/org-a/b/sessions",
+        "/organizations/../sessions",
+        "/organizations/org%2Fa/sessions",
+        "/organizations/org.a/sessions",
+        "/organizations//sessions",
+        "/organizations/org-a/sessions/devin-1/../messages?first=200",
+        "/organizations/org-a/sessions/devin%2e%2e/messages?first=200",
+        "/organizations/org-a/sessions/devin-1/messages?first=200&after=a/b",
+        "/organizations/org-a/sessions/devin-1/messages?first=200&after=a%2Fb",
+        "/organizations/org-a/sessions/devin-1/messages?first=200&after=",
+        "/organizations/org-a/sessions/devin-1/messages?first=100",
+        "/organizations/org-a/sessions/devin-1/attachments",
+        "/organizations/org-a",
+        "/enterprise/sessions",
+    ] {
+        assert!(join_checked(&ep, bad).is_err(), "{bad}");
+    }
+    let long = format!("/organizations/{}/sessions", "a".repeat(129));
+    assert!(join_checked(&ep, &long).is_err());
+}
+
+#[test]
+fn placeholders_match_one_whole_segment_and_nothing_else() {
+    let pats = &["/a/{org}/b/{session}", "/m/{model}:x", "/q?first=2&after={cursor}"];
+    assert!(path_allowed(pats, "/a/o1/b/s_2"));
+    assert!(path_allowed(pats, "/m/gemini-2.5-pro:x"));
+    assert!(path_allowed(pats, "/q?first=2&after=abc-DEF_9="));
+    for bad in ["/a/o1/b/", "/a//b/s", "/a/o.1/b/s", "/a/o1/b/s/extra", "/m/.hidden:x", "/m/a/b:x", "/q?first=2&after=a&b=c"] {
+        assert!(!path_allowed(pats, bad), "{bad}");
+    }
+}

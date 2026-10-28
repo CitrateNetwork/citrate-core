@@ -311,6 +311,16 @@ fn the_explorer_and_faucet_urls_match_the_active_profile() {
     assert_eq!(crate::faucet::DEFAULT_FAUCET_URL, net.faucet_url);
 }
 
+/// #511: a send record written before entries named a genesis belongs to r1005. That genesis is
+/// the `alpha-r1005` profile's, also after the active profile moves to a new genesis.
+#[test]
+fn the_send_record_legacy_genesis_is_the_r1005_profile() {
+    assert_eq!(
+        profile("alpha-r1005").unwrap().genesis_hash.as_deref(),
+        Some(citrate_core_kit::submitted_log::LEGACY_GENESIS)
+    );
+}
+
 /// The withdrawn-branch checks are per genesis; each must belong to a profile this build knows.
 #[test]
 fn every_withdrawn_branch_check_belongs_to_a_known_profile() {

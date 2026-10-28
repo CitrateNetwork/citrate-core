@@ -341,7 +341,8 @@ fn first_call(body: &str, name: &str) -> Option<usize> {
 fn remote_send_fns(src: &str) -> Vec<(String, bool)> {
     fn_items(src)
         .into_iter()
-        .filter(|f| f.body.contains("read_config(") && f.body.contains("post_json("))
+        // D-11: a remote send resolves its proxy route from the stored preset (`route_for`).
+        .filter(|f| f.body.contains("self.route_for(proxy"))
         .map(|f| (f.name, f.sig.contains("&RemoteSendPermit")))
         .collect()
 }
@@ -462,13 +463,13 @@ fn every_remote_send_takes_a_permit_from_the_consent_book() {
 fn negative_control_a_remote_send_without_a_permit_is_seen() {
     let src = r#"
 impl AiManager {
-    fn sneaky(&self, provider_id: &str) -> Result<String> {
-        let cfg = self.read_config(provider_id)?;
-        self.http.post_json(&cfg.base_url, cfg.api_key.expose(), &json!({}))
+    fn sneaky(&self, proxy: &ModelProxy, provider_id: &str) -> Result<String> {
+        let route = self.route_for(proxy, provider_id)?;
+        proxy_send(proxy, &route, &json!({}))
     }
-    fn chat(&self, permit: &RemoteSendPermit, provider_id: &str) -> Result<String> {
-        let cfg = self.read_config(provider_id)?;
-        self.http.post_json(&cfg.base_url, cfg.api_key.expose(), &json!({}))
+    fn chat(&self, proxy: &ModelProxy, permit: &RemoteSendPermit, provider_id: &str) -> Result<String> {
+        let route = self.route_for(proxy, provider_id)?;
+        proxy_send(proxy, &route, &json!({}))
     }
 }
 "#;

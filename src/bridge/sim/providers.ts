@@ -25,5 +25,7 @@ export function simProviders(_host: SimHost): ProvidersDomain {
     confirmCustom: no("confirmCustom"),
     removeCustom: no("removeCustom"),
     resetUsageLog: no("resetUsageLog"),
+    preferredGet: no("preferredGet"),
+    preferredSet: no("preferredSet"),
   };
 }
