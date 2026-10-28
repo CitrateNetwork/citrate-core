@@ -8,6 +8,7 @@ import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
+import { CHAIN_ID_TEXT, rpcHost } from "../network/profile";
 
 // Strip ANSI colour/style escape sequences from a node log line. The node emits
 // `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
@@ -448,7 +449,7 @@ export function Node({ store, s }: SurfaceProps) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Producing</span>
-                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · rpc.citrate.ai"}>
+                  <span className="mono tabular" style={{ fontSize: 12, textAlign: "right" }} title={"distinct proposerPubkey in the " + (s.producers ? s.producers.window + " blocks sampled" : "sampled blocks") + " · " + (rpcHost() ?? "public RPC not set")}>
                     {producingStr}
                     {pWord && s.producers && <span style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{producerWindowLabel(s.producers)}</span>}
                   </span>
@@ -552,7 +553,7 @@ export function Node({ store, s }: SurfaceProps) {
               once pin bonds go live. Until then nothing here is bonded.
             </p>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-              source · IPFSIncentivesV3 · address book 40204
+              source · IPFSIncentivesV3 · address book {CHAIN_ID_TEXT}
             </span>
           </div>
         </div>

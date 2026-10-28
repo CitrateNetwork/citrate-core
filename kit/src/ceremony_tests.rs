@@ -3881,6 +3881,119 @@ fn rule3_tripwire_no_config_can_skip_the_ceremony() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #494: the send-time network check could not READ the endpoint (a transport error or a bad
+// block-0 answer). `eth_sendRawTransaction` was never called, so on a first, sole submission this
+// is "not sent", not "outcome unknown".
+// ---------------------------------------------------------------------------
+
+/// The pre-sign reads (chain id, block 0, nonce, gas price) answer; then the send-time reads get
+/// `send_time`. Returns the result and the methods the endpoint saw.
+fn k6_send_time_read(
+    c: &SignatureCeremony,
+    send_time: Vec<JsonValue>,
+) -> (Result<BroadcastResult>, Vec<String>) {
+    let (v, _p) = vault_with_wallet();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let mut script = vec![
+        ok(JsonValue::String("0x9d0c".into())),
+        ok(serde_json::json!({ "hash": K6_GENESIS })),
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+    ];
+    script.extend(send_time);
+    let client = RpcClient::with_transport(MockRpc::new(script));
+    let gate = k6_gate(Some(K6_GENESIS));
+    let r = c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), Some(&gate));
+    let methods = client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap_or("").to_string())
+        .collect();
+    (r, methods)
+}
+
+fn first_submission_ceremony() -> SignatureCeremony {
+    SignatureCeremony::with_submitted_log(crate::submitted_log::SubmittedTxLog::in_memory())
+}
+
+#[test]
+fn k6_send_time_chain_id_read_failure_on_a_first_submission_is_not_sent() {
+    // No scripted answer for the send-time eth_chainId: the transport fails.
+    let (r, methods) = k6_send_time_read(&first_submission_ceremony(), vec![]);
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("could not be checked"), "{m}");
+            assert!(m.contains("nothing was sent"), "{m}");
+            assert!(m.contains("mock: no scripted response"), "{m}");
+        }
+        other => panic!("expected a definitive not-sent error, got {other:?}"),
+    }
+}
+
+#[test]
+fn k6_send_time_block_zero_read_failure_on_a_first_submission_is_not_sent() {
+    // The send-time eth_chainId answers; block 0 comes back without a hash.
+    let (r, methods) = k6_send_time_read(
+        &first_submission_ceremony(),
+        vec![
+            ok(JsonValue::String("0x9d0c".into())),
+            ok(serde_json::json!({ "number": "0x0" })),
+        ],
+    );
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::Broadcast(m)) => {
+            assert!(m.contains("nothing was sent"), "{m}");
+            assert!(m.contains("block 0 hash"), "{m}");
+        }
+        other => panic!("expected a definitive not-sent error, got {other:?}"),
+    }
+}
+
+/// The not-sent class reaches the app with the "not submitted: " prefix the webview reads as
+/// "not sent" (broadcastOutcome.ts), carrying the read error as is.
+#[test]
+fn k6_send_time_read_failure_reaches_the_app_as_not_submitted() {
+    let (r, _) = k6_send_time_read(&first_submission_ceremony(), vec![]);
+    let e = r.expect_err("the send-time read fails");
+    let s = broadcast_err_str(e);
+    assert!(s.starts_with("not submitted: "), "{s}");
+    assert!(s.contains("nothing was sent"), "{s}");
+}
+
+/// A re-send of the same signed bytes (an earlier attempt may have reached the node) stays an
+/// unknown outcome with the tx hash, even though THIS attempt never called the send.
+#[test]
+fn k6_send_time_read_failure_on_a_re_send_stays_outcome_unknown() {
+    // `new()` is unpersisted: every send counts as a re-send there.
+    let (r, methods) = k6_send_time_read(&SignatureCeremony::new(), vec![]);
+    assert!(
+        !methods.iter().any(|m| m == "eth_sendRawTransaction"),
+        "{methods:?}"
+    );
+    match r {
+        Err(CeremonyError::SubmittedOutcomeUnknown { tx_hash, reason }) => {
+            assert!(tx_hash.starts_with("0x") && tx_hash.len() == 66, "{tx_hash}");
+            assert!(reason.contains("mock: no scripted response"), "{reason}");
+        }
+        other => panic!("expected an unknown outcome on a re-send, got {other:?}"),
+    }
+}
+
 /// Violations of "every ceremony entry that signs or sends passes the K6 network gate" in
 /// ceremony.rs's production code (#363 review). The gate is process-wide and never installed in
 /// unit tests, so a `None` in any of these paths would leave every behaviour test green.

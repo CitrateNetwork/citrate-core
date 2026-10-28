@@ -19,7 +19,7 @@ use sha3::{Digest, Keccak256};
 /// D2 #6: the largest message the budget path will consider.
 pub const MAX_MESSAGE_BYTES: usize = 2048;
 /// D2 #11: the chain allowlist is exactly {40204} under the accepted ADR.
-pub const CHAIN_ALLOWLIST: [u64; 1] = [40204];
+pub const CHAIN_ALLOWLIST: [u64; 1] = [crate::rpc::CITRATE_CHAIN_ID];
 /// D2 #12: the stricter nonce floor (EIP-4361 allows 8).
 pub const MIN_NONCE_LEN: usize = 16;
 /// D2 #13: how old `Issued At` may be.
