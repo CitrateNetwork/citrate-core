@@ -75,7 +75,7 @@ import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt,
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
-import { SyncTracker } from "./syncProgress";
+import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
@@ -1682,9 +1682,9 @@ export class Store {
           this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
           this.nodeStallSince = 0;
         } else if (st.peers > 0) {
-          const NODE_STALL_MS = 60_000; // height frozen this long while behind + peered = stalled
-          if (this.nodeStallSince === 0) this.nodeStallSince = Date.now();
-          else if (Date.now() - this.nodeStallSince >= NODE_STALL_MS) nextNode = "stalled";
+          // Monotonic clock: a wall-clock step back must not hold off (or fake) a stall.
+          if (this.nodeStallSince === 0) this.nodeStallSince = performance.now() || 1;
+          else if (performance.now() - this.nodeStallSince >= STALL_MS) nextNode = "stalled"; // contract §1, shared with the sync line
         }
       } else if (nextNode === "synced" || nextNode === "validating") {
         // Fully caught up — clear the entire stall budget (a fresh session on any later dip).
@@ -1701,7 +1701,7 @@ export class Store {
       patch.miningHold = st.miningHold ?? null;
       // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
       // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
-      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead());
+      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead(), st.peers);
       if (this.validatorArmed && !st.miningArmed && st.miningHold) this.validatorArmed = false;
       if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;
