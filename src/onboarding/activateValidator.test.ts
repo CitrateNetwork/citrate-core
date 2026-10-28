@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { ActivationStatusView } from "../bridge/domains";
+import type { ActivationStatusView, ExitOutcomeView } from "../bridge/domains";
 import {
   activationGate,
   activationGrantCopy,
@@ -36,6 +36,9 @@ function ready(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     nodePubkey: "0x" + "07".repeat(32),
     bondPubkey: null,
     registryStatus: 0,
+    registryBondedWei: null,
+    registryEscrowWei: null,
+    exitOutcome: null,
     activationEpoch: 0,
     registryActive: false,
     currentEpoch: 500,
@@ -147,6 +150,95 @@ describe("state mapping (contract §1 Validators)", () => {
   it("Exiting / Slashed from registry status 2 / 3", () => {
     expect(validatorState(ready({ bondActivated: true, registryStatus: 2 })).word).toBe("Exiting");
     expect(validatorState(ready({ bondActivated: true, registryStatus: 3 })).word).toBe("Slashed");
+  });
+  // The key stays Exiting after the payout (validatorInfo.status never moves on), and a
+  // non-Byzantine slash ALSO leaves it Exiting while it draws bonded, then escrow, then vested
+  // rewards (ValidatorRegistry._slash, citrate-chain 847ea34a). So bonded and escrow at 0 say the
+  // exit SETTLED; only the registry's logs (exitOutcome) say whether the bond came back.
+  const settled = { bondActivated: true, pubkeySource: "bond" as const, registryStatus: 2 as const, registryBondedWei: "0", registryEscrowWei: "0" };
+  const WEI_5 = (5n * 10n ** 18n).toString();
+  const outcome = (over: Partial<ExitOutcomeView> = {}): ExitOutcomeView => ({
+    outcome: "returned",
+    exitBlock: 1500,
+    escrowedWei: WEI_32K,
+    paidOutWei: (32005n * 10n ** 18n).toString(),
+    paidOutBlock: 7100,
+    slashedWei: null,
+    scannedFrom: 1000,
+    scannedTo: 7999,
+    reason: null,
+    ...over,
+  });
+  const returned = { ...settled, exitOutcome: outcome() };
+  it("Bond returned only when the logs prove the payout: escrow >= principal, paid >= escrow, no slash before it", () => {
+    const v = validatorState(ready(returned));
+    expect(v.word).toBe("Bond returned");
+    expect(v.detail).toContain("32,000 SALT");
+    expect(v.detail).toContain("Withdrawn");
+    expect(v.detail).toContain("7,100");
+    expect(activationPhase(ready(returned), true)).toBe("exited");
+  });
+  it("a settled exit with no outcome read is never Bond returned: Exit settled · outcome not read", () => {
+    const st = ready({ ...settled, exitOutcome: null });
+    const v = validatorState(st);
+    expect(v.word).toBe("Exit settled · outcome not read");
+    expect(v.detail).not.toMatch(/paid out|returned/i);
+    expect(activationPhase(st, true)).toBe("exitSettled");
+  });
+  it("an exit drained by a slash reads slashed, with the penalty, never Bond returned (review case)", () => {
+    // Escrow drawn to 0 by a slash, then a terminal withdraw of rewards, even one above the principal.
+    for (const paid of [WEI_5, (64000n * 10n ** 18n).toString(), null]) {
+      const st = ready({ ...settled, exitOutcome: outcome({ outcome: "slashed", slashedWei: WEI_32K, paidOutWei: paid, paidOutBlock: paid ? 7100 : null }) });
+      const v = validatorState(st);
+      expect(v.word).toBe("Exit settled · slashed");
+      expect(v.detail).toContain("32,000 SALT");
+      expect(v.detail).toContain("Slashed");
+      expect(v.detail).not.toMatch(/returned/i);
+      expect(activationPhase(st, true)).toBe("exitSettled");
+      expect(activationGrantCopy(st)).not.toMatch(/returned|paid out/i);
+    }
+  });
+  it("a slash before the exit (escrowed less than the principal) says what the exit escrowed", () => {
+    const st = ready({ ...settled, exitOutcome: outcome({ outcome: "slashed", escrowedWei: (30400n * 10n ** 18n).toString(), slashedWei: null }) });
+    const v = validatorState(st);
+    expect(v.word).toBe("Exit settled · slashed");
+    expect(v.detail).toContain("30,400 of the bond's 32,000 SALT");
+  });
+  it("an outcome the logs could not show reads not read, with the reason", () => {
+    const st = ready({ ...settled, exitOutcome: outcome({ outcome: "notRead", paidOutWei: null, paidOutBlock: null, reason: "no payout logged in blocks 1,000–7,999" }) });
+    const v = validatorState(st);
+    expect(v.word).toBe("Exit settled · outcome not read");
+    expect(v.detail).toContain("no payout logged");
+    expect(activationPhase(st, true)).toBe("exitSettled");
+  });
+  it("a 'returned' outcome whose own amounts do not prove it is not Bond returned (fail closed)", () => {
+    for (const over of [
+      { escrowedWei: (31999n * 10n ** 18n).toString() },
+      { paidOutWei: (31999n * 10n ** 18n).toString() },
+      { escrowedWei: null },
+      { paidOutWei: null },
+      { paidOutBlock: null },
+      { slashedWei: "1" },
+      { escrowedWei: "not a number" },
+    ]) {
+      const st = ready({ ...settled, exitOutcome: outcome(over) });
+      expect(validatorState(st).word, JSON.stringify(over)).not.toBe("Bond returned");
+      expect(activationPhase(st, true)).toBe("exitSettled");
+    }
+    expect(validatorState(ready({ ...returned, principalWei: null })).word).not.toBe("Bond returned");
+  });
+  it("still Exiting while the registry holds the escrow, or while bonded or escrow is unread, whatever the outcome says", () => {
+    for (const over of [{ registryEscrowWei: WEI_32K }, { registryEscrowWei: null }, { registryBondedWei: null }, { registryBondedWei: "1" }]) {
+      expect(validatorState(ready({ ...returned, ...over })).word).toBe("Exiting");
+      expect(activationPhase(ready({ ...returned, ...over }), true)).toBe("exiting");
+    }
+  });
+  it("the grant copy says returned only for a proven return, and never staked once the exit settled", () => {
+    expect(activationGrantCopy(ready(returned))).toContain("returned");
+    for (const st of [ready(returned), ready({ ...settled, exitOutcome: null }), ready({ ...settled, exitOutcome: outcome({ outcome: "slashed", slashedWei: WEI_32K }) })]) {
+      expect(activationGrantCopy(st)).not.toContain("so the grant is staked");
+    }
+    expect(activationGrantCopy(ready({ ...settled, exitOutcome: null }))).not.toMatch(/returned|paid out/i);
   });
   it("unknown reads map to no word (shown as —), never a guessed state", () => {
     expect(validatorState(null).word).toBeNull();
@@ -289,5 +381,50 @@ describe("TRIPWIRE: sync-gate arithmetic lives in one shared, two-sided helper",
     expect(helper).toMatch(/headBlock|localBlock/);
     const gate = src.slice(src.indexOf("export function isNetworkSynced"));
     expect(gate.slice(0, gate.indexOf("\n}\n"))).toMatch(/Math\.abs\(\s*syncGap\(/);
+  });
+});
+
+describe("TRIPWIRE: a bond is said to be returned only from the read that proves it", () => {
+  const root = join(__dirname, "..");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const f of readdirSync(d)) {
+      const p = join(d, f);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f)) files.push(p);
+    }
+  };
+  walk(root);
+  // A payout claim about the bond, grant, principal or stake ("Bond returned", "the exit has paid
+  // out", "stake refunded"). Registry zeros alone can be a slash, so a new claim like this
+  // anywhere else must go through bondReturned() and its exitOutcome read.
+  const claim = /\b(bond|grant|principal|stake|exit)\b[^"'`\n]{0,40}\b(returned|paid out|refunded)\b/i;
+  it("no source outside activateValidator.ts claims a bond payout", () => {
+    const hits: string[] = [];
+    for (const f of files) {
+      if (f.endsWith(join("onboarding", "activateValidator.ts"))) continue;
+      readFileSync(f, "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          if (claim.test(line) && !/^\s*(\/\/|\*|\/\*)/.test(line)) hits.push(`${f.slice(root.length + 1)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(hits).toEqual([]);
+  });
+  it("in activateValidator.ts every payout claim sits behind bondReturned(), and bondReturned reads exitOutcome", () => {
+    const src = readFileSync(join(root, "onboarding/activateValidator.ts"), "utf8");
+    const fn = src.slice(src.indexOf("function bondReturned("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    expect(body).toContain("exitOutcome");
+    expect(body).toMatch(/outcome\s*[!=]==\s*"returned"/);
+    // Every line that claims a payout is inside a branch guarded by bondReturned(...).
+    const lines = src.split("\n");
+    const offenders: string[] = [];
+    lines.forEach((line, i) => {
+      if (!claim.test(line) || /^\s*(\/\/|\*|\/\*)/.test(line) || line.includes("ValidatorWord") || /^\s*\|\s*"/.test(line)) return;
+      const ctx = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
+      if (!/bondReturned\(/.test(ctx)) offenders.push(`${i + 1}: ${line.trim()}`);
+    });
+    expect(offenders).toEqual([]);
   });
 });

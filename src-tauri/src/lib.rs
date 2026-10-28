@@ -100,6 +100,7 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
 // K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
 mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
