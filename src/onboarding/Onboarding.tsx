@@ -625,6 +625,8 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
  *  tests (and #349/#379's money-copy tests) can render the checkout directly. */
 export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppState; onBack?: () => void }) {
   const [entOpen, setEntOpen] = useState(false);
+  // C1-P: the price shown on this step is read from core-membership (cached in the store).
+  useEffect(() => store.watchMembershipPrice(), [store]);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
   // doesn't hunt for a second button. This component mounts only after the member chose
   // membership on S3, so landing on S3 never opens checkout by itself. The "Link your wallet" click is the explicit intent
@@ -684,8 +686,8 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
         <div style={{ border: "2px solid var(--tx-1)", background: "var(--srf-2)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>
-            {/* C1-V V12: no in-app price until core-membership serves one (chain-team ruling). */}
-            <PricingLink open={(u) => void store.openExternal(u)} style={{ fontSize: 15 }} />
+            {/* C1-P: the price read from core-membership, or the pricing link when it was not read. */}
+            <PricingLink open={(u) => void store.openExternal(u)} price={s.membershipPrice} style={{ fontSize: 15 }} />
           </div>
           <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Full membership. Everything listed below.</p>
         </div>

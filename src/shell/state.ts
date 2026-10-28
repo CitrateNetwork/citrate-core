@@ -13,6 +13,7 @@
 import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
+import type { MembershipPrice } from "../data/membership";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -483,6 +484,8 @@ export interface AppState {
    * (no registered stake yet, or the read failed). Observed, never persisted.
    */
   validatorActivation: ValidatorActivation | null;
+  /** C1-P — the membership price read from core-membership; null = not read or unavailable. */
+  membershipPrice: MembershipPrice | null;
   /** C1-V (contract v1.1 §2) — registered / eligible / pending counts of the live registry; null = not read. */
   validatorCounts: ValidatorCounts | null;
   /**
@@ -899,6 +902,7 @@ export function freshState(pid: string): AppState {
     rewards: null,
     rewardsError: null,
     validatorActivation: null,
+    membershipPrice: null,
     validatorCounts: null,
     bondActivated: null,
     bondPubkey: null,
