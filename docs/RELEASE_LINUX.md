@@ -98,6 +98,21 @@ scripts/build-component.sh kubo       --target "$TRIPLE"   # upstream Kubo, arch
 Run these ON the Linux box (host == target): Hermes is pinned stripped, and only a host of the
 target's OS can strip it.
 
+**Reproducible components.** A component with `build.reproducible: true` in the manifest builds
+with `SOURCE_DATE_EPOCH` set to the pinned commit's time, `TZ=UTC`, `LC_ALL=C`, and the build tree
+and `CARGO_HOME` remapped to `/build` and `/cargo`, so its bytes do not depend on the build root or
+the user. Before pinning one, check it with two clean builds in two build roots:
+
+```bash
+scripts/check-reproducible.sh citrate-node --target "$TRIPLE"   # exit 0 = same sha256 twice
+```
+
+The node needs a compiler whose LLVM includes llvm/llvm-project#188821: rustc 1.99.1 (LLVM
+23.1.1) has it, while 1.96.0 (LLVM 22.1.2) and 1.98.1 (LLVM 22.1.8) do not. Without it, LLVM's
+loop unroller orders PHI operands by heap address, so two builds of `halo2curves` can differ, and
+the node's bytes with them. Set the
+node's compiler with `build.toolchain` in the manifest.
+
 The remaining four are plain `cargo build` / third-party binaries. Copy each with
 the target-triple suffix into `src-tauri/binaries/` (provenance in
 `src-tauri/binaries/README.md`):

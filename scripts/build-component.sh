@@ -32,6 +32,13 @@
 # linker derives the Mach-O UUID from the output path, so the same bytes come back only from the
 # same build root on the same machine and user: macOS pins are the release Mac's builds. Builders
 # for other targets (the DGX for Linux) record their own pins with --print-digest.
+#
+# A component with `build.reproducible: true` builds with SOURCE_DATE_EPOCH set to the pinned
+# commit's time, TZ=UTC, LC_ALL=C, and RUSTFLAGS that remap the build tree to /build and
+# CARGO_HOME to /cargo (any RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS from the caller are dropped), so
+# its bytes do not depend on the build root, the user or the clock. `build.toolchain`, if set,
+# overrides the manifest's toolchain for that component. scripts/check-reproducible.sh builds a
+# component twice in two build roots and compares the digests.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,7 +56,7 @@ while [ $# -gt 0 ]; do
     --target) TARGET="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --print-digest) PRINT=1; shift ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
@@ -82,7 +89,9 @@ case "$KIND" in
     REPO="$(field source.repo)"
     REV="$(field source.rev)"
     [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die "$ID: pinned rev is not a full commit: $REV"
-    TOOLCHAIN="$("${PINS[@]}" field - toolchain.rust)"
+    TOOLCHAIN="$(field_or_empty build.toolchain)"
+    [ -n "$TOOLCHAIN" ] && [ "$TOOLCHAIN" != "undefined" ] || TOOLCHAIN="$("${PINS[@]}" field - toolchain.rust)"
+    REPRODUCIBLE="$(field_or_empty build.reproducible)"
     PKG="$(field build.package)"; CARGO_BIN="$(field build.bin)"
     FEATURES="$(field_or_empty build.features)"
     STRIP="$(field_or_empty build.strip)"
@@ -115,7 +124,21 @@ case "$KIND" in
     ENV_ARGS=()
     while IFS= read -r kv; do [ -n "$kv" ] && ENV_ARGS+=("$kv"); done < <(field_or_empty build.env)
     echo "▶ cargo ${ARGS[*]}${ENV_ARGS[*]:+  (env ${ENV_ARGS[*]})}"
-    ( cd "$SRC" && env ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} RUSTUP_TOOLCHAIN="$TOOLCHAIN" CARGO_TARGET_DIR="$W/target" CARGO_INCREMENTAL=0 cargo "${ARGS[@]}" )
+    REPRO_ENV=()
+    if [ "$REPRODUCIBLE" = "true" ]; then
+      # Paths as rustc sees them: cargo passes the target dir as given and source paths from the
+      # (physical) working directory, so remap both spellings of the build tree when they differ.
+      CH="${CARGO_HOME:-$HOME/.cargo}"
+      [ -d "$CH" ] && CH="$(cd "$CH" && pwd -P)"
+      RF="--remap-path-prefix=$W=/build"
+      WP="$(cd "$W" && pwd -P)"
+      [ "$WP" != "$W" ] && RF="$RF --remap-path-prefix=$WP=/build"
+      RF="$RF --remap-path-prefix=$CH=/cargo"
+      SDE="$(git -C "$SRC" log -1 --format=%ct "$REV")"
+      REPRO_ENV=(TZ=UTC LC_ALL=C SOURCE_DATE_EPOCH="$SDE" RUSTFLAGS="$RF")
+      echo "reproducible: SOURCE_DATE_EPOCH=$SDE TZ=UTC LC_ALL=C RUSTFLAGS=$RF"
+    fi
+    ( cd "$SRC" && env ${REPRO_ENV[@]+-u CARGO_ENCODED_RUSTFLAGS} ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} ${REPRO_ENV[@]+"${REPRO_ENV[@]}"} RUSTUP_TOOLCHAIN="$TOOLCHAIN" CARGO_TARGET_DIR="$W/target" CARGO_INCREMENTAL=0 cargo "${ARGS[@]}" )
     BUILT="$W/target/$TARGET/release/${CARGO_BIN}${EXT}"
     [ -f "$BUILT" ] || die "the build produced no binary at $BUILT"
     mkdir -p "$W/out"

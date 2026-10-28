@@ -239,6 +239,30 @@ describe("component-pins check", () => {
     expect(errorsOf(r)).toMatch(/'kubo' has no entry in release\/licences.json/);
   });
 
+  it("refuses a component toolchain that is not an exact version", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "citrate-node").build.toolchain = "stable";
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'citrate-node': build.toolchain must be an exact x.y.z version/);
+  });
+
+  it("refuses build.reproducible that is not true or false", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "citrate-node").build.reproducible = "yes";
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'citrate-node': build.reproducible must be true or false/);
+  });
+
+  it("refuses build.reproducible on a component that is not a cargo build", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "kubo").build.reproducible = true;
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'kubo': build.reproducible applies only to cargo builds/);
+  });
+
   it("refuses a toolchain that is not an exact version", () => {
     const r = fixture();
     const m = manifest(r);

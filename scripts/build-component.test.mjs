@@ -68,6 +68,8 @@ function fixture() {
       'D="${CARGO_TARGET_DIR:-$PWD/target}/$T/release"',
       'mkdir -p "$D"',
       `touch "${root}/cargo-ran"`,
+      // What this cargo ran with, for the reproducible-environment cases.
+      `env | grep -E '^(SOURCE_DATE_EPOCH|TZ|LC_ALL|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTUP_TOOLCHAIN)=' | sort > "${root}/cargo-env"`,
       'printf "#!/bin/sh\\necho %s\\n" "$(cat payload.txt)" > "$D/$B"',
       'chmod +x "$D/$B"',
       "",
@@ -100,20 +102,52 @@ function fixture() {
   const save = () => fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2));
   save();
   const out = path.join(root, "out");
-  return { root, co, revA, revB, bin, out, m, cluster, kubo, archive, save, manifestPath };
+  const cargoHome = path.join(root, "cargo-home");
+  fs.mkdirSync(cargoHome);
+  return { root, co, revA, revB, bin, out, m, cluster, kubo, archive, save, manifestPath, cargoHome };
 }
 
-function runScript(f, script, args) {
+function runScript(f, script, args, env = {}) {
   return spawnSync("bash", [path.join(here, script), ...args], {
     encoding: "utf8",
     env: {
       ...process.env,
       PATH: `${f.bin}:${process.env.PATH}`,
       CARGO_TARGET_DIR: "",
+      CARGO_HOME: f.cargoHome,
       CITRATE_COMPONENTS_MANIFEST: f.manifestPath,
       CITRATE_COMPONENT_BUILD_ROOT: path.join(f.root, "cb"),
+      ...env,
     },
   });
+}
+/** The environment the fake cargo ran with, as an object. */
+const cargoEnv = (f) =>
+  Object.fromEntries(
+    fs.readFileSync(path.join(f.root, "cargo-env"), "utf8").split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+  );
+/**
+ * A fake cargo whose binary embeds its target dir the way rustc embeds source and OUT_DIR paths:
+ * after applying any --remap-path-prefix=FROM=TO in RUSTFLAGS. Its bytes then depend on the build
+ * root unless the build remaps it.
+ */
+function pathEmbeddingCargo(f) {
+  fs.writeFileSync(
+    path.join(f.bin, "cargo"),
+    [
+      "#!/bin/sh",
+      'T=""; B=""; P=""',
+      'while [ $# -gt 0 ]; do case "$1" in --target) T="$2"; shift ;; --bin) B="$2"; shift ;; -p) P="$2"; shift ;; esac; shift; done',
+      '[ -n "$B" ] || B="$P"',
+      'D="${CARGO_TARGET_DIR:-$PWD/target}/$T/release"',
+      'mkdir -p "$D"',
+      'E="$CARGO_TARGET_DIR"',
+      'for a in $RUSTFLAGS; do case "$a" in --remap-path-prefix=*) kv="${a#--remap-path-prefix=}"; from="${kv%%=*}"; to="${kv#*=}"; case "$E" in "$from"*) E="$to${E#"$from"}" ;; esac ;; esac; done',
+      'printf "#!/bin/sh\\necho %s %s\\n" "$(cat payload.txt)" "$E" > "$D/$B"',
+      'chmod +x "$D/$B"',
+      "",
+    ].join("\n"),
+  );
 }
 const cluster = (f, ...extra) => runScript(f, "build-cluster-daemon.sh", ["--cluster", f.co, "--target", HOST, "--out-dir", f.out, ...extra]);
 const kubo = (f, ...extra) => runScript(f, "build-component.sh", ["kubo", "--target", HOST, "--out-dir", f.out, ...extra]);
@@ -196,6 +230,54 @@ describe.skipIf(!CAN_RUN)("build-component.sh: build at the pin, install only a 
     expect(fs.existsSync(installed(f, "cluster-daemon"))).toBe(false);
   });
 
+  it("builds a reproducible component with the commit time, UTC, the C locale and remapped paths", () => {
+    const f = fixture();
+    f.cluster.build.reproducible = true;
+    f.save();
+    const r = cluster(f, "--print-digest");
+    expect(r.status, r.stderr).toBe(0);
+    const env = cargoEnv(f);
+    expect(env.SOURCE_DATE_EPOCH).toBe(git(f.co, "log", "-1", "--format=%ct", f.revA));
+    expect(env.TZ).toBe("UTC");
+    expect(env.LC_ALL).toBe("C");
+    const tree = fs.realpathSync(path.join(f.root, "cb", `cluster-daemon-${f.revA.slice(0, 12)}`));
+    expect(env.RUSTFLAGS.split(" ")).toEqual(expect.arrayContaining([`--remap-path-prefix=${tree}=/build`, `--remap-path-prefix=${fs.realpathSync(f.cargoHome)}=/cargo`]));
+  });
+
+  it("a reproducible build ignores rustflags from the caller's environment", () => {
+    const f = fixture();
+    f.cluster.build.reproducible = true;
+    f.save();
+    const r = runScript(f, "build-cluster-daemon.sh", ["--cluster", f.co, "--target", HOST, "--out-dir", f.out, "--print-digest"], {
+      RUSTFLAGS: "-C target-cpu=native",
+      CARGO_ENCODED_RUSTFLAGS: "-Ctarget-cpu=native",
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const env = cargoEnv(f);
+    expect(env.RUSTFLAGS).not.toMatch(/target-cpu/);
+    expect(env.CARGO_ENCODED_RUSTFLAGS).toBeUndefined();
+  });
+
+  it("leaves the build environment alone for a component that is not marked reproducible", () => {
+    const f = fixture();
+    const r = cluster(f, "--print-digest");
+    expect(r.status, r.stderr).toBe(0);
+    const env = cargoEnv(f);
+    expect(env.SOURCE_DATE_EPOCH).toBeUndefined();
+    expect(env.RUSTFLAGS).toBeUndefined();
+    expect(env.RUSTUP_TOOLCHAIN).toBe(f.m.toolchain.rust);
+  });
+
+  it("builds with a component's own toolchain when it pins one", () => {
+    const f = fixture();
+    f.cluster.build.toolchain = "1.99.1";
+    f.save();
+    const r = cluster(f, "--print-digest");
+    expect(r.status, r.stderr).toBe(0);
+    expect(cargoEnv(f).RUSTUP_TOOLCHAIN).toBe("1.99.1");
+    expect(r.stdout).toMatch(/toolchain : 1\.99\.1/);
+  });
+
   it("fetches a pinned download, checks archive and binary, and installs it", () => {
     const f = fixture();
     const r = kubo(f);
@@ -221,5 +303,52 @@ describe.skipIf(!CAN_RUN)("build-component.sh: build at the pin, install only a 
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/digest mismatch for kubo/);
     expect(fs.existsSync(installed(f, "ipfs"))).toBe(false);
+  });
+});
+
+const checkRepro = (f, ...extra) =>
+  runScript(f, "check-reproducible.sh", ["cluster-daemon", "--checkout", f.co, "--target", HOST, ...extra], {
+    TMPDIR: path.join(f.root, "tmp"),
+  });
+
+describe.skipIf(!CAN_RUN)("check-reproducible.sh: two clean builds in two build roots", { timeout: 60_000 }, () => {
+  it("fails when the bytes depend on the build root, and names both digests", () => {
+    const f = fixture();
+    fs.mkdirSync(path.join(f.root, "tmp"));
+    pathEmbeddingCargo(f);
+    const r = checkRepro(f);
+    expect(r.status).toBe(1);
+    expect(r.stdout + r.stderr).toMatch(/NOT reproducible/);
+    expect((r.stdout.match(/\b[0-9a-f]{64}\b/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("passes for a reproducible component whose only difference was the build root", () => {
+    const f = fixture();
+    fs.mkdirSync(path.join(f.root, "tmp"));
+    pathEmbeddingCargo(f);
+    f.cluster.build.reproducible = true;
+    f.save();
+    const r = checkRepro(f);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/reproducible: cluster-daemon .* [0-9a-f]{64}/);
+  });
+
+  it("removes the build roots it made and installs nothing", () => {
+    const f = fixture();
+    fs.mkdirSync(path.join(f.root, "tmp"));
+    f.cluster.build.reproducible = true;
+    f.save();
+    expect(checkRepro(f).status).toBe(0);
+    expect(fs.readdirSync(path.join(f.root, "tmp"))).toEqual([]);
+    expect(fs.existsSync(path.join(f.root, "cb"))).toBe(false);
+    expect(fs.existsSync(f.out)).toBe(false);
+  });
+
+  it("fails for a component with no cargo build", () => {
+    const f = fixture();
+    fs.mkdirSync(path.join(f.root, "tmp"));
+    const r = runScript(f, "check-reproducible.sh", ["kubo", "--target", HOST], { TMPDIR: path.join(f.root, "tmp") });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/only cargo components/);
   });
 });

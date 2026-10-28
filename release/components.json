@@ -33,6 +33,7 @@
           "LZMA_API_STATIC": "1"
         },
         "strip": false,
+        "reproducible": true,
         "script": "scripts/build-sidecar.sh"
       },
       "artifacts": {
