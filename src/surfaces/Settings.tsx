@@ -1111,7 +1111,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
               <div style={{ display: "flex", gap: 10 }}>
                 {freeUser ? (
                   // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
-                  <button className="btn btn-secondary btn-sm" onClick={() => void store.becomeMember()}>
+                  // Disabled while the held-grant check runs: one attempt at a time (core#584).
+                  <button className="btn btn-secondary btn-sm" disabled={s.billingChecking} onClick={() => void store.becomeMember()}>
                     Become a member ↗
                   </button>
                 ) : (
