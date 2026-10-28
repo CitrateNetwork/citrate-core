@@ -1,7 +1,9 @@
 // Settings › Billing for a free (non-member, non-lapsed) user (follow-up to #576):
 //   - the button is "Become a member ↗" and runs the guarded checkout (store.becomeMember);
 //   - a lapsed member keeps "Renew ↗" (store.renewMembership);
-//   - the stake-attribution / vaulted-principal note shows only to someone with a grant;
+//   - the grant note (since #349: "The membership grant stays locked in your bond…" plus the
+//     disclaimer; it replaced the stake-attribution / vaulted-principal sentence) shows only to
+//     someone with a grant;
 //   - no price figure on the billing card for a free user (the price is on the checkout).
 import { describe, it, expect, vi } from "vitest";
 import { act } from "react";
@@ -35,6 +37,8 @@ const MEMBER_NO_GRANT: Partial<AppState> = { tier: "pilot", entitlement: "active
 const MEMBER_GRANTED: Partial<AppState> = { tier: "pilot", entitlement: "active", hasGrant: true };
 
 const text = (html: string) => html.replace(/<[^>]*>/g, " ");
+/** The grant note on the billing card, old (pre-#349) or current wording. */
+const GRANT_NOTE = /Stake attribution|vaulted principal|grant stays locked in your bond/i;
 
 async function clickBilling(s: AppState, re: RegExp) {
   const { store, spies } = makeStore();
@@ -64,13 +68,13 @@ describe("Settings › Billing for a free user", () => {
 
   it("shows no stake-attribution / vaulted-principal note and no price", () => {
     const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(FREE)} />));
-    expect(t).not.toMatch(/Stake attribution|vaulted principal/i);
+    expect(t).not.toMatch(GRANT_NOTE);
     expect(t).not.toMatch(/\$\s?\d|\bUSD\s?\d|\d\s?USD\b/);
   });
 
   it("a member without a grant sees no stake-attribution note either", () => {
     const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(MEMBER_NO_GRANT)} />));
-    expect(t).not.toMatch(/Stake attribution|vaulted principal/i);
+    expect(t).not.toMatch(GRANT_NOTE);
   });
 });
 
@@ -86,6 +90,7 @@ describe("Settings › Billing for members", () => {
 
   it("a member with a grant still sees the stake-attribution note", () => {
     const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(MEMBER_GRANTED)} />));
-    expect(t).toMatch(/Stake attribution/);
+    expect(t).toContain("The membership grant stays locked in your bond until its unlock block.");
+    expect(t).not.toMatch(/Stake attribution|vaulted principal/i);
   });
 });

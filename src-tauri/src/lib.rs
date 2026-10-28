@@ -100,6 +100,7 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
 // K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
 mod network_profile;
 // D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
@@ -410,11 +411,26 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             // Contract v1.1 §1: the first-submission record persists under the app data dir, so
-            // a re-send after a restart is never mistaken for a first submission.
-            app.manage(match app.path().app_data_dir() {
-                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
-                Err(e) => {
+            // a re-send after a restart is never mistaken for a first submission. It has one
+            // section per network, opened on the genesis of the installed network gate (#511):
+            // other networks' sections are archived, read-only, and decide nothing here. With no
+            // gate genesis every send is refused anyway, and the record on disk is left as it is.
+            let gate_genesis = rpc::network_gate()
+                .filter(|g| g.is_set())
+                .and_then(|g| g.genesis_hash.clone());
+            app.manage(match (app.path().app_data_dir(), gate_genesis) {
+                (Ok(dir), Some(genesis)) => {
+                    ceremony::build_ceremony_state_at(
+                        dir.join(citrate_core_kit::submitted_log::RECORD_FILE),
+                        &genesis,
+                    )
+                }
+                (Err(e), _) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+                (Ok(_), None) => {
+                    eprintln!("[ceremony] no network genesis; the submitted-tx record is not opened");
                     ceremony::build_ceremony_state_unpersisted()
                 }
             });
@@ -600,7 +616,7 @@ pub fn run() {
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,

@@ -357,7 +357,10 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
 
     // The submitted-tx record a 0.5.2 launch opens next to the vault is uncertain (0.5.1 kept
     // none), so a first send error after the switch is "outcome unknown", never "not sent".
-    let log = citrate_core_kit::submitted_log::SubmittedTxLog::open(app.join("submitted-tx.json"));
+    let log = citrate_core_kit::submitted_log::SubmittedTxLog::open(
+        app.join(citrate_core_kit::submitted_log::RECORD_FILE),
+        NEW_GENESIS,
+    );
     assert!(log.is_uncertain());
 
     // Loaders this build uses read the 0.5.1 files after the switch.
@@ -564,6 +567,113 @@ fn a_build_whose_new_genesis_is_not_set_leaves_the_r1005_install_untouched() {
     assert_eq!(
         read(&app.join("node/chain-genesis")),
         read(&fixture_root().join("node-r1005/chain-genesis"))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// #511: the send record a 0.5.2 build kept on r1005 (the legacy file, before the record had one
+// section per network) for the 0.5.1 wallet: it was opened next to the 0.5.1 vault with no record,
+// so it is uncertain, and it holds the wallet's sends at nonces 0..=2.
+fn write_r1005_send_record(app: &Path) -> (String, Vec<String>) {
+    let meta: serde_json::Value =
+        serde_json::from_slice(&read(&fixture_root().join("custody.keyring.json")))
+            .unwrap_or_else(|e| panic!("{e}"));
+    let wallet = meta["walletAddress"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture wallet address"))
+        .to_ascii_lowercase();
+    let hashes: Vec<String> = (1..=3u32).map(|n| format!("0x{n:064x}")).collect();
+    let entries: Vec<serde_json::Value> = hashes
+        .iter()
+        .enumerate()
+        .map(|(i, h)| serde_json::json!({ "hash": h, "sender": wallet, "nonce": i }))
+        .collect();
+    let body = serde_json::json!({ "entries": entries, "evicted": {}, "uncertain": true });
+    std::fs::write(
+        app.join(citrate_core_kit::submitted_log::LEGACY_FILE),
+        serde_json::to_vec(&body).unwrap_or_else(|e| panic!("{e}")),
+    )
+    .unwrap_or_else(|e| panic!("write record: {e}"));
+    (wallet, hashes)
+}
+
+#[test]
+fn an_r1005_send_record_is_archived_by_the_switch_and_the_new_chain_starts_bounded() {
+    let root = scratch("sendrec");
+    let app = install_v051_on_r1005(&root);
+    let (wallet, r1005_hashes) = write_r1005_send_record(&app);
+    let node_kr = MapKeyring::from_fixture("node-r1005.keyring.json");
+    let mgr = manager(&root, &app, &node_kr, Ok(new_network()));
+    start_for_new_network(&mgr);
+
+    // The 0.5.2 launch on the new genesis opens the record on that genesis.
+    let log = citrate_core_kit::submitted_log::SubmittedTxLog::open(
+        app.join(citrate_core_kit::submitted_log::RECORD_FILE),
+        NEW_GENESIS,
+    );
+    // r1005's record is uncertain, so the new chain starts upgrade-bounded (#443): the wallet's
+    // first fetched-nonce send there is unknown, and a later one above it is a first send. The
+    // bound is the new chain's own: r1005's nonces (0..=2) don't set it.
+    assert!(
+        log.is_uncertain(),
+        "r1005's unknown sends bound the new chain"
+    );
+    assert_eq!(log.len(), 0, "no r1005 entry is looked up on the new chain");
+    use citrate_core_kit::submitted_log::NonceSource::Fetched;
+    assert_eq!(
+        log.try_record_call(&format!("0x{:064x}", 100), &wallet, 0, Fetched, None),
+        Ok(false)
+    );
+    assert_eq!(
+        log.try_record_call(&format!("0x{:064x}", 101), &wallet, 1, Fetched, None),
+        Ok(true)
+    );
+    // The r1005 sends are kept as r1005's archived section, and the legacy file is set aside.
+    let d: serde_json::Value = serde_json::from_slice(&read(
+        &app.join(citrate_core_kit::submitted_log::RECORD_FILE),
+    ))
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(d["current"]["genesis"], NEW_GENESIS);
+    let prev = &d["previous_networks"][0];
+    assert_eq!(prev["genesis"], R1005);
+    assert_eq!(prev["uncertain"], true);
+    let kept: Vec<&str> = prev["entries"]
+        .as_array()
+        .unwrap_or_else(|| panic!("archived entries: {d}"))
+        .iter()
+        .map(|e| e["hash"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(kept, r1005_hashes);
+    assert!(!app
+        .join(citrate_core_kit::submitted_log::LEGACY_FILE)
+        .exists());
+    assert!(app
+        .join(format!(
+            "{}.migrated",
+            citrate_core_kit::submitted_log::LEGACY_FILE
+        ))
+        .exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_same_r1005_send_record_without_a_switch_behaves_as_before() {
+    let root = scratch("sendrec-same");
+    let app = install_v051_on_r1005(&root);
+    let (wallet, r1005_hashes) = write_r1005_send_record(&app);
+    let log = citrate_core_kit::submitted_log::SubmittedTxLog::open(
+        app.join(citrate_core_kit::submitted_log::RECORD_FILE),
+        R1005,
+    );
+    assert!(
+        log.is_uncertain(),
+        "the r1005 history stays uncertain on r1005"
+    );
+    assert_eq!(log.len(), 3);
+    assert_eq!(log.try_record_for(&r1005_hashes[0], &wallet, 0), Ok(false));
+    assert_eq!(
+        log.try_record_for(&format!("0x{:064x}", 100), &wallet, 3),
+        Ok(false)
     );
     let _ = std::fs::remove_dir_all(&root);
 }
