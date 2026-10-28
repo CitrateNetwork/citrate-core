@@ -492,10 +492,11 @@ fn r1006_is_filled_with_the_reroll_values_and_active() {
         p.address_book_sha256.as_deref(),
         Some("724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b")
     );
-    assert_eq!(
-        p.min_chain_rev.as_deref(),
-        Some("9a32147e2aac60d388356ecc67488d717aa84c41")
-    );
+    // The node rev is not repeated here: it may move (a node-local fix on top of 9a32147e), and
+    // then only profiles.json minChainRev and build-sidecar.sh MIN_CHAIN_REV change, kept equal by
+    // `the_sidecar_min_chain_rev_is_the_active_profiles`.
+    let rev = p.min_chain_rev.as_deref().unwrap_or_default();
+    assert!(is_lower_hex_nonzero(rev, 40), "{rev:?}");
     assert!(p.pending.is_empty(), "{:?}", p.pending);
     assert_eq!(active_id().unwrap(), R1006);
     let r = active_ready().expect("the active r1006 is ready");

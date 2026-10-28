@@ -33,7 +33,9 @@ const realProfiles = path.join(repo, "src-tauri", "network", "profiles.json");
 const R1006_FILLED = {
   genesisHash: "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4",
   addressBookSha256: "724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b",
-  minChainRev: "9a32147e2aac60d388356ecc67488d717aa84c41",
+  // The node rev is read from build-sidecar.sh (the pin the profile must equal), not repeated here,
+  // so a node rev change is the two pin lines only.
+  minChainRev: /^MIN_CHAIN_REV="([0-9a-f]{40})"/m.exec(fs.readFileSync(path.join(here, "build-sidecar.sh"), "utf8"))[1],
 };
 const PREFILL_REASONS = {
   genesisHash: "recorded at the r1006 reroll (block 0 of the fleet after fleet_agree.sh); fill with scripts/fill-network-profile.sh",
