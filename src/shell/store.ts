@@ -52,6 +52,17 @@ import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, escalationOffered, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import {
+  DELEGATE_TOOL_NAME,
+  DELEGATION_STATUS_TOOL_NAME,
+  cognitionConnected,
+  delegationApproval,
+  delegationOffered,
+  isDelegationDeclined,
+  runDelegationStatusTool,
+  runDelegationTool,
+  withDelegationTools,
+} from "../agent/cognition";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
@@ -61,6 +72,7 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { SyncTracker } from "./syncProgress";
@@ -105,7 +117,7 @@ import { reachedStep } from "../privacy/joinFunnel";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -236,17 +248,31 @@ export function describeBond(g: {
   isUnlocked: boolean;
   isKycVerified: boolean;
   hasValidator: boolean;
+  bondActivated?: boolean | null;
 }): string {
-  if (!g.bondDeployed) return "Not yet staked";
+  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
+  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
+  // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
+  // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
+  if (!g.bondDeployed) return "No bond yet";
+  // #349 review: the bond's activation state is MemberBond.activated(); a registry binding
+  // (hasValidator) implies it. After an exit or a slash hasValidator reads false while the bond
+  // stays activated, and an unread flag is not evidence either way.
+  const activated = g.hasValidator ? true : (g.bondActivated ?? null);
   if (!g.isUnlocked) {
-    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString();
-    return `Staked · unlocks at block ${at}`;
+    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
+    if (g.hasValidator) return `Staked · locked until block ${at}`;
+    // "not staked" needs activated() = false (#411's fix); otherwise the plain §1 lock word.
+    return activated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
   }
-  // Unlocked. Owner decision A.5: eligible, never automatic — so "can", not "has".
-  // A.6: KYC supersedes the lock, so an unverified member is NOT told their funds
-  // are available.
-  if (!g.isKycVerified) return "Unlocked · KYC required to withdraw";
-  return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
+  // Unlocked. A never-activated bond can't be released or withdrawn (requestRelease /
+  // withdrawToMember revert NotActivated()), so it gets no identity / withdraw wording (v1.2).
+  if (activated === false) return "Unlocked · not activated";
+  if (activated === null) return "Unlocked · bond state not read yet";
+  // Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
+  // unverified member is NOT told their funds are available.
+  if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
+  return "Unlocked";
 }
 
 /**
@@ -270,6 +296,7 @@ export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
     s5n: 32000,
     s5StakeWei: g.attributedStakeWei,
     s5BondStatus: describeBond(g),
+    s5UnlockBlock: g.unlockBlock,
     hasGrant: true,
     hasSbt: g.hasSbt,
   };
@@ -503,6 +530,32 @@ export function pickChatProviderKind(
   if (inferenceState === "ask-gateway" || inferenceState === "local-only" || remote) return "ask";
   // 4) DEMO: the honest built-in agent.
   return "demo";
+}
+
+/** D-11: core's preferred cloud model (`providers_preferred_get`), or null when there is none or
+ *  it cannot be read (a read error never sends anything to a cloud model). */
+async function readPreferredModel(): Promise<{ providerId: string; model: string } | null> {
+  if (BRIDGE_MODE !== "tauri") return null;
+  try {
+    return (await bridge.providers.preferredGet()).preferred ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** D-11: the chat provider id core reads as "the member's preferred cloud model". */
+export const PREFERRED_CHAT_ID = "preferred";
+
+/** D-11: the cloud model Hermes runs on, when one is chosen and allowed (the sidecar loop on, the
+ *  desktop app, and not Local model only); null = the local model. */
+export function cloudModelFor(
+  choice: { providerId: string; model: string } | null | undefined,
+  route: ChatRoute,
+  sidecarLoop: boolean,
+  mode: "sim" | "tauri",
+): { providerId: string; model: string } | null {
+  if (!choice || route === "local_only" || !sidecarLoop || mode !== "tauri") return null;
+  return choice;
 }
 
 /** The states in which a local model is set up but its server is not running. */
@@ -1050,10 +1103,16 @@ export class Store {
       } catch {
         statuses = [];
       }
-      const def = this.state.aiDefault;
+      // D-11 (P-5): the member's preferred cloud model, stored in core (`providers_preferred_get`).
+      // When set, it is the remote choice a held message offers (the app's own loop sends there
+      // through the core proxy) and the model the sidecar loop runs on. A failed read is none.
+      const preferred = await readPreferredModel();
+      if (JSON.stringify(preferred) !== JSON.stringify(this.state.hermesCloudModel)) this.setState({ hermesCloudModel: preferred });
+      const def = preferred ? PREFERRED_CHAT_ID : this.state.aiDefault;
+      this.remoteChatId = def;
       // BC-3.2 — is a gateway key configured? (used both for the local-fallback
       // routing computed in Rust AND for the gateway leg of the selection here.)
-      const gatewayConfigured = statuses.some((p) => p.id === def && p.configured);
+      const gatewayConfigured = !!preferred || statuses.some((p) => p.id === def && p.configured);
       // BC-3.2 — the HONEST local-vs-gateway routing state, computed in Rust from
       // the real model status + serve health. Only "ready" means the local server
       // is actually serving. A failed read (web shim) resolves to "demo" — never a
@@ -1064,15 +1123,19 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
+      const kind = pickChatProviderKind(preferred ? [{ id: def, configured: true }, ...statuses] : statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
       this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
+      if (preferred && this.routeAsk.gateway) this.routeAsk = { ...this.routeAsk, remoteLabel: `${preferred.providerId} · ${preferred.model}` };
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
       // (same local model, same approvals), so chat never depends on the sidecar being up.
+      // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
+      // under Local model only (core refuses it there too); it needs the sidecar loop.
+      const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
       const sidecarUp =
-        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+        (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
           ? await bridge.agentHarness
               .status()
               .then((st) => st.running)
@@ -1086,6 +1149,17 @@ export class Store {
           .endpoints()
           .then((e) => escalationOffered(e.length, route))
           .catch(() => false);
+        // D-11 (P-8): the Devin delegation tools only with a connected Devin key, never under Local
+        // model only. A failed read offers none.
+        const providerStatuses = await (async () => {
+          try {
+            return await bridge.providers.status();
+          } catch {
+            return [];
+          }
+        })();
+        const delegationReady = delegationOffered(cognitionConnected(providerStatuses), route);
+        const cloudName = cloudChoice ? providerStatuses.find((p) => p.id === cloudChoice.providerId)?.name ?? cloudChoice.providerId : null;
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
@@ -1097,7 +1171,12 @@ export class Store {
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
-            open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
+            open: (p, t, persona) =>
+              cloudChoice
+                ? h.sessionOpenCloud(p, t, persona ?? null)
+                : persona
+                  ? h.sessionOpen(p, t, persona)
+                  : h.sessionOpen(p, t),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
@@ -1118,9 +1197,9 @@ export class Store {
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
-          () => withEscalationTool(annotatedAgentTools(), escalationReady),
+          () => withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady),
           () => this.sidecarPersonaChoice(),
-          { store: sessionStore },
+          cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
         );
         this.reflectProvider();
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
@@ -1174,7 +1253,7 @@ export class Store {
     const kind: "local" | "real" | "demo" =
       p.kind === "local" || p.kind === "sidecar" || p.kind === "local-stopped"
         ? "local"
-        : p.kind === "real" || p.kind === "agent"
+        : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
@@ -1371,6 +1450,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState({ bondActivated: grant.bondDeployed ? (grant.bondActivated ?? null) : null });
+    // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
+    // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
+    // that is on chain; otherwise the last value stands.
+    if (isGrantOnChain(grant) && grant.unlockBlock != null) this.setState({ s5UnlockBlock: grant.unlockBlock });
     // Onboarding-step reconcile: only needed while the flow is not already settled.
     if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
@@ -2355,12 +2438,11 @@ export class Store {
 
   snapshot() {
     const s = this.state;
-    // The membership grant stakes SALT into a time-locked (≈1yr), recoverable validator bond. That
-    // stake is REAL and locked but is NOT the same as the validator bond (which is 0 until the member
-    // approves the activation ceremony). The model must be able to reconcile "0 spendable but staked",
-    // so expose both figures + the human-readable bond status (which carries the unlock block), rather
-    // than the old single `staked` that only reflected the validator bond and read 0 for a fresh member.
-    const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The membership grant is locked in the member's MemberBond (about a year) and is NOT staked until
+    // the member activates the bond (C1-V V5). The model gets both figures (the locked grant and the
+    // registry stake) plus the bond status (which carries the unlock block), so it can explain a
+    // member with 0 spendable, 0 staked and a locked grant.
+    const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
     return {
       height: s.height,
       peers: s.peers,
@@ -2372,14 +2454,19 @@ export class Store {
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
       rewardsTotal: s.rewards ? Number(BigInt(s.rewards.totalWei)) / 1e18 : null,
+      // C1-V V5: the grant facts the agent's staking reply branches on (null = no grant).
+      grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
       membership: {
-        grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
-        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Staked · unlocks at block N"
+        grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
+        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
         validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
-        note: "The membership grant stakes SALT into a time-locked (about a year), recoverable validator bond. Locked stake is not spendable and is separate from the liquid balance; the bond only starts validating after the member approves the activation ceremony.",
+        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
+        // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
+        note:
+          grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
+          " Locked SALT is not spendable and is separate from the liquid balance.",
       },
     };
   }
@@ -2957,6 +3044,20 @@ export class Store {
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
    *  the default voice. Only the prompt's voice changes; tools, approvals and gates do not. A running
    *  sidecar session keeps its prompt, so the provider is rebuilt to open a fresh one. */
+  /** D-11 (ADR P-5) — the model Hermes's loop runs on: a cloud model from a provider connected in
+   *  Settings › Models, or null for the local model. A running session keeps its model, so the
+   *  provider is rebuilt to open a fresh one. */
+  async setHermesCloudModel(choice: { providerId: string; model: string } | null): Promise<string | null> {
+    try {
+      const v = await bridge.providers.preferredSet(choice);
+      this.setState({ hermesCloudModel: v.preferred });
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    void this.rebuildProvider();
+    return null;
+  }
+
   chooseHermesPersona(p: HermesPersona | null): void {
     this.setState({ hermesPersona: p });
     this.save();
@@ -3090,6 +3191,8 @@ export class Store {
   private routeKind: "local" | "ask" | "demo" = "demo";
   /** K2: what a held message may offer (restart the local model / send to the gateway once). */
   private routeAsk: RouteAskOptions = { restart: false, gateway: false };
+  /** The remote chat id a held message offers: the preferred cloud model (D-11) or the preset. */
+  private remoteChatId = "gateway";
   /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
   private launchLocalStartPending = false;
   /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
@@ -3165,7 +3268,7 @@ export class Store {
       // K2: core mints the one-time consent for this message when the question opens. Core sends
       // nothing to the gateway without it, so a failed mint offers no gateway send.
       if (this.routeAsk.gateway) {
-        consent = await bridge.chat.consentPrepare(this.state.aiDefault, text).catch(() => null);
+        consent = await bridge.chat.consentPrepare(this.remoteChatId, text).catch(() => null);
       }
       hold("ask");
       const choice = await new Promise<LocalModelChoice>((resolve) => {
@@ -3590,6 +3693,38 @@ export class Store {
         hic,
       );
       status = isEscalationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATE_TOOL_NAME) {
+      // D-11 (P-8): every delegation is the member's decision on a card that shows the exact
+      // prompt; core sends only what it prepared (the card's hash binds it).
+      const d = bridge.delegation;
+      result = await runDelegationTool(
+        {
+          prepare: (scope) => d.prepare(scope),
+          decline: (id) => d.decline(id),
+          approve: (id, hash) => d.approve(id, hash),
+          status: (id) => d.status(id),
+          confirm: (view) => {
+            const a = delegationApproval(view, hic?.reason);
+            return ask(
+              {
+                origin: "chat agent",
+                requester: "dashboard agent · tool " + DELEGATE_TOOL_NAME,
+                title: a.title,
+                chainless: true,
+                rows: a.rows,
+                cost: a.cost,
+                sponsor: "billed by Cognition to your Devin account, not a chain transaction",
+                sponsorColor: "var(--warn)",
+              },
+              a.card,
+            );
+          },
+        },
+        args as Record<string, unknown>,
+      );
+      status = isDelegationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATION_STATUS_TOOL_NAME) {
+      result = await runDelegationStatusTool({ status: (id) => bridge.delegation.status(id) }, args as Record<string, unknown>);
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show
