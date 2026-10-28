@@ -9,14 +9,15 @@
 //   V13 Community promised referral rewards with no on-chain source, and "settled" (§5.5, §1).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 vi.mock("../bridge/mode", () => ({
   BRIDGE_MODE: "tauri" as const,
   assertSimAllowed: () => {},
 }));
 
-import { Onboarding, S3, S5 } from "../onboarding/Onboarding";
+import { MembershipCheckout, Onboarding, S3, S5 } from "../onboarding/Onboarding";
 import { Community } from "./Community";
 import { MEMBERSHIP_PRICING_URL } from "../data/membership";
 import { Wallet } from "./Wallet";
@@ -84,7 +85,8 @@ describe("V5 — one grant-custody explanation everywhere", () => {
   });
 
   it("onboarding S3 (membership) uses it", () => {
-    expectOneStory(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />));
+    // #576: S3 opens on the free-node choice; the membership screen is the member checkout.
+    expectOneStory(renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />));
   });
 
   it("onboarding S5 before and after the grant uses it", () => {
@@ -147,7 +149,9 @@ describe("V12 — no in-app price until core-membership serves one", () => {
   const PRICE = /\$\s?\d/;
 
   it("S3 shows a 'See membership pricing' link and no price", () => {
-    const html = renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />);
+    // #576: the pricing link lives on the member checkout; S3's free-node choice shows no price at all.
+    expect(renderToStaticMarkup(<S3 store={stub} s={member({ s3: "idle", hasGrant: false })} />)).not.toMatch(PRICE);
+    const html = renderToStaticMarkup(<MembershipCheckout store={stub} s={member({ s3: "idle", hasGrant: false })} />);
     expect(html).not.toMatch(PRICE);
     expect(html).toContain("See membership pricing");
     expect(html).toContain(MEMBERSHIP_PRICING_URL);
@@ -231,7 +235,66 @@ describe("V13 — referrals describe only what is recorded", () => {
     const html = renderToStaticMarkup(<Community store={stub} s={member()} />);
     expect(html.toLowerCase()).not.toMatch(/reward|settle/);
     expect(html).not.toContain("SALT grant to the whole group");
-    expect(html).toContain("recorded");
+  });
+
+  // Owner 10-27: referral credit is deferred (act retroactively later), and #549 removed the
+  // referral log. Nothing records or attributes a join to the member who invited them, so the card
+  // says credit isn't tracked and makes no recording, attribution or SALT claim.
+  it("the Referrals card says credit isn't tracked, and claims no recording or attribution", () => {
+    const html = renderToStaticMarkup(<Community store={stub} s={member()} />).replace(/&#x27;/g, "'");
+    expect(html).toContain("Referral credit isn't tracked yet.");
+    expect(html).toContain("Invite people from Groups.");
+    expect(referralClaims(html)).toEqual([]);
+    expect(html).not.toMatch(/recorded|attribut|inviter/i);
+  });
+});
+
+/**
+ * A referral-attribution claim: that a join through a member's invite is recorded, attributed or
+ * credited to them. False while referral credit is deferred (owner, 10-27; #549 removed the log).
+ */
+function referralClaims(text: string): string[] {
+  const res = [
+    /names you as the inviter/i,
+    /referrals?\b[^.<\n]{0,80}\b(recorded|attributed|credited|counted)\b/i,
+    /\b(recorded|attributed|credited|counted)\b[^.<\n]{0,80}\b(inviter|referrals?)\b/i,
+    /joins?\b[^.<\n]{0,40}\bthrough (your|a one-time) (link|invite)[^.<\n]{0,80}\b(roster|recorded|attributed)\b/i,
+    /recorded joins/i,
+  ];
+  return res.filter((re) => re.test(text)).map((re) => re.source);
+}
+
+describe("V13 tripwire — no referral-attribution claim in the webview", () => {
+  it("the scanner finds each old claim and passes the deferred line (control)", () => {
+    for (const old of [
+      "A join through a one-time invite you send from Groups is recorded in that group's roster as a signed assertion that names you as the inviter.",
+      "That record is all a referral is today; referrals are recorded per group.",
+      "your recorded joins appear here once the indexer lands",
+      "joins through your link land in your group's roster as signed assertions",
+      "Each join is attributed to the inviter.",
+    ]) {
+      expect(referralClaims(old), old).not.toEqual([]);
+    }
+    expect(referralClaims("Invite people from Groups. Referral credit isn't tracked yet.")).toEqual([]);
+  });
+
+  it("no production webview file carries one", () => {
+    const root = join(__dirname, "..");
+    const found: string[] = [];
+    let scanned = 0;
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(name) && !/\.test\.|tripwire|\.d\.ts$/.test(name)) {
+          scanned++;
+          for (const hit of referralClaims(readFileSync(p, "utf8"))) found.push(`${p.slice(root.length + 1)}: ${hit}`);
+        }
+      }
+    };
+    walk(root);
+    expect(scanned, "positive control: the scan reads the webview").toBeGreaterThan(100);
+    expect(found).toEqual([]);
   });
 });
 

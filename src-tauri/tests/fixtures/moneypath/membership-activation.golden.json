@@ -36,6 +36,7 @@
           "bondUnlocked": null,
           "currentEpoch": 0,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 525,
           "localBlock": null,
           "localSyncing": null,
@@ -47,6 +48,8 @@
           "pubkeySource": "node",
           "recordedTx": null,
           "registryActive": false,
+          "registryBondedWei": "0",
+          "registryEscrowWei": "0",
           "registryStatus": 0,
           "tx": null,
           "unlockBlock": null,
@@ -119,6 +122,7 @@
           "bondUnlocked": false,
           "currentEpoch": 0,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 527,
           "localBlock": null,
           "localSyncing": null,
@@ -130,6 +134,8 @@
           "pubkeySource": "node",
           "recordedTx": null,
           "registryActive": false,
+          "registryBondedWei": "0",
+          "registryEscrowWei": "0",
           "registryStatus": 0,
           "tx": null,
           "unlockBlock": 15725327,
@@ -253,6 +259,7 @@
           "bondUnlocked": false,
           "currentEpoch": 0,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 528,
           "localBlock": null,
           "localSyncing": null,
@@ -264,6 +271,8 @@
           "pubkeySource": "bond",
           "recordedTx": null,
           "registryActive": true,
+          "registryBondedWei": "32000000000000000000000",
+          "registryEscrowWei": "0",
           "registryStatus": 1,
           "tx": null,
           "unlockBlock": 15725327,
@@ -292,6 +301,7 @@
           "origin": "local-user",
           "requiresRawAck": false
         },
+        "gasLimit": "eth_estimateGas + margin",
         "grantStatus": {
           "attributedPrincipalWei": "32000000000000000000000",
           "attributedStakeWei": "32000000000000000000000",
@@ -308,7 +318,7 @@
           "unlockBlock": 15725327
         }
       },
-      "does": "core builds MemberBond.activate (node key signs the registry digest); the ceremony signs and sends it",
+      "does": "core builds MemberBond.activate (node key signs the registry digest, gas estimated); the ceremony signs and sends it",
       "events": [
         {
           "args": {
@@ -420,6 +430,7 @@
           "bondUnlocked": false,
           "currentEpoch": 1,
           "epochBlocks": 1000,
+          "exitOutcome": null,
           "headBlock": 1000,
           "localBlock": null,
           "localSyncing": null,
@@ -431,6 +442,8 @@
           "pubkeySource": "bond",
           "recordedTx": null,
           "registryActive": true,
+          "registryBondedWei": "32000000000000000000000",
+          "registryEscrowWei": "0",
           "registryStatus": 1,
           "tx": null,
           "unlockBlock": 15725327,

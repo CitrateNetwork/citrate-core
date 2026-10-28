@@ -4,10 +4,8 @@
 
 /// A service whose binary does not exist: every spawn fails at once, on every OS.
 fn missing_bin_config(tag: &str, max_retries: u32) -> SupervisorConfig {
-    let dir = std::env::temp_dir().join(format!(
-        "citrate-core-sup-lc-{tag}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("citrate-core-sup-lc-{tag}-{}", std::process::id()));
     let spec = SidecarSpec::new(
         format!("lc-{tag}"),
         dir.join("no-such-binary"),
@@ -53,8 +51,26 @@ fn lifecycle_snapshot_counters_cross_as_decimal_strings() {
         pid: Some(42),
         quarantine: None,
         open_tickets: 2,
+        readiness_profile: ReadinessProfile::Probed,
+        readiness_age_ms: Some(u64::MAX),
+        counters: RetryCounters {
+            attempts: 9_007_199_254_740_993,
+            respawns: 4,
+            initial_failures: 1,
+            consecutive_failures: 2,
+            max_retries: 8,
+            health_credits: 5,
+        },
     };
     let v = serde_json::to_value(&snap).unwrap_or_default();
+    assert_eq!(v["readinessProfile"], "probed");
+    assert_eq!(v["readinessAgeMs"], "18446744073709551615");
+    assert_eq!(v["counters"]["attempts"], "9007199254740993");
+    assert_eq!(v["counters"]["respawns"], "4");
+    assert_eq!(v["counters"]["initialFailures"], "1");
+    assert_eq!(v["counters"]["consecutiveFailures"], "2");
+    assert_eq!(v["counters"]["maxRetries"], "8");
+    assert_eq!(v["counters"]["healthCredits"], "5");
     assert_eq!(v["appEpoch"], "18446744073709551615");
     assert_eq!(v["instance"], "7");
     assert_eq!(v["intentSequence"], "9007199254740993");
@@ -199,7 +215,11 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     };
     assert_eq!(start.intent_sequence, 2);
     assert!(matches!(wait_receipt(&sup, start), Receipt::Failed { .. }));
-    assert_eq!(sup.status().restarts, 2, "one more attempt under a fresh budget");
+    assert_eq!(
+        sup.status().restarts,
+        2,
+        "one more attempt under a fresh budget"
+    );
 
     let stop = match sup.request_stop() {
         ControlResult::Accepted(t) => t,
@@ -208,7 +228,10 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     assert_eq!(stop.intent_sequence, 3);
     match wait_receipt(&sup, stop) {
         Receipt::Complete { scope } => {
-            assert!(!scope.contains(&"child".to_string()), "there was no child: {scope:?}")
+            assert!(
+                !scope.contains(&"child".to_string()),
+                "there was no child: {scope:?}"
+            )
         }
         other => panic!("{other:?}"),
     }
@@ -216,12 +239,19 @@ fn a_start_after_failed_gets_a_fresh_budget_and_a_stop_settles_complete() {
     assert_eq!(snap.phase, Phase::Stopped);
     assert_eq!(snap.desired, Desired::Stopped);
     assert_eq!(sup.status().state, SupervisorState::Off);
-    assert!(snap.revision > rev_before, "every change bumps the revision");
+    assert!(
+        snap.revision > rev_before,
+        "every change bumps the revision"
+    );
     assert!(matches!(
         sup.request_stop(),
         ControlResult::AlreadySatisfied(_)
     ));
-    assert_eq!(sup.status().restarts, 2, "Stop never consumes failure budget");
+    assert_eq!(
+        sup.status().restarts,
+        2,
+        "Stop never consumes failure budget"
+    );
 }
 
 #[test]
@@ -264,11 +294,21 @@ fn deadline_overlay_arms_up_to_its_fixed_size_and_frees_on_release() {
         assert!(p.arm(7, 1, seq, Duration::from_secs(60)));
     }
     assert_eq!(p.armed_records(), DEADLINE_RECORDS);
-    assert!(!p.arm(7, 1, 99, Duration::from_secs(60)), "no record beyond the overlay");
+    assert!(
+        !p.arm(7, 1, 99, Duration::from_secs(60)),
+        "no record beyond the overlay"
+    );
     p.release(7, 1, 3);
     assert_eq!(p.armed_records(), DEADLINE_RECORDS - 1);
-    assert!(p.arm(7, 1, 99, Duration::from_secs(60)), "a freed record is reused");
-    assert_eq!(p.expired(7, 1, 3), Some(false), "a released control has no record");
+    assert!(
+        p.arm(7, 1, 99, Duration::from_secs(60)),
+        "a freed record is reused"
+    );
+    assert_eq!(
+        p.expired(7, 1, 3),
+        Some(false),
+        "a released control has no record"
+    );
 }
 
 #[test]
@@ -283,8 +323,16 @@ fn a_deadline_read_compares_the_monotonic_clock_without_the_publisher() {
         instance: 1,
         intent_sequence: 1,
     };
-    assert_eq!(p.record_state(1, token), Some(DeadlineState::Armed), "never marked");
-    assert_eq!(p.expired(1, 1, 1), Some(true), "but the read sees the deadline passed");
+    assert_eq!(
+        p.record_state(1, token),
+        Some(DeadlineState::Armed),
+        "never marked"
+    );
+    assert_eq!(
+        p.expired(1, 1, 1),
+        Some(true),
+        "but the read sees the deadline passed"
+    );
 }
 
 #[test]
@@ -299,14 +347,21 @@ fn a_stale_expiry_mark_never_applies_to_a_rewritten_record() {
     };
     assert_eq!(p.record_state(1, a), Some(DeadlineState::Expired));
     p.release(1, 1, 1);
-    assert!(p.arm(2, 1, 5, Duration::from_secs(60)), "the same record, rewritten");
+    assert!(
+        p.arm(2, 1, 5, Duration::from_secs(60)),
+        "the same record, rewritten"
+    );
     let b = ControlToken {
         app_epoch: 1,
         instance: 2,
         intent_sequence: 5,
     };
     assert_eq!(p.record_state(2, b), Some(DeadlineState::Armed));
-    assert_eq!(p.expired(2, 1, 5), Some(false), "A's mark does not carry over to B");
+    assert_eq!(
+        p.expired(2, 1, 5),
+        Some(false),
+        "A's mark does not carry over to B"
+    );
 }
 
 #[test]
@@ -321,7 +376,10 @@ fn the_publisher_marks_expiry_within_its_cadence() {
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while p.record_state(3, token) != Some(DeadlineState::Expired) {
-        assert!(std::time::Instant::now() < deadline, "the publisher never marked it");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the publisher never marked it"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -329,10 +387,19 @@ fn the_publisher_marks_expiry_within_its_cadence() {
 #[test]
 fn joining_a_deadline_only_ever_tightens_it() {
     let p = idle_publisher();
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)), "arms when absent");
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)), "a looser join is accepted");
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::from_secs(60)),
+        "arms when absent"
+    );
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)),
+        "a looser join is accepted"
+    );
     assert_eq!(p.expired(4, 1, 1), Some(false));
-    assert!(p.arm_or_tighten(4, 1, 1, Duration::ZERO), "a tighter join moves it earlier");
+    assert!(
+        p.arm_or_tighten(4, 1, 1, Duration::ZERO),
+        "a tighter join moves it earlier"
+    );
     assert_eq!(p.expired(4, 1, 1), Some(true));
     assert!(p.arm_or_tighten(4, 1, 1, Duration::from_secs(3600)));
     assert_eq!(p.expired(4, 1, 1), Some(true), "never moved later again");
@@ -412,8 +479,14 @@ fn an_indeterminate_expiry_at_settlement_counts_as_expired() {
     let at_settle = p.expired_at_settle(4, 1, 2);
     let _ = go.send(());
     let _ = armer.join();
-    assert_eq!(read, None, "INCONCLUSIVE: the paused write did not make the read torn");
-    assert!(at_settle, "an indeterminate expiry at settlement counts as expired");
+    assert_eq!(
+        read, None,
+        "INCONCLUSIVE: the paused write did not make the read torn"
+    );
+    assert!(
+        at_settle,
+        "an indeterminate expiry at settlement counts as expired"
+    );
     assert!(
         !p.expired_at_settle(4, 1, 2),
         "once readable, a control without a record has not expired"
@@ -544,6 +617,49 @@ fn publication_tickets_never_release_on_drop() {
     }
 }
 
+/// Tripwire: `PublicationTicket::commit` runs the caller's activation step inside the same
+/// critical section as the currency check. The step must run before the lock is dropped and
+/// before the publication is resolved; a commit that returns first and leaves activation to the
+/// caller reopens the window in which a Stop settles while a file becomes active.
+#[test]
+fn publication_commit_activates_inside_the_critical_section() {
+    let source = include_str!("supervisor.rs");
+    let start = source
+        .find("    pub fn commit<T, E>(")
+        .expect("PublicationTicket::commit takes an activation step");
+    let body = &source[start..];
+    let end = body.find("\n    }\n").expect("commit body ends");
+    let body = &body[..end];
+    let lock = body
+        .find("self.shared.lock()")
+        .expect("commit takes the cell lock");
+    let activate = body
+        .find("activate()")
+        .expect("commit runs the activation step");
+    let resolve = body
+        .find("resolve_publication(")
+        .expect("commit resolves the publication");
+    assert!(lock < activate, "activation runs under the cell lock");
+    assert!(
+        activate < resolve,
+        "the publication resolves only after activation"
+    );
+    let between = &body[lock..activate];
+    assert!(
+        !between.contains("return Ok"),
+        "commit must not return success before activating"
+    );
+    for (at, _) in between.match_indices("drop(c)") {
+        let after = &between[at..];
+        let next = after.find(';').map_or(after, |i| &after[i + 1..]);
+        assert!(
+            next.trim_start()
+                .starts_with("return Err(CommitRefused::Stale"),
+            "the lock is dropped before activation only on the stale path"
+        );
+    }
+}
+
 #[test]
 fn releasing_an_owner_frees_only_its_records() {
     let p = idle_publisher();
@@ -610,13 +726,248 @@ fn a_token_is_only_answered_by_the_supervisor_that_issued_it() {
     };
     assert!(matches!(wait_receipt(&a, ta), Receipt::Complete { .. }));
     assert!(matches!(wait_receipt(&b, tb), Receipt::Complete { .. }));
-    assert_eq!(b.receipt(ta), Receipt::Expired, "B never answers for A's token");
-    assert_eq!(a.receipt(tb), Receipt::Expired, "A never answers for B's token");
+    assert_eq!(
+        b.receipt(ta),
+        Receipt::Expired,
+        "B never answers for A's token"
+    );
+    assert_eq!(
+        a.receipt(tb),
+        Receipt::Expired,
+        "A never answers for B's token"
+    );
     drop(a);
     let a2 = Supervisor::start(missing_bin_config("token-a", 0)).expect("start a2");
     a2.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
     let _ = a2.request_stop();
-    assert_eq!(a2.receipt(ta), Receipt::Expired, "a replacement never answers for the old one");
+    assert_eq!(
+        a2.receipt(ta),
+        Receipt::Expired,
+        "a replacement never answers for the old one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SCL-S3 (SC2): readiness profiles, split counters, member and automated starts.
+// ---------------------------------------------------------------------------
+
+fn wait_failed(sup: &Supervisor) -> LifecycleSnapshot {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let snap = sup.lifecycle();
+        if let Some(s) = snap.as_ref().filter(|s| s.phase == Phase::Failed) {
+            return s.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "INCONCLUSIVE: never Failed: {snap:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn readiness_profile_follows_the_configured_probe() {
+    let plain = Supervisor::start(missing_bin_config("profile-plain", 0)).expect("start");
+    let snap = wait_failed(&plain);
+    assert_eq!(snap.readiness_profile, ReadinessProfile::LivenessOnly);
+    assert_eq!(snap.readiness, Readiness::NotAssessed, "never assessed without a probe");
+    assert_eq!(snap.readiness_age_ms, None);
+
+    let mut cfg = missing_bin_config("profile-probed", 0);
+    cfg.spec.health_check = Some(HealthCheck {
+        interval: Duration::from_millis(10),
+        grace: Duration::ZERO,
+        probe: Arc::new(|| true),
+    });
+    let probed = Supervisor::start(cfg).expect("start");
+    let snap = wait_failed(&probed);
+    assert_eq!(snap.readiness_profile, ReadinessProfile::Probed);
+    assert_eq!(
+        snap.readiness,
+        Readiness::Unavailable,
+        "a probed service with no live incarnation is Unavailable, never Ready"
+    );
+    assert!(!probed.is_ready());
+}
+
+#[test]
+fn retry_counters_split_attempts_respawns_and_initial_failures() {
+    let sup = Supervisor::start(missing_bin_config("counters", 2)).expect("start");
+    let snap = wait_failed(&sup);
+    let c = snap.counters;
+    assert_eq!(c.attempts, 3, "the first attempt plus max_retries (2) retries");
+    assert_eq!(c.respawns, 0, "no spawn returned a child");
+    assert_eq!(c.initial_failures, 1, "one failure began the sequence");
+    assert_eq!(c.consecutive_failures, 3);
+    assert_eq!(c.max_retries, 2);
+    assert_eq!(c.health_credits, 0);
+    assert_eq!(snap.restarts, 3, "legacy recorded-failure counter");
+}
+
+#[test]
+fn an_automated_start_never_revives_a_failed_service() {
+    let sup = Supervisor::start(missing_bin_config("auto-failed", 1)).expect("start");
+    let before = wait_failed(&sup);
+    assert!(
+        matches!(sup.request_auto_start(), ControlResult::RequiresMemberStart(_)),
+        "{:?}",
+        sup.request_auto_start()
+    );
+    assert!(matches!(
+        sup.request_auto_restart(),
+        ControlResult::RequiresMemberStart(_)
+    ));
+    let after = sup.lifecycle().expect("snapshot");
+    assert_eq!(after.intent_sequence, before.intent_sequence, "nothing committed");
+    assert_eq!(after.counters, before.counters);
+
+    // A member Start gets a fresh budget.
+    let start = match sup.request_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("member Start after Failed: {other:?}"),
+    };
+    assert!(matches!(wait_receipt(&sup, start), Receipt::Failed { .. }));
+    let c = sup.lifecycle().expect("snapshot").counters;
+    assert_eq!(c.attempts, 4, "two attempts per budget of one retry");
+    assert_eq!(c.initial_failures, 2, "each budget began with one initial failure");
+    assert_eq!(c.consecutive_failures, 2);
+}
+
+#[test]
+fn an_automated_start_after_a_stop_carries_the_spent_budget() {
+    let sup = Supervisor::start(missing_bin_config("auto-spent", 2)).expect("start");
+    wait_failed(&sup);
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(wait_receipt(&sup, stop), Receipt::Complete { .. }));
+    let start = match sup.request_auto_start() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("automated start of a stopped service: {other:?}"),
+    };
+    match wait_receipt(&sup, start) {
+        Receipt::Failed { reason } => assert!(reason.contains("budget"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let snap = sup.lifecycle().expect("snapshot");
+    assert_eq!(snap.phase, Phase::Failed);
+    assert_eq!(
+        snap.counters.attempts, 3,
+        "a spent budget admits no spawn for an automated start"
+    );
+    assert_eq!(sup.status().restarts, 3);
+}
+
+#[test]
+fn an_automated_restart_needs_a_running_service() {
+    let sup = Supervisor::start(missing_bin_config("auto-stopped", 0)).expect("start");
+    wait_failed(&sup);
+    let stop = match sup.request_stop() {
+        ControlResult::Accepted(t) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(wait_receipt(&sup, stop), Receipt::Complete { .. }));
+    let seq = sup.lifecycle().expect("snapshot").intent_sequence;
+    assert!(matches!(
+        sup.request_auto_restart(),
+        ControlResult::RequiresMemberStart(_)
+    ));
+    assert_eq!(sup.lifecycle().expect("snapshot").intent_sequence, seq);
+}
+
+#[test]
+fn ready_is_shown_only_while_fresh() {
+    let limit = Duration::from_millis(100);
+    let fresh = Some(Duration::from_millis(100));
+    let old = Some(Duration::from_millis(101));
+    assert_eq!(shown_readiness(Readiness::Ready, fresh, limit), Readiness::Ready);
+    assert_eq!(shown_readiness(Readiness::Ready, old, limit), Readiness::Stale);
+    assert_eq!(shown_readiness(Readiness::Ready, None, limit), Readiness::Stale);
+    for r in [
+        Readiness::NotAssessed,
+        Readiness::Awaiting,
+        Readiness::Stale,
+        Readiness::Unavailable,
+    ] {
+        assert_eq!(shown_readiness(r, old, limit), r);
+    }
+}
+
+/// A success collected after the freshness limit (the monitor was delayed past two intervals
+/// while an on-time worker finished) is not fresh evidence: it never reads Ready and starts no
+/// window.
+#[test]
+fn a_success_collected_after_the_freshness_limit_is_stale() {
+    let t0 = std::time::Instant::now();
+    let fresh = Duration::from_millis(100);
+    let mut w = Window::default();
+    assert_eq!(
+        w.record_success(t0, t0 + Duration::from_millis(150), fresh, Duration::from_millis(500)),
+        Success::Stale
+    );
+    assert!(w.first_ok.is_none() && w.last_ok.is_none(), "an old sample starts no window");
+}
+
+/// The sample is timed when the probe finished, not when the monitor collected it.
+#[test]
+fn a_success_is_timed_when_the_probe_finished() {
+    let t0 = std::time::Instant::now();
+    let mut w = Window::default();
+    let got = w.record_success(
+        t0,
+        t0 + Duration::from_millis(60),
+        Duration::from_millis(100),
+        Duration::from_millis(500),
+    );
+    assert_eq!(got, Success::Fresh { credit: false });
+    assert_eq!(w.last_ok, Some(t0));
+    assert_eq!(w.first_ok, Some(t0));
+}
+
+/// Successes separated by a gap over the freshness limit are two windows: the later one starts
+/// a new window, so it earns no credit from the earlier success.
+#[test]
+fn a_success_after_a_freshness_gap_starts_a_new_window() {
+    let t0 = std::time::Instant::now();
+    let fresh = Duration::from_millis(100);
+    let healthy_after = Duration::from_millis(500);
+    let mut w = Window::default();
+    assert_eq!(
+        w.record_success(t0, t0, fresh, healthy_after),
+        Success::Fresh { credit: false }
+    );
+    let later = t0 + healthy_after + Duration::from_millis(10);
+    assert_eq!(
+        w.record_success(later, later, fresh, healthy_after),
+        Success::Fresh { credit: false },
+        "no credit across a gap in fresh evidence"
+    );
+    assert_eq!(w.first_ok, Some(later), "the gap started a new window");
+}
+
+/// Fresh successes that span `healthy_after` without a gap earn exactly one credit; a single
+/// success never does.
+#[test]
+fn successes_spanning_healthy_after_earn_one_credit() {
+    let t0 = std::time::Instant::now();
+    let step = Duration::from_millis(50);
+    let fresh = Duration::from_millis(100);
+    let healthy_after = Duration::from_millis(200);
+    let mut w = Window::default();
+    let mut credits = Vec::new();
+    for i in 0..6u32 {
+        let at = t0 + step * i;
+        credits.push(w.record_success(at, at, fresh, healthy_after));
+    }
+    let credited: Vec<usize> = credits
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c == Success::Fresh { credit: true })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(credited, vec![4], "one credit, at the sample that spans healthy_after");
 }
 
 /// Tripwire (core#397): every spawn, automatic retries included, is preceded by the full reader
@@ -684,7 +1035,13 @@ fn fn_source<'a>(src: &'a str, sig: &str, indent: &str) -> &'a str {
 #[test]
 fn already_satisfied_start_requires_a_running_monitor_source_check() {
     let src = include_str!("supervisor.rs");
-    let start = fn_source(src, "pub fn request_start(&self)", "    ");
+    // Every Start control (member and automated) answers through `start_intent`.
+    assert!(
+        fn_source(src, "pub fn request_start(&self)", "    ")
+            .contains("self.start_intent(StartOrigin::Member)"),
+        "tripwire: request_start must answer through start_intent"
+    );
+    let start = fn_source(src, "fn start_intent(&self", "    ");
     let lines: Vec<&str> = start.lines().collect();
     let mut found = 0;
     for (i, line) in lines.iter().enumerate() {
@@ -705,10 +1062,13 @@ fn already_satisfied_start_requires_a_running_monitor_source_check() {
             .collect();
         assert!(
             cond.contains("self.monitor_running()"),
-            "request_start answers AlreadySatisfied without checking the monitor: {cond}"
+            "start_intent answers AlreadySatisfied without checking the monitor: {cond}"
         );
     }
-    assert!(found > 0, "tripwire: request_start has no AlreadySatisfied answer to check");
+    assert!(
+        found > 0,
+        "tripwire: start_intent has no AlreadySatisfied answer to check"
+    );
     let monitor = fn_source(src, "fn run_monitor(", "");
     let guard_at = monitor
         .find("MonitorExit(")
@@ -719,5 +1079,80 @@ fn already_satisfied_start_requires_a_running_monitor_source_check() {
     assert!(
         guard_at < loop_at,
         "run_monitor must install its exit guard before the loop"
+    );
+}
+
+/// Tripwire (SC2 member budget): the monitor never decides a budget from a member-Start count
+/// read earlier in its turn. `run_monitor` does not touch `member_starts` itself; it adopts a
+/// member Start under the lock, at the budget rule and in `publish_alive` (where the Start
+/// settles, so no later join can belong to the incarnation).
+#[test]
+fn the_monitor_adopts_member_budgets_under_the_lock_source_check() {
+    let src = include_str!("supervisor.rs");
+    let monitor = fn_source(src, "fn run_monitor(", "");
+    assert!(
+        !monitor.contains("member_starts"),
+        "run_monitor must not keep its own copy of the member-Start count"
+    );
+    assert!(
+        monitor.contains("adopt_member_budget(&shared, &mut budget_member)"),
+        "run_monitor adopts a member Start under the lock before the budget rule"
+    );
+    let publish = fn_source(src, "fn publish_alive(", "");
+    assert!(
+        publish.contains("c.adopt_member_budget(budget_member)"),
+        "publish_alive adopts a member Start in the critical section that settles the Start"
+    );
+}
+
+/// Tripwire (SC2 readiness): every unhealthy verdict clears Ready before it returns, so the
+/// teardown that follows never runs under a cached Ready.
+#[test]
+fn an_unhealthy_verdict_clears_ready_first_source_check() {
+    let src = include_str!("supervisor.rs");
+    let mut found = 0;
+    for (at, _) in src.match_indices("return RunOutcome::Unhealthy") {
+        found += 1;
+        let before: Vec<&str> = src[..at]
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .take(2)
+            .collect();
+        assert!(
+            before
+                .iter()
+                .any(|l| l.starts_with("publish(Readiness::Unavailable")),
+            "an Unhealthy verdict returns without clearing Ready first: {before:?}"
+        );
+    }
+    assert!(found > 0, "tripwire: no Unhealthy verdict found");
+}
+
+// D-11 (RC52): a variable named in `env_remove` is not inherited by the child, and `env` still
+// applies after it.
+#[test]
+fn env_remove_strips_an_inherited_variable_before_env_applies() {
+    let mut spec = SidecarSpec::new("t", "/bin/true", vec![]);
+    spec.env_remove = vec!["CITRATE_TEST_STRIPPED".into(), "CITRATE_TEST_SET".into()];
+    spec.env = vec![("CITRATE_TEST_SET".into(), "v".into())];
+    let cmd = spec.to_command();
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+    assert!(
+        envs.contains(&("CITRATE_TEST_STRIPPED".to_string(), None)),
+        "{envs:?}"
+    );
+    assert!(
+        envs.contains(&("CITRATE_TEST_SET".to_string(), Some("v".to_string()))),
+        "{envs:?}"
     );
 }

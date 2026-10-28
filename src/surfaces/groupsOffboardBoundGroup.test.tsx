@@ -155,7 +155,8 @@ describe("tripwire: member actions take an explicit group", () => {
     const calls = [...src.matchAll(/\b(offboardMember|assignRole|addMemberToGroup|doOffboard|doRole)\(([^()]*)\)/g)].filter(
       (m) => !/^\s*groupId: string/.test(m[2]),
     );
-    expect(calls.length).toBeGreaterThanOrEqual(8);
+    // 7 since D-12: the two claim-approval adds moved into Rust (group_invite_approve takes the group).
+    expect(calls.length).toBeGreaterThanOrEqual(7);
     for (const m of calls) expect(m[2].split(",").length, m[0]).toBeGreaterThanOrEqual(2);
   });
 });

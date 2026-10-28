@@ -8,8 +8,16 @@ a wrapper script that sets STAND_IN_CFG and execs this file), because cold-sync.
 with a minimal environment and nothing else would reach it.
 
 Config keys: record (path), chainId, genesis, seed, rate (blocks/s), headMax, forkAt, forkSeed,
-missing ([from, to]: no block served in that range), exitAfter (s), noRpc, peers, encMeta.
-Block hash at height h > 0: 0x + sha256("<seed>:<h>"); block 0 is `genesis`.
+missing ([from, to]: no block served in that range, by number or by hash), decoyEvery (n: by number,
+every height that is a multiple of n answers with a sibling block that is not on the selected-parent
+chain, the way eth_getBlockByNumber is not canonical on r1006, chain#421), exitAfter (s),
+exitAfterHashOf (h: exit right after serving the block at height h by hash; the harness reads blocks
+by hash only in its final selected-parent walk), exitAfterProbeAfterHashOf (h: after serving the block
+at height h by hash, exit right after serving the next eth_blockNumber: the harness's liveness probe),
+noRpc, peers, encMeta.
+The selected-parent chain: block 0 is `genesis`; block h > 0 is 0x + sha256("<seed>:<h>") (the fork
+seed from forkAt on) and its parent is the chain block at h - 1. A decoy at h is 0x + sha256("decoy:<h>")
+with the same parent.
 """
 import hashlib
 import json
@@ -53,6 +61,8 @@ if not m:
     sys.exit("stand-in: no [rpc] listen_addr in the config")
 host, port = m.group(1), int(m.group(2))
 start = time.time()
+exit_now = False
+probe_armed = False
 
 
 def head():
@@ -71,6 +81,45 @@ def block_hash(h):
     return "0x" + hashlib.sha256(f"{seed}:{h}".encode()).hexdigest()
 
 
+def decoy_hash(h):
+    return "0x" + hashlib.sha256(f"decoy:{h}".encode()).hexdigest()
+
+
+def is_decoy_height(h):
+    n = cfg.get("decoyEvery")
+    return bool(n) and h > 0 and h % n == 0
+
+
+def missing(h):
+    gap = cfg.get("missing")
+    return bool(gap) and gap[0] <= h <= gap[1]
+
+
+def block(h, decoy=False):
+    return {"number": hex(h), "hash": decoy_hash(h) if decoy else block_hash(h),
+            "parentHash": block_hash(h - 1) if h > 0 else "0x" + "00" * 32,
+            "selectedParentHash": block_hash(h - 1) if h > 0 else "0x" + "00" * 32}
+
+
+# hash -> (height, decoy), filled up to the head as it is asked for.
+index = {}
+indexed_to = -1
+
+
+def by_hash(hsh):
+    global indexed_to
+    top = head()
+    while indexed_to < top:
+        indexed_to += 1
+        index[block_hash(indexed_to)] = (indexed_to, False)
+        if is_decoy_height(indexed_to):
+            index[decoy_hash(indexed_to)] = (indexed_to, True)
+    hit = index.get(hsh.lower()) if isinstance(hsh, str) else None
+    if hit is None or hit[0] > top or missing(hit[0]):
+        return None
+    return block(*hit)
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -78,20 +127,30 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         method, params = req.get("method"), req.get("params") or []
+        global exit_now, probe_armed
         if method == "eth_chainId":
             result = hex(cfg["chainId"])
         elif method == "eth_blockNumber":
             result = hex(head())
+            if probe_armed:
+                exit_now = True
         elif method == "net_peerCount":
             result = hex(cfg.get("peers", 2))
         elif method == "eth_getBlockByNumber":
             tag = params[0]
             h = head() if tag == "latest" else int(tag, 16)
-            gap = cfg.get("missing")
-            if h > head() or (gap and gap[0] <= h <= gap[1]):
+            if h > head() or missing(h):
                 result = None
             else:
-                result = {"number": hex(h), "hash": block_hash(h)}
+                result = block(h, decoy=is_decoy_height(h))
+        elif method == "eth_getBlockByHash":
+            result = by_hash(params[0])
+            if result is not None:
+                h = int(result["number"], 16)
+                if cfg.get("exitAfterHashOf") is not None and h == cfg["exitAfterHashOf"]:
+                    exit_now = True
+                if cfg.get("exitAfterProbeAfterHashOf") is not None and h == cfg["exitAfterProbeAfterHashOf"]:
+                    probe_armed = True
         else:
             result = None
         body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).encode()
@@ -108,3 +167,5 @@ while True:
     if cfg.get("exitAfter") is not None and time.time() - start > cfg["exitAfter"]:
         sys.exit(3)
     srv.handle_request()
+    if exit_now:
+        sys.exit(5 if probe_armed else 4)

@@ -23,7 +23,7 @@ fn copy_of_v051(tag: &str) -> PathBuf {
     dst
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap_or_else(|e| panic!("mkdir {}: {e}", dst.display()));
     let entries = std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
     for entry in entries.flatten() {
@@ -37,7 +37,7 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
-fn read(p: &Path) -> Vec<u8> {
+pub(crate) fn read(p: &Path) -> Vec<u8> {
     std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
@@ -161,47 +161,52 @@ fn a_damaged_pin_index_is_kept_not_overwritten_by_the_next_pin() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D-12: 0.5.2 has one invite flow (request and approve) and does not read 0.5.1 invites. A 0.5.1
+/// data dir opens cleanly: the first read sets the old `pending.json` aside, owner-only with its
+/// bytes (and keys) untouched, and reads as no invites; the next invite starts the new format next
+/// to it. `referral-log.json` is no longer read or written and is left as it was.
 #[test]
-fn v051_invites_load_with_their_keys_and_links() {
+fn v051_invites_are_set_aside_kept_and_a_new_store_starts() {
     let dir = copy_of_v051("invites");
-    // invites.rs `load`: serde_json::from_slice::<Vec<PendingInvite>> of invites/pending.json.
-    let v: Vec<crate::invites::PendingInvite> =
-        serde_json::from_slice(&read(&dir.join("invites/pending.json")))
-            .unwrap_or_else(|e| panic!("a 0.5.1 pending.json must load: {e}"));
-    assert_eq!(v.len(), 2);
-    // Compared through the serialized form, so the check holds whatever in-memory type holds the
-    // key: written back, every 0.5.1 field is there with its 0.5.1 value.
-    let back = serde_json::to_value(&v).unwrap_or_else(|e| panic!("serialize: {e}"));
-    let orig: serde_json::Value = serde_json::from_slice(&read(&dir.join("invites/pending.json")))
-        .unwrap_or_else(|e| panic!("{e}"));
-    for (i, rec) in orig
-        .as_array()
-        .unwrap_or_else(|| panic!("not a list"))
-        .iter()
-        .enumerate()
+    let path = dir.join("invites/pending.json");
+    let old = read(&path);
+    let referrals = read(&dir.join("invites/referral-log.json"));
+    let group = "abababababababababababababababab";
+    let now = 1_800_000_000;
+    assert_eq!(
+        crate::invites::invite_views_at(&path, group, now),
+        Ok(Vec::new()),
+        "a 0.5.1 store opens as no invites, not an error"
+    );
+    let aside: Vec<PathBuf> = std::fs::read_dir(dir.join("invites"))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("pending.json.earlier-"))
+        })
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(read(&aside[0]), old, "kept byte for byte");
+    #[cfg(unix)]
     {
-        for (k, val) in rec.as_object().unwrap_or_else(|| panic!("not an object")) {
-            assert_eq!(&back[i][k], val, "invite {i} field {k}");
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&aside[0])
+            .unwrap_or_else(|e| panic!("{e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
     }
-    assert_eq!(back[0]["forHandle"], "@alice");
+    let made = crate::invites::create_at(&path, group, "", "", "Garden club", now)
+        .unwrap_or_else(|e| panic!("a new invite on the upgraded dir: {e}"));
     assert_eq!(
-        back[0]["privKey"].as_str().map(str::len),
-        Some(64),
-        "the invite key is kept"
+        crate::invites::invite_views_at(&path, group, now).map(|v| v.len()),
+        Ok(1)
     );
-    assert!(
-        back[1].get("privKey").is_none(),
-        "the pre-S1 record has no key"
-    );
-    let referrals: Vec<crate::invites::ReferralEvent> =
-        serde_json::from_slice(&read(&dir.join("invites/referral-log.json")))
-            .unwrap_or_else(|e| panic!("a 0.5.1 referral-log.json must load: {e}"));
-    assert_eq!(referrals.len(), 1);
-    assert_eq!(
-        referrals[0].token_hash,
-        crate::invites::blake3_token_hash(back[0]["token"].as_str().unwrap_or_default())
-    );
+    assert!(made.link.contains("&e="), "a link of this version");
+    assert_eq!(read(&aside[0]), old, "still kept");
+    assert_eq!(read(&dir.join("invites/referral-log.json")), referrals);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

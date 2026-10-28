@@ -76,10 +76,12 @@ Every one is pinned in `release/components.json` (source rev, toolchain, build c
 per target). The scripts build that rev, never the checkout's HEAD, and install only bytes whose
 sha256 matches the pin. They default to the sibling source dir, so with the layout above you only
 pass `--target`. Run each on the Linux host so it produces the Linux triple natively. The Linux pins
-are the 0.5.1 builds: if a rebuild on this host does not reproduce them, the script stops; record
-the new digests with `--print-digest` and pin them in a reviewed PR before building with them.
-mem-mcp has no Linux pin yet: it moved to citrate-memories 5aeda317 (the store key file), so
-record its Linux digests with `--print-digest` first.
+were recorded with `--print-digest` by these same scripts: x86_64 on `citrate-core-linux-build`,
+aarch64 on the DGX. If a rebuild on this host does not reproduce them, the script stops; record the
+new digests with `--print-digest` and pin them in a reviewed PR before building with them.
+Build in the default build root (`~/.cache/citrate-components`; do not set
+`CITRATE_COMPONENT_BUILD_ROOT`): the node and hermes embed build-root paths (vendored OpenSSL,
+cranelift's generated sources), so they reproduce only in the root that recorded the pin.
 
 ```bash
 cd citrate-core

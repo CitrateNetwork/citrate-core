@@ -37,6 +37,9 @@ function poller(query: WidgetQuery, render: string, everySec = 15): string {
 }
 
 /** Set `out` to a big value line and a small caption line, as text (never HTML). */
+/** The SALT widget's caption expression (runs in the widget sandbox, over `d` = wallet.summary). */
+export const SALT_BALANCE_CAPTION = `"staked " + (d.stakedSalt == null ? "—" : Number(d.stakedSalt).toLocaleString()) + " · claimable " + (d.claimableSalt == null ? "—" : Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }))`;
+
 const twoLines = (value: string, caption: string) =>
   `out.innerHTML = ""; var a = document.createElement("div"); a.className = "v"; a.textContent = ${value}; var b = document.createElement("div"); b.className = "s"; b.textContent = ${caption}; out.appendChild(a); out.appendChild(b);`;
 
@@ -55,7 +58,7 @@ export const WIDGET_TEMPLATES: readonly WidgetTemplate[] = [
     queries: ["wallet.summary"],
     html: poller(
       "wallet.summary",
-      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, `"staked " + Number(d.stakedSalt).toLocaleString() + " · claimable " + (d.claimableSalt == null ? "—" : Number(d.claimableSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }))`),
+      twoLines(`Number(d.liquidSalt).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " SALT"`, SALT_BALANCE_CAPTION),
       30,
     ),
   },

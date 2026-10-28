@@ -10,14 +10,17 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import book from "../../src-tauri/addresses/40204.json";
 import { useNetworkLabel } from "../shell/networkCompat";
-import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, validatorWord, canOfferActivation, validatorDash, readStakeSalt } from "../shell/chainTruth";
 import { GRANT_DISCLAIMER, grantExplanation } from "../data/grantCopy";
 import { MEMBERSHIP_BUYS } from "../data/membership";
 import { PricingLink } from "../components/PricingLink";
-import { PendingJoinCard, InvitePasteField } from "../surfaces/PendingJoinCard";
+import { HaveAnInvite } from "../surfaces/HaveAnInvite";
+import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
+/** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
+const fmtStake = (salt: number | null) => (salt == null ? "— (not read yet)" : `${fmtI(salt)} SALT`);
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
 const eyebrow: CSSProperties = {
@@ -59,7 +62,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
   const stages: [string, string][] = [
     ["s1", "Sign in"],
     ["s2", "Verify identity"],
-    ["s3", "Membership"],
+    ["s3", "Free node or membership"],
     ["s4", "Wallet ready"],
     ["s5", "Membership grant"],
     ["s6", "Node ignition"],
@@ -85,6 +88,9 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
             <p style={{ fontFamily: "var(--font-sans)", fontSize: 16, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
               Citrate runs a node, a wallet and Hermes on this machine. Your keys stay here.
             </p>
+            <p style={{ fontFamily: "var(--font-sans)", fontSize: 14, lineHeight: 1.55, color: "var(--tx-2)", margin: 0, maxWidth: 520 }}>
+              Running a node is free. Membership is optional, and you can choose it during setup or later.
+            </p>
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <button className="btn btn-primary btn-lg" onClick={() => store.onJoin()}>
@@ -94,14 +100,15 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          {s.pendingJoin && (
+          {s.inviteLink && (
             <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
-              <PendingJoinCard store={store} s={s} />
+              <HaveAnInvite store={store} s={s} />
             </div>
           )}
-          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. */}
+          {/* Join 3 V-01 (fed#353): what Join involves, under the buttons. Owner decision 2026-10-27
+              (option a): Join sets up a free node first, so membership and its bond are optional. */}
           <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, maxWidth: 520 }}>
-            Joining means a yearly membership and a bond. Explore free skips both; you can upgrade later in Settings › Billing.
+            Membership and its bond are optional. You can upgrade later in Settings › Billing.
           </p>
           {/* Join 3 V-02: the network by its genesis-checked name (contract §2, §6), not the chain id. */}
           <NetworkName style={eyebrow} />
@@ -119,9 +126,12 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
             {/* marquee-only, 2.5× (was the mark icon + a height:13 marquee) */}
             <img src={marqueeBlack} alt="Citrate" style={{ height: 33 }} />
           </div>
-          <div style={{ ...eyebrow, marginBottom: 6 }}>Membership onboarding</div>
-          {stages.map(([, label], i) => {
-            const done = i < cur;
+          <div style={{ ...eyebrow, marginBottom: 6 }}>Setup</div>
+          {stages.map(([id, label], i) => {
+            // The free path (no membership checkout, no grant) passes S5 without a grant: it is
+            // marked skipped, never done.
+            const skipped = id === "s5" && i < cur && s.s3 !== "settled" && !s.hasGrant;
+            const done = i < cur && !skipped;
             const active = i === cur;
             return (
               <div key={label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 8px", borderRadius: "var(--r-1)" }}>
@@ -141,11 +151,11 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
                     flexShrink: 0,
                   }}
                 >
-                  {done ? "✓" : String(i + 1)}
+                  {done ? "✓" : skipped ? "–" : String(i + 1)}
                 </span>
                 <span style={{ flex: 1, fontSize: 13, fontWeight: active ? 500 : 400, color: active ? "var(--tx-1)" : done ? "var(--tx-2)" : "var(--tx-3)" }}>{label}</span>
                 <span className="mono" style={{ fontSize: 9, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                  {done ? "done" : active ? "now" : ""}
+                  {skipped ? "skipped" : done ? "done" : active ? "now" : ""}
                 </span>
               </div>
             );
@@ -301,28 +311,14 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
  * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
  * server-side sub↔order reconciler are the sole gates (A8/A2).
  */
-// GROW-S1 task 12 — an invite that arrived (deep link) or was pasted waits here through setup. Before
-// sign-in + wallet the card says the join comes after setup; from the wallet step on it offers
-// Review, then one explicit "Join <cluster>". Never a silent join.
+// D-12 — an invite link that arrived (deep link) or was pasted waits here through setup, on the same
+// component as Groups. Before the wallet step the Join button says the request goes once setup gets
+// there; from then on Join sends the request. Never a silent join: the inviter approves it.
 function OnboardingInvite({ store, s }: { store: Store; s: AppState }) {
-  if (s.pendingJoin) return <PendingJoinCard store={store} s={s} />;
   return (
-    <details className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite-paste">
-      <summary style={{ fontSize: 12.5, color: "var(--tx-2)", cursor: "pointer" }}>Have an invite?</summary>
-      <div style={{ paddingTop: 10 }}>
-        <InvitePasteField
-          onSubmit={async (text) => {
-            if (await store.acceptInviteInput(text)) return;
-            if (/^citrate:\/\/invite\?/i.test(text)) {
-              store.setState({ pendingInvite: { url: text } });
-              store.toast("Got it. You can join that group from Groups once setup finishes.");
-              return;
-            }
-            store.toast("That doesn't look like an invite link or code.");
-          }}
-        />
-      </div>
-    </details>
+    <div className="surface" style={{ padding: "10px 14px" }} data-testid="onboarding-invite">
+      <HaveAnInvite store={store} s={s} />
+    </div>
   );
 }
 
@@ -378,7 +374,7 @@ function S2({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S2 · Verify</div>
       <div style={h1}>Verify your identity</div>
       <p style={body}>
-        Verification is optional — you can finish it any time. Your membership only needs your payment; identity verification unlocks certain features and upgrades you
+        Verification is optional — you can finish it any time. Running a node doesn&apos;t need it, and neither does membership; identity verification unlocks certain features and upgrades you
         to the <span className="mono">commercial.kyc</span> tier. It runs in your browser with our in-house provider; this app only observes the claim change, and your
         documents never touch this machine.
       </p>
@@ -415,7 +411,7 @@ function S2({ store, s }: { store: Store; s: AppState }) {
           </div>
           <div>
             <button className="btn btn-primary" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-              Continue to membership
+              Continue
             </button>
           </div>
         </div>
@@ -445,10 +441,10 @@ function S2({ store, s }: { store: Store; s: AppState }) {
       {s.s2 !== "verified" && (
         <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
           <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-            Skip for now — continue to membership
+            Skip for now — continue
           </button>
           <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
-            Membership needs only your payment. You keep the <span className="mono">commercial</span> tier now and can finish KYC any time to upgrade to
+            Running a node and membership don&apos;t need it. You keep the <span className="mono">commercial</span> tier now and can finish KYC any time to upgrade to
             {" "}<span className="mono">commercial.kyc</span>.
           </p>
         </div>
@@ -563,10 +559,69 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
   );
 }
 
+// Owner decision 2026-10-27 (option a): S3 opens on a choice, with the free node first. Running a
+// node needs no payment; membership is optional. The price shows only inside MembershipCheckout,
+// which mounts only after the member chooses it (or resumes a checkout already started).
 export function S3({ store, s }: { store: Store; s: AppState }) {
+  const [member, setMember] = useState(false);
+  if (member || s.s3 !== "idle") {
+    return <MembershipCheckout store={store} s={s} onBack={s.s3 === "idle" ? () => setMember(false) : undefined} />;
+  }
+  const freeGets = [
+    "A full node on this machine: it follows the chain, checks every block and serves your reads locally",
+    "Your wallet: a signing key sealed on this device",
+    "Hermes, chain reads and the marketplace view",
+  ];
+  return (
+    <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={eyebrow}>S3 · Free node or membership</div>
+      <div style={h1}>Run your node for free</div>
+      <p style={body}>
+        You don&apos;t need a membership to run a node, use your wallet or work with Hermes. Membership is optional: choose it now, or later in Settings › Billing.
+      </p>
+      <div className="surface" data-testid="s3-free-path" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10, borderColor: "var(--tx-1)" }}>
+        <div style={eyebrow}>Free · no charge</div>
+        {freeGets.map((text, i) => (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+            <span style={{ width: 5, height: 5, borderRadius: 999, background: "var(--accent)", flexShrink: 0, position: "relative", top: -2 }}></span>
+            <span style={{ fontSize: 13.5, lineHeight: 1.5, color: "var(--tx-1)" }}>{text}</span>
+          </div>
+        ))}
+        <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+          No membership, no bond. Your node produces blocks only if it becomes an active validator.
+        </p>
+        <div>
+          <button className="btn btn-primary btn-lg" onClick={() => store.onS3Free()}>
+            Run a node for free
+          </button>
+        </div>
+      </div>
+      <div className="surface" data-testid="s3-member-path" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={eyebrow}>Membership · optional</div>
+        <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+          Adds the membership SBT (the on-chain record of your seat), member-tier features across the app and Commissary access at your tier. The next screen
+          shows what it includes and its price. Nothing is charged until you check out in your browser.
+        </p>
+        <div>
+          <button className="btn btn-ghost" onClick={() => setMember(true)}>
+            Become a member (optional)
+          </button>
+        </div>
+      </div>
+      <div className="mono" style={dataSrc}>
+        Free path — no payment and no checkout · membership checkout — core-membership, in your browser
+      </div>
+    </div>
+  );
+}
+
+/** The member checkout: the only onboarding screen that shows the membership price. Exported so
+ *  tests (and #349/#379's money-copy tests) can render the checkout directly. */
+export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppState; onBack?: () => void }) {
   const [entOpen, setEntOpen] = useState(false);
   // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
-  // doesn't hunt for a second button. The "Link your wallet" click is the explicit intent
+  // doesn't hunt for a second button. This component mounts only after the member chose
+  // membership on S3, so landing on S3 never opens checkout by itself. The "Link your wallet" click is the explicit intent
   // signal (or the wallet was linked in a prior session); once linked + idle on S3 we open
   // the Stripe checkout automatically. The settle→S4 effect below then finishes the flow
   // when the grant poll lands (the approved "auto-open + auto-advance on poll" shape).
@@ -602,6 +657,13 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S3 · Membership</div>
       <div style={h1}>Yearly membership</div>
+      {onBack && (
+        <div>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>
+            ← Back to the free node
+          </button>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 12 }}>
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Free</div>
@@ -731,42 +793,47 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
 }
 
 export function S4({ store, s }: { store: Store; s: AppState }) {
-  // Q-A.4b item 10 — for a SIGNED-IN user the wallet address must come from a REAL
-  // `wallet_address` claim (walletFromClaim). Without it, `s.walletAddr` is the
-  // deterministic persona `makeAddr` seed — a fabricated wallet for a real account
-  // — so we show "—"/pending instead. In the web-dev/persona path (signedIn=false)
-  // the labelled persona address is the honest preview and renders as before.
-  const walletKnown = !s.signedIn || s.walletFromClaim;
-  const walletDisplay = walletKnown ? s.walletAddr : "— · pending wallet_address claim";
+  // core#425 — the wallet in 0.5.2 is an EVM signing key sealed in this device's custody vault
+  // (custodyAddr). There is no smart account, passkey signer, guardian or recovery service, and
+  // losing the device loses the wallet (O-21). The card shows the device key's own address, never
+  // the identity's wallet_address claim: until the two are linked that claim is a different address
+  // this key cannot sign for. In the web-dev persona path (signedIn=false) the labelled persona
+  // address stands in, as before.
+  const deviceKey = s.custodyAddr || (!s.signedIn ? s.walletAddr : "");
+  const linkNote = deviceKey === "" ? "device key not read yet" : store.walletIsLinked() ? "linked to your identity" : "not linked to your identity yet";
+  const member = s.s3 === "settled" || s.hasGrant;
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
-      <div style={h1}>Your wallet key is on this device</div>
+      <div style={h1}>Your wallet is a key on this device</div>
       <p style={body}>
-        The app created an EVM signing key on this machine and sealed it in the custody vault. It signs only through the signature ceremony, after you approve each
-        request. The key never leaves this machine.
+        Citrate Core made a signing key for you and sealed it in this computer&apos;s keychain. It signs only when you approve a request on screen. This version has no
+        recovery for it: if this computer or its keychain is lost, the wallet and everything in it is lost with it.
       </p>
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
         <div className="lbl">Wallet key on this device</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{walletDisplay}</span>
-          {walletKnown && (
-            <button className="btn btn-ghost btn-sm" onClick={() => store.copy(s.walletAddr, "Address copied")}>
+          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{deviceKey || "—"}</span>
+          {deviceKey && (
+            <button className="btn btn-ghost btn-sm" onClick={() => store.copy(deviceKey, "Address copied")}>
               Copy
             </button>
           )}
         </div>
         <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <Row k="Signer" v={<span style={{ fontSize: 13 }}>EVM signing key · sealed in the custody vault · signs only through the signature ceremony</span>} />
+          <Row k="Key" v={<span style={{ fontSize: 13 }}>EVM signing key · sealed in the custody vault · {linkNote}</span>} />
+          <Row k="Signing" v={<span style={{ fontSize: 13 }}>Only through the signature ceremony, after you approve</span>} />
+          <Row k="Recovery" v={<span style={{ fontSize: 13 }}>No recovery in this version: device loss is wallet loss</span>} />
         </div>
       </div>
       <div>
-        <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: "s5" }); store.save(); }}>
-          Continue to the grant ceremony
+        {/* The free path (no membership checkout, no grant) has no grant step: straight to the node. */}
+        <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: member ? "s5" : "s6" }); store.save(); }}>
+          {member ? "Continue to the grant ceremony" : "Continue to your node"}
         </button>
       </div>
       <div className="mono" style={dataSrc}>
-        Data source — wallet_address claim (your identity) · custody vault (this device)
+        Data source — device key address (custody vault) · linked when your identity&apos;s wallet_address claim is the same address
       </div>
     </div>
   );
@@ -842,7 +909,7 @@ export function S5({ store, s }: { store: Store; s: AppState }) {
           </div>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT → MembershipStakeVault → your MemberBond</div>
           <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-            treasury UserOp · gas sponsored · first-op category
+            sent by the membership treasury, not by this app
           </div>
         </div>
       )}
@@ -896,10 +963,10 @@ function SettleRow({ k, v, accent }: { k: string; v: string; accent?: boolean })
 }
 
 function S6({ store, s }: { store: Store; s: AppState }) {
-  const syncPct = s.syncPct | 0;
-  // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a
-  // "catching up" number off the 0/100 stub — a fabricated height (Rule 1). With a
-  // real syncPct there is nothing to estimate: show what the node actually has.
+  // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a "catching up" number
+  // off the 0/100 stub, a fabricated height (Rule 1). Show what the node actually has; progress is
+  // the measured sync line (syncProgress.ts: blocks behind the public head, rate and ETA only once
+  // measured), never a percentage (contract §1).
   // C1-V V10: 0 is "no reading yet" (eth_blockNumber returns 0x0 on error), never a height.
   const heightStr = s.height > 0 ? fmtI(s.height) : "—";
   return (
@@ -957,14 +1024,9 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         )}
         {s.node === "syncing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
-              <div className="mono tabular" style={{ fontSize: 13, color: "var(--accent-text)" }}>
-                {syncPct}%
-              </div>
-            </div>
-            <div style={{ height: 6, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-              <div style={{ height: "100%", background: "var(--accent)", width: syncPct + "%", transition: "width .5s var(--ease-standard)" }}></div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Syncing chain 40204</div>
+            <div className="mono tabular" title={SYNC_SOURCE} style={{ fontSize: 13, color: "var(--accent-text)" }}>
+              {syncLine(s.syncProgress)}
             </div>
             <div style={{ display: "flex", gap: 20 }}>
               <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }}>
@@ -991,7 +1053,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Validator active</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · activation epoch reached · stake {fmtI(s.bondedStake)} SALT · {CONSENSUS_LAG_NOTE}
+                synced · activation epoch reached · stake {fmtStake(readStakeSalt(s))} · {CONSENSUS_LAG_NOTE}
               </div>
             </div>
           </div>
@@ -1007,7 +1069,7 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Synced · {validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant) ?? "— · registry not read yet"}</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                stake {fmtI(s.bondedStake)} SALT in the ValidatorRegistry
+                stake {fmtStake(readStakeSalt(s))} in the ValidatorRegistry
               </div>
             </div>
           </div>
@@ -1259,7 +1321,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
   const gate = activationGate(a, linked);
   const phase = activationPhase(a, linked, s.s7TxHash);
   const vs = validatorState(a);
-  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "slashed";
+  const settled = phase === "registered" || phase === "active" || phase === "exiting" || phase === "exited" || phase === "exitSettled" || phase === "slashed";
   const mismatch = keyMismatch(a);
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }} data-testid="s7">
@@ -1301,7 +1363,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
       {phase === "ready" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
-            <button className="btn btn-primary btn-lg" onClick={() => void store.onS7Activate()} data-testid="s7-activate">
+            <button className="btn btn-primary btn-lg" onClick={() => void store.requestValidatorActivation()} data-testid="s7-activate">
               Activate validator
             </button>
           </div>
@@ -1329,7 +1391,7 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
         <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
             <button className="btn btn-ghost btn-lg" onClick={() => store.onS7Skip()} data-testid="s7-skip">
-              Explore free
+              Skip for now
             </button>
           </div>
           <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
@@ -1340,7 +1402,8 @@ export function S7({ store, s }: { store: Store; s: AppState }) {
 
       <div className="mono" style={dataSrc}>
         Data sources — MembershipStakeVault.bondOf · MemberBond.activated / principal / unlockBlock / unlockTimestamp · CitrateMemberSBT.isActive ·
-        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · local eth_syncing · block time{" "}
+        ValidatorRegistry.validatorInfo / isActive / currentEpoch / EPOCH · ValidatorRegistry exit logs (UnbondInitiated / Evicted / Slashed /
+        Withdrawn) · local eth_syncing · block time{" "}
         {a?.blockTimeMs != null ? fmtDuration(a.blockTimeMs) : "—"} (measured over the last 100 blocks)
       </div>
     </div>

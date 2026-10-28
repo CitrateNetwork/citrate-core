@@ -27,7 +27,9 @@ import {
   makeHash,
   WalletReview,
 } from "./state";
+import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
+import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
@@ -50,6 +52,17 @@ import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, escalationOffered, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import {
+  DELEGATE_TOOL_NAME,
+  DELEGATION_STATUS_TOOL_NAME,
+  cognitionConnected,
+  delegationApproval,
+  delegationOffered,
+  isDelegationDeclined,
+  runDelegationStatusTool,
+  runDelegationTool,
+  withDelegationTools,
+} from "../agent/cognition";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
@@ -58,15 +71,17 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { canOfferActivation, createChainReads, isValidatorActive, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
+import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
-import { activationGate, principalSalt } from "../onboarding/activateValidator";
+import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
+import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { classifyInviteInput, joinErrorMessage, joinErrorRetryable, parseClaimLink } from "../surfaces/referral";
-import { groupsSlice, refreshGroups } from "./slices/groups";
+import { parseClaimLink } from "../onboarding/claimLink";
+import { isInviteLink } from "../surfaces/inviteLink";
+import { groupsSlice } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -102,7 +117,7 @@ import { reachedStep } from "../privacy/joinFunnel";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -320,6 +335,14 @@ export function describeBond(g: {
   // unverified member is NOT told their funds are available.
   if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
   return "Unlocked";
+}
+
+/** A wei amount (decimal string) as SALT; null when it is not a decimal wei string (never 0). */
+export function saltFromStakeWei(wei: string | null | undefined): number | null {
+  if (typeof wei !== "string" || !/^\d+$/.test(wei)) return null;
+  const w = BigInt(wei);
+  const unit = 10n ** 18n;
+  return Number(w / unit) + Number(w % unit) / 1e18;
 }
 
 /**
@@ -579,6 +602,32 @@ export function pickChatProviderKind(
   return "demo";
 }
 
+/** D-11: core's preferred cloud model (`providers_preferred_get`), or null when there is none or
+ *  it cannot be read (a read error never sends anything to a cloud model). */
+async function readPreferredModel(): Promise<{ providerId: string; model: string } | null> {
+  if (BRIDGE_MODE !== "tauri") return null;
+  try {
+    return (await bridge.providers.preferredGet()).preferred ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** D-11: the chat provider id core reads as "the member's preferred cloud model". */
+export const PREFERRED_CHAT_ID = "preferred";
+
+/** D-11: the cloud model Hermes runs on, when one is chosen and allowed (the sidecar loop on, the
+ *  desktop app, and not Local model only); null = the local model. */
+export function cloudModelFor(
+  choice: { providerId: string; model: string } | null | undefined,
+  route: ChatRoute,
+  sidecarLoop: boolean,
+  mode: "sim" | "tauri",
+): { providerId: string; model: string } | null {
+  if (!choice || route === "local_only" || !sidecarLoop || mode !== "tauri") return null;
+  return choice;
+}
+
 /** The states in which a local model is set up but its server is not running. */
 const LOCAL_STOPPED_STATES = new Set(["local-stopped", "local-fallback", "local-only-stopped"]);
 
@@ -648,6 +697,7 @@ export function tickPatch(
         // isActive in refreshNode. Self-stake never counts (C1-V V4).
         const simBond = s.hasGrant ? 32000 : 0;
         u.bondedStake = simBond;
+        u.bondedStakeRead = true;
         u.node = simBond > 0 ? "validating" : "synced";
         if (s.stage === "s6") u.s6ready = true;
       }
@@ -699,19 +749,6 @@ export function tickPatch(
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
-  /** GROW-S1 task 12 — the resolved code awaiting the member's Join. Kept off AppState (and so off
-   *  every snapshot and save); the link key never reaches the webview at all. */
-  private pendingJoinCode: string | null = null;
-  /** Bumped whenever the waiting invite is replaced or cancelled. A Review, Join or start-up check
-   *  that started on an older value is about an invite that is no longer waiting, so its answer is
-   *  dropped (Rust applies the same rule to the hold itself). */
-  private pendingJoinGen = 0;
-  /** Bumped on every Cancel. A hold (pending_join_set) that was in flight when the member cancelled
-   *  doesn't bring the card back. */
-  private pendingJoinCancels = 0;
-  /** pending_join_set and pending_join_clear run one at a time, in the order they were asked for, so
-   *  Rust never sees a Cancel overtake the store it cancels, or two stores race. */
-  private pendingJoinOps: Promise<unknown> = Promise.resolve();
   private snap: AppState;
   private cid = 0;
   private mid = 0;
@@ -751,6 +788,8 @@ export class Store {
    *  restart-loop forever against a chain-side wedge that advances only a few blocks per restart. */
   private nodeStallCycles = 0;
   private nodeStalledNotified = false;
+  /** 0.5.2 RC52 — the sync progress window: local heights and public heads (syncProgress.ts). */
+  private syncTracker = new SyncTracker();
   /** The chain-reset notice from `node_status` was shown this session. */
   private nodeChainResetNotified = false;
   // W1.x — true once the producer has been armed this session (the node respawns
@@ -850,11 +889,11 @@ export class Store {
       // is idempotent + honest (an offline daemon surfaces its error) and seeds the constellation once
       // connected. Deferred so the node/wallet vitals it seeds from are already folded.
       setTimeout(() => void this.startMemoryDaemon(), 2500);
-      // RESUME S3 FROM CHAIN TRUTH. `s3` is not persisted, so every launch re-enters
-      // S3 as `idle` — a screen whose only control is "Check out · $48". A member
-      // whose grant landed while the app was closed would therefore be invited to
-      // pay a second time for a membership they already hold. Ask the chain once on
-      // launch; a granted member lands on Continue instead of a checkout button.
+      // RESUME S3 FROM CHAIN TRUTH. A launch can re-enter S3 as `idle`, which offers the
+      // free node and, behind it, the membership checkout. A member whose grant landed
+      // while the app was closed would therefore be offered a second checkout for a
+      // membership they already hold. Ask the chain once on launch; a granted member
+      // lands on Continue instead of a checkout button.
       if (this.state.stage === "s3") void this.settleS3IfAlreadyGranted();
       // FIX 1b: re-read the entitlement when the member comes back to the window (e.g.
       // from the browser checkout), so a new claim shows without a restart.
@@ -1137,10 +1176,16 @@ export class Store {
       } catch {
         statuses = [];
       }
-      const def = this.state.aiDefault;
+      // D-11 (P-5): the member's preferred cloud model, stored in core (`providers_preferred_get`).
+      // When set, it is the remote choice a held message offers (the app's own loop sends there
+      // through the core proxy) and the model the sidecar loop runs on. A failed read is none.
+      const preferred = await readPreferredModel();
+      if (JSON.stringify(preferred) !== JSON.stringify(this.state.hermesCloudModel)) this.setState({ hermesCloudModel: preferred });
+      const def = preferred ? PREFERRED_CHAT_ID : this.state.aiDefault;
+      this.remoteChatId = def;
       // BC-3.2 — is a gateway key configured? (used both for the local-fallback
       // routing computed in Rust AND for the gateway leg of the selection here.)
-      const gatewayConfigured = statuses.some((p) => p.id === def && p.configured);
+      const gatewayConfigured = !!preferred || statuses.some((p) => p.id === def && p.configured);
       // BC-3.2 — the HONEST local-vs-gateway routing state, computed in Rust from
       // the real model status + serve health. Only "ready" means the local server
       // is actually serving. A failed read (web shim) resolves to "demo" — never a
@@ -1151,15 +1196,19 @@ export class Store {
       } catch {
         inferenceState = "demo";
       }
-      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState, route);
+      const kind = pickChatProviderKind(preferred ? [{ id: def, configured: true }, ...statuses] : statuses, def, BRIDGE_MODE, inferenceState, route);
       this.routeKind = kind;
       this.routeAsk = routeAskOptions(inferenceState, route, gatewayConfigured);
+      if (preferred && this.routeAsk.gateway) this.routeAsk = { ...this.routeAsk, remoteLabel: `${preferred.providerId} · ${preferred.model}` };
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
       // (same local model, same approvals), so chat never depends on the sidecar being up.
+      // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
+      // under Local model only (core refuses it there too); it needs the sidecar loop.
+      const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
       const sidecarUp =
-        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+        (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
           ? await bridge.agentHarness
               .status()
               .then((st) => st.running)
@@ -1173,6 +1222,17 @@ export class Store {
           .endpoints()
           .then((e) => escalationOffered(e.length, route))
           .catch(() => false);
+        // D-11 (P-8): the Devin delegation tools only with a connected Devin key, never under Local
+        // model only. A failed read offers none.
+        const providerStatuses = await (async () => {
+          try {
+            return await bridge.providers.status();
+          } catch {
+            return [];
+          }
+        })();
+        const delegationReady = delegationOffered(cognitionConnected(providerStatuses), route);
+        const cloudName = cloudChoice ? providerStatuses.find((p) => p.id === cloudChoice.providerId)?.name ?? cloudChoice.providerId : null;
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
@@ -1184,7 +1244,12 @@ export class Store {
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
-            open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
+            open: (p, t, persona) =>
+              cloudChoice
+                ? h.sessionOpenCloud(p, t, persona ?? null)
+                : persona
+                  ? h.sessionOpen(p, t, persona)
+                  : h.sessionOpen(p, t),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
@@ -1205,9 +1270,9 @@ export class Store {
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
-          () => withEscalationTool(annotatedAgentTools(), escalationReady),
+          () => withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady),
           () => this.sidecarPersonaChoice(),
-          { store: sessionStore },
+          cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
         );
         this.reflectProvider();
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
@@ -1261,7 +1326,7 @@ export class Store {
     const kind: "local" | "real" | "demo" =
       p.kind === "local" || p.kind === "sidecar" || p.kind === "local-stopped"
         ? "local"
-        : p.kind === "real" || p.kind === "agent"
+        : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
@@ -1445,6 +1510,7 @@ export class Store {
     } catch {
       return; // transient RPC error — keep the last honest state, never fabricate
     }
+    this.markNetRead("grant");
     // Membership-renew safeguard FIRST — a real on-chain SBT must not be overridden by
     // a thin /userinfo claim into a false "renew". This runs even when onboarding is
     // already settled, because the wrongful lapse happens post-onboarding, on reopen.
@@ -1457,6 +1523,10 @@ export class Store {
     // node-independent read on every launch, settled or not, so an exited validator's rewards load
     // even with the node stopped. A failed read stays null (unread).
     this.setState(bondReadsFromGrant(grant));
+    // The same read carries ValidatorRegistry.stakeOf for the bond's key: fold it, so the staked
+    // figure is a reading from launch, even with the node stopped (unknown is not zero).
+    const stakeSalt = saltFromStakeWei(grant.bondedStakeWei);
+    if (stakeSalt != null) this.setState({ bondedStake: stakeSalt, bondedStakeRead: true });
     // #349 review: the unlock block is a chain read, never persisted. Fold it on every launch too, so
     // a settled (or fully bonded) member's grant explanation names the block. Only from a grant
     // that is on chain; otherwise the last value stands.
@@ -1577,6 +1647,13 @@ export class Store {
       if (st.notice && !this.nodeChainResetNotified) {
         this.nodeChainResetNotified = true;
         this.toast(st.notice);
+        // RC52: the toast is easy to miss, so Node also keeps the notice until it is dismissed.
+        const at = Date.now();
+        const notice = st.notice;
+        this.setState((s) => ({
+          networkNotice: { ...(s.networkNotice ?? { at, from: s.netKey, to: s.netKey, archived: true }), node: notice },
+        }));
+        this.save();
       }
       // REAL validator bond (SALT) from the ValidatorRegistry (pubkeyOfStaker(bond)
       // → stakeOf, via grantStatus, keyed on the member's MemberBond clone). This —
@@ -1602,8 +1679,10 @@ export class Store {
       // grant existed, and this was the only other read — but it folded ONLY the validator bond (0
       // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
       let grantPatch: Partial<AppState> | null = null;
+      let grantRead = false;
       let bondActivated = this.state.bondActivated;
       let bondReads: Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> | null = null;
+      let stakeRead = this.state.bondedStakeRead;
       const needBond = st.state === "running" && bonded < 32000;
       const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
       // #348 review: the bond's activated flag is observed, never persisted. With the grant restored
@@ -1620,11 +1699,20 @@ export class Store {
           // #362 B-1: an activated bond not (yet) verified on chain is re-read, so a verification
           // made meanwhile offers Claim.
           (bondActivated === true && this.state.bondKycVerified !== true));
-      if ((needBond || needGrant || needActivation) && dueForBondRead) {
+      // Unknown is not zero: the staked figure shows "—" until stakeOf has read this session, so an
+      // unread stake gets its own read whatever the node is doing (it is a public-RPC read).
+      const needStake = !stakeRead;
+      if ((needBond || needGrant || needActivation || needStake) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
-          bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          grantRead = true;
+          // A malformed stake is not a reading: it stays unread, never a fabricated 0.
+          const salt = saltFromStakeWei(g.bondedStakeWei);
+          if (salt != null) {
+            bonded = salt;
+            stakeRead = true;
+          }
           // #348 review: MemberBond.activated(), which outlives an exit (unlike pubkeyOfStaker).
           bondReads = bondReadsFromGrant(g);
           bondActivated = bondReads.bondActivated;
@@ -1669,6 +1757,7 @@ export class Store {
         peers: st.peers,
         syncPct: st.syncPct,
         bondedStake: bonded,
+        bondedStakeRead: stakeRead,
         ...(bondReads ?? { bondActivated }),
         validatorActivation,
       };
@@ -1692,9 +1781,9 @@ export class Store {
           this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
           this.nodeStallSince = 0;
         } else if (st.peers > 0) {
-          const NODE_STALL_MS = 60_000; // height frozen this long while behind + peered = stalled
-          if (this.nodeStallSince === 0) this.nodeStallSince = Date.now();
-          else if (Date.now() - this.nodeStallSince >= NODE_STALL_MS) nextNode = "stalled";
+          // Monotonic clock: a wall-clock step back must not hold off (or fake) a stall.
+          if (this.nodeStallSince === 0) this.nodeStallSince = performance.now() || 1;
+          else if (performance.now() - this.nodeStallSince >= STALL_MS) nextNode = "stalled"; // contract §1, shared with the sync line
         }
       } else if (nextNode === "synced" || nextNode === "validating") {
         // Fully caught up — clear the entire stall budget (a fresh session on any later dip).
@@ -1709,6 +1798,9 @@ export class Store {
       // The mining gate holds or disarms production (node.rs). A producer the backend disarmed
       // is no longer armed here either, so the re-arm path above retries it (still gated).
       patch.miningHold = st.miningHold ?? null;
+      // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
+      // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
+      patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead(), st.peers);
       if (this.validatorArmed && !st.miningArmed && st.miningHold) this.validatorArmed = false;
       if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;
@@ -1722,6 +1814,8 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // RC52: the grant and bond shown now come from this network's chain.
+      if (grantRead) this.markNetRead("grant");
       // 0.5.2 Join funnel: the node reached sync (real poll only; the step id only, no height).
       if (patch.node === "synced" || patch.node === "validating") reachedStep("node_synced");
       // Re-seed the memory graph's personal/stake facts the moment the grant first surfaces (the
@@ -1745,7 +1839,7 @@ export class Store {
    * clone; the member then ACTIVATES it via `MemberBond.activate(pubkey, sig)` (from their own
    * EOA, the clone's `onlyMember`), which bonds the clone's principal into the registry. This
    * only ARMS the producer so the node mints its proposer key; the activation itself is the
-   * member's explicit click on S7 (`onS7Activate`), which opens the Signature Ceremony. Guards
+   * member's explicit click (`requestValidatorActivation`, from S7 or Node), which opens the Signature Ceremony. Guards
    * fail closed — a not-ready node / unlinked wallet / not-yet-granted member does not trigger.
    */
   private maybeAutoBond(): void {
@@ -1904,22 +1998,43 @@ export class Store {
    * Signature Ceremony: nothing is approved or broadcast here. On approval the broadcast's tx hash
    * is persisted so the step resumes to "Pending" after a quit.
    */
-  async onS7Activate(): Promise<boolean> {
-    if (this.state.s7TxHash) {
-      // An activation is already sent and not yet observed: never offer a second one.
-      this.toast("Activation already sent — waiting for it to be included.");
+  async requestValidatorActivation(): Promise<boolean> {
+    // Every request reads the chain again: a read cached on S7 or by an earlier click (Node has
+    // no poll) may be stale in either direction. No fresh read, no ceremony. The read is asked
+    // with any recorded activation tx, so it also reconciles that tx (Node has no poll or
+    // Retry/Forget controls, so this is where a recorded tx is resolved there).
+    const fresh = await this.refreshActivation();
+    if (this.state.s7TxHash && !(fresh && (await this.releaseRecordedActivationTx()))) {
+      // An activation is already sent and not yet resolved: never offer a second one.
+      this.toast("Activation already sent — waiting for it to be included. If it stays unseen for 10 minutes, or reverts, you can activate again.");
+      return false;
+    }
+    if (!fresh) {
+      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
       return false;
     }
     const gate = activationGate(this.state.activation, this.walletIsLinked());
     if (!gate.ready) {
-      const why = gate.checks.find((c) => c.ok !== true);
+      const blocking = gate.checks.filter((c) => c.ok !== true);
+      // The proposer key is minted by arming the producer, and arming signs nothing. When the key
+      // is the ONLY missing prerequisite, arm now (S7 arms on its own; Node has nothing else that
+      // does) and let the member click again once the key lands.
+      if (blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false && !this.validatorArmed) {
+        if (!(await this.armProducer())) {
+          this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
+        }
+        return false;
+      }
+      const why = blocking[0];
       this.toast("Activation not available yet — " + (why ? why.detail : "the chain has not been read"));
       return false;
     }
     return this.activateValidator({
-      // Persist the signed tx's hash before it is sent (and before any receipt poll).
+      // Show the signed tx as Pending at once; the send records it durably (Rust, fsync'd)
+      // before it reaches the node.
       onSigned: (txHash) => this.recordActivationTx(txHash),
-      // The backend refused the send before submission (e.g. no durable record): nothing was sent.
+      // Nothing was sent (the signed tx expired in the ceremony, or the backend refused the send
+      // before submission, e.g. no durable record): clear the shown tx.
       onNotSent: () => this.clearActivationTx(),
       // The re-read is a separate, later step.
       onResolved: async (approved) => {
@@ -1928,7 +2043,23 @@ export class Store {
     });
   }
 
-  /** S7 — "Explore free": enter the app without activating. Membership and tier are unchanged;
+  /**
+   * On a FRESH read, release a recorded activation tx that may safely be retried: its own receipt
+   * shows it reverted (nothing was staked), or it has gone unseen past the forget window
+   * (`canForgetActivationTx`, the same rule as S7's Forget). A pending tx, a mined successful one,
+   * or a revert reported for another hash keeps the guard. Released means forgotten in the
+   * durable record first (so a relaunch does not bring it back); if that write fails it is kept.
+   * True when released.
+   */
+  private async releaseRecordedActivationTx(): Promise<boolean> {
+    const { s7TxHash, activation } = this.state;
+    const tx = activation?.tx;
+    const reverted = !!s7TxHash && tx?.hash === s7TxHash && tx.included === true && tx.success === false;
+    if (!reverted && !this.canForgetActivationTx(Date.now())) return false;
+    return this.forgetActivationTx();
+  }
+
+  /** S7 — "Skip for now": enter the app without activating. Membership and tier are unchanged;
    *  the bond stays locked, not staked, and can be activated later from Node. */
   onS7Skip(): void {
     this.onEnter();
@@ -1956,6 +2087,7 @@ export class Store {
         if (BRIDGE_MODE === "tauri") patch.earnSource = "chain";
       }
       this.setState(patch);
+      this.markNetRead("balances");
     } catch {
       /* honest no-op */
     }
@@ -1978,6 +2110,7 @@ export class Store {
     try {
       const real = await bridge.wallet.activity();
       this.setState((s) => ({ activity: mergeActivity(real, s.activity) }));
+      this.markNetRead("activity");
     } catch {
       /* honest no-op: keep the last real/optimistic list, never a fabricated one */
     }
@@ -2247,6 +2380,19 @@ export class Store {
    * its own OIDC login today; a real signed-in handoff (shared-authority SSO) is
    * work-order WO-6. Honest toast on failure — never a silent dead click.
    */
+  /** RC52: dismiss the genesis-switch notice on Node. */
+  dismissNetworkNotice(): void {
+    this.setState({ networkNotice: null });
+    this.save();
+  }
+
+  /** RC52: a chain read owed after a genesis switch was made; its values are current again. */
+  private markNetRead(read: NetRead): void {
+    if (!this.state.netUnread.includes(read)) return;
+    this.setState((s) => ({ netUnread: s.netUnread.filter((r) => r !== read) }));
+    this.save();
+  }
+
   async openExternal(url: string): Promise<void> {
     try {
       await bridge.shell.openExternal(url);
@@ -2305,6 +2451,11 @@ export class Store {
       this.toast("Renewal opens the checkout in the desktop app.");
       return;
     }
+    await this.openMembershipCheckout();
+  }
+
+  /** Open the core-membership checkout in the browser and watch for the new entitlement. */
+  private async openMembershipCheckout(): Promise<void> {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
@@ -2313,6 +2464,30 @@ export class Store {
     } catch (err) {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
+  }
+  /**
+   * Settings › Billing "Become a member ↗" for a free user: the same guards as onboarding S3
+   * (onS3Pay) before any money moves. (1) Link first: the grant goes to the identity's wallet
+   * claim, which this device can spend from only once linked. (2) Never open checkout for an
+   * account that already holds the grant on chain (one per sub; a second order can never be
+   * granted). An unreadable chain is not evidence of a grant, as in S3. Renewal for a lapsed
+   * member stays on renewMembership: a lapsed member holds the grant and still renews.
+   */
+  async becomeMember(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Membership checkout opens in the desktop app.");
+      return;
+    }
+    if (this.linkBeforeCheckout("Link your wallet first — approve the link, then choose Become a member again.")) return;
+    const held = await this.readHeldGrant();
+    if (held) {
+      this.setState({ hasGrant: true, hasSbt: held.hasSbt });
+      this.save();
+      this.toast("This account already holds the membership grant, so there is nothing to check out. Your membership shows here once your identity claim refreshes.");
+      this.startEntitlementPoll();
+      return;
+    }
+    await this.openMembershipCheckout();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -2409,6 +2584,8 @@ export class Store {
     const s = this.state;
     const keep: Record<string, unknown> = {};
     for (const k of PERSIST_KEYS) keep[k] = s[k];
+    // RC52: the save names the genesis its chain reads belong to (netScope.ts).
+    keep[NET_STAMP_FIELD] = s.netKey;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));
     } catch {
@@ -2423,13 +2600,20 @@ export class Store {
     // registry stake) plus the bond status (which carries the unlock block), so it can explain a
     // member with 0 spendable, 0 staked and a locked grant.
     const grantLockedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
+    // The grant's principal: MemberBond.principal() from the activation read, else the vault's
+    // attribution (MembershipStakeVault.attributedStake). null when neither is read: never 0.
+    const principalSalt = saltFromStakeWei(s.activation?.principalWei);
+    const grantSalt = principalSalt ?? (s.hasGrant ? saltFromStakeWei(s.s5StakeWei) : null);
+    // The stake only from a stakeOf read this session (unknown is not zero).
+    const stakeSalt = readStakeSalt(s);
     return {
       height: s.height,
       peers: s.peers,
       nodeState: nodeLabelLocal(s.node),
       // C1-V V7: the ONE "staked" figure is ValidatorRegistry.stakeOf (UI truth contract §2). The
       // locked grant is reported separately under `membership`; self-stake is not validator stake.
-      staked: s.bondedStake,
+      staked: stakeSalt,
+      grantSalt,
       liquid: s.liquid,
       // C1-V V8: validator rewards from rewardsOf only; null = not a validator / not read.
       claimable: s.rewards ? Number(BigInt(s.rewards.claimableWei)) / 1e18 : null,
@@ -2443,8 +2627,10 @@ export class Store {
       membership: {
         grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
-        validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
-        locked: grantLockedSalt > 0 && s.bondedStake < grantLockedSalt,
+        // ValidatorRegistry.stakeOf, or null with "not read yet" before the read (never a default 0).
+        validatorBondedSalt: stakeSalt,
+        validatorBonded: stakeSalt == null ? "not read yet (ValidatorRegistry.stakeOf)" : "ValidatorRegistry.stakeOf",
+        locked: stakeSalt == null || grantSalt == null ? null : grantSalt > 0 && stakeSalt < grantSalt,
         // C1-V V5: the one grant-custody explanation (UI truth contract §5.4), same as every surface.
         note:
           grantExplanation({ amountSalt: grantLockedSalt > 0 ? grantLockedSalt.toLocaleString("en-US") : null, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, granted: s.hasGrant, activated: s.bondActivated }) +
@@ -2554,10 +2740,9 @@ export class Store {
   }
 
   /**
-   * GROW-S1 — handle a link handed to the app by the OS. A v2 invite (`citrate://join/<code>#K` or
-   * `https://citrate.ai/join/<code>#K`) goes to Rust to hold until the member acts (task 12); an
-   * app-only `citrate://invite?…` link and a legacy display link land on the Groups banner. A
-   * malformed URL is ignored (no crash, no fabricated invite — Rule 1).
+   * Handle a link handed to the app by the OS: a fleet pairing link, a claim link, or an invite link
+   * (`citrate://invite?…`, D-12), which opens the "Join <group>?" screen. A malformed URL is ignored
+   * (no crash, no fabricated invite — Rule 1). Nothing is sent until the member presses Join.
    */
   handleDeepLink(url: string): void {
     if (!url) return;
@@ -2599,72 +2784,20 @@ export class Store {
       this.save();
       return;
     }
-    const kind = classifyInviteInput(url);
-    // GROW-S1 task 12 — a v2 link (`citrate://join/<code>#K` / `https://citrate.ai/join/<code>#K`): hand
-    // it to Rust to hold and drop it here. Nothing is resolved until the member acts. During first-run
-    // setup it waits on the onboarding card; once set up it waits on the Groups banner.
-    if (kind.kind === "v2") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      void this.holdInvite(url).then((ok) => {
-        if (ok && this.state.stage === "done") this.go("groups");
-      });
-      return;
-    }
-    // The app-only relay invite (`citrate://invite?g=&t=`) keeps its one-click Join on Groups.
-    if (kind.kind === "relay") {
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link
-      this.setState({ pendingInvite: { url } });
-      this.go("groups");
-      return;
-    }
-    // A legacy display link already posted somewhere: context only (it can't join on its own).
-    if (kind.kind === "legacy-referral") {
-      const parts = kind.parts;
-      if (!parts.clusterId && !parts.inviterHandle) return;
-      reachedStep("arrive"); // 0.5.2 Join funnel: the step id only, never the link's contents
-      this.setState({
-        pendingInvite: { url, clusterId: parts.clusterId, clusterName: parts.clusterName, inviterHandle: parts.inviterHandle, goal: parts.goal },
-      });
-      this.go("groups");
-    }
+    if (isInviteLink(url)) this.openInviteLink(url);
   }
 
-  /** Run a pending-invite set/clear after the ones already asked for. */
-  private pendingJoinSerial<T>(f: () => Promise<T>): Promise<T> {
-    const run = this.pendingJoinOps.then(f, f);
-    this.pendingJoinOps = run.catch(() => undefined);
-    return run;
+  /** D-12 — show the "Join <group>?" screen for an invite link (deep link or paste). During setup it
+   *  waits on the onboarding screen; once set up, on Groups. Only the step id goes to the join funnel. */
+  openInviteLink(link: string): void {
+    reachedStep("arrive");
+    this.setState({ inviteLink: link.trim() });
+    if (this.state.stage === "done") this.go("groups");
   }
 
-  /** Hand a v2 invite link to Rust (pending_join_set) and record only its status. */
-  private async holdInvite(link: string): Promise<boolean> {
-    const cancels = this.pendingJoinCancels;
-    try {
-      const v = await this.pendingJoinSerial(() => bridge.join.pendingSet(link));
-      // Cancelled while it was being stored: the queued clear wipes it in Rust; don't show it.
-      if (cancels !== this.pendingJoinCancels) return false;
-      this.pendingJoinGen++;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      return true;
-    } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      this.toast(/desktop app/.test(m) ? "Invite links need the desktop app." : "That invite link isn't complete. Ask for the full link, or paste the code.");
-      return false;
-    }
-  }
-
-  /** On start-up: pick up an invite Rust is still holding (status only; not resolved). */
-  async refreshPendingJoin(): Promise<void> {
-    const gen = this.pendingJoinGen;
-    try {
-      const v = await bridge.join.pendingGet();
-      if (gen !== this.pendingJoinGen) return;
-      if (v && !this.state.pendingJoin) this.setState({ pendingJoin: { phase: "waiting", hasKey: v.hasKey, persisted: v.persisted } });
-      if (!v && this.state.pendingJoin?.phase === "waiting") this.setState({ pendingJoin: null });
-    } catch {
-      /* no join client (web preview / older build): nothing waiting */
-    }
+  /** Close the "Join <group>?" screen (joined, cancelled or dismissed). */
+  clearInviteLink(): void {
+    this.setState({ inviteLink: null });
   }
 
   /** Whether setup has reached the point where a Join can run (signed in, wallet ready): the wallet
@@ -2676,97 +2809,9 @@ export class Store {
     return this.state.signedIn && ["s4", "s5", "s6", "s7"].includes(st);
   }
 
-  /** The paste field (onboarding + Groups): the member typed or pasted an invite. A v2 link is held in
-   *  Rust and, if setup allows a Join, reviewed right away (pasting is the member acting). Returns false
-   *  when the text isn't a v2 invite, so the caller can try its own (legacy) path. */
-  async acceptInviteInput(raw: string): Promise<boolean> {
-    if (classifyInviteInput(raw).kind !== "v2") return false;
-    const ok = await this.holdInvite(raw.trim());
-    if (ok && this.canJoinNow()) await this.reviewPendingJoin();
-    return ok;
-  }
-
-  /** The member's Review: resolve + verify the waiting invite in Rust (counts against its resolve limit,
-   *  so it runs only on this click). */
-  async reviewPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    if (!pj || pj.phase === "resolving" || pj.phase === "joining") return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "resolving", error: undefined, retryable: undefined } });
-    try {
-      const r = await bridge.join.pendingResolve();
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = r.actionable ? r.code : null;
-      this.setState({
-        pendingJoin: {
-          ...pj,
-          phase: "ready",
-          error: undefined,
-          retryable: undefined,
-          resolved: {
-            kind: r.kind,
-            clusterName: r.clusterName,
-            goal: r.goal,
-            inviter: r.inviter,
-            inviterVerified: r.inviterVerified,
-            exp: r.exp,
-            actionable: r.actionable,
-            keyMissing: r.keyMissing,
-          },
-        },
-      });
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      this.pendingJoinCode = null;
-      this.setState({ pendingJoin: { ...pj, phase: "error", error: joinErrorMessage(e), retryable: joinErrorRetryable(e) || undefined } });
-    }
-  }
-
-  /** The member's explicit "Join <cluster>": redeem the reviewed direct invite. Rust wipes the waiting
-   *  invite on success. Never called without that click. */
-  async redeemPendingJoin(): Promise<void> {
-    const pj = this.state.pendingJoin;
-    const code = this.pendingJoinCode;
-    if (!pj || pj.phase !== "ready" || !pj.resolved?.actionable || !code) return;
-    const gen = this.pendingJoinGen;
-    this.setState({ pendingJoin: { ...pj, phase: "joining" } });
-    try {
-      await bridge.join.redeem(code);
-      if (gen === this.pendingJoinGen) {
-        this.pendingJoinCode = null;
-        this.setState({ pendingJoin: null });
-      }
-      void refreshGroups().catch(() => {});
-      this.toast(`You're in. Welcome to ${pj.resolved.clusterName || "the group"}.`);
-    } catch (e) {
-      if (gen !== this.pendingJoinGen) return;
-      // Rust keeps the opened invite after a failed redeem (until it expires), so Join can be retried.
-      this.setState({ pendingJoin: { ...pj, phase: "ready", error: `Couldn't join yet (${joinErrorMessage(e).replace(/\.$/, "")}). You can try again.` } });
-    }
-  }
-
-  /** Cancel / dismiss: wipe the waiting invite in Rust. */
-  async cancelPendingJoin(): Promise<void> {
-    this.pendingJoinGen++;
-    this.pendingJoinCancels++;
-    this.pendingJoinCode = null;
-    this.setState({ pendingJoin: null });
-    try {
-      await this.pendingJoinSerial(() => bridge.join.pendingClear());
-    } catch {
-      // Rust has dropped it for this session, but the device keychain couldn't delete its copy.
-      this.toast("Cancelled, but this device's keychain couldn't be reached, so the invite may come back after a restart. Cancel it again if it does.");
-    }
-  }
-
   /** HUP-S8.2 — clear the pending pairing link once the fleet wizard has taken it. */
   clearPendingPairLink(): void {
     this.setState({ pendingPairLink: null });
-  }
-
-  /** Clear the pending deep-link invite once Groups has consumed it. */
-  clearPendingInvite(): void {
-    this.setState({ pendingInvite: null });
   }
 
   /** Clear the pending claim hint once onboarding has surfaced it (or on sign-out). */
@@ -3167,6 +3212,20 @@ export class Store {
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
    *  the default voice. Only the prompt's voice changes; tools, approvals and gates do not. A running
    *  sidecar session keeps its prompt, so the provider is rebuilt to open a fresh one. */
+  /** D-11 (ADR P-5) — the model Hermes's loop runs on: a cloud model from a provider connected in
+   *  Settings › Models, or null for the local model. A running session keeps its model, so the
+   *  provider is rebuilt to open a fresh one. */
+  async setHermesCloudModel(choice: { providerId: string; model: string } | null): Promise<string | null> {
+    try {
+      const v = await bridge.providers.preferredSet(choice);
+      this.setState({ hermesCloudModel: v.preferred });
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    void this.rebuildProvider();
+    return null;
+  }
+
   chooseHermesPersona(p: HermesPersona | null): void {
     this.setState({ hermesPersona: p });
     this.save();
@@ -3300,6 +3359,8 @@ export class Store {
   private routeKind: "local" | "ask" | "demo" = "demo";
   /** K2: what a held message may offer (restart the local model / send to the gateway once). */
   private routeAsk: RouteAskOptions = { restart: false, gateway: false };
+  /** The remote chat id a held message offers: the preferred cloud model (D-11) or the preset. */
+  private remoteChatId = "gateway";
   /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
   private launchLocalStartPending = false;
   /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
@@ -3375,7 +3436,7 @@ export class Store {
       // K2: core mints the one-time consent for this message when the question opens. Core sends
       // nothing to the gateway without it, so a failed mint offers no gateway send.
       if (this.routeAsk.gateway) {
-        consent = await bridge.chat.consentPrepare(this.state.aiDefault, text).catch(() => null);
+        consent = await bridge.chat.consentPrepare(this.remoteChatId, text).catch(() => null);
       }
       hold("ask");
       const choice = await new Promise<LocalModelChoice>((resolve) => {
@@ -3800,6 +3861,38 @@ export class Store {
         hic,
       );
       status = isEscalationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATE_TOOL_NAME) {
+      // D-11 (P-8): every delegation is the member's decision on a card that shows the exact
+      // prompt; core sends only what it prepared (the card's hash binds it).
+      const d = bridge.delegation;
+      result = await runDelegationTool(
+        {
+          prepare: (scope) => d.prepare(scope),
+          decline: (id) => d.decline(id),
+          approve: (id, hash) => d.approve(id, hash),
+          status: (id) => d.status(id),
+          confirm: (view) => {
+            const a = delegationApproval(view, hic?.reason);
+            return ask(
+              {
+                origin: "chat agent",
+                requester: "dashboard agent · tool " + DELEGATE_TOOL_NAME,
+                title: a.title,
+                chainless: true,
+                rows: a.rows,
+                cost: a.cost,
+                sponsor: "billed by Cognition to your Devin account, not a chain transaction",
+                sponsorColor: "var(--warn)",
+              },
+              a.card,
+            );
+          },
+        },
+        args as Record<string, unknown>,
+      );
+      status = isDelegationDeclined(result) ? "declined" : "ok";
+    } else if (call.name === DELEGATION_STATUS_TOOL_NAME) {
+      result = await runDelegationStatusTool({ status: (id) => bridge.delegation.status(id) }, args as Record<string, unknown>);
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show
@@ -3948,36 +4041,36 @@ export class Store {
         }
       }
     } else if (call.name === "group_invite") {
-      // PBA-L7b-002: an invite link is a one-click, no-approval ADMISSION bearer. The member
-      // approves minting it, and the link goes to the member (clipboard) — never back into the
-      // model context, where an injected instruction could exfiltrate it.
+      // D-12: the same invite the member makes in Groups. Whoever opens the link only ASKS to join;
+      // the member approves or declines each request. The member approves making it, and the link
+      // goes to the member (clipboard), never back into the model context.
       const group = args.group || "";
-      const forHandle = args.forHandle || "shared link";
+      const forHandle = args.forHandle || "";
       const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool group_invite",
-        title: "Mint a one-click invite link",
+        title: "Make an invite link",
         chainless: true,
         rows: [
           { k: "Group", v: group || "(none given)" },
-          { k: "For", v: forHandle },
-          { k: "Effect", v: "whoever opens the link joins the group in one click, with no further approval (14 days)" },
+          { k: "For", v: forHandle || "anyone you send it to" },
+          { k: "Effect", v: "whoever opens the link asks to join; you approve or decline them in Groups (link works 14 days)" },
         ],
         cost: "none — no chain transaction",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle }, "mint a one-click invite link to group " + (group || "(none given)")));
+      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle || "(none)" }, "make an invite link to group " + (group || "(none given)")));
       status = r;
       if (r !== "approved") {
-        result = "the member declined minting an invite link; no link exists.";
+        result = "the member declined making an invite link; no link exists.";
       } else {
         try {
-          const { link } = await bridge.invites.create(group, forHandle);
-          this.copy(link, "Invite link copied — share it with " + forHandle);
+          const made = await bridge.invites.create(group, forHandle, this.identity().name);
+          this.copy(made.link, "Invite link copied. When they open it, approve their request in Groups.");
           result =
-            "Minted a one-click invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard.";
+            "Made an invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard, and that whoever opens it asks to join and appears in Groups for them to approve.";
         } catch (e) {
-          result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+          result = "couldn't make an invite: " + (e instanceof Error ? e.message : String(e));
         }
       }
     } else if (call.name === "directory_find") {
@@ -5032,36 +5125,34 @@ export class Store {
    * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
    * honestly — never a fabricated activation.
    */
-  async activateValidator(hooks?: {
+  /**
+   * Arm the block producer so the node mints its proposer key (`arm_mining_if_synced`, which
+   * re-checks the network tip and no-ops if the node is not caught up). Signs nothing. True when
+   * armed; a failure is an honest no-op the caller reports.
+   */
+  private async armProducer(): Promise<boolean> {
+    let armed = false;
+    try {
+      armed = await bridge.node.armMining();
+    } catch {
+      armed = false;
+    }
+    if (armed) {
+      this.validatorArmed = true;
+      this.toast("Block production armed — minting your validator key, then activation opens.");
+    }
+    return armed;
+  }
+
+  private async activateValidator(hooks?: {
     onSigned?: WalletReview["onSigned"];
     onNotSent?: WalletReview["onNotSent"];
     onResolved?: WalletReview["onResolved"];
   }): Promise<boolean> {
-    // Every entry (S7 and Node) reconciles with the chain AND the durable record first: after a
-    // restart nothing is in memory, and only this read brings back a recorded send. No fresh read,
-    // no ceremony (a record may exist). While a recorded send is unresolved, never build a second
-    // ceremony for the same bond.
-    if (!(await this.refreshActivation())) {
-      this.toast("Activation not available yet — the chain could not be read just now" + (this.state.activationError ? ` (${this.state.activationError})` : "") + ".");
-      return false;
-    }
+    // Defence in depth: the guarded entry (requestValidatorActivation) reconciles a recorded
+    // activation tx first; this one never builds a second ceremony while one is recorded.
     if (this.state.s7TxHash) {
       this.toast("Activation already sent — waiting for it to be included.");
-      return false;
-    }
-    if (this.state.activation?.bondActivated === true) {
-      this.toast("Your bond is already activated; there is nothing to sign.");
-      return false;
-    }
-    // #405: the FULL gate (contract §1 conditions) on THIS fresh read, never an earlier one: a
-    // membership that lapsed, a node that fell out of sync or out of band, or any field the read
-    // could not get blocks the ceremony. The proposer key is the one exception: arming mints it
-    // and signs nothing, so a node whose ONLY missing check is the key arms below and returns.
-    const gate = activationGate(this.state.activation, this.walletIsLinked());
-    const blocking = gate.checks.filter((c) => c.ok !== true);
-    const keyOnly = blocking.length === 1 && blocking[0].key === "key" && this.state.activation?.nodeKeyReady === false;
-    if (blocking.length > 0 && !(keyOnly && !this.validatorArmed)) {
-      this.toast("Activation not available yet — " + blocking[0].detail);
       return false;
     }
     // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
@@ -5075,24 +5166,7 @@ export class Store {
     // the node is not caught up or has no coinbase, so calling it here is safe and
     // idempotent. The key appears a few seconds later on respawn, so we do NOT open
     // a ceremony on this pass — we say what is happening and let the caller retry.
-    if (!this.validatorArmed) {
-      let armed = false;
-      try {
-        armed = await bridge.node.armMining();
-      } catch {
-        /* honest no-op: surfaced by the registerValidator error below */
-      }
-      if (armed) {
-        this.validatorArmed = true;
-        this.toast("Block production armed — minting your validator key, then activation opens.");
-        return false; // retry once the key lands
-      }
-      if (keyOnly) {
-        // No key, and the node did not arm (not caught up, or no coinbase): nothing to sign with.
-        this.toast("Activation not available yet — this node has no validator key, and it did not arm block production (it arms only once caught up with the network).");
-        return false;
-      }
-    }
+    if (!this.validatorArmed && (await this.armProducer())) return false; // retry once the key lands
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
     try {
       view = await bridge.node.registerValidator();
@@ -5106,7 +5180,7 @@ export class Store {
     // The bond's principal as READ (MemberBond.principal), never a hard-coded 32,000. The tx moves
     // no SALT from the wallet; the bond forwards its own principal, and the wallet pays gas.
     const principal = principalSalt(this.state.activation);
-    const label = principal === "—" ? "Activate validator" : `Activate validator · bond ${principal} SALT`;
+    const label = activateValidatorLabel(this.state.activation);
     this.openWalletReview("stake", label, view, principal === "—" ? "bond principal not read yet · gas only from your wallet" : `${principal} SALT from your bond · gas only from your wallet`, hooks?.onResolved);
     if (hooks?.onSigned && this.state.walletReview) {
       this.setState({ walletReview: { ...this.state.walletReview, onSigned: hooks.onSigned, onNotSent: hooks.onNotSent } });
@@ -5646,7 +5720,12 @@ export class Store {
         /* best-effort cleanup */
       }
       this.setState({ walletReview: null });
-      if (failure.kind === "not-sent") {
+      // Branch on the structured error TYPE only: a node error after a real send can quote any text.
+      if (r.onSigned && err instanceof SignedTxExpired) {
+        // The ceremony dropped the signed tx before it was sent: nothing reached the network.
+        r.onNotSent?.();
+        this.toast(r.label + " — the signed transaction expired before it was sent; nothing was sent. You can try again.");
+      } else if (failure.kind === "not-sent") {
         r.onNotSent?.(); // nothing reached the node
         // Contract v1.1 §1: a first-send NonceTooLow means the nonce is already used.
         this.toast(
@@ -5767,13 +5846,13 @@ export class Store {
     this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
-  /** S3 — choose the FREE tier: enter the app WITHOUT a paid membership (no stake, no SBT). Mirrors
-   *  onExplore (the S0 free path) so a user who reached the membership step can still decline the paid
-   *  seat instead of being funneled into it. The paid membership stays available later (Settings →
-   *  Billing → Renew opens the same checkout). No payment, no fabricated grant (Rule 1). */
+  /** S3 — "Run a node for free" (owner decision 2026-10-27, option a: the free path comes first).
+   *  Continues onboarding on the Free tier WITHOUT a paid membership (no SBT, no grant, no bond):
+   *  S4 wallet → S6 node ignition (S4 skips the grant step when there is no membership), then the
+   *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
+   *  paid membership stays available later (Settings → Billing opens the same checkout). */
   onS3Free(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
-    this.toast("You're on the Free tier — wallet, agent, chain reads, and marketplace view. Upgrade to membership anytime in Settings → Billing.");
+    this.setState({ stage: "s4", tier: "free" });
     this.save();
   }
   /** Enterprise · Contact us — submit a qualified sales lead to core-membership. Returns `{ ok }`, or
@@ -5881,17 +5960,13 @@ export class Store {
       // check out. The link ceremony re-reads the claim on approval
       // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
       // Pay proceeds. This mirrors how activation is gated on the link.
-      if (!this.walletIsLinked()) {
-        this.toast("Link your wallet first — approve the link, then tap Pay again.");
-        void this.linkWallet();
-        return;
-      }
+      if (this.linkBeforeCheckout("Link your wallet first — approve the link, then tap Pay again.")) return;
       // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
       // grant. Settlement is chain truth, and the client had no way to observe an
       // existing grant: `settled` was reachable ONLY through `pollMembership`, which
       // ran ONLY from this handler. So a member who was granted while the app was
       // closed (or after its poll gave up) came back to S3 `idle`, whose only
-      // control is "Check out in your browser · $48" — and paying again is the one
+      // paid control is the checkout button — and paying again is the one
       // thing that cannot help, because the membership is one-per-sub and the second
       // order can never be granted. Observed 2026-08-15: a member reached three
       // stranded `paid` orders this way. Read the chain BEFORE spending money.
@@ -5995,7 +6070,7 @@ export class Store {
    * the real on-chain grant (`isGrantOnChain && hasSbt`). It does NOT re-open Stripe
    * checkout, so re-checking can never charge a member a second time — the exact
    * hazard that made the dead end dangerous, since the only control the member could
-   * see was "Check out in your browser · $48".
+   * see was the checkout button.
    */
   recheckMembership(): void {
     if (this.state.s3 !== "paying") return;
@@ -6020,22 +6095,38 @@ export class Store {
   async settleS3IfAlreadyGranted(): Promise<boolean> {
     if (BRIDGE_MODE !== "tauri") return false;
     if (this.state.s3 === "settled") return true;
+    const grant = await this.readHeldGrant();
+    if (!grant) return false;
+    this.setState({
+      s3: "settled",
+      s3PollExhausted: false,
+      hasGrant: true,
+      hasSbt: grant.hasSbt,
+    });
+    this.save();
+    return true;
+  }
+
+  /**
+   * The membership grant this account already holds on chain (`isGrantOnChain && hasSbt`, read
+   * permissionlessly from 40204), or null. Null on any read failure: an unreadable chain is not
+   * evidence of a grant (Rule 1). Shared by every checkout's money guard.
+   */
+  private async readHeldGrant(): Promise<GrantStatus | null> {
     try {
       const grant = await bridge.membership.grantStatus(this.identity().wallet);
-      if (isGrantOnChain(grant) && grant.hasSbt) {
-        this.setState({
-          s3: "settled",
-          s3PollExhausted: false,
-          hasGrant: true,
-          hasSbt: grant.hasSbt,
-        });
-        this.save();
-        return true;
-      }
+      return isGrantOnChain(grant) && grant.hasSbt ? grant : null;
     } catch {
-      // Honest no-op: an unreadable chain is not evidence of a grant.
+      return null;
     }
-    return false;
+  }
+
+  /** Checkout ordering guard: true (and the link ceremony opened) when the wallet is not linked yet. */
+  private linkBeforeCheckout(message: string): boolean {
+    if (this.walletIsLinked()) return false;
+    this.toast(message);
+    void this.linkWallet();
+    return true;
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });

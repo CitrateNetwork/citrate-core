@@ -1060,6 +1060,7 @@ fn no_anchor_is_broadcast_when_its_record_cannot_be_made_durable() {
         .unwrap();
     let log = std::sync::Arc::new(crate::submitted_log::SubmittedTxLog::open(
         dir.join("submitted-tx.json"),
+        crate::submitted_log::LEGACY_GENESIS,
     ));
     let kr = FakeKeyring::default();
     ensure_anchor_key(&kr).unwrap();

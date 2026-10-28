@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
-import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
+import { shortNet } from "../shell/netScope";
+import { CONSENSUS_LAG_NOTE, UNACTIVATED_WITHDRAW_NOTE, producerShortfall, producerWindowLabel, producingWord, readStakeSalt, readsValidatorRewards, saltFromWei, validatorWord, canOfferActivation, validatorDash } from "../shell/chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { fmtSaltFromWei } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 import { bondClaimBlocked, memberKeyRuleKey } from "../shell/store";
 
@@ -131,6 +133,8 @@ export function Node({ store, s }: SurfaceProps) {
   // on the window). Not seen → "Not seen producing in the last 100 blocks", never "not producing".
   // No sample → "—" plus the reason. There is still no per-proposer COUNT, so none is shown.
   const isRegisteredValidator = s.bondedStake > 0;
+  // The stake figure itself only once stakeOf has read this session (unknown is not zero).
+  const stakeRead = readStakeSalt(s);
   // C1-V (contract v1.1 §1): the validator word comes from the registry only (stakeOf, isActive,
   // validatorInfo.actEpoch, currentEpoch). null = registered stake but the registry not read → "—".
   const vWord = validatorWord(s.bondedStake, s.validatorActivation, s.hasGrant, s.bondActivated, s.bondUnlocked);
@@ -182,6 +186,11 @@ export function Node({ store, s }: SurfaceProps) {
   // C1-V V2: there is no heartbeat source. The node does not report one to the app and no
   // slashing contract reads one, so the panel shows the unavailable state, never a seeded age.
 
+  // RC52: the genesis-switch notice stays here until the member dismisses it (a toast is easy to
+  // miss). `switched` is the webview's own finding: its saved chain values were another network's.
+  const notice = s.networkNotice;
+  const switched = notice !== null && notice.from !== notice.to;
+
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
       {/* header */}
@@ -218,6 +227,33 @@ export function Node({ store, s }: SurfaceProps) {
           </span>
         </span>
       </div>
+
+      {notice && (
+        <div
+          role="status"
+          data-network-notice="switch"
+          className="surface"
+          style={{ padding: "12px 16px", borderLeft: "3px solid var(--warn)", display: "flex", flexDirection: "column", gap: 6 }}
+        >
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>This app is now on a new network</span>
+          {switched && (
+            <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+              Values read on the previous network (genesis {shortNet(notice.from)}): the grant, bond, balances, claimable
+              and transaction history, are not shown as current. Each is read again from this network, and shows
+              &quot;not read yet&quot; until then.{" "}
+              {notice.archived
+                ? "The previous network's values are kept on this device (Wallet, Activity, under Previous network)."
+                : "The previous network's values could not be kept on this device (storage unavailable)."}
+            </span>
+          )}
+          {notice.node && <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{notice.node}</span>}
+          <span>
+            <button className="btn btn-secondary btn-sm" onClick={() => store.dismissNetworkNotice()}>
+              Dismiss
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* SCL-S0.6 — the node start was refused: another process holds the chain database or a
           node port. The message (from node.rs) names the holder (pid, path) and what to do. */}
@@ -384,15 +420,16 @@ export function Node({ store, s }: SurfaceProps) {
                     ) : (
                       <>
                         <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                          Your node is synced and this wallet is linked to your identity. Activating stakes your membership
-                          bond in the ValidatorRegistry; the registry sets the epoch your validator becomes active, shown here once registered.
+                          Your node is synced and this wallet is linked to your identity. Activating stakes your
+                          bond&rsquo;s principal in the ValidatorRegistry; the registry sets the epoch your validator
+                          becomes active, shown here once registered. You approve it in the Signature Ceremony.
                         </p>
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ alignSelf: "flex-start" }}
-                          onClick={() => void store.activateValidator()}
+                          onClick={() => void store.requestValidatorActivation()}
                         >
-                          Activate validator · stake your bond
+                          {activateValidatorLabel(s.activation)}
                         </button>
                       </>
                     )}
@@ -414,7 +451,7 @@ export function Node({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Your stake</span>
                   <span className="mono tabular" style={{ fontSize: 12 }} title="ValidatorRegistry.stakeOf(pubkey)">
-                    {isRegisteredValidator ? `${fmtI(s.bondedStake)} SALT` : "—"}
+                    {stakeRead != null && stakeRead > 0 ? `${fmtI(stakeRead)} SALT` : stakeRead == null ? "— · not read yet" : "—"}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
