@@ -344,6 +344,12 @@ export interface AppState {
    */
   s3Checking: boolean;
   /**
+   * core#584: Settings › Billing "Become a member" is checking chain 40204 for a grant this account
+   * already holds, before any checkout. One attempt at a time; the button is disabled meanwhile.
+   * Not persisted.
+   */
+  billingChecking: boolean;
+  /**
    * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
    * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
    * "Membership activating" notice instead of the red lapse. Never unlocks paid
@@ -824,6 +830,7 @@ export function freshState(pid: string): AppState {
     s3: "idle",
     s3PollExhausted: false,
     s3Checking: false,
+    billingChecking: false,
     membershipActivating: false,
     agentTabRequest: null,
     s5: "idle",
