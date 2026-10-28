@@ -15,10 +15,13 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { NodeRewards } from "./node/NodeRewards";
 import { Wallet } from "./Wallet";
 import { freshState, type AppState } from "../shell/state";
 import type { Store } from "../shell/store";
+
+// K3 (#563): Node › Rewards is its own tab component; the desktop app renders it in tauri mode.
+const Node = (p: { store: Store; s: AppState }) => createElement(NodeRewards, { ...p, mode: "tauri" });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

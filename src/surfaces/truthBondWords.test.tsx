@@ -22,7 +22,7 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Wallet } from "./Wallet";
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { describeBond, type Store } from "../shell/store";
 import { freshState, type AppState } from "../shell/state";
 import { grantCustody } from "../data/grantCopy";
@@ -75,7 +75,7 @@ describe("#349 review — the grant copy for an exited member", () => {
     const s: AppState = { ...freshState("p1"), signedIn: true, node: "synced", syncPct: 100, hasGrant: true, s5StakeWei: (32_000n * 10n ** 18n).toString(), s5UnlockBlock: 300_000, bondedStake: 0, bondActivated: true };
     for (const html of [
       renderToStaticMarkup(<Wallet store={stub} s={{ ...s, wTab: "staking" }} />),
-      renderToStaticMarkup(<Node store={stub} s={{ ...s, nTab: "ops" }} />),
+      renderStatus(stub, s),
     ]) {
       expect(html).not.toMatch(/until you activate the bond/);
     }

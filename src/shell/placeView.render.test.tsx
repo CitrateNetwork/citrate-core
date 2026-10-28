@@ -174,18 +174,27 @@ describe("Node", () => {
     expect(h).toContain('data-surface="node/status"');
   });
 
-  it("Services renders the services registry snapshot (K1a-2); Rewards is an honest not-available-yet state", () => {
+  it("Services renders the services registry snapshot (K1a-2); Rewards renders the K3 Rewards tab", () => {
     const services = html("node/services");
     expect(services).not.toContain("data-not-available");
     expect(services).toContain('data-testid="node-services"');
-    expect(html("node/rewards")).toContain('data-not-available="node/rewards"');
+    const rewards = html("node/rewards");
+    expect(rewards).not.toContain("data-not-available");
+    expect(rewards).toContain('data-node-tab="rewards"');
   });
 
   it("the earlier node/earnings route opens Rewards", () => {
     const h = html("node/earnings");
     expect(selected(h)).toEqual(["Rewards"]);
-    expect(h).toContain('data-not-available="node/rewards"');
+    expect(h).toContain('data-node-tab="rewards"');
     expect(h).not.toContain(">Earnings<");
+  });
+
+  it("K3: Status and Advanced render the Node page tabs, with one Services implementation", () => {
+    expect(html("node/status")).toContain('data-node-tab="status"');
+    expect(html("node/advanced")).toContain('data-node-tab="advanced"');
+    // The registry-backed Services tab (K1a-2) is the only one: the Node page has no second list.
+    expect(html("node/status")).not.toContain('data-testid="node-services"');
   });
 
   it("Storage holds Files, Memory, Pins and Backup (K4); the old files, storage, pins and backup routes open them", () => {

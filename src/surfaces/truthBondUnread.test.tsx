@@ -20,7 +20,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { Wallet } from "./Wallet";
 import { Dashboard } from "./Dashboard";
 import { Onboarding } from "../onboarding/Onboarding";
@@ -77,7 +77,7 @@ describe("#348 review — an unread MemberBond.activated() is '—', never 'Bond
     });
 
     it(`the Node page offers no activation and shows no bond-locked word (${which})`, () => {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ validatorActivation })} />);
+      const html = renderStatus(stub, member({ validatorActivation }));
       expect(html).not.toContain("Activate validator");
       expect(html).not.toContain("Bond locked · not staked");
     });

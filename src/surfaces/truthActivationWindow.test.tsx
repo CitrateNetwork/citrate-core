@@ -21,7 +21,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { Onboarding } from "../onboarding/Onboarding";
 import { activationGate, activationPhase, validatorState } from "../onboarding/activateValidator";
 import { store, type Store } from "../shell/store";
@@ -158,7 +158,7 @@ describe("activation only inside the lock: surfaces", () => {
       [true, "Unlocked · not activated"],
       [null, "bond lock not read yet"],
     ] as const) {
-      const html = renderToStaticMarkup(<Node store={stub} s={member({ bondUnlocked: unlocked })} />);
+      const html = renderStatus(stub, member({ bondUnlocked: unlocked }));
       expect(html).not.toContain("Activate validator");
       expect(html).toContain(why);
       expect(html).not.toMatch(/activation window/i);
@@ -166,7 +166,7 @@ describe("activation only inside the lock: surfaces", () => {
   });
 
   it("the Node page still offers activation for a locked, never-activated bond", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={member({ bondUnlocked: false })} />);
+    const html = renderStatus(stub, member({ bondUnlocked: false }));
     expect(html).toContain("Activate validator");
   });
 

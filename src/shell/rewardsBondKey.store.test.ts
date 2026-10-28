@@ -5,7 +5,7 @@
 // figures are accepted only when the answer's proposerPubkey is that key. An unread bond, an unread
 // bond key, another key or a malformed proposerPubkey fails closed: no figures, "—" with the reason.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const validatorEarnings = vi.fn();
@@ -29,10 +29,8 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { Store, earningsKeyCheck } from "./store";
-import { Node } from "../surfaces/Node";
+import { renderRewards } from "../surfaces/node/nodePage.fixture";
 import type { AppState } from "./state";
 
 const BOND_KEY = "0x" + "aa".repeat(32);
@@ -90,7 +88,7 @@ describe("#391 — rewards are accepted only for the member's validator key", ()
         await store.refreshEarnings();
         expect(store.state.rewards, `${which}=${JSON.stringify(bad)}`).toBeNull();
         expect(store.state.rewardsError, `${which}=${JSON.stringify(bad)}`).toContain("isn't a number");
-        const html = renderToStaticMarkup(createElement(Node, { store, s: { ...store.state, nTab: "earn" } }));
+        const html = renderRewards(store, store.state);
         expect(html, `${which}=${JSON.stringify(bad)}`).not.toMatch(/>0\.00</);
       }
     }
@@ -187,7 +185,8 @@ describe("#394 — the rewards read names the member's validator key", () => {
 describe("#391 — Node › Earning shows a mismatch as unknown, with the reason", () => {
   it("no figures, and the reason naming both keys", async () => {
     const store = await read(activated(BOND_KEY), NODE_KEY);
-    const html = renderToStaticMarkup(createElement(Node, { store, s: { ...store.state, nTab: "earn" } }));
+    // K3: the Earning view is the Node › Rewards tab.
+    const html = renderRewards(store, store.state);
     expect(html).toContain("not your bond&#x27;s validator key");
     expect(html).not.toContain("30.00");
     expect(html).not.toContain("20.00");
@@ -197,7 +196,11 @@ describe("#391 — Node › Earning shows a mismatch as unknown, with the reason
 // Tripwire (STD): every non-test read of node_validator_earnings that uses its figures checks the
 // key first, the bridge forwards the key, and the figures land in state only through refreshEarnings.
 describe("tripwire — every earnings read path checks the key", () => {
-  const files = ["src/shell/store.ts", "src/surfaces/Node.tsx", "src/surfaces/Wallet.tsx", "src/surfaces/Dashboard.tsx"];
+  // K3: every surface file (the Node page's tabs in surfaces/node included), not a fixed list.
+  const surfaceFiles = (readdirSync(join(process.cwd(), "src/surfaces"), { recursive: true }) as string[])
+    .filter((f) => /\.tsx?$/.test(f) && !/\.(test|fixture)\.tsx?$/.test(f))
+    .map((f) => "src/surfaces/" + f);
+  const files = ["src/shell/store.ts", ...surfaceFiles];
   const src = (f: string) => readFileSync(join(process.cwd(), f), "utf8");
 
   it("each bridge.node.validatorEarnings( call either ignores the figures or runs earningsKeyCheck before using them", () => {

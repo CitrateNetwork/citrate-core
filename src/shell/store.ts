@@ -667,9 +667,8 @@ export function tickPatch(
   s: AppState,
   sim: boolean,
   rand: () => number = Math.random,
-  ctx: { nextId: () => number; makePeers: (n: number) => AppState["peerRows"] } = {
+  ctx: { nextId: () => number } = {
     nextId: () => Date.now(),
-    makePeers: () => [],
   },
 ): Partial<AppState> {
   const u: Partial<AppState> = {};
@@ -677,8 +676,8 @@ export function tickPatch(
   // NODE VITALS SIMULATION — web-dev ONLY. In a Tauri build height/peers/
   // syncPct/node-state come from the REAL node via `refreshNode`
   // (bridge.node.status → node.rs → local RPC eth_blockNumber/net_peerCount),
-  // and cpu/ram/logs/peer-rows are honestly blank rather than fabricated
-  // (Rule 1). This whole block is the source of the implausible always-
+  // and logs are honestly blank rather than fabricated (Rule 1). K3: no
+  // cpu / ram / peer rows are simulated either; the Node page shows none. This whole block is the source of the implausible always-
   // climbing height + steady ~24 peers a packaged build must never show.
   if (sim) {
     u.height = s.height + (rand() < 0.85 ? 1 : 2);
@@ -705,8 +704,6 @@ export function tickPatch(
     }
     if (s.node === "validating" && rand() < 0.018) u.blocksProposed = s.blocksProposed + 1;
     if (running) {
-      u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
-      u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
       if (rand() < 0.55) {
         const T = NODE_LOG_TEMPLATES;
         const line = T[(rand() * T.length) | 0]
@@ -718,7 +715,6 @@ export function tickPatch(
           String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
         u.logs = s.logs.concat([{ t, line, id: ctx.nextId() }]).slice(-14);
       }
-      if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = ctx.makePeers(u.peers!);
     }
   }
   if (s.s5 === "settling") {
@@ -1653,6 +1649,9 @@ export class Store {
     this.nodeRefreshing = true;
     try {
       const st = await bridge.node.status();
+      // K3: when this answer was read. It is committed with the values below, so a poll that stalls
+      // on a later read (grant status, registry, logs) leaves Node › Status's freshness to age.
+      const statusReadAt = Date.now();
       // 40204 reroll: the node's start deleted another genesis's chain data. Say so once.
       if (st.notice && !this.nodeChainResetNotified) {
         this.nodeChainResetNotified = true;
@@ -1770,6 +1769,7 @@ export class Store {
         bondedStakeRead: stakeRead,
         ...(bondReads ?? { bondActivated }),
         validatorActivation,
+        nodeStatusAt: statusReadAt,
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
@@ -2860,22 +2860,8 @@ export class Store {
     this.setState((s) =>
       tickPatch(s, BRIDGE_MODE === "sim", Math.random, {
         nextId: () => this.mid++,
-        makePeers: (n) => this.makePeers(n),
       }),
     );
-  }
-
-  makePeers(n: number) {
-    const rows = [];
-    const cities = ["fra1", "sgp1", "nyc3", "ams2", "tok1", "sfo2"];
-    for (let i = 0; i < Math.min(5, Math.max(2, (n / 5) | 0)); i++) {
-      rows.push({
-        id: "16Uiu2HA" + Math.random().toString(36).slice(2, 8) + "…" + cities[i % cities.length],
-        dir: Math.random() < 0.5 ? "in" : "out",
-        lat: ((18 + Math.random() * 120) | 0) + " ms",
-      });
-    }
-    return rows;
   }
 
   // ---------- ceremony ----------
@@ -4625,7 +4611,7 @@ export class Store {
       void this.refreshNode();
       return Promise.resolve("the app already has the node starting or running");
     }
-    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
+    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [] });
     if (BRIDGE_MODE === "tauri") {
       // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
       // poller (refreshNode) then folds live state/height/peers as it boots +
@@ -4669,7 +4655,7 @@ export class Store {
       );
     }
     setTimeout(() => {
-      this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
+      this.setState({ node: "syncing", syncPct: 2 });
       this.save();
     }, 1500);
     return Promise.resolve(null);
@@ -4679,7 +4665,7 @@ export class Store {
   /** Stop the node. Resolves to the reason the stop was refused, or null (see `startNode`). */
   stopNode(): Promise<string | null> {
     // Explicit member action — remember it so launch does NOT restart the node.
-    this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0, peerRows: [] });
+    this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0 });
     if (BRIDGE_MODE === "tauri") {
       // Only claim the supervisor was released once the real stop RESOLVES — the
       // optimistic "off" reflects intent, but the toast must not overstate.

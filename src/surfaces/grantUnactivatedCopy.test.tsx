@@ -2,7 +2,6 @@
 // bond is activated, even when this node's key is registered with the member's wallet as staker.
 // Only the bond's own registry stake (pubkeyOfStaker(bond) → stakeOf) counts as staked.
 import { afterEach, expect, it, vi } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../bridge/mode", () => ({ BRIDGE_MODE: "tauri" as const, assertSimAllowed: () => {} }));
 vi.mock("wagmi", () => ({
@@ -13,7 +12,7 @@ vi.mock("../components/AgentChat", () => ({ AgentChat: () => null }));
 vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
-import { Node } from "./Node";
+import { renderStatus } from "./node/nodePage.fixture";
 import { Store } from "../shell/store";
 import { bridge } from "../bridge";
 import type { ChainReads } from "../shell/chainTruth";
@@ -57,6 +56,6 @@ it("granted, bond not activated, node key wallet-staked: bondedStake stays 0 and
   await store.refreshNode();
   expect(store.state.bondActivated).toBe(false);
   expect(store.state.bondedStake).toBe(0);
-  const html = renderToStaticMarkup(<Node store={store} s={{ ...store.state, nTab: "status" }} />);
+  const html = renderStatus(store, store.state);
   expect(html).not.toContain("Your bond is activated");
 });
