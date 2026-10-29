@@ -306,6 +306,10 @@ node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
    ```
    `render` refuses a third-party package under a licence outside its permissive list, so a new
    copyleft dependency is a reviewed change. What is scanned is `release/notices.json`.
+   `check` also refuses notices whose `app` or `app-webview` section no longer matches
+   `Cargo.lock` or `package-lock.json` (a listed package that left the lockfile, or a lockfile
+   changed since `render`, which records each lockfile's digest in `release/licences.json`), so
+   re-run collect and render after the last dependency change before the cut.
 
 ### Distribution — the DO Space is the public origin
 
