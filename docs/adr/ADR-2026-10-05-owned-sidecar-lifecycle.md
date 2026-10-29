@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05, then a second set the same day (release path v0.5.0 / v0.5.1 / v0.5.x, D-16 extended, HUP D-41 amended), then a third set (minimum viable v0.5.0, S7.5a to v0.5.1, v0.5.x renamed v0.5.2, HUP D-41 amended again, owners assigned); ADR acceptance (g0-adr) still pending; changes nothing until accepted)
-updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted; second set: D-2 amended again, D-16 extended, HUP D-41 amended for one v0.5.1; third set: D-2 amended a third time, HUP D-41 amended for one v0.5.1 and one v0.5.2, D-18 owners)
+updated: 2026-10-28 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted; second set: D-2 amended again, D-16 extended, HUP D-41 amended for one v0.5.1; third set: D-2 amended a third time, HUP D-41 amended for one v0.5.1 and one v0.5.2, D-18 owners; S10.0 stable-Rust Windows mechanism proof appended, ADR remains proposed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -257,3 +257,43 @@ in planset 05 "Owner decision (2026-10-05, third set)".
 | @rule8 (updater and process-spawn surfaces) | | | |
 | Core maintainer | | | |
 | Runtime maintainer | | | |
+
+## S10.0 mechanism-proof addendum (2026-10-28)
+
+This append-only record covers the public Windows mechanism proof for
+[`CitrateNetwork/citrate-core#252`](https://github.com/CitrateNetwork/citrate-core/issues/252).
+It records an implementation choice and local proof only. It does not accept this ADR, change
+its proposed status, or close any later gate.
+
+The selected stable-Rust mechanism is `std::process::Command` with `CREATE_SUSPENDED`. The
+owner creates and retains a non-inheritable Job handle configured with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigns the suspended child, then enumerates that child's
+threads through ToolHelp (`CreateToolhelp32Snapshot`, `Thread32First`, `Thread32Next`) and calls
+`ResumeThread` on each matching thread only after assignment. Raw `CreateProcessW` is unnecessary
+for this implementation. Undocumented `NtResumeProcess` is rejected.
+
+Assignment failure fails closed: the owner terminates the Job and child while the child remains
+suspended, then reaps the leader. The child is never resumed uncontained. No breakaway flags are
+enabled. Because the owner retains the final Job handle and it is not inherited or duplicated by a
+child, owner death closes that handle and kills the captured tree.
+
+The proof was run locally on Windows `x86_64-pc-windows-msvc` against runtime base
+`05243c72bd521a55bc38333eaf6ae6efacee3816` on
+`spike/252-s10-windows-job-proof`, with this core record based on
+`2c812854eade1a8e4b95687d88de477fc7190e96` on
+`spike/252-windows-job-mechanism`. The evidence is in
+`.agentile/sprints/active/sprint-scl-s10-windows-job-mechanism/EVIDENCE.md`.
+
+This narrows the earlier non-implementation and unproven-native statements only for the four
+locally proved S10.0 behaviors: post-adoption execution, fail-closed assignment, a
+non-inheritable Job handle, and owner-death kill-on-close; all broader implementation and
+native-gate claims remain open.
+
+The proof uses real Win32 processes and Jobs, with bounded waits and guarded helper cleanup. It
+does not change production behavior except for a minimal `#[cfg(test)]` Job-handle inspection
+seam. Hosted Windows CI is recorded in [runtime PR #104](https://github.com/CitrateNetwork/citrate-agent-runtime/pull/104)
+at `8a2296ab2cd5359dad6831fbabb728c34925449f`: the
+[Windows (agent-shell tests + agent-sidecar release build)](https://github.com/CitrateNetwork/citrate-agent-runtime/actions/runs/40827023392/job/123292293808)
+job result: `PASS` (17m15s), and the runtime PR's full check set, including aggregate `ci`, passed.
+Review, merge, release, packaged-app validation, complete Windows containment, core adoption, and
+S10.1 through S10.4 remain unproven or out of scope.
