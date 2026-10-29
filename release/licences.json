@@ -21,7 +21,8 @@
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
       "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
-      "packages": 508
+      "packages": 508,
+      "lock": "sha256:92750a064e74fb51fecec7947a6bb1624795db474c4643439016d2d4580a4c3d"
     }
   },
   "components": [
@@ -213,7 +214,8 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
-        "packages": 23
+        "packages": 23,
+        "lock": "sha256:aafa4ee0b4e3e15c2d41abb96aacb8a23f4fde3b00f3f02a2b400f9fc50f5981"
       }
     },
     {

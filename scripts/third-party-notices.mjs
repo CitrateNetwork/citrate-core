@@ -9,7 +9,9 @@
 //   node scripts/third-party-notices.mjs render [--work <dir>]
 //                                            normalise, write the notices file, update release/licences.json
 //   node scripts/third-party-notices.mjs check
-//                                            the committed notices file matches release/notices.json
+//                                            the committed notices file matches release/notices.json,
+//                                            and the app and webview sections match Cargo.lock and
+//                                            package-lock.json (re-render after a lockfile change)
 //
 // The licence inventory (release/licences.json) covers each sidecar as one first-party component,
 // but each binary also contains hundreds of third-party Rust crates or Go modules whose licences
@@ -495,13 +497,115 @@ export function updateInventory(inv, components, output) {
   return inv;
 }
 
-// ---- Lockfile freshness (stub: old behaviour, no lockfile check) ----
-export function cargoLockPackages() { return new Set(); }
-export function npmLockPackages() { return new Set(); }
-export function lockDigest() { return ""; }
-export function noticeSectionPackages() { return []; }
-export function recordLockDigests(inv) { return inv; }
-export function lockFreshness() { return []; }
+// ---- Lockfile freshness (the app's own notices against this repo's lockfiles) ----------------
+// The app and webview sections are generated from this repo, so they go stale whenever a later
+// change moves Cargo.lock or package-lock.json; `check` compares the file with notices.json only
+// and could not see it (0.5.2: the app section stayed at the 0.5.1 bump while chacha20 and a
+// webpki update landed). `render` records a digest of each lockfile's package set on the app and
+// app-webview inventory entries (`lock`), and `check` refuses a release while (a) a listed package
+// is no longer in the lockfile or (b) the lockfile's package set differs from the rendered one.
+
+/** "name version" of every registry crate reachable from `root` in a Cargo.lock (all dependency
+ *  kinds and targets: Cargo.lock does not record them, so this is a superset of what ships). */
+export function cargoLockPackages(lockText, root = "citrate-core") {
+  const pkgs = lockText.split(/^\[\[package\]\]$/m).slice(1).map((b) => {
+    const get = (k) => new RegExp(`^${k} = "([^"]*)"`, "m").exec(b)?.[1];
+    const deps = (/^dependencies = \[([\s\S]*?)^\]/m.exec(b)?.[1] ?? "")
+      .split("\n")
+      .map((s) => s.trim().replace(/^"|",?$/g, ""))
+      .filter(Boolean);
+    return { name: get("name"), version: get("version"), source: get("source") ?? "", deps };
+  });
+  const byName = new Map();
+  for (const p of pkgs) byName.set(p.name, [...(byName.get(p.name) ?? []), p]);
+  const resolve = (d) => {
+    const [n, v] = d.split(" ");
+    const c = byName.get(n) ?? [];
+    return v ? c.find((p) => p.version === v) : c.length === 1 ? c[0] : undefined;
+  };
+  const start = (byName.get(root) ?? [])[0];
+  if (!start) throw new Refused(`Cargo.lock has no package ${root}`);
+  const seen = new Set();
+  const out = new Set();
+  const stack = [start];
+  while (stack.length) {
+    const p = stack.pop();
+    const key = `${p.name} ${p.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (p.source.startsWith("registry+")) out.add(key);
+    for (const d of p.deps) {
+      const q = resolve(d);
+      if (!q) throw new Refused(`Cargo.lock: ${p.name} depends on ${d}, which does not resolve to one package`);
+      stack.push(q);
+    }
+  }
+  return out;
+}
+
+/** "name version" of every installed package in a package-lock.json (lockfileVersion 2 or 3). */
+export function npmLockPackages(lock) {
+  const out = new Set();
+  for (const [key, p] of Object.entries(lock?.packages ?? {})) {
+    const i = key.lastIndexOf("node_modules/");
+    if (i < 0 || !p?.version) continue;
+    out.add(`${p.name ?? key.slice(i + "node_modules/".length)} ${p.version}`);
+  }
+  return out;
+}
+
+/** A stable digest of a package set. */
+export function lockDigest(set) {
+  return `sha256:${createHash("sha256").update([...set].sort().join("\n")).digest("hex")}`;
+}
+
+/** "name version" of each package listed in one component's section of a notices file. */
+export function noticeSectionPackages(text, component) {
+  const lines = text.split("\n");
+  const start = lines.indexOf(`## ${component}`);
+  if (start < 0) return [];
+  const out = [];
+  for (const l of lines.slice(start + 1)) {
+    if (l.startsWith("## ")) break;
+    const m = /^(\S+) (\S+)  \S/.exec(l);
+    if (m) out.push(`${m[1]} ${m[2]}`);
+  }
+  return out;
+}
+
+/** The repo-built components whose notices follow this repo's lockfiles. */
+export const LOCK_COMPONENTS = [
+  { component: "app", lockfile: "Cargo.lock", packages: (repo) => cargoLockPackages(fs.readFileSync(path.join(repo, "Cargo.lock"), "utf8")) },
+  { component: "app-webview", lockfile: "package-lock.json", packages: (repo) => npmLockPackages(JSON.parse(fs.readFileSync(path.join(repo, "package-lock.json"), "utf8"))) },
+];
+
+/** The current package set of each repo-built component, from this repo's lockfiles. */
+export const lockSets = (repo) => Object.fromEntries(LOCK_COMPONENTS.map((l) => [l.component, l.packages(repo)]));
+
+const inventoryEntry = (inv, component) => (component === "app" ? inv.app : inv.components.find((c) => c.id === component));
+
+/** render: record each lockfile's package digest on its component's inventory entry. */
+export function recordLockDigests(inv, sets) {
+  for (const [component, set] of Object.entries(sets)) {
+    const n = inventoryEntry(inv, component)?.third_party_notices;
+    if (n) n.lock = lockDigest(set);
+  }
+  return inv;
+}
+
+/** check: the notices of the repo-built components against the lockfiles; [] when fresh. */
+export function lockFreshness(text, inv, sets, lockfiles = {}) {
+  const problems = [];
+  for (const [component, set] of Object.entries(sets)) {
+    const lockfile = lockfiles[component] ?? "the lockfile";
+    const gone = noticeSectionPackages(text, component).filter((k) => !set.has(k));
+    if (gone.length) problems.push(`${component}: listed but not in ${lockfile}: ${gone.join(", ")}`);
+    const recorded = inventoryEntry(inv, component)?.third_party_notices?.lock;
+    if (!recorded) problems.push(`${component}: release/licences.json records no ${lockfile} digest`);
+    else if (recorded !== lockDigest(set)) problems.push(`${component}: ${lockfile} changed since the notices were rendered`);
+  }
+  return problems;
+}
 
 function run(cmd, args, opts = {}) {
   try {
@@ -772,7 +876,7 @@ async function main(argv) {
     const text = renderNotices(comps, { targets: cfg.targets });
     fs.writeFileSync(path.join(REPO, cfg.output), text);
     const invPath = path.join(REPO, "release", "licences.json");
-    const inv = updateInventory(JSON.parse(fs.readFileSync(invPath, "utf8")), comps, cfg.output);
+    const inv = recordLockDigests(updateInventory(JSON.parse(fs.readFileSync(invPath, "utf8")), comps, cfg.output), lockSets(REPO));
     fs.writeFileSync(invPath, formatInventory(inv) + "\n");
     process.stdout.write(`wrote ${cfg.output} (${Buffer.byteLength(text)} bytes, ${comps.length} components, ${cfg.targets.length} targets) and updated release/licences.json\n`);
     return 0;
@@ -794,6 +898,8 @@ async function main(argv) {
     const target = id === "app" ? inv.app : inv.components.find((c) => c.id === id);
     if (target?.third_party_notices?.file !== cfg.output) throw new Refused(`release/licences.json ${id} does not point at ${cfg.output}; re-run render`);
   }
+  const stale = lockFreshness(committed, inv, lockSets(REPO), Object.fromEntries(LOCK_COMPONENTS.map((l) => [l.component, l.lockfile])));
+  if (stale.length) throw new Refused(`${cfg.output} is stale against this repo's lockfiles; re-run collect and render:\n  ${stale.join("\n  ")}`);
   process.stdout.write(`third-party notices: OK (${want.length} components, ${cfg.targets.length} targets in ${cfg.output})\n`);
   return 0;
 }
