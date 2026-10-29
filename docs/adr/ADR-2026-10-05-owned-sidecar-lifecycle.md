@@ -291,5 +291,9 @@ native-gate claims remain open.
 
 The proof uses real Win32 processes and Jobs, with bounded waits and guarded helper cleanup. It
 does not change production behavior except for a minimal `#[cfg(test)]` Job-handle inspection
-seam. Hosted Windows CI, review, merge, release, packaged-app validation, complete Windows
-containment, core adoption, and S10.1 through S10.4 remain unproven or out of scope.
+seam. Hosted Windows CI is recorded in [runtime PR #104](https://github.com/CitrateNetwork/citrate-agent-runtime/pull/104)
+at `8a2296ab2cd5359dad6831fbabb728c34925449f`: the
+[Windows (agent-shell tests + agent-sidecar release build)](https://github.com/CitrateNetwork/citrate-agent-runtime/actions/runs/40827023392/job/123292293808)
+job result: `PASS` (17m15s), and the runtime PR's full check set, including aggregate `ci`, passed.
+Review, merge, release, packaged-app validation, complete Windows containment, core adoption, and
+S10.1 through S10.4 remain unproven or out of scope.
