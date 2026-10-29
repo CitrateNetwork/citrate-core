@@ -1214,6 +1214,28 @@ mod tests {
         assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
     }
 
+    /// The release version is declared in four places (tauri.conf.json, src-tauri/Cargo.toml,
+    /// package.json and package-lock.json; the root Cargo.lock is held by `--locked`). The updater
+    /// compares tauri.conf's, so a bump that misses one ships a build whose parts disagree.
+    #[test]
+    fn package_json_and_lock_versions_match_cargo_version() {
+        let pkg: serde_json::Value = serde_json::from_str(include_str!("../../package.json"))
+            .expect("package.json must be valid JSON");
+        assert_eq!(pkg["version"], env!("CARGO_PKG_VERSION"), "package.json");
+        let lock: serde_json::Value = serde_json::from_str(include_str!("../../package-lock.json"))
+            .expect("package-lock.json must be valid JSON");
+        assert_eq!(
+            lock["version"],
+            env!("CARGO_PKG_VERSION"),
+            "package-lock.json"
+        );
+        assert_eq!(
+            lock["packages"][""]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "package-lock.json packages[\"\"]"
+        );
+    }
+
     /// ADV-8 boundary, asserted structurally against the real sources: the invoke_handler
     /// registers exactly the `#[tauri::command]`s defined in kit's custody.rs (whose return types
     /// the kit ADV-8 test pins), and NEVER `custody_get` (the in-process secret-reading pub fn).
