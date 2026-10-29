@@ -40,6 +40,7 @@ $StartedUtc = (Get-Date).ToUniversalTime().ToString('o')
 $CaughtError = $null
 $Manifest = $null
 $PayloadRows = @()
+$Sleeper = $null
 $SidecarNames = @(
     'citrate.exe',
     'node-agent.exe',
@@ -228,6 +229,129 @@ function Invoke-BoundedProcess(
     return $Record
 }
 
+function New-SleeperFixture {
+    if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+        throw 'SystemRoot is required to resolve Windows PowerShell 5.1'
+    }
+    $WindowsPowerShellPath = Join-Path `
+        $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $WindowsPowerShellPath = [System.IO.Path]::GetFullPath($WindowsPowerShellPath)
+    if (-not (Test-Path -LiteralPath $WindowsPowerShellPath -PathType Leaf)) {
+        throw "Windows PowerShell 5.1 executable is missing: $WindowsPowerShellPath"
+    }
+    if (Test-ReparsePoint $WindowsPowerShellPath) {
+        throw "Windows PowerShell 5.1 executable must not be a reparse point: $WindowsPowerShellPath"
+    }
+
+    $CompileScriptPath = Join-Path $FixtureDirectory 'compile-sleeper.ps1'
+    $SleeperPath = Join-Path $FixtureDirectory 'sleeper.exe'
+    $CompilerMetadataPath = Join-Path $EvidenceDirectory 'sleeper-compiler.json'
+    $CompileScript = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$OutputAssembly,
+    [Parameter(Mandatory = $true)]
+    [string]$MetadataPath
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
+
+Add-Type -OutputType ConsoleApplication -OutputAssembly $OutputAssembly -TypeDefinition @"
+public static class Sleeper {
+    public static void Main() { System.Threading.Thread.Sleep(600000); }
+}
+"@
+
+[ordered]@{
+    PSEdition = [string]$PSVersionTable.PSEdition
+    PSVersion = [string]$PSVersionTable.PSVersion
+} | ConvertTo-Json | Set-Content -LiteralPath $MetadataPath -Encoding UTF8
+'@
+    [System.IO.File]::WriteAllText(
+        $CompileScriptPath,
+        $CompileScript,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $CompileScriptItem = Get-Item -LiteralPath $CompileScriptPath -Force
+    if (-not $CompileScriptItem.PSIsContainer -and
+        -not ($CompileScriptItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $CompileArguments = @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', "`"$CompileScriptPath`"",
+            '-OutputAssembly', "`"$SleeperPath`"",
+            '-MetadataPath', "`"$CompilerMetadataPath`""
+        )
+    } else {
+        throw "sleeper compile script is not a regular file: $CompileScriptPath"
+    }
+
+    $CompileRecord = Invoke-BoundedProcess -FilePath $WindowsPowerShellPath `
+        -ArgumentList $CompileArguments -Scenario 'compile-sleeper-fixture' `
+        -TimeoutMilliseconds 60000
+    Add-Check 'sleeper fixture compilation exits within 60 seconds' `
+        $CompileRecord.exitedWithinTimeout $CompileRecord.elapsedSeconds '< 60'
+    Add-Check 'sleeper fixture compilation exits successfully' `
+        ($CompileRecord.exitedWithinTimeout -and $CompileRecord.exitCode -eq 0) `
+        $CompileRecord.exitCode 0
+    if (-not $CompileRecord.exitedWithinTimeout -or $CompileRecord.exitCode -ne 0) {
+        throw 'Windows PowerShell 5.1 sleeper compilation failed'
+    }
+
+    if (-not (Test-Path -LiteralPath $CompilerMetadataPath -PathType Leaf)) {
+        throw "sleeper compiler metadata is missing: $CompilerMetadataPath"
+    }
+    $CompilerMetadata = Get-Content -LiteralPath $CompilerMetadataPath -Raw | ConvertFrom-Json
+    Add-Check 'sleeper compiler PSEdition' `
+        ([string]$CompilerMetadata.PSEdition -ceq 'Desktop') `
+        ([string]$CompilerMetadata.PSEdition) 'Desktop'
+    $CompilerVersion = [version]([string]$CompilerMetadata.PSVersion)
+    Add-Check 'sleeper compiler PowerShell version' `
+        ($CompilerVersion.Major -eq 5 -and $CompilerVersion.Minor -eq 1) `
+        ([string]$CompilerMetadata.PSVersion) '5.1'
+
+    $SleeperExists = Test-Path -LiteralPath $SleeperPath -PathType Leaf
+    $SleeperReparsePoint = if ($SleeperExists) { Test-ReparsePoint $SleeperPath } else { $false }
+    Add-Check 'sleeper fixture is a regular non-reparse file' `
+        ($SleeperExists -and -not $SleeperReparsePoint) `
+        "exists=$SleeperExists; reparsePoint=$SleeperReparsePoint" `
+        'exists=True; reparsePoint=False'
+    if ([string]$CompilerMetadata.PSEdition -cne 'Desktop' -or
+        $CompilerVersion.Major -ne 5 -or $CompilerVersion.Minor -ne 1 -or
+        -not $SleeperExists -or $SleeperReparsePoint) {
+        throw 'Windows PowerShell 5.1 sleeper compilation validation failed'
+    }
+
+    $Probe = $null
+    try {
+        $Probe = Start-Process -FilePath $SleeperPath -PassThru -WindowStyle Hidden
+        $Started.Add($Probe)
+        $ProbeIdentity = New-ProcessIdentity -Process $Probe -ExpectedPath $SleeperPath
+        Start-Sleep -Milliseconds 250
+        $ProbeState = Get-ProcessIdentityState $ProbeIdentity
+        Add-Check 'sleeper fixture starts as a long-running console process' `
+            $ProbeState.identityMatches $ProbeState 'same PID, creation time, and executable path'
+        if (-not $ProbeState.identityMatches) {
+            throw 'compiled sleeper fixture did not remain running with its original identity'
+        }
+    } finally {
+        if ($Probe) {
+            if (-not $Probe.HasExited) {
+                Stop-Process -InputObject $Probe -Force -ErrorAction Stop
+                if (-not $Probe.WaitForExit(10000)) {
+                    throw 'sleeper fixture launch probe did not stop'
+                }
+            }
+            $null = $Started.Remove($Probe)
+        }
+    }
+    return $SleeperPath
+}
+
 function Invoke-Installer([string]$Scenario) {
     $Record = Invoke-BoundedProcess -FilePath $InstallerPath `
         -ArgumentList @('/S', "/D=$InstallDirectory") -Scenario $Scenario
@@ -384,6 +508,11 @@ try {
     Add-Check 'installer product version' ($Installer.VersionInfo.ProductVersion -eq $ExpectedVersion) $Installer.VersionInfo.ProductVersion $ExpectedVersion
     if ($Failures.Count -gt 0) { throw 'installer identity did not match the expected release inputs' }
 
+    if (Test-Path -LiteralPath $FixtureDirectory) { throw "fixture directory already exists: $FixtureDirectory" }
+    New-Item -ItemType Directory -Path $FixtureDirectory | Out-Null
+    $FixtureDirectoryOwned = $true
+    $Sleeper = New-SleeperFixture
+
     if (Test-Path -LiteralPath $InstallDirectory) { throw "fresh install directory already exists: $InstallDirectory" }
     Add-Check 'fresh baseline is absent' (-not (Test-Path -LiteralPath $InstallDirectory)) `
         (Test-Path -LiteralPath $InstallDirectory) $false
@@ -411,15 +540,6 @@ try {
         'render/import-resume/node/comms/supervisor passed' `
         'render/import-resume/node/comms/supervisor passed'
 
-    if (Test-Path -LiteralPath $FixtureDirectory) { throw "fixture directory already exists: $FixtureDirectory" }
-    New-Item -ItemType Directory -Path $FixtureDirectory | Out-Null
-    $FixtureDirectoryOwned = $true
-    $Sleeper = Join-Path $FixtureDirectory 'sleeper.exe'
-    Add-Type -OutputType ConsoleApplication -OutputAssembly $Sleeper -TypeDefinition @'
-public static class Sleeper {
-    public static void Main() { System.Threading.Thread.Sleep(600000); }
-}
-'@
     $DecoyDirectory = Join-Path $FixtureDirectory 'decoy'
     New-Item -ItemType Directory -Path $DecoyDirectory | Out-Null
     $OwnProcesses = @{}

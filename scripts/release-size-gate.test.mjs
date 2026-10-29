@@ -25,9 +25,24 @@ const INSTALLED_ACCEPTANCE_FILE = path.join(
   "tests",
   "test-installed-product.ps1",
 );
+const RELEASE_INSTALLER_FILE = path.join(
+  repoRoot,
+  "src-tauri",
+  "windows",
+  "tests",
+  "test-release-installer.ps1",
+);
+const INSTALLER_SMOKE_WORKFLOW_FILE = path.join(
+  repoRoot,
+  ".github",
+  "workflows",
+  "windows-release-installer-smoke.yml",
+);
 const src = fs.readFileSync(FILE, "utf8");
 const windowsSrc = fs.readFileSync(WINDOWS_FILE, "utf8");
 const installedAcceptanceSrc = fs.readFileSync(INSTALLED_ACCEPTANCE_FILE, "utf8");
+const releaseInstallerSrc = fs.readFileSync(RELEASE_INSTALLER_FILE, "utf8");
+const installerSmokeWorkflowSrc = fs.readFileSync(INSTALLER_SMOKE_WORKFLOW_FILE, "utf8");
 
 function pyYaml(file) {
   const probe = spawnSync("python3", ["-c", "import yaml"], { encoding: "utf8" });
@@ -289,6 +304,58 @@ describe("windows release staging controls", () => {
     expect(installedAcceptanceSrc).toContain("localAppDirectory = $null");
     expect(installedAcceptanceSrc).toContain("memoryDirectory = $null");
     expect(installedAcceptanceSrc).toContain("cleanup = [ordered]@{");
+  });
+
+  it("compiles the sleeper fixture with bounded Windows PowerShell 5.1 before acceptance", () => {
+    expect(installerSmokeWorkflowSrc).toMatch(
+      /- name: Exercise the exact installer artifact\n {8}shell: pwsh/,
+    );
+    expect(releaseInstallerSrc).toContain("function New-SleeperFixture");
+    expect(releaseInstallerSrc).toContain(
+      "'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    );
+    for (const argument of [
+      "'-NoLogo'",
+      "'-NoProfile'",
+      "'-NonInteractive'",
+      "'-ExecutionPolicy', 'Bypass'",
+    ]) {
+      expect(releaseInstallerSrc).toContain(argument);
+    }
+    expect(releaseInstallerSrc).toContain("-Scenario 'compile-sleeper-fixture'");
+    expect(releaseInstallerSrc).toContain("-TimeoutMilliseconds 60000");
+    expect(releaseInstallerSrc).toContain("PSEdition -ceq 'Desktop'");
+    expect(releaseInstallerSrc).toContain("$CompilerVersion.Major -eq 5");
+    expect(releaseInstallerSrc).toContain("$CompilerVersion.Minor -eq 1");
+    expect(releaseInstallerSrc).toContain("sleeper fixture is a regular non-reparse file");
+    expect(releaseInstallerSrc).toContain("New-ProcessIdentity -Process $Probe");
+
+    const generatedScriptStart = releaseInstallerSrc.indexOf("$CompileScript = @'");
+    const generatedScriptEnd = releaseInstallerSrc.indexOf(
+      "\n'@\n    [System.IO.File]::WriteAllText",
+      generatedScriptStart,
+    );
+    const addTypeLocations = [...releaseInstallerSrc.matchAll(/\bAdd-Type\b/g)].map(
+      (match) => match.index,
+    );
+    expect(generatedScriptStart).toBeGreaterThanOrEqual(0);
+    expect(generatedScriptEnd).toBeGreaterThan(generatedScriptStart);
+    expect(addTypeLocations).toHaveLength(1);
+    expect(addTypeLocations[0]).toBeGreaterThan(generatedScriptStart);
+    expect(addTypeLocations[0]).toBeLessThan(generatedScriptEnd);
+
+    const fixtureValidation = releaseInstallerSrc.indexOf("$Sleeper = New-SleeperFixture");
+    const productAcceptance = releaseInstallerSrc.indexOf("& $ProductAcceptance");
+    const sidecarCopy = releaseInstallerSrc.indexOf(
+      "Copy-Item -LiteralPath $Sleeper -Destination $Path -Force",
+    );
+    const sidecarStart = releaseInstallerSrc.indexOf(
+      "Start-Process -FilePath $Path -PassThru -WindowStyle Hidden",
+    );
+    expect(fixtureValidation).toBeGreaterThanOrEqual(0);
+    expect(fixtureValidation).toBeLessThan(productAcceptance);
+    expect(fixtureValidation).toBeLessThan(sidecarCopy);
+    expect(fixtureValidation).toBeLessThan(sidecarStart);
   });
 
   it("binds consensus RPC evidence to one stable installed node listener", () => {
