@@ -18,10 +18,17 @@ import { NetworkCompatGate } from "./NetworkCompatGate";
 import { PROFILES, gateGenesis, isReady, type NetworkProfile } from "../network/profile";
 
 const FIXTURE_GENESIS = "0x" + "6a".repeat(32);
+// The r1006 profile as shipped before the RC52 fill: the three reroll values unset, with reasons.
 const r1006 = (): NetworkProfile => {
   const p = PROFILES.find((x) => x.id === "r1006");
   if (!p) throw new Error("no r1006 profile");
-  return { ...p, pending: { ...p.pending } };
+  return {
+    ...p,
+    genesisHash: null,
+    addressBookSha256: null,
+    minChainRev: null,
+    pending: { genesisHash: "set at the reroll", addressBookSha256: "set at the reroll", minChainRev: "set at the reroll" },
+  };
 };
 const filled = (): NetworkProfile => ({
   ...r1006(),

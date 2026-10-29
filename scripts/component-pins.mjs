@@ -14,6 +14,8 @@
 //   node scripts/component-pins.mjs field <id> <dotted.path>   print one manifest value
 //   node scripts/component-pins.mjs artifact <id> <target>     print the artifact record (JSON)
 //   node scripts/component-pins.mjs digest <id> <target>       print the pinned sha256; exit 1 if none
+//   node scripts/component-pins.mjs pending                    list "<id> <target> <reason>" for every
+//                                                              target whose pin waits on its builder
 //   node scripts/component-pins.mjs check [--root <dir>]       consistency check (CI)
 //   node scripts/component-pins.mjs requires <id> --checkout <dir>
 //                                                              the pinned rev contains every `requires`
@@ -91,6 +93,7 @@ export function getField(obj, dotted) {
 export function pinnedDigest(manifest, pins, id, target) {
   const c = component(manifest, id);
   const a = (c.artifacts || {})[target];
+  if (!a && c.pending && c.pending[target]) throw new Error(`'${id}' ${target}: pin pending: ${c.pending[target]}`);
   if (!a) throw new Error(`no pinned artifact for '${id}' on ${target}`);
   if (a.sha256) {
     if (!HEX64.test(a.sha256)) throw new Error(`'${id}' ${target}: sha256 is not 64 lowercase hex`);
@@ -102,6 +105,15 @@ export function pinnedDigest(manifest, pins, id, target) {
     return d[0];
   }
   throw new Error(`'${id}' ${target}: artifact has neither sha256 nor runtime_deps_asset`);
+}
+
+/**
+ * Targets whose pin waits on another builder (the DGX records the Linux pins): `pending` on a
+ * component maps a target to what is owed. Such a target has no artifact, so nothing builds or
+ * stages it. Returns [{ id, target, reason }].
+ */
+export function pendingPins(manifest) {
+  return (manifest.components || []).flatMap((c) => Object.entries(c.pending || {}).map(([target, reason]) => ({ id: c.id, target, reason })));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -184,6 +196,17 @@ export function stagedRequirementErrors(manifest, dir, target) {
 
 function readIf(f) {
   return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
+}
+
+/**
+ * The Cargo.toml of every workspace member (root Cargo.toml `members`), and src-tauri's, which the
+ * app's chain crates live in. Every one of them builds against the bundled node's chain rev.
+ */
+export function workspaceManifests(root) {
+  const ws = readIf(path.join(root, "Cargo.toml")) || "";
+  const list = /^members\s*=\s*\[([^\]]*)\]/m.exec(ws);
+  const members = list ? [...list[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
+  return [...new Set(["src-tauri", ...members])].map((d) => `${d}/Cargo.toml`);
 }
 
 /** externalBin entries of every src-tauri/tauri*.conf.json overlay. */
@@ -334,6 +357,21 @@ export function check(root) {
     }
   }
 
+  // `pending`: a target waiting on its builder is named with what is owed, is never also pinned,
+  // and is never the macOS target (the release Mac records that one, and release.yml stages it).
+  for (const c of comps) {
+    if (c.pending === undefined) continue;
+    if (!c.pending || typeof c.pending !== "object" || Array.isArray(c.pending)) {
+      err(`'${c.id}': pending must map a target to a reason`);
+      continue;
+    }
+    for (const [t, reason] of Object.entries(c.pending)) {
+      if ((c.artifacts || {})[t]) err(`'${c.id}' ${t}: pinned and pending at once`);
+      if (typeof reason !== "string" || !reason.trim()) err(`'${c.id}' ${t}: pending needs a reason (who builds it and how)`);
+      if (t === "aarch64-apple-darwin") err(`'${c.id}' ${t}: may not be pending (the release Mac records the macOS pin)`);
+    }
+  }
+
   // `requires`: well formed, and (where a checkout of the source sits beside this repo, as on the
   // release Mac) the pinned rev contains each required rev. build-component.sh checks the
   // ancestry strictly, and the built and staged bytes for the markers.
@@ -409,9 +447,11 @@ export function check(root) {
     const min = /MIN_CHAIN_REV="([0-9a-f]{40})"/.exec(sidecar);
     if (!min) err("scripts/build-sidecar.sh has no MIN_CHAIN_REV");
     else if (min[1] !== node.source.rev) err(`citrate-node rev ${node.source.rev} != build-sidecar.sh MIN_CHAIN_REV ${min[1]}`);
-    const cargo = readIf(path.join(root, "src-tauri", "Cargo.toml")) || "";
-    for (const r of new Set([...cargo.matchAll(/citrate-chain\.git", rev = "([0-9a-f]{40})"/g)].map((x) => x[1]))) {
-      if (r !== node.source.rev) err(`src-tauri/Cargo.toml pins citrate-chain ${r}, the bundled node is ${node.source.rev}`);
+    for (const rel of workspaceManifests(root)) {
+      const cargo = readIf(path.join(root, rel)) || "";
+      for (const r of new Set([...cargo.matchAll(/citrate-chain\.git", rev = "([0-9a-f]{40})"/g)].map((x) => x[1]))) {
+        if (r !== node.source.rev) err(`${rel} pins citrate-chain ${r}, the bundled node is ${node.source.rev}`);
+      }
     }
   }
 
@@ -488,6 +528,10 @@ function main(argv) {
       process.stdout.write(pinnedDigest(m, pinsFor(root), id, target) + "\n");
       return;
     }
+    if (cmd === "pending") {
+      for (const p of pendingPins(m)) process.stdout.write(`${p.id}\t${p.target}\t${p.reason}\n`);
+      return;
+    }
     if (cmd === "requires") {
       const [id, flag, dir] = rest;
       if (!id || flag !== "--checkout" || !dir) die("usage: requires <id> --checkout <dir>");
@@ -511,7 +555,7 @@ function main(argv) {
       process.stdout.write("component requires: staged sidecars OK\n");
       return;
     }
-    die("usage: component-pins.mjs field|artifact|digest|check|requires|verify-bytes|verify-staged ...");
+    die("usage: component-pins.mjs field|artifact|digest|pending|check|requires|verify-bytes|verify-staged ...");
   } catch (e) {
     die(e.message);
   }

@@ -4,6 +4,14 @@
 // for a settled grant, and its Store.save() (the PERSIST_KEYS filter), run in a v0.5.1 checkout by
 // the generator in fixtures/upgrade-v0.5.1/GENERATOR.md. These tests load them with this build.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// A 0.5.1 save is an r1005 save. These cases are the upgrade on the SAME network (every carried
+// value comes back), so the build here targets alpha-r1005; since the RC52 fill the shipped build
+// targets r1006, where the network-scoped values are archived instead (netScope.test.tsx, RC52 #505).
+vi.mock("../../src-tauri/network/profiles.json", async (importOriginal) => {
+  const real = (await importOriginal()) as { default: { active: string } };
+  return { default: { ...real.default, active: "alpha-r1005" } };
+});
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadState, freshState, PERSIST_KEYS, STORAGE_KEY, type AppState } from "./state";

@@ -10,3 +10,7 @@ paths = ['''^kit/src/fixtures/rendezvous-v1\.json$''']
 [[allowlists]]
 description = "0.5.1 upgrade fixtures: test-only vault keys, invite tokens and their hashes, minted for the fixture by the v0.5.1 code (fixtures/upgrade-v0.5.1/GENERATOR.md); none is used on the network"
 paths = ['''^fixtures/upgrade-v0\.5\.1/''']
+
+[[allowlists]]
+description = "The canonical citrate-chain address book kept byte for byte next to the embedded book (scripts/sync-addresses.py; the release profile check recomputes its sha256). Public contract addresses only; names such as ModelAccessControl next to a 40-hex address match the generic-api-key rule"
+paths = ['''^src-tauri/addresses/40204\.canonical\.json$''']

@@ -196,8 +196,9 @@ describe("Build the pinned node sidecar", () => {
     expect(r.status, r.stderr).toBe(0);
     expect(fs.readFileSync(path.join(dir, "git-log"), "utf8")).toMatch(/^clone --quiet https:\/\/github\.com\/CitrateNetwork\/citrate-chain\.git \.\.\/citrate-chain$/m);
     expect(ghOutput()).toEqual({ bin: built, sha256: digest });
+    // The pin, or "none" while the Linux pin is pending (the step records a missing pin as none).
     const pin = JSON.parse(fs.readFileSync(path.join(repo, "release", "components.json"), "utf8"))
-      .components.find((c) => c.id === "citrate-node").artifacts["x86_64-unknown-linux-gnu"].sha256;
+      .components.find((c) => c.id === "citrate-node").artifacts["x86_64-unknown-linux-gnu"]?.sha256 ?? "none";
     expect(fs.readFileSync(path.join(dir, "summary"), "utf8")).toContain(`pinned \`${pin}\``);
   });
 

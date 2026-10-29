@@ -286,11 +286,17 @@ fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
         v.sort();
         v
     };
-    let out =
-        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || {
-            panic!("a kept data dir never needs the running-node probe")
-        })
-        .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
+    // The 0.5.1 fixture is an r1005 node; this build may target another network (r1006 since the
+    // RC52 fill, whose switch upgrade_xgenesis_tests.rs covers), so "same genesis" is r1005's.
+    let r1005 = crate::network_profile::profile("alpha-r1005")
+        .unwrap_or_else(|e| panic!("{e:?}"))
+        .genesis_hash
+        .clone()
+        .unwrap_or_else(|| panic!("r1005 genesis"));
+    let out = crate::node_genesis::reconcile_genesis(&node, &r1005, || {
+        panic!("a kept data dir never needs the running-node probe")
+    })
+    .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
     assert_eq!(out, crate::node_genesis::GenesisOutcome::Kept);
     let mut after: Vec<String> = std::fs::read_dir(&node)
         .unwrap_or_else(|e| panic!("{e}"))

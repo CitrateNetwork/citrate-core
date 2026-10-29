@@ -89,9 +89,9 @@ the `runtime_deps_asset` of each component), which release.yml downloads and ver
 
 ```bash
 mkdir -p /tmp/rd
-for f in citrate-aarch64-apple-darwin-c384fc982882 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
+for f in citrate-aarch64-apple-darwin-ad11ed9df0d8 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
   mem-mcp-aarch64-apple-darwin-5aeda3172369 comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c \
-  cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-626486b8a7db; do
+  cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-05243c72bd52; do
   cp "src-tauri/binaries/${f%-*}" "/tmp/rd/$f"
 done
 grep -E 'aarch64-apple-darwin-[0-9a-f]{12}$' src-tauri/runtime-deps.sha256 | (cd /tmp/rd && shasum -a 256 -c --strict)
@@ -103,6 +103,12 @@ asset name per rev) or the artifact's `sha256`, and open a PR; `node scripts/com
 check` fails CI if the manifest, the scripts, the overlays, these pins and release.yml disagree.
 macOS digests reproduce only on the machine and build root that recorded them (the linker derives
 the Mach-O UUID from the output path), so the release Mac records the macOS pins.
+
+When a pin moves, the Linux digests of the old rev no longer apply, and the DGX records new ones
+on its own hosts. Until it does, the component lists the target under `pending`, with who builds
+it and how, instead of an artifact: `build-component.sh` refuses that target and names the reason,
+and `node scripts/component-pins.mjs pending` lists everything still owed. The macOS target is
+never pending.
 
 The Gemma model is **not bundled**: macOS ships `bundle-lite`, and the app downloads Gemma on first
 run and refuses it unless it matches `MODEL_SHA256` and `MODEL_SIZE_BYTES` in

@@ -2,7 +2,7 @@
   "$comment": [
     "Release component pins: where every bundled sidecar and model comes from, and which bytes a release may ship. Read by scripts/build-component.sh (builds or fetches a component at its pin and installs it only if its sha256 matches) and checked by `node scripts/component-pins.mjs check` (CI, node job), which fails when this file, the build scripts, the bundle overlays, src-tauri/runtime-deps.sha256, release.yml and src-tauri/src/model.rs disagree.",
     "Each artifact's digest lives in one place: its own sha256, or, for bytes uploaded to the runtime-deps prerelease, the pin of its runtime_deps_asset in src-tauri/runtime-deps.sha256 (release.yml verifies that pin before staging). Digests are of the bytes staged into src-tauri/binaries before bundling; Tauri then signs each externalBin with the Developer ID, so the copies inside a signed macOS app differ.",
-    "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are recorded by the DGX lane with build-component.sh --print-digest (x86_64 on citrate-core-linux-build, aarch64 on the DGX) in the default build root; some cargo outputs (the node, hermes) embed the build-root path, so a Linux rebuild reproduces them only in that same root.",
+    "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are DGX-lane builds (v0.5.1 PROVENANCE-linux.txt for the components that did not move). A component whose rev moved lists its Linux targets under `pending`, with who builds them and how, until the DGX records them with build-component.sh --print-digest; nothing builds or stages a pending target (`component-pins.mjs pending` lists them).",
     "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR."
   ],
   "version": 1,
@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "c384fc982882f830306142c70dd643b59fcda1f6"
+        "rev": "ad11ed9df0d898dda2c0b8704e64fcc809a44d47"
       },
       "federation": {
-        "rev": "f9f6257b2dcde21149fe9c09236231ccfc32da68",
-        "status": "drift",
-        "note": "manifest.toml [repos.citrate-chain] pins f9f6257b (#240, 2026-09-26). The node shipped in 0.5.1 and pinned here is c384fc98 (v0.5.1 fork safety), a descendant; the federation pin is behind."
+        "rev": "ad11ed9df0d898dda2c0b8704e64fcc809a44d47",
+        "status": "match",
+        "note": "The node rev is ad11ed9d, chain main with the sync hardening on top of f6b6f3e4 (chain #437: #430, #428, #431, #433, #434, #437 and the r1006 ops files; fed#331); genesis 0xa3651a27 unchanged; a descendant of 9a32147e and c384fc98 (the node 0.5.1 shipped). citrate-federation#420 moves [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core and citrate-commd [[drift]] rows to it from f6b6f3e4 (#413) (merged, Rule 12)."
       },
       "build": {
         "kind": "cargo",
@@ -37,16 +37,16 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-c384fc982882",
-          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-ad11ed9df0d8",
+          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-28 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-28 (RC52), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x353646fb15b9c03ac7e5bb06b2f0ca02 (no config: 0x0ff604c39354583a04c54ec0aea866bd), git_dirty false; every input except git_sha identical to the f6b6f3e4 build. A clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "33c2447aec63bf40c6902b58c53855cbd05c09696d3769bca318a8c08dabd6fc",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (DGX lane, droplet citrate-core-linux-build)"
+          "sha256": "d81832e0194629651a3b435f68934c7d243c9430044d7ef8684c7838e57b131d",
+          "evidence": "DGX lane fixed asset, built on citrate-core-linux-build 2026-10-28: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at ad11ed9d (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6484339281 (ad11ed9d confirmed as the 0.5.2 node; r1006 rerolled from the same genesis on it); consensus --json fingerprint with no config 0x0ff604c39354583a04c54ec0aea866bd, equal on both Linux arches and on the macOS build of the same rev"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "f625c15ee9a4c1dbf3b91c13331172f47f33e07240fac6f4d4e3eb84e539026e",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (DGX lane, spark-2e01)"
+          "sha256": "8e2b1c5f7103aa1a68fbdebf40d39ce30753dfcd1cdc05cd2e88ff05320fb94b",
+          "evidence": "DGX lane fixed asset, built on the DGX 2026-10-28: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at ad11ed9d (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6484339281 (ad11ed9d confirmed as the 0.5.2 node; r1006 rerolled from the same genesis on it); consensus --json fingerprint with no config 0x0ff604c39354583a04c54ec0aea866bd, equal on both Linux arches and on the macOS build of the same rev"
         }
       }
     },
@@ -214,12 +214,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-agent-runtime",
         "checkout": "citrate-agent-runtime",
-        "rev": "626486b8a7db0ab85cbe62f8a251abfd30677c3d"
+        "rev": "05243c72bd521a55bc38333eaf6ae6efacee3816"
       },
       "federation": {
-        "rev": "f161e699c51b7c92f59cda6999a982a1916a4b66",
-        "status": "drift",
-        "note": "manifest.toml pins f161e699 (2026-09-07), which is on no branch of citrate-agent-runtime and is not an ancestor of the shipped rev. Shipped in 0.5.0 and 0.5.1: 626486b8 (#72)."
+        "rev": "05243c72bd521a55bc38333eaf6ae6efacee3816",
+        "status": "match",
+        "note": "citrate-federation#408 (Rule 12, merges before this) pins [repos.citrate-agent-runtime] and the citrate-core externalBin:hermes row at 05243c72: main with #101 (a session on core's model proxy, D-11) and #102. Shipped in 0.5.0 and 0.5.1: 626486b8 (#72)."
       },
       "build": {
         "kind": "cargo",
@@ -232,16 +232,16 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "hermes-aarch64-apple-darwin-626486b8a7db",
-          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+          "runtime_deps_asset": "hermes-aarch64-apple-darwin-05243c72bd52",
+          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root; uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "f2af250d114e692bf2a6ca5101b38060853f047fbde8137dea45701ac95fb106",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "sha256": "4268f3d12f9f7027a2f74ad844c9142ee16831ae5b3521968b2dea72fa471af5",
+          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), x86_64 on citrate-core-linux-build (O-17), 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "2b9b83431e6daf28863d98bb1265cb5c897a7c728d95c6892d80eb94b181fdbe",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0)"
+          "sha256": "23e36abb2d965d9dbc6e4c6c2de8f20a867ba2ccf4d22240fa8109dfce82773f",
+          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), aarch64 on the DGX spark-2e01, 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
         }
       }
     },
