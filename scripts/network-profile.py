@@ -29,7 +29,9 @@ check [--release] [--require-active <profile>] [--canonical-book <file>]
     the unset values, and a set genesis is the block 0 the profile's genesisProfile builds
     (nodeGenesisProfiles: the genesis profiles the bundled node builds). With --release (the RC
     build gate G0): the active profile has NO unset value, the embedded address book has its chain
-    id and genesis, and build-sidecar.sh pins its minChainRev. --require-active fails unless the active profile is the one named.
+    id and genesis, the canonical book kept next to it (`<book>.canonical.json`, written by
+    sync-addresses.py) has the profile's addressBookSha256 (recomputed) and the embedded book is
+    exactly what sync-addresses.py generates from it, and build-sidecar.sh pins its minChainRev. --require-active fails unless the active profile is the one named.
     --canonical-book checks the active profile's addressBookSha256 against that file.
 
 Paths default to this repo; --profiles, --app-book-dir and --sidecar exist for tests.
@@ -263,6 +265,37 @@ def check_book(path: Path, chain_id: int, genesis: str) -> bytes:
     return raw
 
 
+def embedded_book_problems(book_path: Path, p: dict) -> list:
+    """The embedded book is bound to the canonical book the profile pins: the canonical copy kept
+    next to it has the profile's addressBookSha256 (recomputed here), and regenerating from that
+    copy gives the embedded book byte for byte. An edited, stale or hand-made embedded book fails."""
+    canon = book_path.with_name(book_path.stem + ".canonical.json")
+    try:
+        raw = canon.read_bytes()
+    except OSError as e:
+        return [f"canonical book {canon} cannot be read ({e}); regenerate the embedded book with scripts/sync-addresses.py"]
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != p["addressBookSha256"]:
+        return [f"canonical book {canon} sha256 {digest} != profile addressBookSha256 {p['addressBookSha256']} "
+                "(the embedded book was generated from another book; regenerate it from the pinned one)"]
+    try:
+        embedded = book_path.read_bytes()
+        router = "InferenceRouter" in (json.loads(embedded).get("addresses") or {})
+    except (OSError, ValueError) as e:
+        return [f"embedded book {book_path} cannot be read: {e}"]
+    with tempfile.TemporaryDirectory(prefix="network-profile-") as tmp:
+        out = Path(tmp) / book_path.name
+        cmd = [sys.executable, "-I", str(SYNC), "--book", str(canon), "--genesis", str(p["genesisHash"]).lower(),
+               "--out", str(out)] + (["--with-inference-router"] if router else [])
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return [f"the canonical book {canon} does not generate a book: " + (r.stderr or r.stdout).strip()]
+        if out.read_bytes() != embedded:
+            return [f"embedded book {book_path} is not the book scripts/sync-addresses.py generates from the canonical "
+                    f"book (sha256 {digest}); regenerate it, never edit it"]
+    return []
+
+
 def write_atomic(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     mode = path.stat().st_mode & 0o777
@@ -374,6 +407,7 @@ def cmd_check(a) -> None:
                     )
             except (OSError, ValueError) as e:
                 errors.append(f"embedded book {book_path} cannot be read: {e}")
+            errors += embedded_book_problems(book_path, p)
             try:
                 m = re.search(r'^MIN_CHAIN_REV="([0-9a-f]{40})"', Path(a.sidecar).read_text(), re.M)
                 if not m:

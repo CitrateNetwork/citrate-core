@@ -83,6 +83,20 @@ Build in the default build root (`~/.cache/citrate-components`; do not set
 `CITRATE_COMPONENT_BUILD_ROOT`): the node and hermes embed build-root paths (vendored OpenSSL,
 cranelift's generated sources), so they reproduce only in the root that recorded the pin.
 
+**Exception (0.5.2): the citrate node ships as a fixed uploaded asset.** Its rebuild does not
+reproduce byte for byte, even in the same build root (citrate-chain#427: a second clean build gives
+different code, same strings). So the "a rebuild must reproduce the pin" rule does not apply to it.
+The DGX lane builds the node once per Linux triple at the rev in `release/components.json`
+(= `MIN_CHAIN_REV` in `scripts/build-sidecar.sh`), uploads those bytes, and posts their sha256 on
+fed#331. The fixed-asset recipe (0.5.2): in a clean citrate-chain checkout of origin/main at
+the pinned node rev (`git_dirty=false` in `citrate consensus --json`), rustc 1.96.0,
+`CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate`
+(x86_64 on `citrate-core-linux-build`, aarch64 on the DGX). Record the binary's
+`consensus --json` fingerprint with the digest; it must equal the macOS build's for the same rev. That sha256 is the pin, and the release stages the uploaded asset after checking it, as
+release.yml does for the macOS node. Do not rebuild the node on the release host and expect its
+pin to match. Until the digests are posted, the node's Linux targets stay under `pending` in
+`release/components.json`.
+
 ```bash
 cd citrate-core
 TRIPLE=x86_64-unknown-linux-gnu

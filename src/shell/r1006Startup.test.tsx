@@ -1,12 +1,16 @@
 // K6 (RC52 D-2): a build whose active profile is the unfilled r1006 starts, sends nothing, and
-// shows Update required. Only the embedded profiles file is replaced (the real file with
-// `active` set to the real r1006 entry); wagmi and the gate are the real modules.
+// shows Update required. Only the embedded profiles file is replaced (the real file, r1006 active,
+// with its three reroll values set back to null as before the RC52 fill); wagmi and the gate are
+// the real modules.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../../src-tauri/network/profiles.json", async (importOriginal) => {
-  const real = (await importOriginal()) as { default: { active: string } };
-  return { default: { ...real.default, active: "r1006" } };
+  const real = (await importOriginal()) as { default: { active: string; profiles: Record<string, Record<string, unknown>> } };
+  const unset = { genesisHash: null, addressBookSha256: null, minChainRev: null };
+  const pending = { genesisHash: "set at the reroll", addressBookSha256: "set at the reroll", minChainRev: "set at the reroll" };
+  const r1006 = { ...real.default.profiles.r1006, ...unset, pending };
+  return { default: { ...real.default, active: "r1006", profiles: { ...real.default.profiles, r1006 } } };
 });
 
 const fetchSpy = vi.fn(async () => {

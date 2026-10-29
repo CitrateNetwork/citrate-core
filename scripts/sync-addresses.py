@@ -13,6 +13,11 @@ Fail-closed checks, all before anything is written:
     matches, and block 0 hashes to --genesis (so the book and the chain the app
     will talk to are the same chain).
 
+Next to the generated book it writes the canonical book it was generated from, byte for byte
+(`40204.canonical.json`): the release check (scripts/network-profile.py check --release) recomputes
+its sha256 against the profile's addressBookSha256 and regenerates the embedded book from it, so
+an edited or stale embedded book cannot ship.
+
 Usage:
   scripts/sync-addresses.py --book ../citrate-chain/contracts/addresses/40204.json \
       --genesis 0x<64 hex> --rpc https://rpc.citrate.ai
@@ -75,6 +80,11 @@ OPTIONAL = [
 # Always used with .fullmatch (Python's `$` also matches before a final "\n").
 ADDR = re.compile(r"0x[0-9a-fA-F]{40}")
 HASH = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+def canonical_copy(generated: Path) -> Path:
+    """Where the canonical book a generated book came from is kept: next to it, `<name>.canonical.json`."""
+    return generated.with_name(generated.stem + ".canonical.json")
 
 
 def die(msg: str) -> None:
@@ -141,7 +151,8 @@ def main() -> None:
         die(f"--genesis must be 0x + 64 hex, got {a.genesis!r}")
     genesis = a.genesis.lower()
 
-    book = json.loads(Path(a.book).read_text())
+    raw = Path(a.book).read_bytes()
+    book = json.loads(raw)
     if int(book.get("chainId", 0)) != CHAIN_ID:
         die(f"book chainId {book.get('chainId')} != {CHAIN_ID}")
     flat = flatten(book)
@@ -187,6 +198,7 @@ def main() -> None:
         return
     dest = Path(a.out)
     dest.write_text(json.dumps(out, indent=2) + "\n")
+    canonical_copy(dest).write_bytes(raw)
     shown = dest.resolve().relative_to(REPO) if dest.resolve().is_relative_to(REPO) else dest
     print(f"sync-addresses: wrote {shown} ({len(pins)} pins{', verified live' if a.rpc else ''})")
 

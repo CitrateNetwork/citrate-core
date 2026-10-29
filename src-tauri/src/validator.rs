@@ -590,7 +590,9 @@ mod tests {
         let rpc = RpcClient::with_transport(Recorded(RefCell::new(Vec::new())));
         let mut key = [0u8; 32];
         key.copy_from_slice(&hex::decode(KEY).unwrap());
-        let registry = crate::addresses::validator_registry();
+        // The r1005 ValidatorRegistry the answer was recorded from (the embedded book is r1006's
+        // since the RC52 fill); the call must go to the registry it is given.
+        let registry = "0xde4f679632be7810d915f637cc6a72bf076a3bd9";
         let (total, claimable) = read_validator_rewards(&rpc, registry, &key).unwrap();
         assert_eq!(total, 8_753_600_000_639_448_003_647_486u128);
         assert_eq!(claimable, 8_719_960_000_639_448_003_647_486u128);

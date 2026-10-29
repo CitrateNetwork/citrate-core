@@ -10,10 +10,10 @@ Targets: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-g
 Components:
   app: citrate-core@bd5d6a52e44d6fa3ee7be7f46c4bf605d59fe36a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 505 third-party packages
   app-webview: citrate-core@bd5d6a52e44d6fa3ee7be7f46c4bf605d59fe36a, vite 7.3.6 build (vite.config.ts), 710 bundled modules and assets, 24 third-party packages
-  citrate-node: citrate-chain@c384fc982882f830306142c70dd643b59fcda1f6, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
+  citrate-node: citrate-chain@ad11ed9df0d898dda2c0b8704e64fcc809a44d47, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
   cluster-daemon: citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 217 third-party packages
   comms-member-daemon: citrate-comms@9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 193 third-party packages
-  hermes-sidecar: citrate-agent-runtime@626486b8a7db0ab85cbe62f8a251abfd30677c3d, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 493 third-party packages
+  hermes-sidecar: citrate-agent-runtime@05243c72bd521a55bc38333eaf6ae6efacee3816, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 485 third-party packages
   kubo: github.com/ipfs/kubo@v0.42.0 ./cmd/ipfs, go-licenses, go1.26.4, darwin/arm64, linux/amd64, linux/arm64, windows/amd64, 250 third-party packages
   mem-mcp: citrate-memories@5aeda31723693edf577f0bad238f691586ccde39, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 283 third-party packages
   node-agent: citrate-node-agent@1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 107 third-party packages
@@ -903,7 +903,7 @@ rustc-hex 2.1.0  MIT OR Apache-2.0  [T1]  https://github.com/debris/rustc-hex
 rustix 1.1.4  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/rustix  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 rustls 0.23.46  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/rustls
 rustls-pki-types 1.14.0  MIT OR Apache-2.0  [T1]  https://github.com/rustls/pki-types
-rustls-webpki 0.103.15  ISC  [T36]  https://github.com/rustls/webpki
+rustls-webpki 0.103.16  ISC  [T36]  https://github.com/rustls/webpki
 rustversion 1.0.22  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/rustversion
 ryu 1.0.23  Apache-2.0 OR BSL-1.0  [T7]  https://github.com/dtolnay/ryu
 salsa20 0.10.2  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/stream-ciphers
@@ -966,7 +966,7 @@ time 0.3.47  MIT OR Apache-2.0  [T1]  https://github.com/time-rs/time
 time-core 0.1.8  MIT OR Apache-2.0  [T1]  https://github.com/time-rs/time
 tiny-keccak 2.0.2  CC0-1.0  [T9]  https://crates.io/crates/tiny-keccak/2.0.2
 tinystr 0.8.3  Unicode-3.0  [T15]  https://github.com/unicode-org/icu4x
-tokio 1.52.1  MIT  [T4]  https://github.com/tokio-rs/tokio
+tokio 1.53.3  MIT  [T4]  https://github.com/tokio-rs/tokio
 tokio-macros 2.7.0  MIT  [T4]  https://github.com/tokio-rs/tokio
 tokio-native-tls 0.3.1  MIT  [T1]  https://github.com/tokio-rs/tls
 tokio-rustls 0.26.4  MIT OR Apache-2.0  [T1]  https://github.com/rustls/tokio-rustls
@@ -1012,7 +1012,7 @@ utf8parse 0.2.2  Apache-2.0 OR MIT  [T1]  https://github.com/alacritty/vte
 uuid 1.23.1  Apache-2.0 OR MIT  [T1]  https://github.com/uuid-rs/uuid
 virtue 0.0.18  MIT  [T2]  https://github.com/bincode-org/virtue
 want 0.3.1  MIT  [T1]  https://github.com/seanmonstar/want
-webpki-roots 1.0.7  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
+webpki-roots 1.0.10  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
 winapi 0.2.8  MIT  [T2]  https://github.com/retep998/winapi-rs  (on x86_64-pc-windows-msvc only)
 winapi 0.3.9  MIT OR Apache-2.0  [T1]  https://github.com/retep998/winapi-rs  (on x86_64-pc-windows-msvc only)
 windows-link 0.2.1  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
@@ -1047,9 +1047,9 @@ zip 9.0.4  MIT  [T2]  https://github.com/zip-rs/zip2
 zlib-rs 0.6.8  Zlib  [T14]  https://github.com/trifectatechfoundation/zlib-rs
 zmij 1.0.21  MIT  [T1]  https://github.com/dtolnay/zmij
 zopfli 0.8.3  Apache-2.0  [T59]  https://github.com/zopfli-rs/zopfli
-zstd 0.13.3  MIT  [T2]  https://github.com/gyscos/zstd-rs
-zstd-safe 7.2.4  MIT OR Apache-2.0  [T2]  https://github.com/gyscos/zstd-rs
-zstd-sys 2.0.16+zstd.1.5.7  MIT OR Apache-2.0  [T2]  https://github.com/gyscos/zstd-rs
+zstd 0.14.3  BSD-3-Clause  [T51]  https://github.com/gyscos/zstd-rs
+zstd-safe 8.2.0  BSD-3-Clause  [T51]  https://github.com/gyscos/zstd-rs
+zstd-sys 2.1.2+zstd.1.5.7  BSD-3-Clause  [T60, T61, T51]  https://github.com/gyscos/zstd-rs
 
 ## cluster-daemon
 
@@ -1057,7 +1057,7 @@ ahash 0.8.12  MIT OR Apache-2.0  [T1]  https://github.com/tkaitchuck/ahash
 aho-corasick 1.1.5  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/aho-corasick
 anyhow 1.0.104  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/anyhow
 arrayref 0.3.9  BSD-2-Clause  [T46]  https://github.com/droundy/arrayref
-asn1_der 0.7.7  BSD-2-Clause OR MIT  [T60]  https://github.com/KizzyCode/asn1_der-rust
+asn1_der 0.7.7  BSD-2-Clause OR MIT  [T62]  https://github.com/KizzyCode/asn1_der-rust
 async-channel 2.5.0  Apache-2.0 OR MIT  [T1]  https://github.com/smol-rs/async-channel
 asynchronous-codec 0.7.0  MIT  [T4]  https://github.com/mxinden/asynchronous-codec
 base-x 0.2.11  MIT  [T2]  https://github.com/OrKoN/base-x-rs
@@ -1117,11 +1117,11 @@ getrandom 0.3.4  MIT OR Apache-2.0  [T1]  https://github.com/rust-random/getrand
 group 0.13.0  MIT OR Apache-2.0  [T1]  https://github.com/zkcrypto/group
 hashbrown 0.14.5  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/hashbrown
 hashbrown 0.15.5  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/hashbrown
-hashlink 0.10.0  MIT OR Apache-2.0  [T61]  https://github.com/kyren/hashlink
-hashlink 0.9.1  MIT OR Apache-2.0  [T61]  https://github.com/kyren/hashlink
+hashlink 0.10.0  MIT OR Apache-2.0  [T63]  https://github.com/kyren/hashlink
+hashlink 0.9.1  MIT OR Apache-2.0  [T63]  https://github.com/kyren/hashlink
 heck 0.5.0  MIT OR Apache-2.0  [T1]  https://github.com/withoutboats/heck
 hex 0.4.3  MIT OR Apache-2.0  [T1]  https://github.com/KokaKiwi/rust-hex
-hex_fmt 0.3.0  MIT OR Apache-2.0  [T62]  https://github.com/poanetwork/hex_fmt
+hex_fmt 0.3.0  MIT OR Apache-2.0  [T64]  https://github.com/poanetwork/hex_fmt
 hkdf 0.12.4  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/KDFs/
 hmac 0.12.1  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/MACs
 icu_collections 2.3.0  Unicode-3.0  [T15]  https://github.com/unicode-org/icu4x
@@ -1142,13 +1142,13 @@ itoa 1.0.18  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/itoa
 k256 0.13.4  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/elliptic-curves/tree/master/k256
 keccak 0.1.6  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/sponges/tree/master/keccak
 libc 0.2.189  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/libc
-libp2p 0.56.0  MIT  [T63]  https://github.com/libp2p/rust-libp2p
+libp2p 0.56.0  MIT  [T65]  https://github.com/libp2p/rust-libp2p
 libp2p-allow-block-list 0.6.0  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-connection-limits 0.6.0  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-core 0.43.2  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-gossipsub 0.49.5  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-identify 0.47.0  MIT  [T4]  https://github.com/libp2p/rust-libp2p
-libp2p-identity 0.2.14  MIT  [T64]  https://github.com/libp2p/rust-libp2p
+libp2p-identity 0.2.14  MIT  [T66]  https://github.com/libp2p/rust-libp2p
 libp2p-noise 0.46.1  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-swarm 0.47.1  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 libp2p-swarm-derive 0.35.1  MIT  [T4]  https://github.com/libp2p/rust-libp2p
@@ -1160,12 +1160,12 @@ log 0.4.34  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/log
 match-lookup 0.1.3  MIT  [T4]  https://github.com/mriise/smol-base-x
 memchr 2.8.3  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/memchr
 mio 1.2.2  MIT  [T1]  https://github.com/tokio-rs/mio
-multiaddr 0.18.2  MIT  [T65]  https://github.com/multiformats/rust-multiaddr
-multibase 0.9.3  MIT  [T65]  https://github.com/multiformats/rust-multibase
-multihash 0.19.5  MIT  [T65]  https://github.com/multiformats/rust-multihash
+multiaddr 0.18.2  MIT  [T67]  https://github.com/multiformats/rust-multiaddr
+multibase 0.9.3  MIT  [T67]  https://github.com/multiformats/rust-multibase
+multihash 0.19.5  MIT  [T67]  https://github.com/multiformats/rust-multihash
 multistream-select 0.13.0  MIT  [T4]  https://github.com/libp2p/rust-libp2p
 netlink-packet-core 0.8.2  MIT  [T4]  https://github.com/rust-netlink/netlink-packet-core  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
-netlink-packet-route 0.28.0  MIT  [T66]  https://github.com/rust-netlink/netlink-packet-route  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+netlink-packet-route 0.28.0  MIT  [T68]  https://github.com/rust-netlink/netlink-packet-route  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 netlink-proto 0.12.2  MIT  [T4]  https://github.com/rust-netlink/netlink-proto  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 netlink-sys 0.8.8  MIT  [T4]  https://github.com/rust-netlink/netlink-sys  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 nix 0.30.1  MIT  [T2]  https://github.com/nix-rust/nix  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
@@ -1236,8 +1236,8 @@ tracing-attributes 0.1.31  MIT  [T1]  https://github.com/tokio-rs/tracing
 tracing-core 0.1.36  MIT  [T2, T1]  https://github.com/tokio-rs/tracing
 typenum 1.20.1  MIT OR Apache-2.0  [T2]  https://github.com/paholg/typenum
 unicode-ident 1.0.24  (MIT OR Apache-2.0) AND Unicode-3.0  [T38, T1]  https://github.com/dtolnay/unicode-ident
-unsigned-varint 0.7.2  MIT  [T67, T68, T1]  https://github.com/paritytech/unsigned-varint
-unsigned-varint 0.8.0  MIT  [T67, T68, T1]  https://github.com/paritytech/unsigned-varint
+unsigned-varint 0.7.2  MIT  [T69, T70, T1]  https://github.com/paritytech/unsigned-varint
+unsigned-varint 0.8.0  MIT  [T69, T70, T1]  https://github.com/paritytech/unsigned-varint
 untrusted 0.9.0  ISC  [T39]  https://github.com/briansmith/untrusted
 url 2.5.8  MIT OR Apache-2.0  [T1]  https://github.com/servo/rust-url
 utf8_iter 1.0.4  Apache-2.0 OR MIT  [T1]  https://github.com/hsivonen/utf8_iter
@@ -1524,7 +1524,7 @@ bs58 0.5.1  MIT OR Apache-2.0  [T4]  https://github.com/Nullus157/bs58-rs
 bumpalo 3.20.2  MIT OR Apache-2.0  [T1]  https://github.com/fitzgen/bumpalo
 byteorder 1.5.0  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/byteorder
 bytes 1.11.1  MIT  [T1]  https://github.com/tokio-rs/bytes
-calamine 0.36.1  MIT  [T2]  https://github.com/tafia/calamine
+calamine 0.37.0  MIT  [T2]  https://github.com/tafia/calamine
 cap-primitives 4.0.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/cap-std
 cfg-if 1.0.4  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/cfg-if
 chacha20 0.10.0  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/stream-ciphers
@@ -1545,15 +1545,15 @@ core-foundation-sys 0.8.7  MIT OR Apache-2.0  [T1]  https://github.com/servo/cor
 cpp_demangle 0.5.1  MIT OR Apache-2.0  [T1]  https://github.com/gimli-rs/cpp_demangle
 cpufeatures 0.2.17  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/utils
 cpufeatures 0.3.0  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/utils  (on x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc only)
-cranelift-assembler-x64 0.136.2  Apache-2.0 WITH LLVM-exception  [T7]  https://crates.io/crates/cranelift-assembler-x64/0.136.2
-cranelift-bforest 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-bitset 0.136.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-cranelift-codegen 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-codegen-shared 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-control 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-entity 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-frontend 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-cranelift-native 0.136.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
+cranelift-assembler-x64 0.136.4  Apache-2.0 WITH LLVM-exception  [T7]  https://crates.io/crates/cranelift-assembler-x64/0.136.4
+cranelift-bforest 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-bitset 0.136.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+cranelift-codegen 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-codegen-shared 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-control 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-entity 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-frontend 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+cranelift-native 0.136.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
 crc32fast 1.5.0  MIT OR Apache-2.0  [T4]  https://github.com/srijs/rust-crc32fast
 crossbeam-deque 0.8.6  MIT OR Apache-2.0  [T2]  https://github.com/crossbeam-rs/crossbeam
 crossbeam-epoch 0.9.21  MIT OR Apache-2.0  [T2]  https://github.com/crossbeam-rs/crossbeam
@@ -1578,10 +1578,8 @@ derive_more 0.99.20  MIT  [T2]  https://github.com/JelteF/derive_more
 derive_more 2.1.1  MIT  [T2]  https://github.com/JelteF/derive_more
 derive_more-impl 2.1.1  MIT  [T2]  https://github.com/JelteF/derive_more
 digest 0.10.7  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/traits
-directories-next 2.0.0  MIT OR Apache-2.0  [T1]  https://github.com/xdg-rs/dirs/tree/master/directories
 dirs 5.0.1  MIT OR Apache-2.0  [T1]  https://github.com/soc/dirs-rs
 dirs-sys 0.4.1  MIT OR Apache-2.0  [T1]  https://github.com/dirs-dev/dirs-sys-rs
-dirs-sys-next 0.1.2  MIT OR Apache-2.0  [T1]  https://github.com/xdg-rs/dirs/tree/master/dirs-sys
 displaydoc 0.2.5  MIT OR Apache-2.0  [T1]  https://github.com/yaahc/displaydoc
 dom_query 0.28.0  MIT  [T12]  https://github.com/niklak/dom_query
 dom_smoothie 0.18.2  MIT  [T4]  https://github.com/niklak/dom_smoothie
@@ -1703,8 +1701,9 @@ native-tls 0.2.18  MIT OR Apache-2.0  [T1]  https://github.com/rust-native-tls/r
 ndarray 0.15.6  MIT OR Apache-2.0  [T53]  https://github.com/rust-ndarray/ndarray
 ndarray-rand 0.14.0  MIT OR Apache-2.0  [T53]  https://github.com/rust-ndarray/ndarray
 new_debug_unreachable 1.0.6  MIT  [T1]  https://github.com/mbrubeck/rust-debug-unreachable
+nix 0.31.3  MIT  [T2]  https://github.com/nix-rust/nix  (on aarch64-apple-darwin only)
 nom 8.0.0  MIT  [T1]  https://github.com/rust-bakery/nom
-ntapi 0.4.3  Apache-2.0 OR MIT  [T70]  https://github.com/MSxDOS/ntapi  (on x86_64-pc-windows-msvc only)
+ntapi 0.4.3  Apache-2.0 OR MIT  [T72]  https://github.com/MSxDOS/ntapi  (on x86_64-pc-windows-msvc only)
 num 0.4.3  MIT OR Apache-2.0  [T1]  https://github.com/rust-num/num
 num-bigint 0.4.6  MIT OR Apache-2.0  [T1]  https://github.com/rust-num/num-bigint
 num-complex 0.4.6  MIT OR Apache-2.0  [T1]  https://github.com/rust-num/num-complex
@@ -1745,9 +1744,9 @@ primeorder 0.13.6  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/ellipt
 primitive-types 0.12.2  MIT OR Apache-2.0  [T4]  https://crates.io/crates/primitive-types/0.12.2
 proc-macro2 1.0.106  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/proc-macro2
 prometheus 0.13.4  Apache-2.0  [T56]  https://github.com/tikv/rust-prometheus
-pulley-interpreter 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
-pulley-macros 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
-quick-xml 0.41.0  MIT  [T2]  https://github.com/tafia/quick-xml
+pulley-interpreter 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
+pulley-macros 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
+quick-xml 0.42.0  MIT  [T2]  https://github.com/tafia/quick-xml
 quote 1.0.45  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/quote
 radium 0.7.0  MIT  [T4]  https://github.com/bitvecto-rs/radium
 rand 0.10.1  MIT OR Apache-2.0  [T1]  https://github.com/rust-random/rand
@@ -1769,7 +1768,7 @@ rand_xorshift 0.1.1  MIT OR Apache-2.0  [T1]  https://github.com/rust-random/ran
 rawpointer 0.2.1  MIT OR Apache-2.0  [T1]  https://github.com/bluss/rawpointer/
 rayon 1.12.0  MIT OR Apache-2.0  [T1]  https://github.com/rayon-rs/rayon
 rayon-core 1.13.0  MIT OR Apache-2.0  [T1]  https://github.com/rayon-rs/rayon
-regalloc2 0.15.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/regalloc2
+regalloc2 0.15.2  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/regalloc2
 regex 1.12.3  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/regex
 regex-automata 0.4.14  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/regex
 regex-syntax 0.8.10  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/regex
@@ -1784,15 +1783,15 @@ ripemd 0.1.3  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/hashes
 rlp 0.5.2  MIT OR Apache-2.0  [T4]  https://github.com/paritytech/parity-common
 ruint 1.18.0  MIT  [T4]  https://github.com/recmo/uint
 ruint-macro 1.2.1  MIT  [T4]  https://github.com/recmo/uint
-rust_xlsxwriter 0.99.1  MIT OR Apache-2.0  [T4]  https://github.com/jmcnamara/rust_xlsxwriter
+rust_xlsxwriter 0.101.0  MIT OR Apache-2.0  [T4]  https://github.com/jmcnamara/rust_xlsxwriter
 rustc-demangle 0.1.27  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/rustc-demangle
 rustc-hash 2.1.2  Apache-2.0 OR MIT  [T1]  https://github.com/rust-lang/rustc-hash
 rustc-hex 2.1.0  MIT OR Apache-2.0  [T1]  https://github.com/debris/rustc-hex
 rustix 1.1.4  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/rustix
 rustix-linux-procfs 0.1.1  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/sunfishcode/rustix-linux-procfs  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
-rustls 0.23.45  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/rustls
+rustls 0.23.46  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/rustls
 rustls-pki-types 1.14.1  MIT OR Apache-2.0  [T1]  https://github.com/rustls/pki-types
-rustls-webpki 0.103.15  ISC  [T36]  https://github.com/rustls/webpki
+rustls-webpki 0.103.16  ISC  [T36]  https://github.com/rustls/webpki
 rustversion 1.0.22  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/rustversion
 ryu 1.0.23  Apache-2.0 OR BSL-1.0  [T7]  https://github.com/dtolnay/ryu
 schannel 0.1.29  MIT  [T1]  https://github.com/steffengy/schannel-rs  (on x86_64-pc-windows-msvc only)
@@ -1808,7 +1807,6 @@ serde_derive 1.0.228  MIT OR Apache-2.0  [T1]  https://github.com/serde-rs/serde
 serde_json 1.0.149  MIT OR Apache-2.0  [T1]  https://github.com/serde-rs/json
 serde_path_to_error 0.1.20  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/path-to-error
 serde_spanned 0.6.9  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
-serde_spanned 1.1.1  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
 serde_urlencoded 0.7.1  MIT OR Apache-2.0  [T1]  https://github.com/nox/serde_urlencoded
 servo_arc 0.4.3  MIT OR Apache-2.0  [T1]  https://github.com/servo/stylo
 sha1 0.10.6  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/hashes
@@ -1838,7 +1836,7 @@ system-configuration 0.7.0  MIT OR Apache-2.0  [T1]  https://github.com/mullvad/
 system-configuration-sys 0.6.0  MIT OR Apache-2.0  [T1]  https://github.com/mullvad/system-configuration-rs  (on aarch64-apple-darwin only)
 tap 1.0.1  MIT  [T4]  https://github.com/myrrlyn/tap
 tar 0.4.46  MIT OR Apache-2.0  [T1]  https://github.com/composefs/tar-rs
-target-lexicon 0.13.5  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/target-lexicon
+target-lexicon 0.13.5  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/target-lexicon
 tempfile 3.27.0  MIT OR Apache-2.0  [T1]  https://github.com/Stebalien/tempfile
 tendril 0.5.1  MIT OR Apache-2.0  [T1]  https://github.com/servo/html5ever
 termcolor 1.4.1  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/termcolor
@@ -1854,13 +1852,9 @@ tokio-native-tls 0.3.1  MIT  [T1]  https://github.com/tokio-rs/tls
 tokio-rustls 0.26.4  MIT OR Apache-2.0  [T1]  https://github.com/rustls/tokio-rustls
 tokio-util 0.7.18  MIT  [T4]  https://github.com/tokio-rs/tokio
 toml 0.8.23  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
-toml 1.1.6+spec-1.1.0  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
 toml_datetime 0.6.11  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
-toml_datetime 1.1.1+spec-1.1.0  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
 toml_edit 0.22.27  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
-toml_parser 1.1.3+spec-1.1.0  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
 toml_write 0.1.2  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
-toml_writer 1.1.2+spec-1.1.0  MIT OR Apache-2.0  [T1]  https://github.com/toml-rs/toml
 tower 0.5.3  MIT  [T1]  https://github.com/tower-rs/tower
 tower-http 0.6.11  MIT  [T1]  https://github.com/tower-rs/tower-http
 tower-layer 0.3.3  MIT  [T1]  https://github.com/tower-rs/tower
@@ -1891,29 +1885,28 @@ wasm-encoder 0.259.0  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1] 
 wasm-metadata 0.258.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-metadata
 wasmparser 0.258.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
 wasmprinter 0.258.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmprinter
-wasmtime 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-environ 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-cache 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-component-macro 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-component-util 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-core 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://crates.io/crates/wasmtime-internal-core/49.0.2
-wasmtime-internal-cranelift 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-fiber 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-jit-debug 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-jit-icache-coherence 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-unwinder 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-versioned-export-macros 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-wit-bindgen 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
-wasmtime-wasi 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wasmtime-wasi-io 49.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-environ 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-component-macro 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-component-util 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-core 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://crates.io/crates/wasmtime-internal-core/49.0.4
+wasmtime-internal-cranelift 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-fiber 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-jit-debug 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-jit-icache-coherence 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-unwinder 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-versioned-export-macros 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-wit-bindgen 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
+wasmtime-wasi 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wasmtime-wasi-io 49.0.4  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasmtime
 wast 259.0.0  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wast
 wast 35.0.2  Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wast
 wat 1.259.0  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wat
 web_atoms 0.2.6  MIT OR Apache-2.0  [T1]  https://github.com/servo/html5ever
-webpki-roots 1.0.7  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
-wiggle 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wiggle-generate 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
-wiggle-macro 49.0.2  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/bytecodealliance/wasmtime
+webpki-roots 1.0.10  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
+wiggle 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wiggle-generate 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
+wiggle-macro 49.0.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/bytecodealliance/wasmtime
 winapi 0.3.9  MIT OR Apache-2.0  [T1]  https://github.com/retep998/winapi-rs  (on x86_64-pc-windows-msvc only)
 winapi-util 0.1.11  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/winapi-util  (on x86_64-pc-windows-msvc only)
 windows 0.62.2  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
@@ -1936,8 +1929,7 @@ windows-threading 0.2.1  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/w
 windows_x86_64_msvc 0.48.5  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
 windows_x86_64_msvc 0.52.6  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
 winnow 0.7.15  MIT  [T1]  https://github.com/winnow-rs/winnow
-winnow 1.0.3  MIT  [T1]  https://github.com/winnow-rs/winnow
-winx 0.36.4  Apache-2.0 WITH LLVM-exception  [T69]  https://github.com/sunfishcode/winx  (on x86_64-pc-windows-msvc only)
+winx 0.36.4  Apache-2.0 WITH LLVM-exception  [T71]  https://github.com/sunfishcode/winx  (on x86_64-pc-windows-msvc only)
 wit-component 0.258.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wit-component
 wit-parser 0.258.3  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT  [T1]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wit-parser
 witx 0.9.1  Apache-2.0  [T7]  https://github.com/WebAssembly/WASI
@@ -1955,30 +1947,30 @@ zeroize_derive 1.4.3  Apache-2.0 OR MIT  [T4]  https://github.com/RustCrypto/uti
 zerotrie 0.2.4  Unicode-3.0  [T15]  https://github.com/unicode-org/icu4x
 zerovec 0.11.6  Unicode-3.0  [T15]  https://github.com/unicode-org/icu4x
 zerovec-derive 0.11.3  Unicode-3.0  [T15]  https://github.com/unicode-org/icu4x
-zip 8.6.0  MIT  [T2]  https://github.com/zip-rs/zip2
+zip 9.0.5  MIT  [T2]  https://github.com/zip-rs/zip2
 zlib-rs 0.6.8  Zlib  [T14]  https://github.com/trifectatechfoundation/zlib-rs
 zmij 1.0.21  MIT  [T1]  https://github.com/dtolnay/zmij
 zopfli 0.8.3  Apache-2.0  [T59]  https://github.com/zopfli-rs/zopfli
-zstd 0.13.3  MIT  [T2]  https://github.com/gyscos/zstd-rs
-zstd-safe 7.2.4  MIT OR Apache-2.0  [T2]  https://github.com/gyscos/zstd-rs
-zstd-sys 2.0.16+zstd.1.5.7  MIT OR Apache-2.0  [T2]  https://github.com/gyscos/zstd-rs
+zstd 0.14.3  BSD-3-Clause  [T51]  https://github.com/gyscos/zstd-rs
+zstd-safe 8.2.0  BSD-3-Clause  [T51]  https://github.com/gyscos/zstd-rs
+zstd-sys 2.1.2+zstd.1.5.7  BSD-3-Clause  [T60, T61, T51]  https://github.com/gyscos/zstd-rs
 
 ## kubo
 
 contrib.go.opencensus.io/exporter/prometheus v0.4.2  Apache-2.0  [T7]  https://github.com/census-ecosystem/opencensus-go-exporter-prometheus/blob/v0.4.2/LICENSE
-filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5  BSD-3-Clause  [T71]  https://github.com/FiloSottile/bigmod/blob/f8a47775ebe5/LICENSE
-filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b  ISC  [T72]  https://github.com/FiloSottile/keygen/blob/8e2790ea4c5b/LICENSE
-github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96  MIT  [T73]  https://github.com/AndreasBriese/bbloom/blob/46b345b51c96/LICENSE
-github.com/Jorropo/jsync v1.0.1  Apache-2.0  [T74]  https://github.com/Jorropo/jsync/blob/v1.0.1/LICENSE-APACHE
+filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5  BSD-3-Clause  [T73]  https://github.com/FiloSottile/bigmod/blob/f8a47775ebe5/LICENSE
+filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b  ISC  [T74]  https://github.com/FiloSottile/keygen/blob/8e2790ea4c5b/LICENSE
+github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96  MIT  [T75]  https://github.com/AndreasBriese/bbloom/blob/46b345b51c96/LICENSE
+github.com/Jorropo/jsync v1.0.1  Apache-2.0  [T76]  https://github.com/Jorropo/jsync/blob/v1.0.1/LICENSE-APACHE
 github.com/RaduBerinde/axisds v0.1.0  Apache-2.0  [T7]  https://github.com/RaduBerinde/axisds/blob/v0.1.0/LICENSE
 github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54  Apache-2.0  [T7]  https://github.com/RaduBerinde/btreemap/blob/3d62b7205d54/LICENSE
-github.com/VividCortex/ewma v1.2.0  MIT  [T62]  https://github.com/VividCortex/ewma/blob/v1.2.0/LICENSE
+github.com/VividCortex/ewma v1.2.0  MIT  [T64]  https://github.com/VividCortex/ewma/blob/v1.2.0/LICENSE
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b  MIT  [T1]  https://github.com/alecthomas/units/blob/0f3dac36c52b/COPYING
-github.com/alexbrainman/goissue34681 v0.0.0-20191006012335-3fc7a47baff5  BSD-3-Clause  [T75]  (on x86_64-pc-windows-msvc only)
+github.com/alexbrainman/goissue34681 v0.0.0-20191006012335-3fc7a47baff5  BSD-3-Clause  [T77]  (on x86_64-pc-windows-msvc only)
 github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239  MIT  [T1]  https://github.com/anmitsu/go-shlex/blob/648efa622239/LICENSE
 github.com/benbjohnson/clock v1.3.5  MIT  [T2]  https://github.com/benbjohnson/clock/blob/v1.3.5/LICENSE
 github.com/beorn7/perks v1.0.1  MIT  [T1]  https://github.com/beorn7/perks/blob/v1.0.1/LICENSE
-github.com/blang/semver/v4 v4.0.0  MIT  [T62]  https://github.com/blang/semver/blob/v4.0.0/v4/LICENSE
+github.com/blang/semver/v4 v4.0.0  MIT  [T64]  https://github.com/blang/semver/blob/v4.0.0/v4/LICENSE
 github.com/caddyserver/certmagic v0.25.3  Apache-2.0  [T13]  https://github.com/caddyserver/certmagic/blob/v0.25.3/LICENSE.txt
 github.com/caddyserver/zerossl v0.1.5  MIT  [T4]  https://github.com/caddyserver/zerossl/blob/v0.1.5/LICENSE
 github.com/cenkalti/backoff/v4 v4.3.0  MIT  [T2]  https://github.com/cenkalti/backoff/blob/v4.3.0/LICENSE
@@ -1986,92 +1978,92 @@ github.com/cenkalti/backoff/v5 v5.0.3  MIT  [T2]  https://github.com/cenkalti/ba
 github.com/ceramicnetwork/go-dag-jose v0.1.1  MIT  [T2]  https://github.com/ceramicnetwork/go-dag-jose/blob/v0.1.1/LICENSE
 github.com/cespare/xxhash v1.1.0  MIT  [T4]  https://github.com/cespare/xxhash/blob/v1.1.0/LICENSE.txt
 github.com/cespare/xxhash/v2 v2.3.0  MIT  [T4]  https://github.com/cespare/xxhash/blob/v2.3.0/LICENSE.txt
-github.com/cheggaaa/pb/v3 v3.1.7  BSD-3-Clause  [T76]  https://github.com/cheggaaa/pb/blob/v3.1.7/v3/LICENSE
+github.com/cheggaaa/pb/v3 v3.1.7  BSD-3-Clause  [T78]  https://github.com/cheggaaa/pb/blob/v3.1.7/v3/LICENSE
 github.com/cockroachdb/crlib v0.0.0-20241112164430-1264a2edc35b  Apache-2.0  [T7]  https://github.com/cockroachdb/crlib/blob/1264a2edc35b/LICENSE
 github.com/cockroachdb/errors v1.11.3  Apache-2.0  [T7]  https://github.com/cockroachdb/errors/blob/v1.11.3/LICENSE
 github.com/cockroachdb/logtags v0.0.0-20230118201751-21c54148d20b  Apache-2.0  [T7]  https://github.com/cockroachdb/logtags/blob/21c54148d20b/LICENSE
-github.com/cockroachdb/pebble/v2 v2.1.5  BSD-3-Clause  [T71]  https://github.com/cockroachdb/pebble/blob/v2.1.5/LICENSE
+github.com/cockroachdb/pebble/v2 v2.1.5  BSD-3-Clause  [T73]  https://github.com/cockroachdb/pebble/blob/v2.1.5/LICENSE
 github.com/cockroachdb/redact v1.1.5  Apache-2.0  [T7]  https://github.com/cockroachdb/redact/blob/v1.1.5/LICENSE
-github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b  Apache-2.0  [T77]  https://github.com/cockroachdb/swiss/blob/b0f6560f979b/LICENSE
+github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b  Apache-2.0  [T79]  https://github.com/cockroachdb/swiss/blob/b0f6560f979b/LICENSE
 github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06  Apache-2.0  [T7]  https://github.com/cockroachdb/tokenbucket/blob/cc333fc44b06/LICENSE
-github.com/coreos/go-systemd/v22 v22.7.0  Apache-2.0  [T78]  https://github.com/coreos/go-systemd/blob/v22.7.0/LICENSE  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+github.com/coreos/go-systemd/v22 v22.7.0  Apache-2.0  [T80]  https://github.com/coreos/go-systemd/blob/v22.7.0/LICENSE  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 github.com/crackcomm/go-gitignore v0.0.0-20241020182519-7843d2ba8fdf  MIT  [T2]  https://github.com/crackcomm/go-gitignore/blob/7843d2ba8fdf/LICENSE
 github.com/cskr/pubsub v1.0.2  BSD-2-Clause  [T46]  https://github.com/cskr/pubsub/blob/v1.0.2/LICENSE
 github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c  MIT  [T1]  https://github.com/davidlazar/go-crypto/blob/b73af7476f6c/LICENSE
-github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1  ISC  [T79]  https://github.com/decred/dcrd/blob/dcrec/secp256k1/v4.4.1/dcrec/secp256k1/LICENSE
+github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1  ISC  [T81]  https://github.com/decred/dcrd/blob/dcrec/secp256k1/v4.4.1/dcrec/secp256k1/LICENSE
 github.com/dgraph-io/badger v1.6.2  Apache-2.0  [T45]  https://github.com/dgraph-io/badger/blob/v1.6.2/LICENSE
-github.com/dgraph-io/ristretto v0.0.2  MIT  [T80]  https://github.com/dgraph-io/ristretto/blob/v0.0.2/z/LICENSE
-github.com/dunglas/httpsfv v1.1.0  BSD-3-Clause  [T71]  https://github.com/dunglas/httpsfv/blob/v1.1.0/LICENSE
-github.com/dustin/go-humanize v1.0.1  MIT  [T81]  https://github.com/dustin/go-humanize/blob/v1.0.1/LICENSE
+github.com/dgraph-io/ristretto v0.0.2  MIT  [T82]  https://github.com/dgraph-io/ristretto/blob/v0.0.2/z/LICENSE
+github.com/dunglas/httpsfv v1.1.0  BSD-3-Clause  [T73]  https://github.com/dunglas/httpsfv/blob/v1.1.0/LICENSE
+github.com/dustin/go-humanize v1.0.1  MIT  [T83]  https://github.com/dustin/go-humanize/blob/v1.0.1/LICENSE
 github.com/elgris/jsondiff v0.0.0-20160530203242-765b5c24c302  MIT  [T2]  https://github.com/elgris/jsondiff/blob/765b5c24c302/LICENSE
-github.com/facebookgo/atomicfile v0.0.0-20151019160806-2de1f203e7d5  BSD-3-Clause  [T82]  https://github.com/facebookgo/atomicfile/blob/2de1f203e7d5/license
+github.com/facebookgo/atomicfile v0.0.0-20151019160806-2de1f203e7d5  BSD-3-Clause  [T84]  https://github.com/facebookgo/atomicfile/blob/2de1f203e7d5/license
 github.com/fatih/color v1.18.0  MIT  [T2]  https://github.com/fatih/color/blob/v1.18.0/LICENSE.md
 github.com/felixge/httpsnoop v1.0.4  MIT  [T1]  https://github.com/felixge/httpsnoop/blob/v1.0.4/LICENSE.txt
 github.com/filecoin-project/go-clock v0.1.0  MIT  [T2]  https://github.com/filecoin-project/go-clock/blob/v0.1.0/LICENSE
-github.com/flynn/noise v1.1.0  BSD-3-Clause  [T83]  https://github.com/flynn/noise/blob/v1.1.0/LICENSE
-github.com/fsnotify/fsnotify v1.10.1  BSD-3-Clause  [T71]  https://github.com/fsnotify/fsnotify/blob/v1.10.1/LICENSE
+github.com/flynn/noise v1.1.0  BSD-3-Clause  [T85]  https://github.com/flynn/noise/blob/v1.1.0/LICENSE
+github.com/fsnotify/fsnotify v1.10.1  BSD-3-Clause  [T73]  https://github.com/fsnotify/fsnotify/blob/v1.10.1/LICENSE
 github.com/gabriel-vasile/mimetype v1.4.13  MIT  [T4]  https://github.com/gabriel-vasile/mimetype/blob/v1.4.13/LICENSE
 github.com/gammazero/chanqueue v1.1.2  MIT  [T4]  https://github.com/gammazero/chanqueue/blob/v1.1.2/LICENSE
 github.com/gammazero/deque v1.2.1  MIT  [T4]  https://github.com/gammazero/deque/blob/v1.2.1/LICENSE
 github.com/getsentry/sentry-go v0.27.0  MIT  [T4]  https://github.com/getsentry/sentry-go/blob/v0.27.0/LICENSE
-github.com/go-jose/go-jose/v4 v4.1.4  BSD-3-Clause  [T71]  https://github.com/go-jose/go-jose/blob/v4.1.4/json/LICENSE
+github.com/go-jose/go-jose/v4 v4.1.4  BSD-3-Clause  [T73]  https://github.com/go-jose/go-jose/blob/v4.1.4/json/LICENSE
 github.com/go-kit/log v0.2.1  MIT  [T4]  https://github.com/go-kit/log/blob/v0.2.1/LICENSE
 github.com/go-logfmt/logfmt v0.6.0  MIT  [T2]  https://github.com/go-logfmt/logfmt/blob/v0.6.0/LICENSE
 github.com/go-logr/logr v1.4.3  Apache-2.0  [T13]  https://github.com/go-logr/logr/blob/v1.4.3/LICENSE
 github.com/go-logr/stdr v1.2.2  Apache-2.0  [T7]  https://github.com/go-logr/stdr/blob/v1.2.2/LICENSE
-github.com/gogo/protobuf v1.3.2  BSD-3-Clause  [T84]  https://github.com/gogo/protobuf/blob/v1.3.2/LICENSE
-github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da  Apache-2.0  [T78]  https://github.com/golang/groupcache/blob/41bb18bfe9da/LICENSE
-github.com/golang/protobuf v1.5.4  BSD-3-Clause  [T71]  https://github.com/golang/protobuf/blob/v1.5.4/LICENSE
-github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e  BSD-3-Clause  [T71]  https://github.com/golang/snappy/blob/43d5d4cd4e0e/LICENSE
-github.com/google/gopacket v1.1.19  BSD-3-Clause  [T85]  https://github.com/google/gopacket/blob/v1.1.19/LICENSE
-github.com/google/uuid v1.6.0  BSD-3-Clause  [T71]  https://github.com/google/uuid/blob/v1.6.0/LICENSE
-github.com/gorilla/mux v1.8.1  BSD-3-Clause  [T71]  https://github.com/gorilla/mux/blob/v1.8.1/LICENSE
-github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674  BSD-2-Clause  [T86]  https://github.com/gorilla/websocket/blob/e064f32e3674/LICENSE
-github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0  BSD-3-Clause  [T87]  https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.28.0/LICENSE
+github.com/gogo/protobuf v1.3.2  BSD-3-Clause  [T86]  https://github.com/gogo/protobuf/blob/v1.3.2/LICENSE
+github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da  Apache-2.0  [T80]  https://github.com/golang/groupcache/blob/41bb18bfe9da/LICENSE
+github.com/golang/protobuf v1.5.4  BSD-3-Clause  [T73]  https://github.com/golang/protobuf/blob/v1.5.4/LICENSE
+github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e  BSD-3-Clause  [T73]  https://github.com/golang/snappy/blob/43d5d4cd4e0e/LICENSE
+github.com/google/gopacket v1.1.19  BSD-3-Clause  [T87]  https://github.com/google/gopacket/blob/v1.1.19/LICENSE
+github.com/google/uuid v1.6.0  BSD-3-Clause  [T73]  https://github.com/google/uuid/blob/v1.6.0/LICENSE
+github.com/gorilla/mux v1.8.1  BSD-3-Clause  [T73]  https://github.com/gorilla/mux/blob/v1.8.1/LICENSE
+github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674  BSD-2-Clause  [T88]  https://github.com/gorilla/websocket/blob/e064f32e3674/LICENSE
+github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0  BSD-3-Clause  [T89]  https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.28.0/LICENSE
 github.com/guillaumemichel/reservedpool v0.3.0  MIT  [T4]  https://github.com/guillaumemichel/reservedpool/blob/v0.3.0/LICENSE
-github.com/hanwen/go-fuse/v2 v2.10.1  BSD-3-Clause  [T88]  https://github.com/hanwen/go-fuse/blob/v2.10.1/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
-github.com/hashicorp/go-version v1.9.0  MPL-2.0  [T89]  https://github.com/hashicorp/go-version/blob/v1.9.0/LICENSE
-github.com/hashicorp/golang-lru v1.0.2  MPL-2.0  [T90]  https://github.com/hashicorp/golang-lru/blob/v1.0.2/LICENSE
-github.com/hashicorp/golang-lru/v2 v2.0.7  MPL-2.0  [T90]  https://github.com/hashicorp/golang-lru/blob/v2.0.7/LICENSE
-github.com/huin/goupnp v1.3.0  BSD-2-Clause  [T91]  https://github.com/huin/goupnp/blob/v1.3.0/LICENSE
+github.com/hanwen/go-fuse/v2 v2.10.1  BSD-3-Clause  [T90]  https://github.com/hanwen/go-fuse/blob/v2.10.1/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+github.com/hashicorp/go-version v1.9.0  MPL-2.0  [T91]  https://github.com/hashicorp/go-version/blob/v1.9.0/LICENSE
+github.com/hashicorp/golang-lru v1.0.2  MPL-2.0  [T92]  https://github.com/hashicorp/golang-lru/blob/v1.0.2/LICENSE
+github.com/hashicorp/golang-lru/v2 v2.0.7  MPL-2.0  [T92]  https://github.com/hashicorp/golang-lru/blob/v2.0.7/LICENSE
+github.com/huin/goupnp v1.3.0  BSD-2-Clause  [T93]  https://github.com/huin/goupnp/blob/v1.3.0/LICENSE
 github.com/ipfs-shipyard/nopfs v0.0.14  Apache-2.0  [T7]  https://github.com/ipfs-shipyard/nopfs/blob/v0.0.14/LICENSE
 github.com/ipfs-shipyard/nopfs/ipfs v0.25.0  Apache-2.0  [T7]  https://github.com/ipfs-shipyard/nopfs/blob/ipfs/v0.25.0/ipfs/LICENSE
 github.com/ipfs/bbloom v0.1.0  MIT  [T4]  https://github.com/ipfs/bbloom/blob/v0.1.0/LICENSE
-github.com/ipfs/boxo v0.40.0  Apache-2.0  [T92]  https://github.com/ipfs/boxo/blob/v0.40.0/LICENSE.md
+github.com/ipfs/boxo v0.40.0  Apache-2.0  [T94]  https://github.com/ipfs/boxo/blob/v0.40.0/LICENSE.md
 github.com/ipfs/go-bitfield v1.1.0  MIT  [T2]  https://github.com/ipfs/go-bitfield/blob/v1.1.0/LICENSE-MIT
 github.com/ipfs/go-block-format v0.2.3  MIT  [T2]  https://github.com/ipfs/go-block-format/blob/v0.2.3/LICENSE
 github.com/ipfs/go-cid v0.6.1  MIT  [T2]  https://github.com/ipfs/go-cid/blob/v0.6.1/LICENSE
 github.com/ipfs/go-cidutil v0.1.1  MIT  [T2]  https://github.com/ipfs/go-cidutil/blob/v0.1.1/LICENSE
-github.com/ipfs/go-datastore v0.9.1  MIT  [T62]  https://github.com/ipfs/go-datastore/blob/v0.9.1/LICENSE
-github.com/ipfs/go-ds-badger v0.3.4  MIT  [T62]  https://github.com/ipfs/go-ds-badger/blob/v0.3.4/LICENSE
-github.com/ipfs/go-ds-flatfs v0.6.0  MIT  [T62]  https://github.com/ipfs/go-ds-flatfs/blob/v0.6.0/LICENSE
-github.com/ipfs/go-ds-leveldb v0.5.2  MIT  [T62]  https://github.com/ipfs/go-ds-leveldb/blob/v0.5.2/LICENSE
-github.com/ipfs/go-ds-measure v0.2.2  MIT  [T62]  https://github.com/ipfs/go-ds-measure/blob/v0.2.2/LICENSE
+github.com/ipfs/go-datastore v0.9.1  MIT  [T64]  https://github.com/ipfs/go-datastore/blob/v0.9.1/LICENSE
+github.com/ipfs/go-ds-badger v0.3.4  MIT  [T64]  https://github.com/ipfs/go-ds-badger/blob/v0.3.4/LICENSE
+github.com/ipfs/go-ds-flatfs v0.6.0  MIT  [T64]  https://github.com/ipfs/go-ds-flatfs/blob/v0.6.0/LICENSE
+github.com/ipfs/go-ds-leveldb v0.5.2  MIT  [T64]  https://github.com/ipfs/go-ds-leveldb/blob/v0.5.2/LICENSE
+github.com/ipfs/go-ds-measure v0.2.2  MIT  [T64]  https://github.com/ipfs/go-ds-measure/blob/v0.2.2/LICENSE
 github.com/ipfs/go-ds-pebble v0.5.11  MIT  [T1]  https://github.com/ipfs/go-ds-pebble/blob/v0.5.11/LICENSE-MIT
-github.com/ipfs/go-dsqueue v0.2.0  Apache-2.0  [T93]  https://github.com/ipfs/go-dsqueue/blob/v0.2.0/LICENSE.md
+github.com/ipfs/go-dsqueue v0.2.0  Apache-2.0  [T95]  https://github.com/ipfs/go-dsqueue/blob/v0.2.0/LICENSE.md
 github.com/ipfs/go-fs-lock v0.1.1  MIT  [T2]  https://github.com/ipfs/go-fs-lock/blob/v0.1.1/LICENSE
 github.com/ipfs/go-ipfs-cmds v0.16.1  MIT  [T2]  https://github.com/ipfs/go-ipfs-cmds/blob/v0.16.1/LICENSE
 github.com/ipfs/go-ipfs-ds-help v1.1.1  MIT  [T4]  https://github.com/ipfs/go-ipfs-ds-help/blob/v1.1.1/LICENSE
 github.com/ipfs/go-ipfs-pq v0.0.4  MIT  [T4]  https://github.com/ipfs/go-ipfs-pq/blob/v0.0.4/LICENSE
-github.com/ipfs/go-ipfs-redirects-file v0.1.2  MIT  [T94]  https://github.com/ipfs/go-ipfs-redirects-file/blob/v0.1.2/LICENSE
+github.com/ipfs/go-ipfs-redirects-file v0.1.2  MIT  [T96]  https://github.com/ipfs/go-ipfs-redirects-file/blob/v0.1.2/LICENSE
 github.com/ipfs/go-ipld-cbor v0.2.1  MIT  [T2]  https://github.com/ipfs/go-ipld-cbor/blob/v0.2.1/LICENSE
 github.com/ipfs/go-ipld-format v0.6.3  MIT  [T2]  https://github.com/ipfs/go-ipld-format/blob/v0.6.3/LICENSE
 github.com/ipfs/go-ipld-git v0.1.1  MIT  [T2]  https://github.com/ipfs/go-ipld-git/blob/v0.1.1/LICENSE
-github.com/ipfs/go-ipld-legacy v0.3.0  Apache-2.0  [T92]  https://github.com/ipfs/go-ipld-legacy/blob/v0.3.0/LICENSE.md
-github.com/ipfs/go-libdht v0.5.0  Apache-2.0  [T92]  https://github.com/ipfs/go-libdht/blob/v0.5.0/LICENSE.md
+github.com/ipfs/go-ipld-legacy v0.3.0  Apache-2.0  [T94]  https://github.com/ipfs/go-ipld-legacy/blob/v0.3.0/LICENSE.md
+github.com/ipfs/go-libdht v0.5.0  Apache-2.0  [T94]  https://github.com/ipfs/go-libdht/blob/v0.5.0/LICENSE.md
 github.com/ipfs/go-log/v2 v2.9.2  MIT  [T2]  https://github.com/ipfs/go-log/blob/v2.9.2/LICENSE
 github.com/ipfs/go-metrics-interface v0.3.0  MIT  [T2]  https://github.com/ipfs/go-metrics-interface/blob/v0.3.0/LICENSE
 github.com/ipfs/go-metrics-prometheus v0.1.0  MIT  [T2]  https://github.com/ipfs/go-metrics-prometheus/blob/v0.1.0/LICENSE
 github.com/ipfs/go-peertaskqueue v0.8.3  MIT  [T1]  https://github.com/ipfs/go-peertaskqueue/blob/v0.8.3/LICENSE-MIT
-github.com/ipfs/go-test v0.3.0  Apache-2.0  [T92]  https://github.com/ipfs/go-test/blob/v0.3.0/LICENSE.md
-github.com/ipfs/go-unixfsnode v1.10.4  Apache-2.0  [T92]  https://github.com/ipfs/go-unixfsnode/blob/v1.10.4/LICENSE.md
-github.com/ipld/go-car/v2 v2.16.1-0.20260428045700-c4b9f366f20c  Apache-2.0  [T92]  https://github.com/ipld/go-car/blob/c4b9f366f20c/v2/LICENSE.md
+github.com/ipfs/go-test v0.3.0  Apache-2.0  [T94]  https://github.com/ipfs/go-test/blob/v0.3.0/LICENSE.md
+github.com/ipfs/go-unixfsnode v1.10.4  Apache-2.0  [T94]  https://github.com/ipfs/go-unixfsnode/blob/v1.10.4/LICENSE.md
+github.com/ipld/go-car/v2 v2.16.1-0.20260428045700-c4b9f366f20c  Apache-2.0  [T94]  https://github.com/ipld/go-car/blob/c4b9f366f20c/v2/LICENSE.md
 github.com/ipld/go-codec-dagpb v1.7.0  MIT  [T1]  https://github.com/ipld/go-codec-dagpb/blob/v1.7.0/LICENSE-MIT
 github.com/ipld/go-ipld-prime v0.23.0  MIT  [T2]  https://github.com/ipld/go-ipld-prime/blob/v0.23.0/LICENSE
-github.com/ipshipyard/p2p-forge v0.9.0  Apache-2.0  [T95]  https://github.com/ipshipyard/p2p-forge/blob/v0.9.0/client/LICENSE.md
-github.com/jackpal/go-nat-pmp v1.0.2  Apache-2.0  [T96]
+github.com/ipshipyard/p2p-forge v0.9.0  Apache-2.0  [T97]  https://github.com/ipshipyard/p2p-forge/blob/v0.9.0/client/LICENSE.md
+github.com/jackpal/go-nat-pmp v1.0.2  Apache-2.0  [T98]
 github.com/jbenet/go-temp-err-catcher v0.1.0  MIT  [T2]  https://github.com/jbenet/go-temp-err-catcher/blob/v0.1.0/LICENSE
-github.com/klauspost/compress v1.18.4  MIT  [T97]  https://github.com/klauspost/compress/blob/v1.18.4/LICENSE
+github.com/klauspost/compress v1.18.4  MIT  [T99]  https://github.com/klauspost/compress/blob/v1.18.4/LICENSE
 github.com/klauspost/cpuid/v2 v2.3.0  MIT  [T2]  https://github.com/klauspost/cpuid/blob/v2.3.0/LICENSE
 github.com/koron/go-ssdp v0.0.6  MIT  [T2]  https://github.com/koron/go-ssdp/blob/v0.0.6/LICENSE
 github.com/kr/pretty v0.3.1  MIT  [T1]  https://github.com/kr/pretty/blob/v0.3.1/License
@@ -2093,25 +2085,25 @@ github.com/libp2p/go-libp2p-record v0.3.1  MIT  [T4]  https://github.com/libp2p/
 github.com/libp2p/go-libp2p-routing-helpers v0.7.5  MIT  [T2]  https://github.com/libp2p/go-libp2p-routing-helpers/blob/v0.7.5/LICENSE
 github.com/libp2p/go-libp2p-xor v0.1.0  MIT  [T2]  https://github.com/libp2p/go-libp2p-xor/blob/v0.1.0/LICENSE
 github.com/libp2p/go-msgio v0.3.0  MIT  [T2]  https://github.com/libp2p/go-msgio/blob/v0.3.0/LICENSE
-github.com/libp2p/go-netroute v0.4.0  BSD-3-Clause  [T85]  https://github.com/libp2p/go-netroute/blob/v0.4.0/LICENSE
-github.com/libp2p/go-reuseport v0.4.0  ISC  [T98]  https://github.com/libp2p/go-reuseport/blob/v0.4.0/LICENSE
+github.com/libp2p/go-netroute v0.4.0  BSD-3-Clause  [T87]  https://github.com/libp2p/go-netroute/blob/v0.4.0/LICENSE
+github.com/libp2p/go-reuseport v0.4.0  ISC  [T100]  https://github.com/libp2p/go-reuseport/blob/v0.4.0/LICENSE
 github.com/libp2p/go-socket-activation v0.1.1  MIT  [T2]  https://github.com/libp2p/go-socket-activation/blob/v0.1.1/LICENSE
-github.com/libp2p/go-yamux/v5 v5.0.1  MPL-2.0  [T90]  https://github.com/libp2p/go-yamux/blob/v5.0.1/LICENSE
-github.com/libp2p/zeroconf/v2 v2.2.0  MIT  [T99]  https://github.com/libp2p/zeroconf/blob/v2.2.0/LICENSE
-github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd  BSD-2-Clause  [T91]  https://github.com/marten-seemann/tcp/blob/dfbc87cc63fd/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+github.com/libp2p/go-yamux/v5 v5.0.1  MPL-2.0  [T92]  https://github.com/libp2p/go-yamux/blob/v5.0.1/LICENSE
+github.com/libp2p/zeroconf/v2 v2.2.0  MIT  [T101]  https://github.com/libp2p/zeroconf/blob/v2.2.0/LICENSE
+github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd  BSD-2-Clause  [T93]  https://github.com/marten-seemann/tcp/blob/dfbc87cc63fd/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 github.com/mattn/go-colorable v0.1.14  MIT  [T2]  https://github.com/mattn/go-colorable/blob/v0.1.14/LICENSE
-github.com/mattn/go-isatty v0.0.22  MIT  [T100]  https://github.com/mattn/go-isatty/blob/v0.0.22/LICENSE
+github.com/mattn/go-isatty v0.0.22  MIT  [T102]  https://github.com/mattn/go-isatty/blob/v0.0.22/LICENSE
 github.com/mattn/go-runewidth v0.0.16  MIT  [T2]  https://github.com/mattn/go-runewidth/blob/v0.0.16/LICENSE
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b  MIT  [T2]  https://github.com/mgutz/ansi/blob/9520e82c474b/LICENSE
 github.com/mholt/acmez/v3 v3.1.6  Apache-2.0  [T7]  https://github.com/mholt/acmez/blob/v3.1.6/LICENSE
 github.com/miekg/dns v1.1.72  BSD-3-Clause  [T51]  https://github.com/miekg/dns/blob/v1.1.72/LICENSE
-github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b  BSD-2-Clause  [T91]  https://github.com/mikioh/tcpinfo/blob/30a79bb1804b/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
-github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc  BSD-2-Clause  [T91]  https://github.com/mikioh/tcpopt/blob/172688c1accc/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b  BSD-2-Clause  [T93]  https://github.com/mikioh/tcpinfo/blob/30a79bb1804b/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
+github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc  BSD-2-Clause  [T93]  https://github.com/mikioh/tcpopt/blob/172688c1accc/LICENSE  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 github.com/minio/minlz v1.0.1-0.20250507153514-87eb42fe8882  Apache-2.0  [T45]  https://github.com/minio/minlz/blob/87eb42fe8882/LICENSE
 github.com/minio/sha256-simd v1.0.1  Apache-2.0  [T7]  https://github.com/minio/sha256-simd/blob/v1.0.1/LICENSE
 github.com/mr-tron/base58 v1.3.0  MIT  [T4]  https://github.com/mr-tron/base58/blob/v1.3.0/LICENSE
-github.com/multiformats/go-base32 v0.1.0  BSD-3-Clause  [T71]  https://github.com/multiformats/go-base32/blob/v0.1.0/LICENSE
-github.com/multiformats/go-base36 v0.2.0  Apache-2.0  [T101]
+github.com/multiformats/go-base32 v0.1.0  BSD-3-Clause  [T73]  https://github.com/multiformats/go-base32/blob/v0.1.0/LICENSE
+github.com/multiformats/go-base36 v0.2.0  Apache-2.0  [T103]
 github.com/multiformats/go-multiaddr v0.16.1  MIT  [T2]  https://github.com/multiformats/go-multiaddr/blob/v0.16.1/LICENSE
 github.com/multiformats/go-multiaddr-dns v0.5.0  MIT  [T2]  https://github.com/multiformats/go-multiaddr-dns/blob/v0.5.0/LICENSE
 github.com/multiformats/go-multiaddr-fmt v0.1.0  MIT  [T2]  https://github.com/multiformats/go-multiaddr-fmt/blob/v0.1.0/LICENSE
@@ -2120,10 +2112,10 @@ github.com/multiformats/go-multicodec v0.10.0  MIT  [T2]  https://github.com/mul
 github.com/multiformats/go-multihash v0.2.3  MIT  [T2]  https://github.com/multiformats/go-multihash/blob/v0.2.3/LICENSE
 github.com/multiformats/go-multistream v0.6.1  MIT  [T2]  https://github.com/multiformats/go-multistream/blob/v0.6.1/LICENSE
 github.com/multiformats/go-varint v0.1.0  MIT  [T2]  https://github.com/multiformats/go-varint/blob/v0.1.0/LICENSE
-github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822  BSD-3-Clause  [T102]  https://github.com/munnerz/goautoneg/blob/a7dc8b61c822/LICENSE
-github.com/opentracing/opentracing-go v1.2.0  Apache-2.0  [T103]  https://github.com/opentracing/opentracing-go/blob/v1.2.0/LICENSE
-github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58  BSD-3-Clause  [T104]  https://github.com/pbnjay/memory/blob/7b4eea64cf58/LICENSE
-github.com/petar/GoLLRB v0.0.0-20210522233825-ae3b015fd3e9  BSD-3-Clause  [T105]  https://github.com/petar/GoLLRB/blob/ae3b015fd3e9/LICENSE
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822  BSD-3-Clause  [T104]  https://github.com/munnerz/goautoneg/blob/a7dc8b61c822/LICENSE
+github.com/opentracing/opentracing-go v1.2.0  Apache-2.0  [T105]  https://github.com/opentracing/opentracing-go/blob/v1.2.0/LICENSE
+github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58  BSD-3-Clause  [T106]  https://github.com/pbnjay/memory/blob/7b4eea64cf58/LICENSE
+github.com/petar/GoLLRB v0.0.0-20210522233825-ae3b015fd3e9  BSD-3-Clause  [T107]  https://github.com/petar/GoLLRB/blob/ae3b015fd3e9/LICENSE
 github.com/pion/datachannel v1.5.10  MIT  [T4]  https://github.com/pion/datachannel/blob/v1.5.10/LICENSE
 github.com/pion/dtls/v3 v3.1.2  MIT  [T4]  https://github.com/pion/dtls/blob/v3.1.2/LICENSE
 github.com/pion/ice/v4 v4.0.10  MIT  [T4]  https://github.com/pion/ice/blob/v4.0.10/LICENSE
@@ -2141,10 +2133,10 @@ github.com/pion/transport/v3 v3.0.7  MIT  [T4]  https://github.com/pion/transpor
 github.com/pion/transport/v4 v4.0.1  MIT  [T4]  https://github.com/pion/transport/blob/v4.0.1/LICENSE
 github.com/pion/turn/v4 v4.0.2  MIT  [T4]  https://github.com/pion/turn/blob/v4.0.2/LICENSE
 github.com/pion/webrtc/v4 v4.1.2  MIT  [T4]  https://github.com/pion/webrtc/blob/v4.1.2/LICENSE
-github.com/pkg/errors v0.9.1  BSD-2-Clause  [T91]  https://github.com/pkg/errors/blob/v0.9.1/LICENSE
+github.com/pkg/errors v0.9.1  BSD-2-Clause  [T93]  https://github.com/pkg/errors/blob/v0.9.1/LICENSE
 github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a  MIT  [T2]  https://github.com/polydawn/refmt/blob/37766d95467a/LICENSE
-github.com/probe-lab/go-libdht v0.4.0  Apache-2.0  [T92]  https://github.com/probe-lab/go-libdht/blob/v0.4.0/LICENSE.md
-github.com/prometheus/client_golang v1.23.2  BSD-3-Clause  [T71]  https://github.com/prometheus/client_golang/blob/v1.23.2/internal/github.com/golang/gddo/LICENSE
+github.com/probe-lab/go-libdht v0.4.0  Apache-2.0  [T94]  https://github.com/probe-lab/go-libdht/blob/v0.4.0/LICENSE.md
+github.com/prometheus/client_golang v1.23.2  BSD-3-Clause  [T73]  https://github.com/prometheus/client_golang/blob/v1.23.2/internal/github.com/golang/gddo/LICENSE
 github.com/prometheus/client_model v0.6.2  Apache-2.0  [T7]  https://github.com/prometheus/client_model/blob/v0.6.2/LICENSE
 github.com/prometheus/common v0.67.5  Apache-2.0  [T7]  https://github.com/prometheus/common/blob/v0.67.5/LICENSE
 github.com/prometheus/otlptranslator v1.0.0  Apache-2.0  [T7]  https://github.com/prometheus/otlptranslator/blob/v1.0.0/LICENSE
@@ -2154,41 +2146,41 @@ github.com/quic-go/qpack v0.6.0  MIT  [T1]  https://github.com/quic-go/qpack/blo
 github.com/quic-go/quic-go v0.59.0  MIT  [T4]  https://github.com/quic-go/quic-go/blob/v0.59.0/LICENSE
 github.com/quic-go/webtransport-go v0.10.0  MIT  [T1]  https://github.com/quic-go/webtransport-go/blob/v0.10.0/LICENSE
 github.com/rivo/uniseg v0.4.7  MIT  [T4]  https://github.com/rivo/uniseg/blob/v0.4.7/LICENSE.txt
-github.com/rogpeppe/go-internal v1.14.1  BSD-3-Clause  [T71]  https://github.com/rogpeppe/go-internal/blob/v1.14.1/LICENSE
+github.com/rogpeppe/go-internal v1.14.1  BSD-3-Clause  [T73]  https://github.com/rogpeppe/go-internal/blob/v1.14.1/LICENSE
 github.com/rs/cors v1.11.1  MIT  [T1]  https://github.com/rs/cors/blob/v1.11.1/LICENSE
-github.com/slok/go-http-metrics v0.13.0  Apache-2.0  [T106]  https://github.com/slok/go-http-metrics/blob/v0.13.0/LICENSE
-github.com/spaolacci/murmur3 v1.1.0  BSD-3-Clause  [T107]  https://github.com/spaolacci/murmur3/blob/v1.1.0/LICENSE
-github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d  BSD-2-Clause  [T91]  https://github.com/syndtr/goleveldb/blob/126854af5e6d/LICENSE
+github.com/slok/go-http-metrics v0.13.0  Apache-2.0  [T108]  https://github.com/slok/go-http-metrics/blob/v0.13.0/LICENSE
+github.com/spaolacci/murmur3 v1.1.0  BSD-3-Clause  [T109]  https://github.com/spaolacci/murmur3/blob/v1.1.0/LICENSE
+github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d  BSD-2-Clause  [T93]  https://github.com/syndtr/goleveldb/blob/126854af5e6d/LICENSE
 github.com/texttheater/golang-levenshtein v1.0.1  MIT  [T2]  https://github.com/texttheater/golang-levenshtein/blob/v1.0.1/LICENSE
 github.com/ucarion/urlpath v0.0.0-20200424170820-7ccc79b76bbb  MIT  [T4]  https://github.com/ucarion/urlpath/blob/7ccc79b76bbb/LICENSE
-github.com/whyrusleeping/base32 v0.0.0-20170828182744-c30ac30633cc  BSD-3-Clause  [T75]
-github.com/whyrusleeping/cbor v0.0.0-20171005072247-63513f603b11  Apache-2.0  [T96]
+github.com/whyrusleeping/base32 v0.0.0-20170828182744-c30ac30633cc  BSD-3-Clause  [T77]
+github.com/whyrusleeping/cbor v0.0.0-20171005072247-63513f603b11  Apache-2.0  [T98]
 github.com/whyrusleeping/cbor-gen v0.3.1  MIT  [T2]  https://github.com/whyrusleeping/cbor-gen/blob/v0.3.1/LICENSE
 github.com/whyrusleeping/chunker v0.0.0-20181014151217-fe64bd25879f  BSD-2-Clause  [T46]  https://github.com/whyrusleeping/chunker/blob/fe64bd25879f/LICENSE
 github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1  MIT  [T2]  https://github.com/whyrusleeping/go-keyspace/blob/5b898ac5add1/LICENSE
 github.com/whyrusleeping/go-sysinfo v0.0.0-20190219211824-4a357d4b90b1  MIT  [T2]  https://github.com/whyrusleeping/go-sysinfo/blob/4a357d4b90b1/LICENSE
 github.com/whyrusleeping/multiaddr-filter v0.0.0-20160516205228-e903e4adabd7  MIT  [T2]  https://github.com/whyrusleeping/multiaddr-filter/blob/e903e4adabd7/LICENSE
 github.com/wlynxg/anet v0.0.5  BSD-3-Clause  [T51]  https://github.com/wlynxg/anet/blob/v0.0.5/LICENSE
-github.com/zeebo/blake3 v0.2.4  CC0-1.0  [T108]  https://github.com/zeebo/blake3/blob/v0.2.4/LICENSE
-go (standard library) go1.26.4  BSD-3-Clause  [T75]  https://go.dev/LICENSE
+github.com/zeebo/blake3 v0.2.4  CC0-1.0  [T110]  https://github.com/zeebo/blake3/blob/v0.2.4/LICENSE
+go (standard library) go1.26.4  BSD-3-Clause  [T77]  https://go.dev/LICENSE
 go.opencensus.io v0.24.0  Apache-2.0  [T7]  https://github.com/census-instrumentation/opencensus-go/blob/v0.24.0/LICENSE
 go.opentelemetry.io/auto/sdk v1.2.1  Apache-2.0  [T7]  https://github.com/open-telemetry/opentelemetry-go-instrumentation/blob/sdk/v1.2.1/sdk/LICENSE
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.68.0/instrumentation/net/http/otelhttp/LICENSE
-go.opentelemetry.io/contrib/propagators/autoprop v0.68.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/autoprop/v0.68.0/propagators/autoprop/LICENSE
-go.opentelemetry.io/contrib/propagators/aws v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/aws/v1.43.0/propagators/aws/LICENSE
-go.opentelemetry.io/contrib/propagators/b3 v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/b3/v1.43.0/propagators/b3/LICENSE
-go.opentelemetry.io/contrib/propagators/jaeger v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/jaeger/v1.43.0/propagators/jaeger/LICENSE
-go.opentelemetry.io/contrib/propagators/ot v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/ot/v1.43.0/propagators/ot/LICENSE
-go.opentelemetry.io/otel v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/v1.43.0/LICENSE
-go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.42.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/v1.42.0/exporters/otlp/otlptrace/LICENSE
-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/otlptracegrpc/v1.42.0/exporters/otlp/otlptrace/otlptracegrpc/LICENSE
-go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.42.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/otlptracehttp/v1.42.0/exporters/otlp/otlptrace/otlptracehttp/LICENSE
-go.opentelemetry.io/otel/exporters/prometheus v0.65.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/prometheus/v0.65.0/exporters/prometheus/LICENSE
-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.42.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdouttrace/v1.42.0/exporters/stdout/stdouttrace/LICENSE
-go.opentelemetry.io/otel/metric v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/metric/v1.43.0/metric/LICENSE
-go.opentelemetry.io/otel/sdk v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/sdk/v1.43.0/sdk/LICENSE
-go.opentelemetry.io/otel/sdk/metric v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/sdk/metric/v1.43.0/sdk/metric/LICENSE
-go.opentelemetry.io/otel/trace v1.43.0  Apache-2.0  [T109]  https://github.com/open-telemetry/opentelemetry-go/blob/trace/v1.43.0/trace/LICENSE
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.68.0/instrumentation/net/http/otelhttp/LICENSE
+go.opentelemetry.io/contrib/propagators/autoprop v0.68.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/autoprop/v0.68.0/propagators/autoprop/LICENSE
+go.opentelemetry.io/contrib/propagators/aws v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/aws/v1.43.0/propagators/aws/LICENSE
+go.opentelemetry.io/contrib/propagators/b3 v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/b3/v1.43.0/propagators/b3/LICENSE
+go.opentelemetry.io/contrib/propagators/jaeger v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/jaeger/v1.43.0/propagators/jaeger/LICENSE
+go.opentelemetry.io/contrib/propagators/ot v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go-contrib/blob/propagators/ot/v1.43.0/propagators/ot/LICENSE
+go.opentelemetry.io/otel v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/v1.43.0/LICENSE
+go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.42.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/v1.42.0/exporters/otlp/otlptrace/LICENSE
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/otlptracegrpc/v1.42.0/exporters/otlp/otlptrace/otlptracegrpc/LICENSE
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.42.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/otlptracehttp/v1.42.0/exporters/otlp/otlptrace/otlptracehttp/LICENSE
+go.opentelemetry.io/otel/exporters/prometheus v0.65.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/prometheus/v0.65.0/exporters/prometheus/LICENSE
+go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.42.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdouttrace/v1.42.0/exporters/stdout/stdouttrace/LICENSE
+go.opentelemetry.io/otel/metric v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/metric/v1.43.0/metric/LICENSE
+go.opentelemetry.io/otel/sdk v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/sdk/v1.43.0/sdk/LICENSE
+go.opentelemetry.io/otel/sdk/metric v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/sdk/metric/v1.43.0/sdk/metric/LICENSE
+go.opentelemetry.io/otel/trace v1.43.0  Apache-2.0  [T111]  https://github.com/open-telemetry/opentelemetry-go/blob/trace/v1.43.0/trace/LICENSE
 go.opentelemetry.io/proto/otlp v1.9.0  Apache-2.0  [T7]  https://github.com/open-telemetry/opentelemetry-proto-go/blob/otlp/v1.9.0/otlp/LICENSE
 go.uber.org/dig v1.19.0  MIT  [T1]  https://github.com/uber-go/dig/blob/v1.19.0/LICENSE
 go.uber.org/fx v1.24.0  MIT  [T1]  https://github.com/uber-go/fx/blob/v1.24.0/LICENSE
@@ -2197,23 +2189,23 @@ go.uber.org/zap v1.28.0  MIT  [T1]  https://github.com/uber-go/zap/blob/v1.28.0/
 go.uber.org/zap/exp v0.3.0  MIT  [T1]  https://github.com/uber-go/zap/blob/exp/v0.3.0/exp/LICENSE
 go.yaml.in/yaml/v2 v2.4.4  Apache-2.0  [T13]  https://github.com/yaml/go-yaml/blob/v2.4.4/LICENSE
 go4.org v0.0.0-20230225012048-214862532bf5  Apache-2.0  [T13]  https://github.com/go4org/go4/blob/214862532bf5/LICENSE
-golang.org/x/crypto v0.51.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/crypto/+/v0.51.0:LICENSE
-golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/exp/+/74f9aab9:LICENSE
-golang.org/x/net v0.54.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/net/+/v0.54.0:LICENSE
-golang.org/x/oauth2 v0.36.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/oauth2/+/v0.36.0:LICENSE
-golang.org/x/sync v0.20.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/sync/+/v0.20.0:LICENSE
-golang.org/x/sys v0.45.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/sys/+/v0.45.0:LICENSE
-golang.org/x/term v0.43.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/term/+/v0.43.0:LICENSE
-golang.org/x/text v0.37.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/text/+/v0.37.0:LICENSE
-golang.org/x/time v0.15.0  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/time/+/v0.15.0:LICENSE
-golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da  BSD-3-Clause  [T75]  https://cs.opensource.google/go/x/xerrors/+/7835f813:LICENSE
-gonum.org/v1/gonum v0.17.0  BSD-3-Clause  [T110]  https://github.com/gonum/gonum/blob/v0.17.0/LICENSE
+golang.org/x/crypto v0.51.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/crypto/+/v0.51.0:LICENSE
+golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/exp/+/74f9aab9:LICENSE
+golang.org/x/net v0.54.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/net/+/v0.54.0:LICENSE
+golang.org/x/oauth2 v0.36.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/oauth2/+/v0.36.0:LICENSE
+golang.org/x/sync v0.20.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/sync/+/v0.20.0:LICENSE
+golang.org/x/sys v0.45.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/sys/+/v0.45.0:LICENSE
+golang.org/x/term v0.43.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/term/+/v0.43.0:LICENSE
+golang.org/x/text v0.37.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/text/+/v0.37.0:LICENSE
+golang.org/x/time v0.15.0  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/time/+/v0.15.0:LICENSE
+golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da  BSD-3-Clause  [T77]  https://cs.opensource.google/go/x/xerrors/+/7835f813:LICENSE
+gonum.org/v1/gonum v0.17.0  BSD-3-Clause  [T112]  https://github.com/gonum/gonum/blob/v0.17.0/LICENSE
 google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7  Apache-2.0  [T7]  https://github.com/googleapis/go-genproto/blob/d00831a3d3e7/googleapis/api/LICENSE
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9  Apache-2.0  [T7]  https://github.com/googleapis/go-genproto/blob/9d38bb4040a9/googleapis/rpc/LICENSE
 google.golang.org/grpc v1.80.0  Apache-2.0  [T7]  https://github.com/grpc/grpc-go/blob/v1.80.0/LICENSE
-google.golang.org/protobuf v1.36.11  BSD-3-Clause  [T71]  https://github.com/protocolbuffers/protobuf-go/blob/v1.36.11/LICENSE
+google.golang.org/protobuf v1.36.11  BSD-3-Clause  [T73]  https://github.com/protocolbuffers/protobuf-go/blob/v1.36.11/LICENSE
 gopkg.in/yaml.v2 v2.4.0  Apache-2.0  [T13]  https://github.com/go-yaml/yaml/blob/v2.4.0/LICENSE
-gopkg.in/yaml.v3 v3.0.1  MIT  [T111]  https://github.com/go-yaml/yaml/blob/v3.0.1/LICENSE
+gopkg.in/yaml.v3 v3.0.1  MIT  [T113]  https://github.com/go-yaml/yaml/blob/v3.0.1/LICENSE
 lukechampine.com/blake3 v1.4.1  MIT  [T2]  https://github.com/lukechampine/blake3/blob/v1.4.1/LICENSE
 
 ## mem-mcp
@@ -2233,8 +2225,8 @@ bit-vec 0.8.0  Apache-2.0 OR MIT  [T1]  https://github.com/contain-rs/bit-vec
 bitflags 2.13.0  MIT OR Apache-2.0  [T1]  https://github.com/bitflags/bitflags
 blake3 1.8.5  CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception  [T7]  https://github.com/BLAKE3-team/BLAKE3
 block-buffer 0.10.4  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/utils
-bytemuck 1.25.0  Zlib OR Apache-2.0 OR MIT  [T112]  https://github.com/Lokathor/bytemuck
-bytemuck_derive 1.10.2  Zlib OR Apache-2.0 OR MIT  [T112]  https://github.com/Lokathor/bytemuck
+bytemuck 1.25.0  Zlib OR Apache-2.0 OR MIT  [T114]  https://github.com/Lokathor/bytemuck
+bytemuck_derive 1.10.2  Zlib OR Apache-2.0 OR MIT  [T114]  https://github.com/Lokathor/bytemuck
 byteorder 1.5.0  Unlicense OR MIT  [T2]  https://github.com/BurntSushi/byteorder
 bytes 1.11.1  MIT  [T1]  https://github.com/tokio-rs/bytes
 candle-core 0.10.2  MIT OR Apache-2.0  [T4]  https://github.com/huggingface/candle
@@ -2283,7 +2275,7 @@ enum-as-inner 0.6.1  MIT OR Apache-2.0  [T1]  https://github.com/bluejekyll/enum
 equivalent 1.0.2  Apache-2.0 OR MIT  [T1]  https://github.com/indexmap-rs/equivalent
 errno 0.3.14  MIT OR Apache-2.0  [T1]  https://github.com/lambda-fairy/rust-errno  (on aarch64-apple-darwin only)
 esaxx-rs 0.1.10  Apache-2.0  [T7]  https://github.com/Narsil/esaxx-rs
-fancy-regex 0.17.0  MIT  [T62]  https://github.com/fancy-regex/fancy-regex
+fancy-regex 0.17.0  MIT  [T64]  https://github.com/fancy-regex/fancy-regex
 fastrand 2.4.1  Apache-2.0 OR MIT  [T1]  https://github.com/smol-rs/fastrand  (on aarch64-apple-darwin only)
 flate2 1.1.9  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/flate2-rs
 float8 0.7.0  MIT  [T4]  https://github.com/EricLBuehler/float8
@@ -2365,8 +2357,8 @@ num-traits 0.2.19  MIT OR Apache-2.0  [T1]  https://github.com/rust-num/num-trai
 num_cpus 1.17.0  MIT OR Apache-2.0  [T1]  https://github.com/seanmonstar/num_cpus
 number_prefix 0.4.0  MIT  [T4]  https://github.com/ogham/rust-number-prefix
 once_cell 1.21.4  MIT OR Apache-2.0  [T1]  https://github.com/matklad/once_cell
-onig 6.5.3  MIT  [T113]  https://github.com/iwillspeak/rust-onig
-onig_sys 69.9.3  MIT  [T114]  https://github.com/rust-onig/rust-onig
+onig 6.5.3  MIT  [T115]  https://github.com/iwillspeak/rust-onig
+onig_sys 69.9.3  MIT  [T116]  https://github.com/rust-onig/rust-onig
 opaque-debug 0.3.1  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/utils
 openssl 0.10.80  Apache-2.0  [T13]  https://github.com/rust-openssl/rust-openssl  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 openssl-macros 0.1.1  MIT OR Apache-2.0  [T1]  https://crates.io/crates/openssl-macros/0.1.1  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
@@ -2851,14 +2843,12 @@ Copyright (c) 2018 Tom Kaitchuck
   applies to: ahash 0.8.12
 Copyright (c) 2018 auto_impl Developers
   applies to: auto_impl 1.3.0
-Copyright (c) 2018 directories-rs contributors
-  applies to: directories-next 2.0.0
 Copyright (c) 2018-2019 Sean McArthur
   applies to: want 0.3.1
 Copyright (c) 2018-2019 The RustCrypto Project Developers
   applies to: block-buffer 0.10.4, block-buffer 0.7.3, block-padding 0.1.5, byte-tools 0.3.1, opaque-debug 0.2.3
 Copyright (c) 2018-2019 dirs-rs contributors
-  applies to: dirs 5.0.1, dirs 6.0.0, dirs-sys 0.4.1, dirs-sys 0.5.0, dirs-sys-next 0.1.2
+  applies to: dirs 5.0.1, dirs 6.0.0, dirs-sys 0.4.1, dirs-sys 0.5.0
 Copyright (c) 2018-2022 RustCrypto Developers
   applies to: ecdsa 0.16.9, keccak 0.1.6, rfc6979 0.4.0
 Copyright (c) 2018-2022 RustCrypto Developers
@@ -2994,7 +2984,7 @@ Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
 Copyright (c) 2025 Dmitry Rodionov
   applies to: debug_unsafe 0.1.4
 Copyright (c) Individual contributors
-  applies to: anstream 1.0.0, anstyle 1.0.14, anstyle-parse 1.0.0, anstyle-query 1.1.5, anstyle-wincon 3.0.11, clap 4.6.1, clap_builder 4.6.0, clap_derive 4.6.1, clap_lex 1.1.0, colorchoice 1.0.5, is_terminal_polyfill 1.70.2, once_cell_polyfill 1.70.2, serde_spanned 0.6.9, serde_spanned 1.1.1, toml 0.8.23, toml 0.9.12+spec-1.1.0, toml 1.1.2+spec-1.1.0, toml 1.1.6+spec-1.1.0, toml_datetime 0.6.11, toml_datetime 0.7.5+spec-1.1.0, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.19.15, toml_edit 0.20.2, toml_edit 0.22.27, toml_edit 0.25.12+spec-1.1.0, toml_parser 1.1.2+spec-1.1.0, toml_parser 1.1.3+spec-1.1.0, toml_write 0.1.2, toml_writer 1.1.1+spec-1.1.0, toml_writer 1.1.2+spec-1.1.0
+  applies to: anstream 1.0.0, anstyle 1.0.14, anstyle-parse 1.0.0, anstyle-query 1.1.5, anstyle-wincon 3.0.11, clap 4.6.1, clap_builder 4.6.0, clap_derive 4.6.1, clap_lex 1.1.0, colorchoice 1.0.5, is_terminal_polyfill 1.70.2, once_cell_polyfill 1.70.2, serde_spanned 0.6.9, serde_spanned 1.1.1, toml 0.8.23, toml 0.9.12+spec-1.1.0, toml 1.1.2+spec-1.1.0, toml_datetime 0.6.11, toml_datetime 0.7.5+spec-1.1.0, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.19.15, toml_edit 0.20.2, toml_edit 0.22.27, toml_edit 0.25.12+spec-1.1.0, toml_parser 1.1.2+spec-1.1.0, toml_write 0.1.2, toml_writer 1.1.1+spec-1.1.0
 Copyright (c) Jacob Pratt
   applies to: num-conv 0.2.1, num-conv 0.2.2
 Copyright (c) Jacob Pratt et al.
@@ -3099,7 +3089,7 @@ Copyright (c) 2014 Cenk Altı
 Copyright (c) 2014 Juan Batiz-Benet
   applies to: github.com/ipfs/go-log/v2 v2.9.2, github.com/jbenet/go-temp-err-catcher v0.1.0, github.com/libp2p/go-buffer-pool v0.1.0, github.com/libp2p/go-libp2p v0.48.0, github.com/libp2p/go-msgio v0.3.0, github.com/multiformats/go-multiaddr v0.16.1, github.com/multiformats/go-multiaddr-dns v0.5.0, github.com/multiformats/go-multihash v0.2.3
 Copyright (c) 2014 Mathijs van de Nes
-  applies to: spin 0.9.8, spin 0.9.9, tracing-core 0.1.36, zip 8.6.0, zip 9.0.4
+  applies to: spin 0.9.8, spin 0.9.9, tracing-core 0.1.36, zip 9.0.4, zip 9.0.5
 Copyright (c) 2014 Paho Lurie-Gregg
   applies to: typenum 1.20.0, typenum 1.20.1
 Copyright (c) 2014 Ty Overby
@@ -3153,7 +3143,7 @@ Copyright (c) 2015-2020 Julien Cretin
 Copyright (c) 2017-2020 Google Inc.
   applies to: data-encoding 2.10.0, data-encoding 2.11.0, data-encoding 2.11.1, data-encoding-macro 0.1.21, data-encoding-macro-internal 0.1.19
 Copyright (c) 2016 Alexandre Bury
-  applies to: zstd 0.13.3, zstd-safe 7.2.4, zstd-sys 2.0.16+zstd.1.5.7
+  applies to: zstd-sys 2.0.16+zstd.1.5.7
 Copyright (c) 2016 Eric Myhre
   applies to: github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a
 Copyright (c) 2016 IPFS
@@ -3163,7 +3153,7 @@ Copyright (c) 2016 Jelte Fennema
 Copyright (c) 2016 Jeromy Johnson
   applies to: github.com/ipfs/go-ipld-cbor v0.2.1, github.com/ipfs/go-ipld-format v0.6.3, github.com/multiformats/go-multiaddr-fmt v0.1.0, github.com/multiformats/go-multistream v0.6.1, github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1, github.com/whyrusleeping/go-sysinfo v0.0.0-20190219211824-4a357d4b90b1
 Copyright (c) 2016 Johann Tuffe
-  applies to: calamine 0.36.1, quick-xml 0.41.0
+  applies to: calamine 0.37.0, quick-xml 0.41.0, quick-xml 0.42.0
 Copyright (c) 2016 Jonathan Creekmore
   applies to: pem 3.0.6
 Copyright (c) 2016 MURAOKA Taro <koron.kaoriya@gmail.com>
@@ -3456,11 +3446,11 @@ Copyright (c) 2025 sarah quiñones el kazdadi
 Copyright (c) 2026 The Pion community <https://pion.ly>
   applies to: github.com/pion/dtls/v3 v3.1.2, github.com/pion/sdp/v3 v3.0.18
 Copyright (c) <year> <copyright holders>
-  applies to: alloy-primitives 0.7.7, alloy-rlp 0.3.15, ark-snark 0.4.0, base256emoji 1.0.2, base45 3.2.0, block2 0.6.2, brotli-decompressor 5.0.3, candle-core 0.10.2, candle-nn 0.10.2, candle-transformers 0.10.2, chrono 0.4.44, const-str 0.4.3, convert_case 0.4.0, dispatch2 0.3.1, dlopen2 0.8.2, dlopen2_derive 0.4.3, dpi 0.1.2, ethbloom 0.13.0, ethereum-types 0.14.1, ff_derive 0.13.1, fixed-hash 0.8.0, futures-bounded 0.2.4, fxprof-processed-profile 0.8.1, github.com/pion/rtp v1.8.19, halo2derive 0.2.0, if-watch 3.2.2, impl-rlp 0.3.0, impl-serde 0.4.0, jsonrpc-core 18.0.0, jsonrpc-derive 18.0.0, jsonrpc-http-server 18.0.0, jsonrpc-server-utils 18.0.0, jsonrpc-ws-server 18.0.0, kernel32-sys 0.2.2, libm 0.2.16, libp2p-allow-block-list 0.6.0, libp2p-connection-limits 0.6.0, libp2p-core 0.43.2, libp2p-gossipsub 0.49.5, libp2p-identify 0.47.0, libp2p-noise 0.46.1, libp2p-swarm 0.47.1, libp2p-swarm-derive 0.35.1, libp2p-tcp 0.44.1, libp2p-yamux 0.47.0, librocksdb-sys 0.16.0+8.10.0, match-lookup 0.1.3, minisign-verify 0.2.5, multistream-select 0.13.0, netlink-packet-core 0.8.2, netlink-proto 0.12.2, netlink-sys 0.8.8, number_prefix 0.4.0, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-core-foundation 0.3.2, objc2-encode 4.1.0, objc2-exception-helper 0.1.1, objc2-foundation 0.3.2, objc2-io-kit 0.3.2, objc2-osa-kit 0.3.2, objc2-web-kit 0.3.2, openmls 0.8.1, openmls_basic_credential 0.5.0, openmls_memory_storage 0.5.0, openmls_rust_crypto 0.5.1, openmls_traits 0.5.0, plonky2_maybe_rayon 1.0.0, pqcrypto-internals 0.2.11, pqcrypto-kyber 0.8.1, pqcrypto-traits 0.3.5, primitive-types 0.12.2, pulp-wasm-simd-flag 0.1.0, quick-protobuf 0.8.1, quick-protobuf-codec 0.3.1, rlp 0.5.2, rtnetlink 0.20.0, ruint 1.12.4, ruint 1.18.0, ruint-macro 1.2.1, rust_xlsxwriter 0.99.1, rw-stream-sink 0.4.0, siphasher 1.0.3, tauri 2.11.5, tauri-codegen 2.6.3, tauri-macros 2.6.3, tauri-plugin-deep-link 2.4.10, tauri-plugin-dialog 2.7.3, tauri-plugin-fs 2.5.2, tauri-plugin-opener 2.5.4, tauri-plugin-process 2.3.1, tauri-plugin-single-instance 2.4.3, tauri-plugin-store 2.4.3, tauri-plugin-updater 2.10.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3, uint 0.9.5, unic-char-property 0.9.0, unic-char-range 0.9.0, unic-common 0.9.0, unic-ucd-ident 0.9.0, unic-ucd-version 0.9.0, webview2-com 0.38.2, webview2-com-macros 0.8.1, webview2-com-sys 0.38.2, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.5.3, windows-registry 0.6.1, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, ws2_32-sys 0.2.1, yamux 0.12.1, yamux 0.13.10
+  applies to: alloy-primitives 0.7.7, alloy-rlp 0.3.15, ark-snark 0.4.0, base256emoji 1.0.2, base45 3.2.0, block2 0.6.2, brotli-decompressor 5.0.3, candle-core 0.10.2, candle-nn 0.10.2, candle-transformers 0.10.2, chrono 0.4.44, const-str 0.4.3, convert_case 0.4.0, dispatch2 0.3.1, dlopen2 0.8.2, dlopen2_derive 0.4.3, dpi 0.1.2, ethbloom 0.13.0, ethereum-types 0.14.1, ff_derive 0.13.1, fixed-hash 0.8.0, futures-bounded 0.2.4, fxprof-processed-profile 0.8.1, github.com/pion/rtp v1.8.19, halo2derive 0.2.0, if-watch 3.2.2, impl-rlp 0.3.0, impl-serde 0.4.0, jsonrpc-core 18.0.0, jsonrpc-derive 18.0.0, jsonrpc-http-server 18.0.0, jsonrpc-server-utils 18.0.0, jsonrpc-ws-server 18.0.0, kernel32-sys 0.2.2, libm 0.2.16, libp2p-allow-block-list 0.6.0, libp2p-connection-limits 0.6.0, libp2p-core 0.43.2, libp2p-gossipsub 0.49.5, libp2p-identify 0.47.0, libp2p-noise 0.46.1, libp2p-swarm 0.47.1, libp2p-swarm-derive 0.35.1, libp2p-tcp 0.44.1, libp2p-yamux 0.47.0, librocksdb-sys 0.16.0+8.10.0, match-lookup 0.1.3, minisign-verify 0.2.5, multistream-select 0.13.0, netlink-packet-core 0.8.2, netlink-proto 0.12.2, netlink-sys 0.8.8, number_prefix 0.4.0, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-core-foundation 0.3.2, objc2-encode 4.1.0, objc2-exception-helper 0.1.1, objc2-foundation 0.3.2, objc2-io-kit 0.3.2, objc2-osa-kit 0.3.2, objc2-web-kit 0.3.2, openmls 0.8.1, openmls_basic_credential 0.5.0, openmls_memory_storage 0.5.0, openmls_rust_crypto 0.5.1, openmls_traits 0.5.0, plonky2_maybe_rayon 1.0.0, pqcrypto-internals 0.2.11, pqcrypto-kyber 0.8.1, pqcrypto-traits 0.3.5, primitive-types 0.12.2, pulp-wasm-simd-flag 0.1.0, quick-protobuf 0.8.1, quick-protobuf-codec 0.3.1, rlp 0.5.2, rtnetlink 0.20.0, ruint 1.12.4, ruint 1.18.0, ruint-macro 1.2.1, rust_xlsxwriter 0.101.0, rw-stream-sink 0.4.0, siphasher 1.0.3, tauri 2.11.5, tauri-codegen 2.6.3, tauri-macros 2.6.3, tauri-plugin-deep-link 2.4.10, tauri-plugin-dialog 2.7.3, tauri-plugin-fs 2.5.2, tauri-plugin-opener 2.5.4, tauri-plugin-process 2.3.1, tauri-plugin-single-instance 2.4.3, tauri-plugin-store 2.4.3, tauri-plugin-updater 2.10.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3, uint 0.9.5, unic-char-property 0.9.0, unic-char-range 0.9.0, unic-common 0.9.0, unic-ucd-ident 0.9.0, unic-ucd-version 0.9.0, webview2-com 0.38.2, webview2-com-macros 0.8.1, webview2-com-sys 0.38.2, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.5.3, windows-registry 0.6.1, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, ws2_32-sys 0.2.1, yamux 0.12.1, yamux 0.13.10
 Copyright (c) Meta Platforms, Inc. and affiliates.
   applies to: react 19.2.7, react-dom 19.2.7, scheduler 0.27.0
 Copyright (c) Tokio Contributors
-  applies to: tokio 1.52.1, tokio 1.52.3, tokio 1.53.1, tokio-stream 0.1.18, tokio-util 0.7.18
+  applies to: tokio 1.52.3, tokio 1.53.1, tokio 1.53.3, tokio-stream 0.1.18, tokio-util 0.7.18
 Copyright (c) [2021] [Marvin Countryman]
   applies to: simd-adler32 0.3.9
 Copyright 2013-2014 RAD Game Tools and Valve Software
@@ -6455,6 +6445,8 @@ All rights reserved.
   applies to: matchit 0.7.3
 Copyright (c) 2023, wlynxg
   applies to: github.com/wlynxg/anet v0.0.5
+Copyright (c) 2026, Alexandre Bury
+  applies to: zstd 0.14.3, zstd-safe 8.2.0, zstd-sys 2.1.2+zstd.1.5.7
 
 BSD 3-Clause License
 
@@ -7525,7 +7517,75 @@ by the Mozilla Public License, v. 2.0.
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T60: MIT ----
+---- T60: BSD-3-Clause ----
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---- T61: BSD-3-Clause ----
+
+The auto-generated bindings are under the 3-clause BSD license:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---- T62: MIT ----
 
 Copyright (c) 2026 Keziah Biermann
   applies to: asn1_der 0.7.7
@@ -7551,7 +7611,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.__
 
----- T61: MIT ----
+---- T63: MIT ----
 
 This work is derived in part from the `linked-hash-map` crate, Copyright (c)
 2015 The Rust Project Developers
@@ -7580,7 +7640,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
----- T62: MIT ----
+---- T64: MIT ----
 
 Copyright (c) 2013 VividCortex
   applies to: github.com/VividCortex/ewma v1.2.0
@@ -7618,7 +7678,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
----- T63: MIT ----
+---- T65: MIT ----
 
 // Copyright 2018 Parity Technologies (UK) Ltd.
 //
@@ -7645,7 +7705,7 @@ THE SOFTWARE.
 pub mod hole_punching;
 pub mod ping;
 
----- T64: MIT ----
+---- T66: MIT ----
 
 // Copyright 2020 Parity Technologies (UK) Ltd.
 //
@@ -7709,7 +7769,7 @@ fn sort_vec(c: &mut Criterion) {
 criterion_group!(peer_id, from_bytes, clone, sort_vec);
 criterion_main!(peer_id);
 
----- T65: MIT ----
+---- T67: MIT ----
 
 Copyright (C) 2015-2016 Friedel Ziegelmayer
   applies to: multiaddr 0.18.2, multihash 0.19.5
@@ -7737,7 +7797,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Status API Training Shop Blog About Pricing
 
----- T66: MIT ----
+---- T68: MIT ----
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the “Software”), to deal in
@@ -7757,7 +7817,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----- T67: MIT ----
+---- T69: MIT ----
 
 // Copyright 2018-2019 Parity Technologies (UK) Ltd.
 //
@@ -7800,7 +7860,7 @@ pub mod codec;
 #[cfg(feature = "nom")]
 pub mod nom;
 
----- T68: MIT ----
+---- T70: MIT ----
 
 // Copyright (c) 2020 Aleksa Sarai <cyphar@cyphar.com>
 //
@@ -7853,7 +7913,7 @@ gen! {
     usize, "`usize`"
 }
 
----- T69: Apache-2.0 ----
+---- T71: Apache-2.0 ----
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8074,7 +8134,7 @@ prospectively choose to deem waived or otherwise exclude such Section(s) of
 the License, but only in their entirety and only with respect to the Combined
 Software.
 
----- T70: MIT ----
+---- T72: MIT ----
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"),to deal
@@ -8094,7 +8154,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----- T71: BSD-3-Clause ----
+---- T73: BSD-3-Clause ----
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
   applies to: filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5, github.com/multiformats/go-base32 v0.1.0
@@ -8146,7 +8206,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T72: ISC ----
+---- T74: ISC ----
 
 Copyright 2023 Filippo Valsorda
   applies to: filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b
@@ -8166,7 +8226,7 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
----- T73: MIT ----
+---- T75: MIT ----
 
 bbloom.go
 
@@ -8204,7 +8264,7 @@ siphash.go
 // Package siphash implements SipHash-2-4, a fast short-input PRF
 // created by Jean-Philippe Aumasson and Daniel J. Bernstein.
 
----- T74: Apache-2.0 ----
+---- T76: Apache-2.0 ----
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8385,7 +8445,7 @@ siphash.go
 
    Copyright 2023 Protocol Labs
 
----- T75: BSD-3-Clause ----
+---- T77: BSD-3-Clause ----
 
 Copyright 2009 The Go Authors.
   applies to: github.com/alexbrainman/goissue34681 v0.0.0-20191006012335-3fc7a47baff5, github.com/whyrusleeping/base32 v0.0.0-20170828182744-c30ac30633cc, go (standard library) go1.26.4, golang.org/x/crypto v0.51.0, golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a, golang.org/x/net v0.54.0, golang.org/x/oauth2 v0.36.0, golang.org/x/sync v0.20.0, golang.org/x/sys v0.45.0, golang.org/x/term v0.43.0, golang.org/x/text v0.37.0, golang.org/x/time v0.15.0
@@ -8418,7 +8478,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T76: BSD-3-Clause ----
+---- T78: BSD-3-Clause ----
 
 Copyright (c) 2012-2024, Sergey Cherepanov
 All rights reserved.
@@ -8434,7 +8494,7 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T77: Apache-2.0 ----
+---- T79: Apache-2.0 ----
 
 Apache License
                            Version 2.0, January 2004
@@ -8638,7 +8698,7 @@ Apache License
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T78: Apache-2.0 ----
+---- T80: Apache-2.0 ----
 
 Apache License
 Version 2.0, January 2004
@@ -8832,7 +8892,7 @@ third-party archives.
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T79: ISC ----
+---- T81: ISC ----
 
 Copyright (c) 2013-2017 The btcsuite developers
 Copyright (c) 2015-2024 The Decred developers
@@ -8854,7 +8914,7 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
----- T80: MIT ----
+---- T82: MIT ----
 
 bbloom.go
 
@@ -8920,7 +8980,7 @@ Modifications:
  * limitations under the License.
  */
 
----- T81: MIT ----
+---- T83: MIT ----
 
 Copyright (c) 2005-2008  Dustin Sallings <dustin@spy.net>
   applies to: github.com/dustin/go-humanize v1.0.1
@@ -8945,7 +9005,7 @@ SOFTWARE.
 
 <http://www.opensource.org/licenses/mit-license.php>
 
----- T82: BSD-3-Clause ----
+---- T84: BSD-3-Clause ----
 
 BSD License
 
@@ -8978,7 +9038,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T83: BSD-3-Clause ----
+---- T85: BSD-3-Clause ----
 
 Flynn® is a trademark of Prime Directive, Inc.
 
@@ -9010,7 +9070,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T84: BSD-3-Clause ----
+---- T86: BSD-3-Clause ----
 
 Copyright (c) 2013, The GoGo Authors. All rights reserved.
   applies to: github.com/gogo/protobuf v1.3.2
@@ -9048,7 +9108,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T85: BSD-3-Clause ----
+---- T87: BSD-3-Clause ----
 
 Copyright (c) 2012 Google, Inc. All rights reserved.
 Copyright (c) 2009-2011 Andreas Krennmair. All rights reserved.
@@ -9084,7 +9144,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T86: BSD-2-Clause ----
+---- T88: BSD-2-Clause ----
 
 Copyright (c) 2013 The Gorilla WebSocket Authors. All rights reserved.
   applies to: github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -9110,7 +9170,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T87: BSD-3-Clause ----
+---- T89: BSD-3-Clause ----
 
 Copyright (c) 2015, Gengo, Inc.
 All rights reserved.
@@ -9141,7 +9201,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T88: BSD-3-Clause ----
+---- T90: BSD-3-Clause ----
 
 Copyright (c) 2010 the Go-FUSE Authors. All rights reserved.
   applies to: github.com/hanwen/go-fuse/v2 v2.10.1
@@ -9175,7 +9235,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T89: MPL-2.0 ----
+---- T91: MPL-2.0 ----
 
 Copyright IBM Corp. 2014, 2025
   applies to: github.com/hashicorp/go-version v1.9.0
@@ -9534,7 +9594,7 @@ Exhibit B - “Incompatible With Secondary Licenses” Notice
       With Secondary Licenses”, as defined by
       the Mozilla Public License, v. 2.0.
 
----- T90: MPL-2.0 ----
+---- T92: MPL-2.0 ----
 
 Copyright (c) 2014 HashiCorp, Inc.
   applies to: github.com/hashicorp/golang-lru v1.0.2, github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -9902,7 +9962,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
       With Secondary Licenses", as defined by
       the Mozilla Public License, v. 2.0.
 
----- T91: BSD-2-Clause ----
+---- T93: BSD-2-Clause ----
 
 Copyright (c) 2013, John Beisley <johnbeisleyuk@gmail.com>
 All rights reserved.
@@ -9941,7 +10001,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T92: Apache-2.0 ----
+---- T94: Apache-2.0 ----
 
 The contents of this repository are Copyright (c) corresponding authors and
 contributors, licensed under the `Permissive License Stack` meaning either of:
@@ -10173,7 +10233,7 @@ THE SOFTWARE.
 ```
 </details>
 
----- T93: Apache-2.0 ----
+---- T95: Apache-2.0 ----
 
 The contents of this repository are Copyright (c) corresponding authors and
 contributors, licensed under the `Permissive License Stack` meaning either of:
@@ -10405,7 +10465,7 @@ THE SOFTWARE.
 ```
 </details>
 
----- T94: MIT ----
+---- T96: MIT ----
 
 Copyright (c) 2020 TJ Holowaychuk tj@tjholowaychuk.com
   applies to: github.com/ipfs/go-ipfs-redirects-file v0.1.2
@@ -10432,7 +10492,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
----- T95: Apache-2.0 ----
+---- T97: Apache-2.0 ----
 
 The contents of this package are Copyright (c) corresponding authors and
 contributors, licensed under the `Permissive License Stack` meaning either of:
@@ -10664,7 +10724,7 @@ THE SOFTWARE.
 ```
 </details>
 
----- T96: Apache-2.0 ----
+---- T98: Apache-2.0 ----
 
 Copyright 2013 John Howard Palevich
   applies to: github.com/jackpal/go-nat-pmp v1.0.2
@@ -10683,7 +10743,7 @@ Copyright 2014-2015 Brian Olson
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T97: MIT ----
+---- T99: MIT ----
 
 Copyright (c) 2012 The Go Authors. All rights reserved.
 Copyright (c) 2019 Klaus Post. All rights reserved.
@@ -10991,7 +11051,7 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
----- T98: ISC ----
+---- T100: ISC ----
 
 Copyright (c) 2013 Conformal Systems LLC.
   applies to: github.com/libp2p/go-reuseport v0.4.0
@@ -11008,7 +11068,7 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
----- T99: MIT ----
+---- T101: MIT ----
 
 Copyright (c) 2016 Stefan Smarzly
 Copyright (c) 2014 Oleksandr Lobunets
@@ -11039,7 +11099,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----- T100: MIT ----
+---- T102: MIT ----
 
 Copyright (c) Yasuhiro MATSUMOTO <mattn.jp@gmail.com>
   applies to: github.com/mattn/go-isatty v0.0.22
@@ -11052,7 +11112,7 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
----- T101: Apache-2.0 ----
+---- T103: Apache-2.0 ----
 
 The software contents of this repository are Copyright (c) Protocol Labs,
 Licensed under the `Permissive License Stack`, meaning either of:
@@ -11077,7 +11137,7 @@ governing permissions and limitations under that License.
 <!--- SPDX-License-Identifier: Apache-2.0 OR MIT -->
 `SPDX-License-Identifier: Apache-2.0 OR MIT`
 
----- T102: BSD-3-Clause ----
+---- T104: BSD-3-Clause ----
 
 Copyright (c) 2011, Open Knowledge Foundation Ltd.
 All rights reserved.
@@ -11112,7 +11172,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T103: Apache-2.0 ----
+---- T105: Apache-2.0 ----
 
                                  Apache License
                            Version 2.0, January 2004
@@ -11316,7 +11376,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T104: BSD-3-Clause ----
+---- T106: BSD-3-Clause ----
 
 Copyright (c) 2017, Jeremy Jay
 All rights reserved.
@@ -11350,7 +11410,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T105: BSD-3-Clause ----
+---- T107: BSD-3-Clause ----
 
 Copyright (c) 2010, Petar Maymounkov
 All rights reserved.
@@ -11381,7 +11441,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T106: Apache-2.0 ----
+---- T108: Apache-2.0 ----
 
                                  Apache License
                            Version 2.0, January 2004
@@ -11585,7 +11645,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
----- T107: BSD-3-Clause ----
+---- T109: BSD-3-Clause ----
 
 Copyright 2013, Sébastien Paolacci.
 All rights reserved.
@@ -11613,7 +11673,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T108: CC0-1.0 ----
+---- T110: CC0-1.0 ----
 
 This work is released into the public domain with CC0 1.0.
 
@@ -11741,7 +11801,7 @@ express Statement of Purpose.
     party to this document and has no duty or obligation with respect to
     this CC0 or use of the Work.
 
----- T109: Apache-2.0 ----
+---- T111: Apache-2.0 ----
 
                                  Apache License
                            Version 2.0, January 2004
@@ -11975,7 +12035,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T110: BSD-3-Clause ----
+---- T112: BSD-3-Clause ----
 
 Copyright ©2013 The Gonum Authors. All rights reserved.
   applies to: gonum.org/v1/gonum v0.17.0
@@ -12002,7 +12062,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
----- T111: MIT ----
+---- T113: MIT ----
 
 This project is covered by two different licenses: MIT and Apache.
 
@@ -12054,7 +12114,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
----- T112: MIT ----
+---- T114: MIT ----
 
 Copyright (c) 2019 Daniel "Lokathor" Gee.
   applies to: bytemuck 1.25.0, bytemuck_derive 1.10.2
@@ -12068,7 +12128,7 @@ The above copyright notice and this permission notice (including the next paragr
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
----- T113: MIT ----
+---- T115: MIT ----
 
 # Rust-Onig is Open Source!
 
@@ -12100,7 +12160,7 @@ under the original license.
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
 
----- T114: MIT ----
+---- T116: MIT ----
 
 # Rust-Onig is Open Source!
 

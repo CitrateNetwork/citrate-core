@@ -108,11 +108,12 @@ const BOND_WORD: &str = "0x00000000000000000000000000000000000000000000000000000
 /// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (vault = the ERC1967 PROXY, 109 bytes; its implementation slot reads 0x72035977…).
 ///
 /// Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (vault = the ERC1967 PROXY, 109 bytes; implementation slot 0x72035977…); `0x` at the previous pin.
+/// Re-earned 2026-10-27 for r1006 (genesis 0xa3651a27…, node chain 9a32147e): the canonical r1006 book (citrate-chain contracts/addresses/r1006/40204.json at a857443e, sha256 724e3843…), every contract in block 0; book via sync-addresses.py without --rpc (no public r1006 RPC until the cutover), so not yet confirmed with a live eth_getCode.
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         membership_stake_vault(),
-        "0xa93f7f688a8f212e0cad59edbd1f7d3592151751"
+        "0xd6632ea2179d047d2460f1de90abcc519839555e"
     );
 }
 
@@ -128,11 +129,12 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 /// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (10,219 bytes).
 ///
 /// Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (10,219 bytes); `0x` at the previous pin.
+/// Re-earned 2026-10-27 for r1006 (genesis 0xa3651a27…, node chain 9a32147e): the canonical r1006 book (citrate-chain contracts/addresses/r1006/40204.json at a857443e, sha256 724e3843…), every contract in block 0; book via sync-addresses.py without --rpc (no public r1006 RPC until the cutover), so not yet confirmed with a live eth_getCode.
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xf8ad11f6d3aefa605e2ebf7c81ed08a2b38b3a3c"
+        "0x883165132776171fbcfde2d3c789ef5bdb0d060d"
     );
 }
 
@@ -771,9 +773,25 @@ impl R1005Replay {
         (v["member"].as_str().unwrap_or_default().to_string(), Self(calls))
     }
 }
+/// The recording was made on r1005. Since the RC52 fill the embedded book is r1006's, so the
+/// contracts the app reads (book addresses) are mapped to the r1005 addresses the recording holds;
+/// selectors, arguments and the bond clone address are compared as recorded.
+fn as_recorded_on_r1005(to: &str) -> String {
+    let book = [
+        (membership_stake_vault(), "0xa93f7f688a8f212e0cad59edbd1f7d3592151751"),
+        (citrate_member_sbt(), "0xf8ad11f6d3aefa605e2ebf7c81ed08a2b38b3a3c"),
+        (crate::addresses::validator_registry(), "0xde4f679632be7810d915f637cc6a72bf076a3bd9"),
+    ];
+    book.iter()
+        .find(|(now, _)| now.eq_ignore_ascii_case(to))
+        .map(|(_, r1005)| r1005.to_string())
+        .unwrap_or_else(|| to.to_string())
+}
 impl RpcTransport for R1005Replay {
     fn call(&self, body: JsonValue) -> Result<JsonValue, RpcError> {
-        let to = body["params"][0]["to"].as_str().unwrap_or_default().to_ascii_lowercase();
+        let to = as_recorded_on_r1005(
+            &body["params"][0]["to"].as_str().unwrap_or_default().to_ascii_lowercase(),
+        );
         let data = body["params"][0]["data"].as_str().unwrap_or_default().to_ascii_lowercase();
         let hit = self.0.iter().find(|(t, d, _)| *t == to && *d == data);
         match hit {

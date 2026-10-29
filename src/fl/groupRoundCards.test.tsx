@@ -27,7 +27,14 @@ import { FIXTURE_ROUND_STATES, FixtureRoundCard } from "./fixtures/groupRoundSta
 
 const FRL = "0x" + "a1".repeat(20);
 const PL = "0x" + "b2".repeat(20);
-const bookWith = (extra: Record<string, string>) => ({ addresses: { ...realBook.addresses, ...extra } });
+// The real book with neither round ledger, plus `extra` (today's r1006 book pins PatronageLedger).
+const withoutLedgers = (): Record<string, string> => {
+  const a: Record<string, string> = { ...(realBook.addresses as Record<string, string>) };
+  delete a.PatronageLedger;
+  delete a.FederatedRoundLedger;
+  return a;
+};
+const bookWith = (extra: Record<string, string>) => ({ addresses: { ...withoutLedgers(), ...extra } });
 
 const BANNED = /earn|income|projected|estimate|reward|yield|apy|\bfinal(ized)?\b/i;
 
@@ -48,10 +55,12 @@ describe("the flag", () => {
 });
 
 describe("address book pins", () => {
-  it("today's book pins neither round ledger", () => {
+  it("today's book (r1006) pins PatronageLedger but not FederatedRoundLedger", () => {
+    // r1006 deploys PatronageLedger in block 0 (canonical book, citrate-chain a857443e);
+    // FederatedRoundLedger is not in the book, so rounds stay not live.
     expect(roundLedgerPins(realBook)).toEqual([
       { name: "FederatedRoundLedger", address: null },
-      { name: "PatronageLedger", address: null },
+      { name: "PatronageLedger", address: "0x41f68b9e710585b064459a0ec706148fbf503659" },
     ]);
   });
   it("a malformed or zero address is not a pin", () => {
@@ -67,8 +76,14 @@ describe("address book pins", () => {
 describe("readGroupRounds", () => {
   it("no address in the book: not live, and nothing is read from the chain", async () => {
     const codeSize = vi.fn();
-    const r = await readGroupRounds(realBook, codeSize);
+    const r = await readGroupRounds(bookWith({}), codeSize);
     expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger", "PatronageLedger"] });
+    expect(codeSize).not.toHaveBeenCalled();
+  });
+  it("today's book (one ledger pinned): not live, and nothing is read from the chain", async () => {
+    const codeSize = vi.fn();
+    const r = await readGroupRounds(realBook, codeSize);
+    expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger"] });
     expect(codeSize).not.toHaveBeenCalled();
   });
   it("one ledger pinned is still not live, and still no read", async () => {

@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import {
   check,
+  pendingPins,
+  pinnedDigest,
+  parsePins,
   requirementByteErrors,
   requirementRevErrors,
   revContains,
@@ -23,7 +26,11 @@ const FILES = [
   "release/components.json",
   "release/licences.json",
   "src-tauri/runtime-deps.sha256",
+  "Cargo.toml",
   "src-tauri/Cargo.toml",
+  "kit/Cargo.toml",
+  "templates/renderer/Cargo.toml",
+  "components/Cargo.toml",
   "src-tauri/src/model.rs",
   ".github/workflows/release.yml",
   "docs/RELEASE.md",
@@ -104,9 +111,9 @@ describe("component-pins check", () => {
   it("refuses federation drift that is not explained", () => {
     const r = fixture();
     const m = manifest(r);
-    delete comp(m, "hermes-sidecar").federation.note;
+    delete comp(m, "cluster-daemon").federation.note;
     setManifest(r, m);
-    expect(errorsOf(r)).toMatch(/'hermes-sidecar': federation drift needs a note/);
+    expect(errorsOf(r)).toMatch(/'cluster-daemon': federation drift needs a note/);
   });
 
   it("refuses a 'match' that does not match", () => {
@@ -119,8 +126,8 @@ describe("component-pins check", () => {
 
   it("refuses an artifact whose runtime-deps asset has no pin", () => {
     const r = fixture();
-    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-626486b8a7db", "  hermes-aarch64-apple-darwin-renamed");
-    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-626486b8a7db is pinned 0 times/);
+    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-05243c72bd52", "  hermes-aarch64-apple-darwin-renamed");
+    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-05243c72bd52 is pinned 0 times/);
   });
 
   it("refuses an asset pinned twice (ambiguous)", () => {
@@ -167,7 +174,7 @@ describe("component-pins check", () => {
 
   it("refuses release.yml that does not stage a pinned sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-626486b8a7db\n", "");
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-05243c72bd52\n", "");
     expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar'/);
   });
 
@@ -207,8 +214,11 @@ describe("component-pins check", () => {
     comp(m, "citrate-node").source.rev = "f9f6257b2dcde21149fe9c09236231ccfc32da68";
     setManifest(r, m);
     const e = errorsOf(r);
-    expect(e).toMatch(/citrate-node rev f9f6257b\S+ != build-sidecar.sh MIN_CHAIN_REV c384fc98/);
-    expect(e).toMatch(/src-tauri\/Cargo.toml pins citrate-chain c384fc98\S+, the bundled node is f9f6257b/);
+    // The current floor is read from build-sidecar.sh, so a node rev change is the pin lines only.
+    const floor = /^MIN_CHAIN_REV="([0-9a-f]{40})"/m.exec(fs.readFileSync(path.join(r, "scripts", "build-sidecar.sh"), "utf8"))[1];
+    const short = floor.slice(0, 8);
+    expect(e).toMatch(new RegExp(`citrate-node rev f9f6257b\\S+ != build-sidecar.sh MIN_CHAIN_REV ${short}`));
+    expect(e).toMatch(new RegExp(`src-tauri/Cargo.toml pins citrate-chain ${short}\\S+, the bundled node is f9f6257b`));
   });
 
   it("refuses a Gemma pin that differs from the app's own model pin", () => {
@@ -237,6 +247,25 @@ describe("component-pins check", () => {
     lic.components = lic.components.filter((c) => c.id !== "kubo");
     write(r, "release/licences.json", JSON.stringify(lic));
     expect(errorsOf(r)).toMatch(/'kubo' has no entry in release\/licences.json/);
+  });
+
+  it("refuses a workspace crate that pins the chain at a rev other than the bundled node's", () => {
+    // kit/Cargo.toml carries citrate-wallet-core too; a re-pin that moves only src-tauri leaves
+    // two chain revs in the lock and a kit built against the old chain.
+    const r = fixture();
+    const node = comp(manifest(r), "citrate-node").source.rev;
+    const kit = read(r, "kit/Cargo.toml");
+    write(r, "kit/Cargo.toml", kit.replace(`citrate-chain.git", rev = "${node}"`, `citrate-chain.git", rev = "${"3".repeat(40)}"`));
+    expect(read(r, "kit/Cargo.toml")).toContain("3".repeat(40));
+    expect(errorsOf(r)).toMatch(new RegExp(`kit/Cargo.toml pins citrate-chain ${"3".repeat(40)}, the bundled node is ${node}`));
+  });
+
+  it("checks every workspace member named in the root Cargo.toml", () => {
+    const r = fixture();
+    const node = comp(manifest(r), "citrate-node").source.rev;
+    const extra = `\ncitrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "${"4".repeat(40)}" }\n`;
+    write(r, "components/Cargo.toml", read(r, "components/Cargo.toml") + extra);
+    expect(errorsOf(r)).toMatch(new RegExp(`components/Cargo.toml pins citrate-chain ${"4".repeat(40)}, the bundled node is ${node}`));
   });
 
   it("refuses a toolchain that is not an exact version", () => {
@@ -378,5 +407,55 @@ describe("component requires (mem-mcp store key file)", () => {
     const wf = read(r, ".github/workflows/release.yml");
     write(r, ".github/workflows/release.yml", wf.split("\n").filter((l) => !l.includes("verify-staged")).join("\n"));
     expect(errorsOf(r)).toMatch(/release.yml does not run `component-pins.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin`/);
+  });
+});
+
+// A target whose bytes another machine builds (the DGX records the Linux pins) is `pending` until
+// that builder posts its digest: it names what is owed, and nothing can build or stage it.
+describe("pending pins (a target waiting on its builder)", () => {
+  const LINUX = "x86_64-unknown-linux-gnu";
+  const REASON = "DGX (citrate-core-linux-build): build-component.sh --print-digest at the pinned rev";
+  const pend = (r, id, target, reason = REASON) => {
+    const m = manifest(r);
+    const c = comp(m, id);
+    delete c.artifacts[target];
+    c.pending = { ...(c.pending || {}), [target]: reason };
+    setManifest(r, m);
+    return m;
+  };
+
+  it("a pending target has no digest, and the refusal names what is owed", () => {
+    const r = fixture();
+    const m = pend(r, "citrate-node", LINUX);
+    const pins = parsePins(read(r, "src-tauri/runtime-deps.sha256"));
+    expect(() => pinnedDigest(m, pins, "citrate-node", LINUX)).toThrow(/'citrate-node' x86_64-unknown-linux-gnu: pin pending: DGX \(citrate-core-linux-build\)/);
+  });
+
+  it("the check passes with a pending Linux target and lists it", () => {
+    const r = fixture();
+    const m = pend(r, "citrate-node", LINUX);
+    expect(check(r)).toEqual([]);
+    expect(pendingPins(m)).toContainEqual({ id: "citrate-node", target: LINUX, reason: REASON });
+  });
+
+  it("refuses a target that is both pinned and pending", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "cluster-daemon").pending = { [LINUX]: REASON };
+    setManifest(r, m);
+    expect(comp(m, "cluster-daemon").artifacts[LINUX]).toBeDefined();
+    expect(errorsOf(r)).toMatch(/'cluster-daemon' x86_64-unknown-linux-gnu: pinned and pending at once/);
+  });
+
+  it("refuses a pending target with no reason", () => {
+    const r = fixture();
+    pend(r, "hermes-sidecar", LINUX, "  ");
+    expect(errorsOf(r)).toMatch(/'hermes-sidecar' x86_64-unknown-linux-gnu: pending needs a reason/);
+  });
+
+  it("refuses the macOS target as pending (the release Mac records it)", () => {
+    const r = fixture();
+    pend(r, "hermes-sidecar", "aarch64-apple-darwin");
+    expect(errorsOf(r)).toMatch(/'hermes-sidecar' aarch64-apple-darwin: may not be pending/);
   });
 });
