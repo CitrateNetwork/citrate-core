@@ -19,13 +19,16 @@ $AppPath = Join-Path $InstallDirectory 'citrate-core.exe'
 $MemPath = Join-Path $InstallDirectory 'mem-mcp.exe'
 $NodePath = Join-Path $InstallDirectory 'citrate.exe'
 $CommsPath = Join-Path $InstallDirectory 'comms-member-daemon.exe'
-$ProfileRoot = Join-Path $RuntimeRoot "citrate-installed-product-profile-$PID"
-$AppDataRoot = Join-Path $ProfileRoot 'Roaming'
-$LocalAppDataRoot = Join-Path $ProfileRoot 'Local'
-$AppDataDirectory = Join-Path $AppDataRoot 'ai.citrate.core'
-$MemoryDirectory = Join-Path $AppDataDirectory 'memory'
-$ImportProgressPath = Join-Path $MemoryDirectory 'knowledge-corpus.progress.json'
-$ImportMarkerPath = Join-Path $MemoryDirectory 'knowledge-corpus.imported'
+$AppIdentifier = 'ai.citrate.core'
+$RoamingKnownFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+$LocalKnownFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$AppDataDirectory = $null
+$LocalAppDataDirectory = $null
+$MemoryDirectory = $null
+$ImportProgressPath = $null
+$ImportMarkerPath = $null
+$AppDataDirectoryOwned = $false
+$LocalAppDataDirectoryOwned = $false
 $Acceptance = [ordered]@{
     schemaVersion = 1
     startedUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -36,18 +39,106 @@ $Acceptance = [ordered]@{
     resumedImport = $null
     node = $null
     comms = $null
+    knownFolders = [ordered]@{
+        roaming = $RoamingKnownFolder
+        local = $LocalKnownFolder
+        roamingAppDirectory = $null
+        localAppDirectory = $null
+        memoryDirectory = $null
+    }
+    cleanup = [ordered]@{
+        processTrees = [ordered]@{
+            attempted = $false
+            succeeded = $false
+            error = $null
+        }
+        roamingAppDirectory = [ordered]@{
+            path = $null
+            owned = $false
+            attempted = $false
+            removed = $false
+            outcome = 'not-started'
+            error = $null
+        }
+        localAppDirectory = [ordered]@{
+            path = $null
+            owned = $false
+            attempted = $false
+            removed = $false
+            outcome = 'not-started'
+            error = $null
+        }
+    }
 }
 $App = $null
 $Comms = $null
 
-foreach ($Path in @($AppPath, $MemPath, $NodePath, $CommsPath)) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "installed acceptance binary is missing: $Path"
+function Assert-DirectKnownFolderAppPath(
+    [string]$KnownFolder,
+    [string]$AppDirectory,
+    [string]$Label
+) {
+    if ([string]::IsNullOrWhiteSpace($KnownFolder)) {
+        throw "$Label Known Folder path is empty"
+    }
+    $CanonicalKnownFolder = [System.IO.Path]::GetFullPath($KnownFolder).TrimEnd('\', '/')
+    if (-not (Test-Path -LiteralPath $CanonicalKnownFolder -PathType Container)) {
+        throw "$Label Known Folder parent does not exist: $CanonicalKnownFolder"
+    }
+    if ([string]::IsNullOrWhiteSpace($AppDirectory)) {
+        throw "$Label app directory path is empty"
+    }
+    $CanonicalAppDirectory = [System.IO.Path]::GetFullPath($AppDirectory).TrimEnd('\', '/')
+    $ActualParent = [System.IO.Path]::GetDirectoryName($CanonicalAppDirectory)
+    $ActualLeaf = [System.IO.Path]::GetFileName($CanonicalAppDirectory)
+    if (-not [string]::Equals(
+        $ActualParent,
+        $CanonicalKnownFolder,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "$Label app directory is not a direct child of its Known Folder: $CanonicalAppDirectory"
+    }
+    if ($ActualLeaf -cne $AppIdentifier) {
+        throw "$Label app directory has an unexpected leaf name: $CanonicalAppDirectory"
+    }
+    return $CanonicalAppDirectory
+}
+
+function New-OwnedAppDirectory([string]$Path, [string]$Label) {
+    New-Item -ItemType Directory -Path $Path -ErrorAction Stop | Out-Null
+    $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $Item.PSIsContainer) {
+        throw "$Label app path is not a directory after creation: $Path"
+    }
+    if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw "$Label app directory is a reparse point after creation: $Path"
     }
 }
-if (Test-Path -LiteralPath $ProfileRoot) { throw "acceptance profile collision: $ProfileRoot" }
-New-Item -ItemType Directory -Path $AppDataRoot | Out-Null
-New-Item -ItemType Directory -Path $LocalAppDataRoot | Out-Null
+
+function Remove-OwnedKnownFolderAppDirectory(
+    [string]$Path,
+    [string]$KnownFolder,
+    [string]$Label
+) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $CanonicalPath = Assert-DirectKnownFolderAppPath `
+        -KnownFolder $KnownFolder -AppDirectory $Path -Label $Label
+    if (-not (Test-Path -LiteralPath $CanonicalPath -PathType Container)) {
+        throw "$Label cleanup target is not a directory: $CanonicalPath"
+    }
+    $Item = Get-Item -LiteralPath $CanonicalPath -Force -ErrorAction Stop
+    if (-not $Item.PSIsContainer) {
+        throw "$Label cleanup target is not a container: $CanonicalPath"
+    }
+    if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw "$Label cleanup target is a reparse point: $CanonicalPath"
+    }
+    Remove-Item -LiteralPath $CanonicalPath -Recurse -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $CanonicalPath) {
+        throw "$Label app directory cleanup failed: $CanonicalPath"
+    }
+    return $true
+}
 
 function Get-FreeLoopbackPort {
     $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -219,8 +310,6 @@ function Start-InstalledApp {
     $Info.FileName = $AppPath
     $Info.WorkingDirectory = $InstallDirectory
     $Info.UseShellExecute = $false
-    $Info.Environment['APPDATA'] = $AppDataRoot
-    $Info.Environment['LOCALAPPDATA'] = $LocalAppDataRoot
     $Info.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] =
         "--remote-debugging-port=$Port --remote-allow-origins=http://127.0.0.1:$Port"
     $Process = [System.Diagnostics.Process]::Start($Info)
@@ -679,6 +768,47 @@ function Test-CommsAcceptance {
 
 $AcceptanceError = $null
 try {
+    foreach ($Path in @($AppPath, $MemPath, $NodePath, $CommsPath)) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "installed acceptance binary is missing: $Path"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($RoamingKnownFolder)) {
+        throw 'Roaming ApplicationData Known Folder path is empty'
+    }
+    if ([string]::IsNullOrWhiteSpace($LocalKnownFolder)) {
+        throw 'LocalApplicationData Known Folder path is empty'
+    }
+    $AppDataDirectory = Join-Path $RoamingKnownFolder $AppIdentifier
+    $LocalAppDataDirectory = Join-Path $LocalKnownFolder $AppIdentifier
+    $AppDataDirectory = Assert-DirectKnownFolderAppPath `
+        -KnownFolder $RoamingKnownFolder -AppDirectory $AppDataDirectory -Label 'Roaming'
+    $LocalAppDataDirectory = Assert-DirectKnownFolderAppPath `
+        -KnownFolder $LocalKnownFolder -AppDirectory $LocalAppDataDirectory -Label 'Local'
+    $MemoryDirectory = Join-Path $AppDataDirectory 'memory'
+    $ImportProgressPath = Join-Path $MemoryDirectory 'knowledge-corpus.progress.json'
+    $ImportMarkerPath = Join-Path $MemoryDirectory 'knowledge-corpus.imported'
+    $Acceptance.knownFolders.roamingAppDirectory = $AppDataDirectory
+    $Acceptance.knownFolders.localAppDirectory = $LocalAppDataDirectory
+    $Acceptance.knownFolders.memoryDirectory = $MemoryDirectory
+    $Acceptance.cleanup.roamingAppDirectory.path = $AppDataDirectory
+    $Acceptance.cleanup.localAppDirectory.path = $LocalAppDataDirectory
+
+    foreach ($Collision in @(
+        [pscustomobject]@{ path = $AppDataDirectory; label = 'Roaming' },
+        [pscustomobject]@{ path = $LocalAppDataDirectory; label = 'Local' }
+    )) {
+        if (Test-Path -LiteralPath $Collision.path) {
+            throw "$($Collision.label) app data collision; refusing to touch pre-existing user data: $($Collision.path)"
+        }
+    }
+    New-OwnedAppDirectory -Path $AppDataDirectory -Label 'Roaming'
+    $AppDataDirectoryOwned = $true
+    $Acceptance.cleanup.roamingAppDirectory.owned = $true
+    New-OwnedAppDirectory -Path $LocalAppDataDirectory -Label 'Local'
+    $LocalAppDataDirectoryOwned = $true
+    $Acceptance.cleanup.localAppDirectory.owned = $true
+
     $Session1 = Start-InstalledApp
     $App = $Session1.process
     $Acceptance.renderedApplication = Save-RenderedScreenshot $Session1.webSocketUrl
@@ -756,19 +886,67 @@ try {
     $Acceptance.error = $AcceptanceError
     throw
 } finally {
-    $CleanupError = $null
-    try { Stop-InstalledProcessTrees } catch { $CleanupError = $_.Exception.Message }
+    $CleanupErrors = [System.Collections.Generic.List[string]]::new()
+    $Acceptance.cleanup.processTrees.attempted = $true
+    try {
+        Stop-InstalledProcessTrees
+        $Acceptance.cleanup.processTrees.succeeded = $true
+    } catch {
+        $Acceptance.cleanup.processTrees.error = $_.Exception.Message
+        $CleanupErrors.Add("process cleanup failed: $($_.Exception.Message)")
+    }
+    foreach ($Cleanup in @(
+        [pscustomobject]@{
+            path = $AppDataDirectory
+            knownFolder = $RoamingKnownFolder
+            label = 'Roaming'
+            owned = $AppDataDirectoryOwned
+            evidence = $Acceptance.cleanup.roamingAppDirectory
+        },
+        [pscustomobject]@{
+            path = $LocalAppDataDirectory
+            knownFolder = $LocalKnownFolder
+            label = 'Local'
+            owned = $LocalAppDataDirectoryOwned
+            evidence = $Acceptance.cleanup.localAppDirectory
+        }
+    )) {
+        if (-not $Cleanup.owned) {
+            $Cleanup.evidence.outcome = 'not-owned'
+            continue
+        }
+        if (-not $Acceptance.cleanup.processTrees.succeeded) {
+            $Cleanup.evidence.outcome = 'skipped-process-cleanup-failed'
+            $Cleanup.evidence.error = 'Directory cleanup was skipped because exact process-tree cleanup failed.'
+            $CleanupErrors.Add("$($Cleanup.label) directory cleanup skipped after process cleanup failure")
+            continue
+        }
+        $Cleanup.evidence.attempted = $true
+        try {
+            $Removed = Remove-OwnedKnownFolderAppDirectory `
+                -Path $Cleanup.path -KnownFolder $Cleanup.knownFolder -Label $Cleanup.label
+            $Cleanup.evidence.removed = $Removed
+            $Cleanup.evidence.outcome = if ($Removed) { 'removed' } else { 'already-absent' }
+        } catch {
+            $Cleanup.evidence.outcome = 'unsafe-or-failed'
+            $Cleanup.evidence.error = $_.Exception.Message
+            $CleanupErrors.Add("$($Cleanup.label) directory cleanup failed closed: $($_.Exception.Message)")
+        }
+    }
+    if ($CleanupErrors.Count -gt 0) {
+        $Acceptance.passed = $false
+        $CleanupMessage = $CleanupErrors -join '; '
+        $Acceptance.error = if ($AcceptanceError) {
+            "$AcceptanceError; $CleanupMessage"
+        } else {
+            $CleanupMessage
+        }
+    }
     $Acceptance.finishedUtc = (Get-Date).ToUniversalTime().ToString('o')
     $Acceptance | ConvertTo-Json -Depth 20 |
         Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'installed-product-acceptance.json') -Encoding UTF8
-    if (Test-Path -LiteralPath $ProfileRoot) {
-        Remove-Item -LiteralPath $ProfileRoot -Recurse -Force -ErrorAction Stop
-    }
-    if (Test-Path -LiteralPath $ProfileRoot) {
-        throw "installed-product profile cleanup failed: $ProfileRoot"
-    }
-    if ($CleanupError) {
-        throw "installed-product process cleanup failed: $CleanupError; acceptance error: $AcceptanceError"
+    if ($CleanupErrors.Count -gt 0) {
+        throw "installed-product cleanup failed: $($CleanupErrors -join '; '); acceptance error: $AcceptanceError"
     }
 }
 

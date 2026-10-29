@@ -215,6 +215,82 @@ describe("windows release staging controls", () => {
     expect(installedAcceptanceSrc).toContain("gracefulShutdownMemoryProcessCount");
   });
 
+  it("uses exact Known Folder app-data children with fail-closed owned cleanup", () => {
+    expect(installedAcceptanceSrc).toContain(
+      "[Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)",
+    );
+    expect(installedAcceptanceSrc).toContain(
+      "[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
+    );
+    expect(installedAcceptanceSrc).toContain("$AppIdentifier = 'ai.citrate.core'");
+    expect(installedAcceptanceSrc).not.toContain("$ProfileRoot");
+    expect(installedAcceptanceSrc).not.toContain("citrate-installed-product-profile-");
+
+    const directPathGuard = installedAcceptanceSrc.slice(
+      installedAcceptanceSrc.indexOf("function Assert-DirectKnownFolderAppPath"),
+      installedAcceptanceSrc.indexOf("function New-OwnedAppDirectory"),
+    );
+    expect(directPathGuard).toContain("[string]::IsNullOrWhiteSpace($KnownFolder)");
+    expect(directPathGuard).toContain("Test-Path -LiteralPath $CanonicalKnownFolder -PathType Container");
+    expect(directPathGuard).toContain("[System.IO.Path]::GetDirectoryName($CanonicalAppDirectory)");
+    expect(directPathGuard).toContain("[System.IO.Path]::GetFileName($CanonicalAppDirectory)");
+    expect(directPathGuard).toContain("[System.StringComparison]::OrdinalIgnoreCase");
+    expect(directPathGuard).toContain("$ActualLeaf -cne $AppIdentifier");
+
+    const collision = installedAcceptanceSrc.indexOf(
+      "app data collision; refusing to touch pre-existing user data",
+    );
+    const roamingCreation = installedAcceptanceSrc.indexOf(
+      "New-OwnedAppDirectory -Path $AppDataDirectory",
+    );
+    const localCreation = installedAcceptanceSrc.indexOf(
+      "New-OwnedAppDirectory -Path $LocalAppDataDirectory",
+    );
+    const firstLaunch = installedAcceptanceSrc.indexOf("$Session1 = Start-InstalledApp");
+    expect(collision).toBeGreaterThanOrEqual(0);
+    expect(collision).toBeLessThan(roamingCreation);
+    expect(collision).toBeLessThan(localCreation);
+    expect(localCreation).toBeLessThan(firstLaunch);
+    expect(
+      installedAcceptanceSrc.indexOf("$AppDataDirectoryOwned = $true", roamingCreation),
+    ).toBeGreaterThan(roamingCreation);
+    expect(
+      installedAcceptanceSrc.indexOf("$LocalAppDataDirectoryOwned = $true", localCreation),
+    ).toBeGreaterThan(localCreation);
+
+    const startInstalledApp = installedAcceptanceSrc.slice(
+      installedAcceptanceSrc.indexOf("function Start-InstalledApp"),
+      installedAcceptanceSrc.indexOf("function Stop-InstalledApp"),
+    );
+    expect(startInstalledApp).not.toMatch(
+      /\.Environment\[['"](?:APPDATA|LOCALAPPDATA)['"]\]\s*=/,
+    );
+
+    const cleanupGuard = installedAcceptanceSrc.slice(
+      installedAcceptanceSrc.indexOf("function Remove-OwnedKnownFolderAppDirectory"),
+      installedAcceptanceSrc.indexOf("function Get-FreeLoopbackPort"),
+    );
+    expect(cleanupGuard).toContain("Assert-DirectKnownFolderAppPath");
+    expect(cleanupGuard).toContain("-PathType Container");
+    expect(cleanupGuard).toContain("$Item.PSIsContainer");
+    expect(cleanupGuard).toContain("[System.IO.FileAttributes]::ReparsePoint");
+    expect(cleanupGuard).toContain("Remove-Item -LiteralPath $CanonicalPath -Recurse");
+    expect(installedAcceptanceSrc).toContain("if (-not $Cleanup.owned)");
+    expect(installedAcceptanceSrc).toContain("skipped-process-cleanup-failed");
+    expect(installedAcceptanceSrc).toContain("unsafe-or-failed");
+
+    const finalProcessStop = installedAcceptanceSrc.lastIndexOf("Stop-InstalledProcessTrees");
+    const finalDirectoryRemoval = installedAcceptanceSrc.lastIndexOf(
+      "Remove-OwnedKnownFolderAppDirectory",
+    );
+    expect(finalProcessStop).toBeGreaterThanOrEqual(0);
+    expect(finalProcessStop).toBeLessThan(finalDirectoryRemoval);
+    expect(installedAcceptanceSrc).toContain("roamingAppDirectory = $null");
+    expect(installedAcceptanceSrc).toContain("localAppDirectory = $null");
+    expect(installedAcceptanceSrc).toContain("memoryDirectory = $null");
+    expect(installedAcceptanceSrc).toContain("cleanup = [ordered]@{");
+  });
+
   it("binds consensus RPC evidence to one stable installed node listener", () => {
     expect(installedAcceptanceSrc).toContain("function Get-NodeRpcListenerIdentity");
     expect(installedAcceptanceSrc).toContain(
