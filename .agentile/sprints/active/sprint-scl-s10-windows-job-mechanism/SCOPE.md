@@ -45,11 +45,13 @@ reap the leader, and never resume an uncontained child.
 ## Out of scope
 
 S10.1 through S10.4, real managed-browser and `npx` fixtures, complete process accounting, core
-adoption, hosted CI, review, merge, release, packaged-app validation, and issue closure are out of
-scope. Hosted Windows CI evidence remains pending until a branch or PR runs. No commit or push
-exists yet.
+adoption, review, merge, release, packaged-app validation, and issue closure are out of scope.
+Hosted Windows CI is met and linked in [EVIDENCE.md](EVIDENCE.md#hosted-verification). Core
+documentation is published in [PR #595](https://github.com/CitrateNetwork/citrate-core/pull/595);
+review and merge remain pending.
 
 ## Exit record
 
-Local results and the Rule-2 test-count record are in [EVIDENCE.md](EVIDENCE.md). They are proof
-of this mechanism only, not evidence of hosted CI or broader Windows containment.
+Local results and the Rule-2 test-count record are in [EVIDENCE.md](EVIDENCE.md). They remain
+local proof only; the same file separately records hosted Windows CI. Neither is evidence of
+broader Windows containment.

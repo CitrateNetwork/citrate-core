@@ -72,6 +72,14 @@ PASS
 `citrate-agent-shell`, including `agent-legacy/src/adapters/memory.rs`. The package-scoped format
 check above is the relevant S10.0 check; this record does not claim the workspace-wide check passed.
 
+## Hosted verification
+
+[Runtime PR #104](https://github.com/CitrateNetwork/citrate-agent-runtime/pull/104) at
+`8a2296ab2cd5359dad6831fbabb728c34925449f` passed its full check set, including aggregate `ci`.
+The hosted [Windows (agent-shell tests + agent-sidecar release build)](https://github.com/CitrateNetwork/citrate-agent-runtime/actions/runs/40827023392/job/123292293808)
+job result: `PASS` (17m15s). It runs `cargo test -p citrate-agent-shell --locked`, which includes the four
+non-ignored acceptance tests. No separate focused hosted command or hosted test count is recorded.
+
 ## Rule-2 record
 
 The runtime base has 38 passing package tests, 26 unit and 12 Windows integration. The proof tree
@@ -81,7 +89,8 @@ ignored tests are process helper entry points, not disabled acceptance tests.
 ## Limits and pending evidence
 
 Production behavior is unchanged by this proof except for a minimal `#[cfg(test)]` Job-handle
-inspection seam. Hosted Windows CI evidence is pending until a branch or PR runs; this evidence is
-local only. There is no commit or push yet. This does not claim review, merge, release,
+inspection seam. Hosted Windows CI evidence is recorded above; the local evidence remains local
+only. Core documentation is published in [PR #595](https://github.com/CitrateNetwork/citrate-core/pull/595);
+review and merge remain pending. This does not claim release,
 packaged-app validation, complete Windows containment, core adoption, issue closure, S10.1 through
 S10.4 completion, or real managed-browser and `npx` fixture coverage.
