@@ -28,6 +28,12 @@ import {
   splitCopyright,
   textKey,
   updateInventory,
+  cargoLockPackages,
+  npmLockPackages,
+  lockDigest,
+  noticeSectionPackages,
+  recordLockDigests,
+  lockFreshness,
 } from "./third-party-notices.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -485,5 +491,112 @@ describe("packageRootOf", () => {
     expect(packageRootOf("node_modules/@fontsource/geist-sans/files/a.woff2")).toBe("node_modules/@fontsource/geist-sans");
     expect(packageRootOf("/r/src/App.tsx")).toBeNull();
     expect(packageRootOf("\0vite/preload-helper.js")).toBeNull();
+  });
+});
+
+// Lockfile freshness: the app and webview sections are generated from this repo, so a later
+// Cargo.lock or package-lock.json change makes them stale; `check` must see it (0.5.2 freeze: the
+// app section stayed at the 0.5.1 bump while chacha20 and a webpki update landed).
+describe("lockfile freshness", () => {
+  const LOCK = [
+    "version = 4",
+    "",
+    "[[package]]",
+    'name = "citrate-core"',
+    'version = "0.5.2"',
+    "dependencies = [",
+    ' "chacha20poly1305",',
+    ' "kit",',
+    ' "webpki-roots 1.0.10",',
+    "]",
+    "",
+    "[[package]]",
+    'name = "kit"',
+    'version = "0.1.0"',
+    "dependencies = [",
+    ' "aead",',
+    ' "wallet-core",',
+    "]",
+    "",
+    "[[package]]",
+    'name = "wallet-core"',
+    'version = "0.1.0"',
+    'source = "git+https://github.com/CitrateNetwork/citrate-chain?rev=9a32147e#9a32147e"',
+    "",
+    "[[package]]",
+    'name = "chacha20poly1305"',
+    'version = "0.10.1"',
+    `source = "${REG}"`,
+    "dependencies = [",
+    ' "aead",',
+    "]",
+    "",
+    "[[package]]",
+    'name = "aead"',
+    'version = "0.5.2"',
+    `source = "${REG}"`,
+    "",
+    "[[package]]",
+    'name = "webpki-roots"',
+    'version = "1.0.8"',
+    `source = "${REG}"`,
+    "",
+    "[[package]]",
+    'name = "webpki-roots"',
+    'version = "1.0.10"',
+    `source = "${REG}"`,
+    "",
+    "[[package]]",
+    'name = "unrelated"',
+    'version = "9.9.9"',
+    `source = "${REG}"`,
+    "",
+  ].join("\n");
+  const notices = (app, web = ["react 19.1.0"]) =>
+    ["Components:", "  app: x", "", "## app", "", ...app.map((k) => `${k}  MIT  [T1]  https://x`), "", "## app-webview", "", ...web.map((k) => `${k}  MIT  [T2]`), "", "## kubo", "", "chacha20 0.0.1  MIT  [T1]", ""].join("\n");
+  const inv = () => ({ app: { third_party_notices: { file: "f" } }, components: [{ id: "app-webview", third_party_notices: { file: "f" } }] });
+
+  it("reads the registry crates reachable from the app, by exact version, git and path crates left out", () => {
+    expect([...cargoLockPackages(LOCK)].sort()).toEqual(["aead 0.5.2", "chacha20poly1305 0.10.1", "webpki-roots 1.0.10"]);
+    expect(() => cargoLockPackages(LOCK.replace(' "webpki-roots 1.0.10",', ' "webpki-roots",'))).toThrow(/does not resolve to one package/);
+    expect(() => cargoLockPackages(LOCK, "ghost")).toThrow(/no package ghost/);
+  });
+
+  it("reads every installed npm package, nested and scoped, not the root", () => {
+    const lock = { packages: { "": { name: "citrate-core", version: "0.5.2" }, "node_modules/react": { version: "19.1.0" }, "node_modules/@noble/hashes": { version: "1.8.0" }, "node_modules/a/node_modules/b": { version: "2.0.0", dev: true } } };
+    expect([...npmLockPackages(lock)].sort()).toEqual(["@noble/hashes 1.8.0", "b 2.0.0", "react 19.1.0"]);
+  });
+
+  it("lists one section's packages and nothing from the next", () => {
+    expect(noticeSectionPackages(notices(["aead 0.5.2", "webpki-roots 1.0.10"]), "app")).toEqual(["aead 0.5.2", "webpki-roots 1.0.10"]);
+    expect(noticeSectionPackages(notices([]), "app-webview")).toEqual(["react 19.1.0"]);
+  });
+
+  it("passes notices rendered from the current lockfiles", () => {
+    const sets = { app: cargoLockPackages(LOCK), "app-webview": new Set(["react 19.1.0"]) };
+    const i = recordLockDigests(inv(), sets);
+    expect(i.app.third_party_notices.lock).toBe(lockDigest(sets.app));
+    expect(lockFreshness(notices(["aead 0.5.2", "chacha20poly1305 0.10.1", "webpki-roots 1.0.10"]), i, sets)).toEqual([]);
+  });
+
+  it("refuses a listed package that is no longer in the lockfile (a moved version)", () => {
+    const sets = { app: cargoLockPackages(LOCK) };
+    const i = recordLockDigests(inv(), sets);
+    expect(lockFreshness(notices(["aead 0.5.2", "webpki-roots 1.0.8"]), i, sets, { app: "Cargo.lock" })).toEqual(["app: listed but not in Cargo.lock: webpki-roots 1.0.8"]);
+  });
+
+  it("refuses a lockfile that changed after the render (an added crate the notices do not list)", () => {
+    const before = { app: new Set(["aead 0.5.2", "webpki-roots 1.0.10"]) };
+    const i = recordLockDigests(inv(), before);
+    const after = { app: cargoLockPackages(LOCK) };
+    expect(lockFreshness(notices(["aead 0.5.2", "webpki-roots 1.0.10"]), i, after, { app: "Cargo.lock" })).toEqual(["app: Cargo.lock changed since the notices were rendered"]);
+  });
+
+  it("refuses notices with no recorded digest (rendered before this check)", () => {
+    const sets = { app: cargoLockPackages(LOCK), "app-webview": new Set(["react 19.1.0"]) };
+    expect(lockFreshness(notices(["aead 0.5.2"]), inv(), sets, { app: "Cargo.lock", "app-webview": "package-lock.json" })).toEqual([
+      "app: release/licences.json records no Cargo.lock digest",
+      "app-webview: release/licences.json records no package-lock.json digest",
+    ]);
   });
 });

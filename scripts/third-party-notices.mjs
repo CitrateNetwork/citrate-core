@@ -495,6 +495,14 @@ export function updateInventory(inv, components, output) {
   return inv;
 }
 
+// ---- Lockfile freshness (stub: old behaviour, no lockfile check) ----
+export function cargoLockPackages() { return new Set(); }
+export function npmLockPackages() { return new Set(); }
+export function lockDigest() { return ""; }
+export function noticeSectionPackages() { return []; }
+export function recordLockDigests(inv) { return inv; }
+export function lockFreshness() { return []; }
+
 function run(cmd, args, opts = {}) {
   try {
     return execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], ...opts });
