@@ -58,12 +58,12 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # producer set, canonical checkpoints, block-timing fix, storage key from a file; r1006, 9a32147e:
 # the r1006 genesis pin 0xa3651a27 and its activation table, #398; r1006 restart, f6b6f3e4: the
 # producer, by-number and state-tag fixes #430, #428, #431, #433, then #434 sync rejoin and #437 seal
-# gate; ad11ed9d: the sync hardening on chain main, fed#331). A node without it rejects
+# gate; ad11ed9d: the sync hardening on chain main, fed#331; 56cc2bc8: the split-healing and restart-safe reorg fix, chain main 56cc2bc8). A node without it rejects
 # nothing at the activation height and forks from the fleet there; a node without the r1006 pin
 # does not know the r1006 genesis. `component-pins.mjs
 # check` (CI) fails unless the citrate-node pin, this floor and the app's citrate-chain crates in
 # src-tauri/Cargo.toml are the same rev.
-MIN_CHAIN_REV="ad11ed9df0d898dda2c0b8704e64fcc809a44d47"
+MIN_CHAIN_REV="56cc2bc80439c350dd9eca8817f173c1986096e6"
 
 [ -d "$CHAIN_DIR" ] || die "citrate-chain not found at $CHAIN_DIR (use --chain <path>)"
 REV="$(node "$REPO_ROOT/scripts/component-pins.mjs" field citrate-node source.rev)"
