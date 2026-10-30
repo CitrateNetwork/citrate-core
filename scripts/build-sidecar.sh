@@ -27,6 +27,7 @@
 #   scripts/build-sidecar.sh                       # host target, ../citrate-chain
 #   scripts/build-sidecar.sh --chain ~/src/citrate-chain
 #   scripts/build-sidecar.sh --target aarch64-apple-darwin
+#   scripts/build-sidecar.sh --out-dir /path/to/dir # install citrate-<target-triple>[.exe] there
 #   scripts/build-sidecar.sh --print-digest        # build, print the digest, install nothing
 #
 # The node is built with LZMA_API_STATIC=1 (release/components.json build.env): lzma-sys probes
@@ -40,17 +41,25 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHAIN_DIR="${CHAIN_DIR:-$(cd "$REPO_ROOT/.." && pwd)/citrate-chain}"
 PASS=()
 
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+require_option_value() {
+  [ "$#" -ge 2 ] || die "$1 requires a value"
+  [ -n "$2" ] || die "$1 requires a non-empty value"
+  case "$2" in
+    --*) die "$1 requires a value before $2" ;;
+  esac
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --chain) CHAIN_DIR="$2"; shift 2 ;;
-    --target|--out-dir) PASS+=("$1" "$2"); shift 2 ;;
+    --chain) require_option_value "$@"; CHAIN_DIR="$2"; shift 2 ;;
+    --target|--out-dir) require_option_value "$@"; PASS+=("$1" "$2"); shift 2 ;;
     --print-digest) PASS+=("$1"); shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
-
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 # ── activation-hardening floor ─────────────────────────────────────────────────
 # The node must carry the activation hardening (citrate-chain f9f6257b, #240; re-pinned to the

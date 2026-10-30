@@ -1,0 +1,283 @@
+name: windows release installer smoke
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Artifact containing the installer and payload manifest
+        required: true
+        type: string
+      artifact_run_id:
+        description: Run ID that uploaded the artifact; empty means the current run
+        required: false
+        default: ""
+        type: string
+      installer_file_name:
+        description: Installer file name inside the artifact
+        required: true
+        type: string
+      payload_manifest_file_name:
+        description: Payload manifest file name inside the artifact
+        required: true
+        type: string
+      expected_version:
+        description: Expected installer and manifest version
+        required: true
+        type: string
+      expected_installer_sha256:
+        description: Required lowercase installer SHA-256
+        required: true
+        type: string
+      expected_installer_size:
+        description: Required positive installer size in bytes
+        required: true
+        type: string
+      expected_artifact_digest:
+        description: Immutable sha256 digest reported by actions/upload-artifact
+        required: true
+        type: string
+      source_sha:
+        description: Full peeled source SHA represented by the installer
+        required: true
+        type: string
+    outputs:
+      evidence_artifact_name:
+        description: Exact artifact containing installed-product acceptance evidence
+        value: ${{ jobs.installer_smoke.outputs.evidence_artifact_name }}
+      evidence_artifact_digest:
+        description: Bare lowercase SHA-256 reported by actions/upload-artifact
+        value: ${{ jobs.installer_smoke.outputs.evidence_artifact_digest }}
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: Artifact containing the installer and payload manifest
+        required: true
+        type: string
+      artifact_run_id:
+        description: Run ID that uploaded the artifact
+        required: true
+        type: string
+      installer_file_name:
+        description: Installer file name inside the artifact
+        required: true
+        default: Citrate-Core-windows-x86_64-setup.exe
+        type: string
+      payload_manifest_file_name:
+        description: Payload manifest file name inside the artifact
+        required: true
+        default: PAYLOAD-MANIFEST-windows.json
+        type: string
+      expected_version:
+        description: Expected installer and manifest version
+        required: true
+        default: 0.5.1
+        type: string
+      expected_installer_sha256:
+        description: Required lowercase installer SHA-256
+        required: true
+        type: string
+      expected_installer_size:
+        description: Required positive installer size in bytes
+        required: true
+        type: string
+      expected_artifact_digest:
+        description: Immutable sha256 digest reported by actions/upload-artifact
+        required: true
+        type: string
+      source_sha:
+        description: Full peeled source SHA represented by the installer
+        required: true
+        default: b521d98e80217346bcb68294301ded129d0f1846
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: windows-release-installer-smoke-${{ github.run_id }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  installer_smoke:
+    name: NSIS fresh install, running reinstall, launch, and uninstall
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      evidence_artifact_name: ${{ steps.evidence_name.outputs.name }}
+      evidence_artifact_digest: ${{ steps.evidence_digest.outputs.digest }}
+    steps:
+      - name: Validate workflow inputs
+        shell: pwsh
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          INSTALLER_FILE_NAME: ${{ inputs.installer_file_name }}
+          MANIFEST_FILE_NAME: ${{ inputs.payload_manifest_file_name }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          EXPECTED_SHA256: ${{ inputs.expected_installer_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.expected_installer_size }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ inputs.expected_artifact_digest }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          CONTROL_REF_NAME: ${{ github.ref_name }}
+          CONTROL_REF_TYPE: ${{ github.ref_type }}
+          CONTROL_REF_PROTECTED: ${{ github.ref_protected }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:ARTIFACT_NAME)) { throw 'artifact-name is required' }
+          if ($env:ARTIFACT_NAME -notmatch '^[A-Za-z0-9_.-]+$') { throw 'artifact-name contains unsupported characters' }
+          foreach ($name in @($env:INSTALLER_FILE_NAME, $env:MANIFEST_FILE_NAME)) {
+            if ([string]::IsNullOrWhiteSpace($name) -or [IO.Path]::GetFileName($name) -ne $name) {
+              throw "artifact file input must be a plain file name: $name"
+            }
+          }
+          if ($env:EXPECTED_VERSION -cne '0.5.1') { throw 'expected_version must be exactly 0.5.1' }
+          if ($env:SOURCE_SHA -cne 'b521d98e80217346bcb68294301ded129d0f1846') {
+            throw 'source_sha must be the approved v0.5.1 Windows source commit'
+          }
+          if ($env:EXPECTED_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'expected_installer_sha256 must be a lowercase SHA-256'
+          }
+          if ($env:EXPECTED_ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'expected_artifact_digest must be a canonical lowercase SHA-256'
+          }
+          $size = 0L
+          if (-not [long]::TryParse($env:EXPECTED_SIZE, [ref]$size) -or $size -le 0) {
+            throw 'expected_installer_size must be a positive integer'
+          }
+          $runId = 0L
+          if ($env:ARTIFACT_RUN_ID -and (-not [long]::TryParse($env:ARTIFACT_RUN_ID, [ref]$runId) -or $runId -le 0)) {
+            throw 'artifact_run_id must be a positive integer when supplied'
+          }
+
+          $selectedRunId = if ($env:ARTIFACT_RUN_ID) { $runId } else { [long]$env:CURRENT_RUN_ID }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $run = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/runs/$selectedRunId" `
+            -Headers $headers
+          if ($run.repository.full_name -cne $env:REPOSITORY -or
+              $run.path -cne '.github/workflows/windows-release.yml' -or
+              $run.event -cne 'workflow_dispatch' -or
+              $run.head_branch -cne $env:DEFAULT_BRANCH -or
+              [string]$run.head_sha -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'artifact run was not produced by the approved default-branch release workflow'
+          }
+          if ($env:ARTIFACT_RUN_ID) {
+            if ($env:EVENT_NAME -cne 'workflow_dispatch' -or
+                $env:CONTROL_REF_TYPE -cne 'branch' -or
+                $env:CONTROL_REF_NAME -cne $env:DEFAULT_BRANCH -or
+                $env:CONTROL_REF_PROTECTED -cne 'true') {
+              throw 'manual smoke must run from the protected default branch'
+            }
+            $expectedWorkflowRef = "$env:REPOSITORY/.github/workflows/windows-release-installer-smoke.yml@refs/heads/$env:DEFAULT_BRANCH"
+            if ($env:WORKFLOW_REF -cne $expectedWorkflowRef) { throw 'manual smoke workflow ref is not approved' }
+            if ($run.status -cne 'completed' -or $run.conclusion -cne 'success') {
+              throw 'selected artifact run must be completed successfully'
+            }
+          } else {
+            $expectedWorkflowRef = "$env:REPOSITORY/.github/workflows/windows-release.yml@refs/heads/$env:DEFAULT_BRANCH"
+            if ($env:WORKFLOW_REF -cne $expectedWorkflowRef) { throw 'reusable smoke caller is not approved' }
+          }
+          $expectedArtifactName = "windows-v0.5.1-$selectedRunId-$($run.run_attempt)"
+          if ($env:ARTIFACT_NAME -cne $expectedArtifactName) {
+            throw "artifact_name must be $expectedArtifactName"
+          }
+          $encodedName = [uri]::EscapeDataString($env:ARTIFACT_NAME)
+          $artifactResponse = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/runs/$selectedRunId/artifacts?name=$encodedName" `
+            -Headers $headers
+          $artifacts = @($artifactResponse.artifacts | Where-Object { $_.name -ceq $env:ARTIFACT_NAME })
+          if ($artifacts.Count -ne 1 -or $artifacts[0].expired) {
+            throw 'expected exactly one unexpired release artifact'
+          }
+          $apiDigest = [string]$artifacts[0].digest
+          if ($apiDigest -cnotmatch '^sha256:([0-9a-f]{64})$' -or $Matches[1] -cne $env:EXPECTED_ARTIFACT_DIGEST) {
+            throw 'release artifact digest does not match the build output'
+          }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Download artifact from current run
+        if: ${{ inputs.artifact_run_id == '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/citrate-installer-download
+
+      - name: Download artifact from selected run
+        if: ${{ inputs.artifact_run_id != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/citrate-installer-download
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.artifact_run_id }}
+
+      - name: Exercise the exact installer artifact
+        shell: pwsh
+        env:
+          INSTALLER_FILE_NAME: ${{ inputs.installer_file_name }}
+          MANIFEST_FILE_NAME: ${{ inputs.payload_manifest_file_name }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          EXPECTED_SHA256: ${{ inputs.expected_installer_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.expected_installer_size }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $download = Join-Path $env:RUNNER_TEMP 'citrate-installer-download'
+          $arguments = @{
+            InstallerPath = Join-Path $download $env:INSTALLER_FILE_NAME
+            EvidenceDirectory = Join-Path $env:RUNNER_TEMP 'citrate-installer-evidence'
+            ExpectedVersion = $env:EXPECTED_VERSION
+            SourceSha = $env:SOURCE_SHA
+            PayloadManifestPath = Join-Path $download $env:MANIFEST_FILE_NAME
+          }
+          if ($env:EXPECTED_SHA256) { $arguments.ExpectedInstallerSha256 = $env:EXPECTED_SHA256 }
+          if ($env:EXPECTED_SIZE) { $arguments.ExpectedInstallerSize = [long]$env:EXPECTED_SIZE }
+          & .\src-tauri\windows\tests\test-release-installer.ps1 @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Name installer evidence artifact
+        id: evidence_name
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          "name=windows-release-installer-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer evidence
+        id: evidence_upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.evidence_name.outputs.name }}
+          path: ${{ runner.temp }}/citrate-installer-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Canonicalize installer evidence artifact digest
+        id: evidence_digest
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          UPLOADED_DIGEST: ${{ steps.evidence_upload.outputs['artifact-digest'] }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:UPLOADED_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw "upload-artifact returned a non-canonical evidence digest: $env:UPLOADED_DIGEST"
+          }
+          "digest=$env:UPLOADED_DIGEST" >> $env:GITHUB_OUTPUT
