@@ -36,7 +36,11 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # --locked), uploaded under this new name and verified by download. Like 9a32147e, the pin is the
 # uploaded first build: stage that asset.
 # Not uploaded yet: node-agent, comms-member-daemon, cluster-daemon.
-b805bf5bad3556989e29ff94263b3068efb5a85dcd761581c9113bfb12a888e5  citrate-aarch64-apple-darwin-ad11ed9df0d8
+# 2026-10-30 (RC52 recut): citrate is citrate-chain 56cc2bc8 (the split-healing and restart-safe reorg fix, chain main 56cc2bc8, after ad11ed9d; MIN_CHAIN_REV),
+# built on the release Mac with build-sidecar.sh in a new tree of the same build root (rustc 1.96.0,
+# --locked), uploaded under this new name and verified by download. The pin is the uploaded first
+# build: stage that asset.
+5863ece71752f069dc4af1eee631679d7fc56d476ad5ada03e302b5a12135786  citrate-aarch64-apple-darwin-56cc2bc80439
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369
 192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
