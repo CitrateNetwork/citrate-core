@@ -230,3 +230,115 @@ fn slow_retries_never_give_a_fresh_budget() {
         );
     }
 }
+
+/// A monitor seam the test arms: unarmed it lets the monitor through; armed, it holds the next
+/// monitor turn that reaches it until released (or until the guard drops, so a failing assertion
+/// never leaves the monitor parked).
+#[derive(Default)]
+struct SlowRetryGate {
+    state: std::sync::Mutex<(bool, bool, bool)>, // (armed, held, released)
+    cv: std::sync::Condvar,
+}
+
+impl SlowRetryGate {
+    fn hook(gate: &Arc<SlowRetryGate>) -> Arc<dyn Fn() + Send + Sync> {
+        let g = gate.clone();
+        Arc::new(move || {
+            let mut s = g.state.lock().unwrap_or_else(|p| p.into_inner());
+            if !s.0 || s.2 {
+                return;
+            }
+            s.1 = true;
+            g.cv.notify_all();
+            while !s.2 {
+                s = g.cv.wait(s).unwrap_or_else(|p| p.into_inner());
+            }
+        })
+    }
+
+    fn arm(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).0 = true;
+    }
+
+    fn wait_held(&self, limit: Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        while !s.1 {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            s = self
+                .cv
+                .wait_timeout(s, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        true
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).2 = true;
+        self.cv.notify_all();
+    }
+}
+
+struct ReleaseOnDrop(Arc<SlowRetryGate>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// A due slow retry is published in one step: no read ever sees the service `Failed` with no
+/// slow retry scheduled. The monitor is held at the budget seam, after the slow retry is armed and
+/// before its spawn is admitted (the instant core#600 left as `Failed` with nothing scheduled);
+/// there the service already reads `Starting`, with the budget left spent but for this attempt.
+#[test]
+fn an_armed_slow_retry_never_reads_failed_with_nothing_scheduled() {
+    let gate = Arc::new(SlowRetryGate::default());
+    let mut cfg = missing_bin_config("slow-armed", 1);
+    cfg.slow_retry = Some(Duration::from_millis(50));
+    cfg.budget_barrier = Some(SlowRetryGate::hook(&gate));
+    let sup = Supervisor::start(cfg).expect("start");
+    let _release = ReleaseOnDrop(gate.clone());
+    let failed = wait_failed(&sup);
+    assert_eq!(
+        failed.counters.consecutive_failures, 2,
+        "the budget is spent"
+    );
+
+    gate.arm();
+    assert!(
+        gate.wait_held(Duration::from_secs(5)),
+        "INCONCLUSIVE: the slow retry never reached the budget seam"
+    );
+    let obs = sup.observe().expect("observe");
+    assert!(
+        !(obs.lifecycle.phase == Phase::Failed && obs.slow_retry.is_none()),
+        "a Failed service with a slow retry configured reads as having none scheduled: {:?}",
+        obs.lifecycle
+    );
+    assert_eq!(
+        obs.lifecycle.phase,
+        Phase::Starting,
+        "the slow retry is published as the attempt it is"
+    );
+    assert_eq!(
+        obs.lifecycle.counters.consecutive_failures, 1,
+        "one attempt under the spent budget"
+    );
+    assert_eq!(sup.status().state, SupervisorState::Starting);
+
+    gate.release();
+    let again = wait_lifecycle(&sup, Duration::from_secs(5), "Failed again", |s| {
+        s.phase == Phase::Failed && s.restarts == 3
+    });
+    assert_eq!(again.counters.consecutive_failures, 2);
+    let slow = sup.observe().expect("observe").slow_retry;
+    assert!(
+        slow.is_some_and(|s| s.attempts == 1),
+        "Failed again with the next slow retry scheduled: {slow:?}"
+    );
+}
