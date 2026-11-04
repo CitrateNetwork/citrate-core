@@ -3372,6 +3372,70 @@ fn an_automated_start_carries_the_budget_over() {
     fx.assert_clean();
 }
 
+/// CORE-D3 slow retry (core#600; INV-17 amended 2026-11-04 by owner decision, INV-17a): a child
+/// that crashes every run, retried once per slow-retry period after it is Failed. Each slow retry
+/// is one more child and one more recorded failure, never a fresh budget: every time the service
+/// is Failed again, the children spawned since the member Start are exactly
+/// `1 + max_retries + slow retries`, and it never backs off in between.
+#[test]
+fn slow_retries_add_one_child_each_and_never_a_fresh_budget() {
+    let fx = OwnedFixture::new("slow-retry");
+    let mut cfg = SupervisorConfig::new(
+        fx.crash_after_spec("lcf-slow-retry", "0.1"),
+        fx.path("crash.jsonl"),
+    );
+    cfg.healthy_after = Duration::from_secs(30);
+    cfg.backoff = fast_backoff(1);
+    cfg.stop_grace = Duration::from_millis(300);
+    cfg.slow_retry = Some(Duration::from_millis(300));
+    let sup = Supervisor::start(cfg)
+        .unwrap_or_else(|e| panic!("INCONCLUSIVE: supervisor did not start: {e}"));
+    let max_retries: u64 = 1;
+    let mut checked: u64 = 0;
+    let mut seen_failed = false;
+    let deadline = Deadline::after(SLOW_FAILED);
+    while checked < 2 {
+        assert!(
+            !deadline.expired(),
+            "INCONCLUSIVE: {checked} slow retries checked; {:?}",
+            sup.lifecycle()
+        );
+        let Some(obs) = sup.observe() else {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        match (obs.lifecycle.phase, obs.slow_retry) {
+            (Phase::Failed, Some(slow)) => {
+                seen_failed = true;
+                if slow.attempts > checked {
+                    checked = slow.attempts;
+                }
+                assert_eq!(
+                    u64::from(obs.lifecycle.restarts),
+                    1 + max_retries + slow.attempts,
+                    "failures since the member Start: first run, max_retries, one per slow retry"
+                );
+                // Every recorded failure was a real child here (no spawn failures).
+                let children = fx.pidfile_pids().len() as u64;
+                assert_eq!(
+                    children,
+                    1 + max_retries + slow.attempts,
+                    "one child per slow retry, never a fresh budget of retries"
+                );
+            }
+            (phase, _) if seen_failed => assert_ne!(
+                phase,
+                Phase::Backoff,
+                "a slow retry never backs off: its budget is spent"
+            ),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(sup);
+    fx.assert_clean();
+}
+
 /// A probe answer that arrives after its interval never counts, even when the monitor first
 /// sees it finished and its deadline passed in the same poll (it must not be read as a fresh
 /// success just because the result was collected before the timeout was noticed).
