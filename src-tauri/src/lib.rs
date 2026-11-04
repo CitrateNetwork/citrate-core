@@ -52,6 +52,7 @@ mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
+mod contract_intel;
 mod contract_reader;
 mod deploy_gate;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).

@@ -759,6 +759,18 @@ fn resources_list_read_and_templates() {
         .contains("ValidatorRegistry"));
 }
 
+/// CORE-A1: the MCP address book carries the full canonical book, not only the app's 15 pins.
+#[test]
+fn the_mcp_address_book_lists_the_full_canonical_book() {
+    let book = crate::node_mcp_protocol::address_book().expect("book");
+    let full = book["book"].as_array().expect("full book");
+    assert!(full.len() > 80, "only {} entries", full.len());
+    for name in ["WrappedSALT", "EntryPoint", "CapsuleRegistry", "GovernanceTimelock"] {
+        assert!(full.iter().any(|e| e["name"] == name), "{name} missing");
+    }
+    assert!(book["addresses"]["ValidatorRegistry"].is_string());
+}
+
 // ---------------------------------------------------------------------------
 // Writes: the ceremony route and the approval inbox
 // ---------------------------------------------------------------------------
