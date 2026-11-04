@@ -204,6 +204,17 @@ expected 10 to 14 weeks after v0.5.1 (about late March to late April 2027) with 
 one contributor lane. Assumptions and the fallback when a proposed owner does not accept are
 in planset 05 "Owner decision (2026-10-05, third set)".
 
+## Owner decision (2026-11-04): slow retry after Failed (INV-17 amended)
+
+Recorded in chat on 2026-11-04 for citrate-core PR #600 (CORE-D3, planset r1007-v060). It
+amends the retry-budget rule this ADR adopts from SPEC-001 and the model's INV-17. The rows above
+stay as the record.
+
+| # | Decision | Replaces |
+|---|---|---|
+| D-SR1 | **Slow retry after Failed, on in the app.** `SupervisorConfig::slow_retry` (default `None`) lets the monitor try a Failed service again once per period. The app turns it on for every sidecar at 10 minutes (`services::DEFAULT_SLOW_RETRY`; `CITRATE_SIDECAR_SLOW_RETRY_SECS` overrides, at least 60 s, `0` or `off` turns it off). Each slow retry is one attempt under the spent budget: a failure is Failed again at once, a healthy run earns credit as normal, and a Stop, a member Start or shutdown cancels a pending one. Only a member Start gives a fresh budget. With `None`, Failed stays terminal as in SPEC-001 | SPEC-001's "retry budget terminal" for services with a slow retry configured; INV-17 as first written ("failures since the last member Start stay within `1 + MaxRetries`") |
+| D-SR2 | **INV-17 amended, INV-17a and INV-17b added.** INV-17: failures since the last member Start stay within `1 + MaxRetries + slow retries` since that Start. INV-17a: a slow retry adds at most one counted failure before the service is Failed again, never a fresh budget. INV-17b: a slow retry is never taken while a Stop or member intent is pending, or from any phase but Failed. TLC configs, mutants and witnesses: `src-tauri/formal/README.md` and the SCL-S1 EVIDENCE addendum of 2026-11-04 | INV-17 as first written |
+
 ## Consequences
 
 - A cross-cutting change to every manager, its commands and the frontend store, behind a

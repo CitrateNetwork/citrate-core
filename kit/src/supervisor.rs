@@ -57,7 +57,12 @@
 //!
 //! Only a member Start ([`Supervisor::request_start`]) gives a fresh retry budget. An automated
 //! start or restart ([`Supervisor::request_auto_start`], [`Supervisor::request_auto_restart`])
-//! carries the budget over and never revives a `Failed` service (INV-17).
+//! carries the budget over and never revives a `Failed` service. With a slow retry configured
+//! ([`SupervisorConfig::slow_retry`], CORE-D3) the monitor itself tries a `Failed` service once
+//! per period, one attempt under the spent budget, so the failures since the last member Start
+//! stay within `1 + max_retries + slow retries` (INV-17 as amended 2026-11-04, owner decision on
+//! core#600; INV-17a: a slow retry is never a fresh budget; INV-17b: a Stop, a member Start or
+//! shutdown cancels a pending one).
 //!
 //! ## Platform note (honesty)
 //! Graceful stop is SIGTERM → wait → SIGKILL on Unix (macOS + Linux), via a
@@ -1689,8 +1694,9 @@ impl Supervisor {
     /// Commit an automated Start (SC2): no member asked (auto-start at launch, a lazy start from
     /// another service or a tool). Like a member Start, except that it carries the retry budget
     /// over (failures before an earlier Stop still count) and never revives a `Failed` service:
-    /// that is `RequiresMemberStart`. If the carried budget is already spent, the Start settles
-    /// `Failed` without spawning.
+    /// that is `RequiresMemberStart` (a configured slow retry is the monitor's own single attempt
+    /// under the spent budget, not a caller's start; INV-17 as amended 2026-11-04). If the
+    /// carried budget is already spent, the Start settles `Failed` without spawning.
     pub fn request_auto_start(&self) -> ControlResult {
         self.start_intent(StartOrigin::Automated)
     }

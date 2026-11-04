@@ -971,3 +971,125 @@ fixture flakes in CI, the fix belongs in the fixture (a longer probe interval), 
 - **Counts:** kit lib 532 passed, 1 ignored; `supervisor::tests` 61 Unix / 39 Windows;
   `lifecycle_faults` 73. Load: 16 runs (2 rounds of 8 concurrent copies) at a load average of
   about 77 to 120: 16/16 green, no `citrate-lcf-` process left.
+
+## Addendum 2026-11-04: INV-17 amended for the CORE-D3 slow retry (core#600)
+
+Owner decision (2026-11-04, chat): amend INV-17 to allow CORE-D3's slow retry, and keep the slow
+retry on (10 min) in the app. Code: citrate-core PR #600 (`feat/sidecar-supervision-gaps`,
+`SupervisorConfig::slow_retry`, `arm_slow_retry`). The sections above stay as the record of
+INV-17 as first written; this addendum supersedes them where they differ.
+
+### Model changes (`src-tauri/formal/SidecarSupervisor.tla`)
+
+- **Constants** `SlowRetry` (BOOLEAN, models `slow_retry.is_some()`), `MaxSlowRetries` (a guard
+  bound on slow retries between member Starts, for TLC only) and `SpawnFlaky` (a recovering
+  child's OS spawn can fail for a while, so Failed and then recovery are reachable in a green
+  config; this partly closes open item 3, "a partly healthy, early-crashing config").
+- **Action `SlowRetryStep`** (the constant takes the name `SlowRetry`, so the action is named
+  differently): enabled only while Failed, with `SlowRetry`, under the Run intent that failed
+  (`desired = "Run"`; in this model the only intents that can be committed from Failed are a Stop,
+  which sets `desired = "Stop"`, and a member Start, which leaves Failed), with no owned resource
+  left. It moves to Starting with `failures = MaxRetries`: one attempt under the spent budget. A
+  failure goes through `FailStep` to Failed at once; a healthy run earns credit through
+  `ResetCredit` as for any incarnation.
+- **Variables** `slowSince` (slow retries since the last member Start, reset where `sinceMember`
+  resets) and the observers `slowOpen`, `slowFails` (no guard reads them).
+- **INV-17 amended:** `~CanHealthy => sinceMember <= 1 + MaxRetries + slowSince`. With
+  `SlowRetry = FALSE`, `slowSince = 0` and this is INV-17 as first written.
+- **INV-17a `INV_SlowRetryOneAttempt`:** `slowOpen => (slowFails <= 1 /\ (slowFails = 1 => phase # "Backoff"))`.
+  A slow retry adds at most one counted failure before a credit or a member Start, and that
+  failure never backs off.
+- **INV-17b `INV_SlowRetryOnlyFromFailed`** (action): a step that raises `slowSince` starts from
+  Failed, with `SlowRetry`, under `desired = "Run"`.
+- **Liveness** `SlowRetryReturnsToFailed`: in the fork-bomb configs every slow retry ends back in
+  Failed. `WF_vars(SlowRetryStep)` joins `ForkBombFairness` (never enabled when `SlowRetry = FALSE`).
+- Every pre-existing config sets `SlowRetry = FALSE`, `MaxSlowRetries = 0`, `SpawnFlaky = FALSE`.
+  Its meaning is unchanged: each pre-existing green config has the same distinct state count as
+  at `f83c18c7` (1002, 22729, 24, 108, 188, 783). Mutant and witness counts move a little run to
+  run because TLC stops at the first violation with several workers.
+
+New configs: green `_SlowRetry` (LivenessOnly, SpawnFlaky, full `Spec`), `_SlowRetryProbed`,
+`_SlowRetryCrashLoop` (never-healthy, full `Spec`: Stop, member and automated Starts, restarts,
+replacement), `_SlowRetryForkBomb`, `_SlowRetryProbedForkBomb`. Mutants
+`_MutSlowRetryFreshBudget` (the slow retry resets the budget; INV-17a),
+`_MutSlowRetryFreshBudgetCrashBound` (the same mutant against the amended INV-17 alone) and
+`_MutSlowRetryIgnoresStop` (the slow retry fires under a Stop; INV-17b). Witnesses
+`_ReachSlowRetryAfterFailed` (slow retry taken, then Failed again), `_ReachSlowRetryThenHealthy`
+(slow retry taken, then credited) and `_ReachFailedUnderStop` (the mutant's state is reachable).
+
+**Red first.** With `SlowRetryStep` in and INV-17 as first written, TLC reports
+`INV_CrashBoundBetweenMemberStarts` violated on `_SlowRetryCrashLoop`, `_SlowRetryForkBomb` and
+`_SlowRetryProbedForkBomb` (the red commit). The amendment makes them green.
+
+### TLC run (TLC 2.19, tla2tools.jar sha256 `936a2620…0e88`, OpenJDK Homebrew, MAC lane)
+
+`tlc_expect.py SidecarSupervisor`: **39 of 39 configs match** (28 before). Frame lint clean;
+action coverage complete (`SlowRetryStep` is taken in the green slow-retry configs);
+`--self-test` all ok.
+
+| Config | Expected | TLC result | Distinct states | Depth | Match |
+|---|---|---|---|---|---|
+| `SidecarSupervisor` | no error | no error | 1002 | 35 | yes |
+| `SidecarSupervisor_ForkBomb` | no error | no error | 24 | 14 | yes |
+| `SidecarSupervisor_ForkBombAutoRestart` | no error | no error | 188 | 22 | yes |
+| `SidecarSupervisor_MutAutoStartResets` | violated INV_CrashBoundBetweenMemberStarts | violated INV_CrashBoundBetweenMemberStarts | 411 | 23 | yes |
+| `SidecarSupervisor_MutElapsedCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 71 | 14 | yes |
+| `SidecarSupervisor_MutFirstNotRecorded` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 328 | 14 | yes |
+| `SidecarSupervisor_MutSampleCredit` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 465 | 14 | yes |
+| `SidecarSupervisor_MutSlowRetryFreshBudget` | violated INV_SlowRetryOneAttempt | violated INV_SlowRetryOneAttempt | 28 | 19 | yes |
+| `SidecarSupervisor_MutSlowRetryFreshBudgetCrashBound` | violated INV_CrashBoundBetweenMemberStarts | violated INV_CrashBoundBetweenMemberStarts | 34 | 22 | yes |
+| `SidecarSupervisor_MutSlowRetryIgnoresStop` | violated INV_SlowRetryOnlyFromFailed | violated INV_SlowRetryOnlyFromFailed | 848 | 25 | yes |
+| `SidecarSupervisor_MutStaleKeepsWindow` | violated INV_CreditOnlyFromAttestedHealth | violated INV_CreditOnlyFromAttestedHealth | 994 | 16 | yes |
+| `SidecarSupervisor_MutStaleSuccess` | violated INV_ReadyIsCurrent | violated INV_ReadyIsCurrent | 2789 | 21 | yes |
+| `SidecarSupervisor_MutStopIgnoresWorkers` | violated INV_StoppedOwnsNothing | violated INV_StoppedOwnsNothing | 343 | 13 | yes |
+| `SidecarSupervisor_MutStopOff` | violated INV_StopNeverSpawns | violated INV_StopNeverSpawns | 106 | 12 | yes |
+| `SidecarSupervisor_MutTimeoutFrees` | violated INV_ProbePermitBounded | violated INV_ProbePermitBounded | 253 | 12 | yes |
+| `SidecarSupervisor_Probed` | no error | no error | 22729 | 60 | yes |
+| `SidecarSupervisor_ProbedForkBomb` | no error | no error | 108 | 18 | yes |
+| `SidecarSupervisor_ProbedForkBombAutoRestart` | no error | no error | 783 | 24 | yes |
+| `SidecarSupervisor_ReachAutoRestartAfterFailures` | violated W_AutoRestartAfterFailures | violated W_AutoRestartAfterFailures | 98 | 24 | yes |
+| `SidecarSupervisor_ReachCreditFromSpan` | violated W_CreditFromSpan | violated W_CreditFromSpan | 754 | 16 | yes |
+| `SidecarSupervisor_ReachFailedUnderStop` | violated W_FailedUnderStop | violated W_FailedUnderStop | 974 | 33 | yes |
+| `SidecarSupervisor_ReachFirstSuccessLate` | violated W_FirstSuccessLate | violated W_FirstSuccessLate | 140 | 11 | yes |
+| `SidecarSupervisor_ReachMemberStartAfterFailures` | violated W_MemberStartAfterFailures | violated W_MemberStartAfterFailures | 282 | 18 | yes |
+| `SidecarSupervisor_ReachMemberStartFromFailed` | violated W_MemberStartFromFailed | violated W_MemberStartFromFailed | 584 | 20 | yes |
+| `SidecarSupervisor_ReachSamplesWithoutSpan` | violated W_SamplesWithoutSpan | violated W_SamplesWithoutSpan | 234 | 12 | yes |
+| `SidecarSupervisor_ReachSlowRetryAfterFailed` | violated W_SlowRetryFailedAgain | violated W_SlowRetryFailedAgain | 28 | 18 | yes |
+| `SidecarSupervisor_ReachSlowRetryThenHealthy` | violated W_SlowRetryThenHealthy | violated W_SlowRetryThenHealthy | 1684 | 25 | yes |
+| `SidecarSupervisor_ReachStaleWithOpenWindow` | violated W_StaleWithOpenWindow | violated W_StaleWithOpenWindow | 319 | 12 | yes |
+| `SidecarSupervisor_ReachStaleWorker` | violated W_StaleWorkerWhileAlive | violated W_StaleWorkerWhileAlive | 169 | 11 | yes |
+| `SidecarSupervisor_ReachStopInStopped` | violated W_StopInStopped | violated W_StopInStopped | 150 | 13 | yes |
+| `SidecarSupervisor_ReachStopWaitsOnWorker` | violated W_StopWaitsOnWorker | violated W_StopWaitsOnWorker | 208 | 11 | yes |
+| `SidecarSupervisor_ReachStoppedWithWorker` | violated W_StoppedWithWorker | violated W_StoppedWithWorker | 371 | 14 | yes |
+| `SidecarSupervisor_ReachTimedOutWorker` | violated W_TimedOutWorkerHeldWhileAlive | violated W_TimedOutWorkerHeldWhileAlive | 180 | 11 | yes |
+| `SidecarSupervisor_ReachUnattestedTick` | violated W_UnattestedTickPastHealthy | violated W_UnattestedTickPastHealthy | 15 | 10 | yes |
+| `SidecarSupervisor_SlowRetry` | no error | no error | 2747 | 30 | yes |
+| `SidecarSupervisor_SlowRetryCrashLoop` | no error | no error | 1964 | 56 | yes |
+| `SidecarSupervisor_SlowRetryForkBomb` | no error | no error | 36 | 22 | yes |
+| `SidecarSupervisor_SlowRetryProbed` | no error | no error | 61673 | 54 | yes |
+| `SidecarSupervisor_SlowRetryProbedForkBomb` | no error | no error | 148 | 22 | yes |
+
+### Rust tests that mirror it (kit)
+
+| Test | What it pins |
+|---|---|
+| `supervisor::tests::slow_retries_never_give_a_fresh_budget` (new) | spawn-failure path, `max_retries` 0, 1, 2, three slow retries each, every observation: while Failed, failures since the member Start = `1 + max_retries + slow retries` exactly and the budget is spent; after the first Failed never Backoff and never fewer than `max_retries` counted |
+| `lifecycle_faults::slow_retries_add_one_child_each_and_never_a_fresh_budget` (new, manifest row added) | a real child that crashes every run: each time Failed again, children = recorded failures = `1 + max_retries + slow retries`; never Backoff |
+| core#600's `a_failed_service_is_retried_once_per_slow_retry_period`, `a_stop_cancels_a_pending_slow_retry`, `without_a_slow_retry_a_failed_service_stays_failed`, `a_slow_retry_recovers_a_service_whose_cause_went_away` | one attempt per period (17a), Stop cancels (17b), off by default, positive control |
+
+Neither new test is red on `f83c18c7`: they are regression pins for code that already holds the
+amended invariant. Teeth: with `arm_slow_retry` mutated to `consecutive_failures = 0` (a fresh
+budget, reverted afterwards) both new tests fail, as does `a_failed_service_is_retried_once_per_slow_retry_period`.
+Five repeated runs of each new test pass.
+
+**Counts** (`CARGO_INCREMENTAL=0 cargo test -p citrate-core-kit`, Mac): kit lib 628 → 629
+passed (1 ignored); `lifecycle_faults` 80 → 81. Workspace not run on the Mac (disk rule).
+
+**Refinement note.** `SlowRetryStep` changes the budget and the phase in one step. The Rust arm
+takes two critical sections: `arm_slow_retry` sets `consecutive_failures = max_retries` and clears
+`slow_retry_at` while the phase still reads Failed, and `admit_spawn` then publishes Starting. For
+that instant an observer sees Failed, `slow_retry: None` and `max_retries` counted. No invariant
+here is affected (the attempt has not been admitted), but `enter_failed`'s comment ("no read sees
+a Failed service with a slow retry configured but none scheduled") does not hold for that
+instant. The new unit test tolerates it explicitly. A follow-up could publish Starting inside
+`arm_slow_retry`.
