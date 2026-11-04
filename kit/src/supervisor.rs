@@ -3420,4 +3420,7 @@ mod tests {
 
     // The services registry read (K1a-2): platform-neutral.
     include!("supervisor_registry_tests.rs");
+
+    // CORE-D3: the slow retry after Failed.
+    include!("supervisor_slow_retry_tests.rs");
 }

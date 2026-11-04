@@ -127,6 +127,40 @@ fn the_owned_list_matches_the_bundled_sidecars() {
     assert!(checked > 0);
 }
 
+/// CORE-D1: both llama-server sidecars (local chat in `serve.rs`, embeddings in `embed_serve.rs`)
+/// run the one bundled `llama/llama-server`, and a crashed run can leave either holding its
+/// loopback port. The startup sweep must cover that binary.
+#[test]
+fn llama_server_is_an_owned_sidecar() {
+    assert!(
+        crate::OWNED_SIDECARS.contains(&"llama-server"),
+        "llama-server (chat and embed) must be on OWNED_SIDECARS: {:?}",
+        crate::OWNED_SIDECARS
+    );
+}
+
+/// CORE-D1: the sweep's llama-server path is the bundled one inside this installation's
+/// resources (`llama/llama-server`), never a developer override such as
+/// `CITRATE_LLAMA_SERVER_BIN=/opt/homebrew/bin/llama-server`, which would make a member's own
+/// llama-server a sweep candidate.
+#[cfg(not(windows))]
+#[test]
+fn the_swept_llama_server_path_is_the_bundled_one() {
+    let app = tauri::test::mock_app();
+    let path = crate::resolve_owned_sidecar(app.handle(), "llama-server")
+        .unwrap_or_else(|e| panic!("llama-server must resolve for the sweep: {e}"));
+    let resources = tauri::Manager::path(app.handle())
+        .resource_dir()
+        .unwrap_or_else(|e| panic!("resource dir: {e}"));
+    assert_eq!(
+        path,
+        resources
+            .join("llama")
+            .join(format!("llama-server{}", std::env::consts::EXE_SUFFIX)),
+        "the sweep resolves the bundled llama-server only"
+    );
+}
+
 /// The March 2026 Linux package was `Package: citrate` 0.1.0 and also owned `usr/bin/citrate-core`.
 /// Builds before 0.3 killed every process whose command line named their binary directory, which
 /// for a `.deb` is `/usr/bin`, ending the desktop session (#318). The `.deb` must declare that
@@ -412,6 +446,31 @@ mod native {
 
         assert!(!signalled.contains(&decoy));
         assert!(survives(decoy, &same_name), "a name match alone must never make a process ours");
+    }
+
+    /// CORE-D1: a member's own llama-server (Homebrew, a source build) shares the bundled
+    /// binary's file name. Only the bundled path is ours: the same-named process survives, the
+    /// leftover at the bundled path is stopped.
+    #[test]
+    fn a_members_own_llama_server_survives_the_sweep() {
+        let mut fx = Fixtures::new();
+        let install_dir = fx.dir("llamainstall");
+        std::fs::create_dir_all(install_dir.join("llama")).expect("create llama dir");
+        let owned = install_dir.join("llama").join("llama-server");
+        let main = install_dir.join("citrate-core");
+        fx.install(&owned);
+        fx.install(&main);
+        let brew_dir = fx.dir("llamabrew");
+        let members = brew_dir.join("llama-server");
+        fx.install(&members);
+        let member_pid = fx.start_orphan(&members, "llama-server", &["sleep", SLEEP_MS]);
+        let leftover = fx.start_orphan(&owned, "llama-server", &["sleep", SLEEP_MS]);
+
+        let signalled = cleanup(std::slice::from_ref(&owned), Some(&main));
+
+        assert!(signalled.contains(&leftover), "the bundled llama-server leftover is stopped");
+        assert!(!signalled.contains(&member_pid), "a same-named llama-server is never signalled");
+        assert!(survives(member_pid, &members), "the member's own llama-server keeps running");
     }
 
     #[test]
