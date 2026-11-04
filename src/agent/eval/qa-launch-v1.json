@@ -1,0 +1,62 @@
+{
+  "version": "qa-launch-v1",
+  "provenance": {
+    "author": "Larry Klosowski + Codex",
+    "created": "2026-11-04",
+    "purpose": "Current pre-launch status; historical qa-v1 remains frozen for reproducibility.",
+    "disjointFromTraining": true
+  },
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "800d03a0460d0dab3e5a37225da272a0659dc9a1",
+      "visibility": "public"
+    }
+  },
+  "items": [
+    {
+      "id": "qa-launch-tokenomics-status",
+      "question": "Have Citrate launch tokenomics and the launch supply cap been finalized? Where can I find updates and send feedback?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "TBD",
+          "to be determined",
+          "not finalized"
+        ],
+        [
+          "before launch",
+          "prior to launch"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/economics.md",
+          "anchor": "tokenomics-to-be-determined-before-launch"
+        }
+      ]
+    },
+    {
+      "id": "qa-launch-tokenomics-feedback",
+      "question": "Where can I send feedback on Citrate tokenomics?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "support@citrate.ai"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/economics.md",
+          "anchor": "questions-and-feedback"
+        }
+      ]
+    }
+  ]
+}

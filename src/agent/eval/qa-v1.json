@@ -49,29 +49,28 @@
     },
     {
       "id": "qa-chain-native-token",
-      "question": "Have Citrate launch tokenomics and the launch supply cap been finalized? Where can I find updates and send feedback?",
+      "question": "What is the native token of the Citrate Network, how many decimals does it have, and what is its total supply cap?",
       "category": "chain-basics",
       "difficulty": "easy",
       "answerable": true,
       "keyPoints": [
         [
-          "TBD",
-          "to be determined",
-          "not finalized"
+          "SALT"
         ],
         [
-          "before launch",
-          "prior to launch"
+          "18"
         ],
         [
-          "support@citrate.ai"
+          "one trillion",
+          "1000000000000",
+          "1 trillion"
         ]
       ],
       "citations": [
         {
           "source": "citrate-docs",
           "path": "content/chain/economics.md",
-          "anchor": "tokenomics-to-be-determined-before-launch"
+          "anchor": "reference"
         }
       ]
     },
