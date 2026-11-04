@@ -48,6 +48,14 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   contract_deploy: { effect: "sign", trust: "trusted" }, // opens a SignatureCeremony for a creation tx
   get_verified_source: { effect: "none", trust: "untrusted" }, // HUP-S4.3: deployer-written source from CitrateScan
   contract_view: { effect: "none", trust: "untrusted" }, // HUP-S6.7 / US-6.3 AC2: an eth_call; values chosen by the contract
+  // CORE-A1 / CORE-A2: all reads. Registry names, token symbols, explorer contract names and
+  // decoded call/event values are chosen by whoever deployed or called a contract: untrusted.
+  address_book_lookup: { effect: "none", trust: "untrusted" },
+  get_code: { effect: "none", trust: "untrusted" },
+  identify_contract: { effect: "none", trust: "untrusted" },
+  decode_calldata: { effect: "none", trust: "untrusted" },
+  decode_log: { effect: "none", trust: "untrusted" },
+  explain_tx: { effect: "none", trust: "untrusted" },
   // HUP-S9.4: the plan text is composed by core; only typed counts and one of three fixed
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },

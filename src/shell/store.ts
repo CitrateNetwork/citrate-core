@@ -48,6 +48,7 @@ import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { runContractView } from "../agent/contractView";
+import { runAddressBookLookup, runDecodeCalldata, runDecodeLog, runExplainTx, runGetCode, runIdentifyContract } from "../agent/contractIntel";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
@@ -4316,6 +4317,24 @@ export class Store {
       // HUP-S6.7 / US-6.3 AC2 — READ: an eth_call through core's contract_view_call (no effect,
       // no approval); a non-view function is refused, the result is fenced as untrusted data.
       result = await runContractView(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "address_book_lookup") {
+      // CORE-A1 — READ: the embedded 40204 book + registry reads (core); registry text fenced.
+      result = await runAddressBookLookup(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "get_code") {
+      // CORE-A1 — READ: eth_getCode / eth_getStorageAt + CitrateScan status, through core.
+      result = await runGetCode(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "identify_contract") {
+      // CORE-A1 — READ: book name, ABI source, ERC-165 / ERC-20 probes (eth_call), code selectors.
+      result = await runIdentifyContract(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "decode_calldata") {
+      // CORE-A2 — READ: verified ABI, then bundled book ABI, then the bundled selector subset.
+      result = await runDecodeCalldata(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "decode_log") {
+      // CORE-A2 — READ: the emitter's ABI, then the bundled topic subset.
+      result = await runDecodeLog(bridge.contracts, args as Record<string, unknown>);
+    } else if (call.name === "explain_tx") {
+      // CORE-A2 — READ: the tx + receipt from the 40204 RPC, decoded; values fenced.
+      result = await runExplainTx(bridge.contracts, args as Record<string, unknown>);
     } else if (call.name === "belnap_codec") {
       // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
       result = belnapCodecTool(args as Record<string, unknown>);

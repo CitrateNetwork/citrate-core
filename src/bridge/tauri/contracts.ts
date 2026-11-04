@@ -25,6 +25,7 @@ import type {
   ForkDryRunRequest,
 } from "../../agent/deployGate";
 import type { VerifiedSourceView } from "../../agent/verifiedSource";
+import type { AbiResolutionView, BookLookupView, CodeInfoView, IdentityView, SignatureMatchesView, TxFetchView } from "../../agent/contractIntel";
 import type {
   TemplateCatalog,
   TemplateRenderInput,
@@ -71,6 +72,25 @@ export const tauriContracts: ContractsDomain = {
   },
   proposeWrite(address: string, calldata: string, valueWei: string) {
     return invoke<CeremonyView>("contract_write_propose", { address, calldata, valueWei });
+  },
+  // CORE-A1 / CORE-A2 — contract lookup, identification and decoding inputs (core reads; no writes).
+  addressBookLookup(query: string) {
+    return invoke<BookLookupView>("contract_address_book_lookup", { query });
+  },
+  getCode(address: string) {
+    return invoke<CodeInfoView>("contract_get_code", { address });
+  },
+  identify(address: string) {
+    return invoke<IdentityView>("contract_identify", { address });
+  },
+  abiResolve(address: string) {
+    return invoke<AbiResolutionView>("contract_abi_resolve", { address });
+  },
+  signatureLookup(selectors: string[], topics: string[]) {
+    return invoke<SignatureMatchesView>("abi_signature_lookup", { selectors, topics });
+  },
+  txFetch(hash: string) {
+    return invoke<TxFetchView>("chain_tx_fetch", { hash });
   },
   // HUP-S6.6 — after the deploy.
   postdeployStatus(projectDir: string) {

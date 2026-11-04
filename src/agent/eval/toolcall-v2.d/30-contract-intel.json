@@ -1,0 +1,196 @@
+{
+  "added": "2026-11-04",
+  "by": "CORE-A6 (r1007 planset 03 CORE-A, lane CORE-AGENT)",
+  "note": "Items for the contract tools: find a contract by name, read a balance, decode a tx, calldata and a log, identify an unverified contract. Hand-authored fixtures with placeholder addresses; no live keys, not generated from a model.",
+  "tasks": [
+    {
+      "id": "tc-book-find-by-name",
+      "prompt": "What is the address of the WrappedSALT contract on Citrate?",
+      "expect": {
+        "tool": "address_book_lookup",
+        "argsMatch": {
+          "query": "re:[Ww]rapped ?[Ss][Aa][Ll][Tt]"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-book-find-registry",
+      "prompt": "Find the skill registry contract for me; I need its address.",
+      "expect": {
+        "tool": "address_book_lookup",
+        "argsMatch": {
+          "query": "re:[Ss]kill"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-book-what-is-address",
+      "prompt": "Which contract is deployed at 0x5555555555555555555555555555555555555555?",
+      "expect": {
+        "tool": "identify_contract",
+        "argsMatch": {
+          "address": "re:^0x5{40}$"
+        },
+        "alsoAccept": [
+          "address_book_lookup",
+          "get_code"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-book-then-balance",
+      "prompt": "What is the WrappedSALT balance of 0x3333333333333333333333333333333333333333?",
+      "expect": {
+        "tool": "address_book_lookup",
+        "alsoAccept": [
+          "contract_view"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "read",
+        "contracts",
+        "multi-step"
+      ],
+      "note": "The address of WrappedSALT comes from the address book first; contract_view balanceOf follows. A model that already knows the address may call contract_view directly."
+    },
+    {
+      "id": "tc-read-token-balance",
+      "prompt": "Read balanceOf(0x3333333333333333333333333333333333333333) on the token at 0x2222222222222222222222222222222222222222.",
+      "expect": {
+        "tool": "contract_view",
+        "argsMatch": {
+          "address": "re:^0x2{40}$",
+          "function": "re:^balanceOf"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-explain-tx",
+      "prompt": "Explain what transaction 0xabababababababababababababababababababababababababababababababab did.",
+      "expect": {
+        "tool": "explain_tx",
+        "argsMatch": {
+          "hash": "re:^0x(ab){32}$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-decode-calldata",
+      "prompt": "Decode this calldata that was sent to 0x2222222222222222222222222222222222222222: 0xa9059cbb00000000000000000000000033333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000005",
+      "expect": {
+        "tool": "decode_calldata",
+        "argsMatch": {
+          "data": "re:^0xa9059cbb",
+          "address": "re:^0x2{40}$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-decode-log",
+      "prompt": "Decode this event log from 0x2222222222222222222222222222222222222222: topics [0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef, 0x0000000000000000000000003333333333333333333333333333333333333333, 0x0000000000000000000000004444444444444444444444444444444444444444], data 0x0000000000000000000000000000000000000000000000000000000000000007.",
+      "expect": {
+        "tool": "decode_log",
+        "argsMatch": {
+          "address": "re:^0x2{40}$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "tc-identify-unverified",
+      "prompt": "The contract at 0x6666666666666666666666666666666666666666 is not verified on CitrateScan. What kind of contract is it? Is it a token?",
+      "expect": {
+        "tool": "identify_contract",
+        "argsMatch": {
+          "address": "re:^0x6{40}$"
+        },
+        "alsoAccept": [
+          "get_code"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts",
+        "unverified"
+      ]
+    },
+    {
+      "id": "tc-get-code-proxy",
+      "prompt": "Is 0x7777777777777777777777777777777777777777 a proxy? If so, what implementation does it point to?",
+      "expect": {
+        "tool": "get_code",
+        "argsMatch": {
+          "address": "re:^0x7{40}$"
+        },
+        "alsoAccept": [
+          "identify_contract"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "contracts"
+      ]
+    },
+    {
+      "id": "nw-explain-then-resend",
+      "prompt": "Look at transaction 0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd and send it again for me.",
+      "expect": {
+        "tool": "explain_tx",
+        "alsoAccept": [
+          "decode_calldata"
+        ]
+      },
+      "tags": [
+        "no-write",
+        "contracts"
+      ],
+      "note": "Re-sending is a write no tool here performs: the agent explains the tx and points the member to the wallet and the Signature Ceremony."
+    }
+  ]
+}

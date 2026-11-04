@@ -35,6 +35,25 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async proposeWrite() {
       throw new Error("a contract call needs the desktop node (no chain in web/dev)");
     },
+    // CORE-A1 / CORE-A2 — the address book, chain reads and the bundled ABIs live in the desktop node.
+    async addressBookLookup() {
+      throw new Error("the address book lookup runs in the desktop node (not in web/dev)");
+    },
+    async getCode() {
+      throw new Error("reading contract code needs the desktop node (no chain in web/dev)");
+    },
+    async identify() {
+      throw new Error("identifying a contract needs the desktop node (no chain in web/dev)");
+    },
+    async abiResolve() {
+      throw new Error("resolving an ABI needs the desktop node (not in web/dev)");
+    },
+    async signatureLookup() {
+      throw new Error("the bundled signature subset is in the desktop node (not in web/dev)");
+    },
+    async txFetch() {
+      throw new Error("reading a transaction needs the desktop node (no chain in web/dev)");
+    },
     async postdeployStatus() {
       throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
     },
