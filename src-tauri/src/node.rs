@@ -435,6 +435,9 @@ pub struct NodeManager {
     /// The per-user runtime directory the storage key file is written in (see the module
     /// doc); `None` falls back to the app-data secrets directory.
     key_runtime_dir: Option<PathBuf>,
+    /// CORE-D2: the liveness watch's last restart (or refused restart) and its reason, shown on the
+    /// node's `sidecars_health` row.
+    liveness_note: Mutex<Option<String>>,
 }
 
 /// How long a node start waits for the startup cleanup barrier (SCL-S8.5a). The cleanup runs
@@ -479,6 +482,7 @@ impl NodeManager {
             admission_wait: ADMISSION_WAIT,
             node_ports: None,
             key_runtime_dir: key_runtime_dir(),
+            liveness_note: Mutex::new(None),
         }
         .with_network(crate::network_profile::active_ready())
     }
@@ -990,6 +994,8 @@ impl NodeManager {
         // C1.0b-1: default fork-bomb-bounded backoff, but a node-tuned
         // sustained-healthy window (see the module doc).
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         config.healthy_after = NODE_HEALTHY_AFTER;
         let sup = match Supervisor::start(config) {
@@ -1206,6 +1212,53 @@ impl NodeManager {
         done
     }
 
+    /// CORE-D2: the liveness watch's last note (a restart, or a refused one, with its reason).
+    pub fn liveness_note(&self) -> Option<String> {
+        self.liveness_note
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// CORE-D2: one liveness sample, or `None` unless a supervised node is `Alive`. The run is the
+    /// supervisor's instance and incarnation; head and peers come from the node's own RPC (head
+    /// `None` when it does not answer); the tip is the public RPC's (15 s cache). The supervisor
+    /// slot is released before any RPC call.
+    fn liveness_sample(&self) -> Option<crate::node_liveness::Sample> {
+        let run = {
+            let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+            let snap = guard.as_ref()?.lifecycle()?;
+            if snap.phase != crate::supervisor::Phase::Alive {
+                return None;
+            }
+            (snap.instance, snap.incarnation)
+        };
+        let (head, peers) = match self.poll_rpc() {
+            Some((h, p)) => (Some(h), p),
+            None => (None, 0),
+        };
+        Some(crate::node_liveness::Sample {
+            run,
+            head,
+            peers,
+            tip: self.cached_network_tip(),
+        })
+    }
+
+    /// CORE-D2: ask the supervisor for an automated restart of the running node (graceful
+    /// teardown, then a respawn under the same retry budget; never a crash, never a revival of a
+    /// `Failed` node).
+    fn liveness_restart(&self) -> std::result::Result<(), String> {
+        let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sup) = guard.as_ref() else {
+            return Err("the node is not supervised".to_string());
+        };
+        match sup.request_auto_restart() {
+            crate::supervisor::ControlResult::Accepted(_) => Ok(()),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
     /// This node's local head height (`eth_blockNumber` over its own RPC), or
     /// `None` if the RPC is not up. The arm gate reads this as the "how far have I
     /// caught up" side of the comparison.
@@ -1278,6 +1331,67 @@ pub fn spawn_mining_watchdog<R: Runtime>(app: AppHandle<R>) {
         });
     if let Err(e) = spawned {
         eprintln!("[node] mining watchdog did not start: {e}");
+    }
+}
+
+/// CORE-D2: the node manager as the liveness watch's probe.
+struct NodeLiveness<'a>(&'a NodeManager);
+
+impl crate::node_liveness::LivenessProbe for NodeLiveness<'_> {
+    fn sample(&self) -> Option<crate::node_liveness::Sample> {
+        self.0.liveness_sample()
+    }
+    fn restart(&self, reason: &str) -> std::result::Result<(), String> {
+        eprintln!("[node] liveness: restarting the node: {reason}");
+        self.0.liveness_restart()
+    }
+    fn note(&self, text: String) {
+        eprintln!("[node] {text}");
+        *self
+            .0
+            .liveness_note
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(text);
+    }
+}
+
+/// CORE-D2: start the node liveness watch (see [`crate::node_liveness`]). Every
+/// `check_every` it samples the running node and restarts it after a sustained stall. The policy is
+/// read once from the environment (`CITRATE_NODE_LIVENESS`, `CITRATE_NODE_STALL_SECS`).
+pub fn spawn_liveness_watch<R: Runtime>(app: AppHandle<R>) {
+    let policy = crate::node_liveness::policy_from_env(|k| std::env::var(k).ok());
+    if !policy.enabled {
+        eprintln!(
+            "[node] liveness restart is off ({})",
+            crate::node_liveness::LIVENESS_ENV
+        );
+    }
+    let spawned = std::thread::Builder::new()
+        .name("node-liveness".into())
+        .spawn(move || {
+            let every = policy.check_every;
+            let mut watch = crate::node_liveness::LivenessWatch::new(policy);
+            let mut was_stalling = false;
+            loop {
+                std::thread::sleep(every);
+                let Some(state) = app.try_state::<NodeState>() else {
+                    continue;
+                };
+                let verdict = crate::node_liveness::tick(
+                    &mut watch,
+                    &crate::supervisor::SystemClock,
+                    &NodeLiveness(&state.0),
+                );
+                // One log line when a stall is first seen, not one per sample.
+                let stalling = matches!(verdict, crate::node_liveness::Verdict::Stalling { .. });
+                if stalling && !was_stalling {
+                    eprintln!("[node] liveness: the head has stopped moving while the network is ahead; watching");
+                }
+                was_stalling = stalling;
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[node] liveness watch did not start: {e}");
     }
 }
 

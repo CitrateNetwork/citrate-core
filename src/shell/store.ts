@@ -70,6 +70,7 @@ import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierC
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
+import { sidecarAlertText } from "./sidecarAlert";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
@@ -881,6 +882,11 @@ export class Store {
     // AppState, so the Node surface + Sidebar render live numbers instead of the
     // sim tick(). No-op in web-dev (the sim tick drives those there).
     if (BRIDGE_MODE === "tauri") {
+      // CORE-D3: a sidecar that spends its retry budget (or comes back) is told to the member
+      // wherever they are. Subscribed inside a promise so a bridge without events cannot throw here.
+      void Promise.resolve()
+        .then(() => bridge.services.onAlert((a) => this.toast(sidecarAlertText(a))))
+        .catch(() => {});
       void this.refreshNode();
       this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
       // AUTOSTART. `startNode()` was reachable ONLY from a button, so after any

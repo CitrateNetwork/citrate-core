@@ -2671,8 +2671,54 @@ export interface ServicesSnapshot {
   takenAtUnixMs: number;
   services: ServiceEntry[];
 }
+// ---- CORE-D4: `sidecars_health` (Rust `services.rs`). One row per sidecar, each read from that
+// sidecar's kit supervisor: the registry row above plus its retry counters, the slow retry after
+// Failed (CORE-D3), the last N captured log lines (scrubbed in Rust: home path, key shapes, hex
+// blobs) and, for the node, the liveness note (CORE-D2). Counters cross as decimal strings.
+export interface SidecarRetryCounters {
+  attempts: string;
+  respawns: string;
+  initialFailures: string;
+  consecutiveFailures: string;
+  maxRetries: string;
+  healthCredits: string;
+}
+export interface SidecarSlowRetry {
+  everyMs: string;
+  nextAtUnixMs: string;
+  attempts: string;
+}
+export interface SidecarLogLine {
+  ts: number;
+  stream: "out" | "err" | string;
+  line: string;
+}
+export interface SidecarHealth extends ServiceEntry {
+  counters: SidecarRetryCounters | null;
+  slowRetry: SidecarSlowRetry | null;
+  logTail: SidecarLogLine[];
+  logLinesKept: number | null;
+  note: string | null;
+}
+export interface SidecarsHealth {
+  takenAtUnixMs: number;
+  services: SidecarHealth[];
+}
+/** The `sidecars://alert` event: a sidecar became Failed, or came back from Failed. */
+export interface SidecarAlert {
+  id: ServiceId;
+  label: string;
+  kind: "failed" | "recovered";
+  reason: string | null;
+  nextRetryAtUnixMs: number | null;
+  atUnixMs: number;
+}
 export interface ServicesDomain {
   snapshot(): Promise<ServicesSnapshot>;
+  /** CORE-D4: every sidecar's health row, with its last `lines` log lines (Rust clamps it). */
+  health(lines?: number): Promise<SidecarsHealth>;
+  /** CORE-D3: subscribe to sidecar alerts; resolves to the unsubscribe function. */
+  onAlert(cb: (alert: SidecarAlert) => void): Promise<() => void>;
 }
 
 // ---- D-11 (RC52) — cloud model providers (ADR-2026-10-26). Mirrors Rust `providers_ipc.rs`. ----

@@ -95,7 +95,7 @@ Migrate native and bundled frontend together. Preserve existing fields, but deli
 | Alive + Ready | running | Child exists; scoped healthy true only while current/fresh. Existing domain/identity/ceremony checks still apply. |
 | Alive + NotAssessed | running | Process-only profile remains usable through its existing liveness/domain/transport checks; no fabricated generic healthy field. |
 | Backoff | restarting | No eligible active incarnation; healthy false; only current Running intent may admit a retry. |
-| Failed | failed | Retry budget terminal; healthy false; a new explicit Start requires complete old teardown. |
+| Failed | failed | Retry budget terminal; healthy false; a new explicit Start requires complete old teardown. *Amended 2026-11-04 (owner decision; core#600, CORE-D3):* when the service is configured with a slow retry, the monitor tries a Failed service again once per period: one attempt under the spent budget, so a further failure is Failed again at once. A healthy run earns credit as for any incarnation. A Stop, a member Start or shutdown cancels a pending slow retry. Only a member Start gives a fresh budget. Without a slow retry configured, Failed stays terminal as written. Formal statement: INV-17 (amended), INV-17a and INV-17b in `src-tauri/formal/SidecarSupervisor.tla`. |
 | Stopping | stopping | Owned resources/tickets may remain; healthy false; new work denied until teardown/explicit queued intent is reconciled. |
 | Quarantined | quarantined | Owned resources remain; healthy false; starts/actions denied; late actual completion can resolve ownership, not silently restart. |
 

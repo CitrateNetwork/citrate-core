@@ -17,15 +17,20 @@
 //   offers Reset (the owner's stop, which releases the slot), and Start appears once the slot is
 //   empty. A control in flight says "requested" until the next snapshot shows what happened; the
 //   state word never moves ahead of it. A refused control shows the owner's reason on its row.
-// - Logs: only the node has a log read (`node_logs`, on Node › Advanced). The other eight say
+// - Logs: only the node has a full log read (`node_logs`, on Node › Advanced). The other eight say
 //   "not available yet" (N-8, SC4).
+// - Health (CORE-D4): a second section reads `sidecars_health` (Rust `services.rs`): for every
+//   sidecar its state, retry counters, last crash, the slow retry after Failed (CORE-D3), the node's
+//   liveness note (CORE-D2) and the last lines its supervisor captured, scrubbed in Rust. Alerts
+//   (CORE-D3, the `sidecars://alert` event) show as a banner while the tab is open.
 // =====================================================================
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import type { Store } from "../shell/store";
 import { bridge, isUnavailable } from "../bridge";
 import { startRuntime, stopRuntime } from "../shell/slices/agent";
-import type { ServiceEntry, ServiceId, ServicePhase, ServiceReadiness, ServicesSnapshot } from "../bridge/domains";
+import { sidecarAlertText, untilText } from "../shell/sidecarAlert";
+import type { ServiceEntry, ServiceId, ServicePhase, ServiceReadiness, ServicesSnapshot, SidecarAlert, SidecarHealth, SidecarsHealth } from "../bridge/domains";
 
 /** How often the tab re-reads the snapshot while it is open. */
 const POLL_MS = 2000;
@@ -304,6 +309,156 @@ export function ServicesView({
   );
 }
 
+/** How often the health section re-reads `sidecars_health`, and how many log lines it asks for. */
+const HEALTH_POLL_MS = 5000;
+export const HEALTH_TAIL_LINES = 40;
+
+/** A decimal-string counter as a number for display (`null` when it isn't one). */
+function count(v: string | null | undefined): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** "in N s" / "in N min" / "in N h" until `at`, against the read's own time. */
+export const until = untilText;
+
+function HealthRow({ h, takenAt }: { h: SidecarHealth; takenAt: number }) {
+  const observedRow = h.observation === "observed";
+  const failures = count(h.counters?.consecutiveFailures);
+  const maxRetries = count(h.counters?.maxRetries);
+  const next = count(h.slowRetry?.nextAtUnixMs);
+  const slowTries = count(h.slowRetry?.attempts);
+  return (
+    <div data-health={h.id} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "10px 16px", borderTop: "1px solid var(--line-1)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 500, minWidth: 110 }}>{h.label}</span>
+        <span data-testid="health-state" className="mono" style={{ fontSize: 11, color: stateColor(h) }}>{stateWord(h)}</span>
+        {observedRow && (
+          <span className="mono" style={mono}>
+            Restarts: {h.restarts ?? "—"}
+            {failures !== null && maxRetries !== null ? ` · Failures in a row: ${failures} of ${maxRetries + 1}` : ""}
+          </span>
+        )}
+      </div>
+      {observedRow && (
+        <span className="mono" style={mono}>
+          {h.lastCrash ? `Last exit: ${h.lastCrash.exit} · ${ago(takenAt, h.lastCrash.atUnixMs)}` : "No crash recorded"}
+        </span>
+      )}
+      {observedRow && h.phase === "failed" && (
+        <span data-testid="health-retry" role="status" style={{ fontSize: 12, color: "var(--warn, var(--tx-2))" }}>
+          {next !== null
+            ? `It stopped retrying after repeated failures. Next automatic try ${until(takenAt, next)}${slowTries ? ` (tried ${slowTries} time${slowTries === 1 ? "" : "s"} so far)` : ""}.`
+            : "It stopped retrying after repeated failures. It stays stopped until it is started again."}
+        </span>
+      )}
+      {h.note && (
+        <span data-testid="health-note" style={{ fontSize: 12, color: "var(--tx-2)" }}>
+          {h.note}
+        </span>
+      )}
+      {observedRow && (
+        <details>
+          <summary className="mono" style={{ ...mono, cursor: "pointer" }}>
+            Last {h.logTail.length} log line{h.logTail.length === 1 ? "" : "s"}
+            {h.logLinesKept !== null ? ` of ${h.logLinesKept} kept` : ""}
+          </summary>
+          {h.logTail.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--tx-3)", marginTop: 6 }}>It has written nothing yet.</div>
+          ) : (
+            <pre data-testid="health-log" className="mono" style={{ fontSize: 10.5, whiteSpace: "pre-wrap", wordBreak: "break-all", margin: "6px 0 0", maxHeight: 240, overflow: "auto" }}>
+              {h.logTail.map((l) => (l.stream === "err" ? "! " : "  ") + l.line).join("\n")}
+            </pre>
+          )}
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** The health section for one `sidecars_health` read. Pure: every word comes from `health`, `error` or `alerts`. */
+export function SidecarsHealthView({ health, error, alerts }: { health: SidecarsHealth | null; error: string | null; alerts: SidecarAlert[] }) {
+  return (
+    <div data-testid="sidecars-health" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 18 }}>Health</span>
+        <span className="mono" style={{ marginLeft: "auto", ...mono }}>
+          source · sidecars_health · each sidecar&apos;s supervisor
+        </span>
+      </div>
+      {alerts.map((a) => (
+        <div key={`${a.id}-${a.atUnixMs}-${a.kind}`} role="alert" data-alert={a.kind} style={{ fontSize: 12.5, color: a.kind === "failed" ? "var(--warn, var(--tx-2))" : "var(--ok)" }}>
+          {sidecarAlertText(a)}
+        </div>
+      ))}
+      <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+        {error ? (
+          <div role="alert" style={{ padding: 16, fontSize: 12.5, color: "var(--tx-2)" }}>
+            Health couldn&apos;t be read: {error}
+          </div>
+        ) : !health ? (
+          <div style={{ padding: 16, fontSize: 12.5, color: "var(--tx-3)" }}>Reading health…</div>
+        ) : (
+          health.services.map((h) => <HealthRow key={h.id} h={h} takenAt={health.takenAtUnixMs} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Polls `sidecars_health` while open and keeps the alerts this tab has seen (newest first, at most 5). */
+function SidecarsHealthSection() {
+  const [health, setHealth] = useState<SidecarsHealth | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [alerts, setAlerts] = useState<SidecarAlert[]>([]);
+  const live = useRef(true);
+
+  const read = useCallback(async () => {
+    try {
+      const h = await bridge.services.health(HEALTH_TAIL_LINES);
+      if (!live.current) return;
+      setHealth(h);
+      setError(null);
+    } catch (e) {
+      if (!live.current) return;
+      setHealth(null);
+      setError(errorText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    live.current = true;
+    void read();
+    const t = setInterval(() => void read(), HEALTH_POLL_MS);
+    let unlisten: (() => void) | null = null;
+    // Subscribed inside a promise so a bridge without an event channel rejects into the catch
+    // below instead of throwing out of the effect.
+    Promise.resolve()
+      .then(() =>
+        bridge.services.onAlert((a) => {
+          if (!live.current) return;
+          setAlerts((prev) => [a, ...prev].slice(0, 5));
+          void read();
+        }),
+      )
+      .then((u) => {
+        if (live.current) unlisten = u;
+        else u();
+      })
+      .catch(() => {
+        // The browser preview has no event channel; the poll still reads health.
+      });
+    return () => {
+      live.current = false;
+      clearInterval(t);
+      unlisten?.();
+    };
+  }, [read]);
+
+  return <SidecarsHealthView health={health} error={error} alerts={alerts} />;
+}
+
 function errorText(e: unknown): string {
   if (isUnavailable(e)) return "the browser preview supervises no processes; open the desktop app";
   return String((e as Error)?.message ?? e);
@@ -361,5 +516,12 @@ export function NodeServices({ store }: SurfaceProps) {
     [store, read],
   );
 
-  return <ServicesView snapshot={snapshot} error={error} pending={pending} refusals={refusals} onControl={onControl} onOpenLogs={() => store.go("node/advanced")} />;
+  return (
+    <>
+      <ServicesView snapshot={snapshot} error={error} pending={pending} refusals={refusals} onControl={onControl} onOpenLogs={() => store.go("node/advanced")} />
+      <div style={{ padding: "0 26px 24px", maxWidth: 960 }}>
+        <SidecarsHealthSection />
+      </div>
+    </>
+  );
 }

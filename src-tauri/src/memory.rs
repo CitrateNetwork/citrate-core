@@ -860,6 +860,8 @@ impl MemoryManager {
         }
         let spec = self.spawn_spec()?;
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         let sup = match Supervisor::start(config) {
             Ok(sup) => sup,

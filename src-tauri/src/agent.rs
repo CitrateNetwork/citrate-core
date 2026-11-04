@@ -548,6 +548,8 @@ impl AgentManager {
 
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         let sup = Supervisor::start(config).map_err(|e| AgentError::Spawn(e.to_string()))?;
         *guard = Some(sup);

@@ -429,6 +429,8 @@ impl LlamaServerManager {
         }
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         config.healthy_after = LLAMA_HEALTHY_AFTER;
         let sup = Supervisor::start(config).map_err(|e| ServeError::Spawn(e.to_string()))?;
@@ -600,7 +602,6 @@ pub struct ServeState(pub LlamaServerManager);
 pub(crate) fn resolve_llama_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var("CITRATE_LLAMA_SERVER_BIN") {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -611,16 +612,28 @@ pub(crate) fn resolve_llama_bin<R: tauri::Runtime>(
             path.display()
         ));
     }
+    bundled_llama_bin(app)
+}
+
+/// The bundled `llama-server` inside this installation's resources, ignoring any developer
+/// override. The startup orphan sweep (CORE-D1) matches only this path, so a member's own
+/// llama-server (Homebrew, a source build) is never swept.
+pub(crate) fn bundled_llama_bin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
+    use tauri::Manager;
     // Bundled as a `resources` DIRECTORY (`llama/`) — the binary sits alongside its
     // llama.cpp/ggml dylibs so its `@loader_path` rpath resolves them (a bare
     // `externalBin` can't carry the dylib tree). See tauri.conf.json `resources`.
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    Ok(bundled_llama_path(&resources))
+}
+
+/// Where the bundled `llama-server` sits under a resource dir: `llama/llama-server[.exe]`.
+pub(crate) fn bundled_llama_path(resources: &std::path::Path) -> PathBuf {
+    resources
         .join("llama")
-        .join(llama_server_file_name(std::env::consts::EXE_SUFFIX));
-    Ok(resource)
+        .join(llama_server_file_name(std::env::consts::EXE_SUFFIX))
 }
 
 /// The bundled llama-server's file name inside `llama/` for a platform `exe_suffix`
