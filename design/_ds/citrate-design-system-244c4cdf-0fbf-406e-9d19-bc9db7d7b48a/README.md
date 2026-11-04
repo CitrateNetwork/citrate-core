@@ -55,7 +55,7 @@ The selling motion is consultative and bespoke. The website and outbound materia
 | **Checkpoint** | 50 blocks · ~25 seconds |
 | **VM** | Lattice Virtual Machine (LVM) — REVM + 10 precompiles (7 AI + 3 x402) |
 | **Orchestration** | MCP (Model Context Protocol) layer |
-| **Tokenomics** | SALT |
+| **Launch tokenomics** | TBD before launch; [current notice](https://docs.citrate.ai/chain/economics) |
 | **Compatibility** | EVM compatible · Chain ID 40204 (testnet) |
 | **Learning** | Mentor-mentee protocol at every checkpoint · LoRA rank 16 · embedding dim 768 |
 | **Logic** | Belnap FOUR-valued (handles contradictory outputs without discard) |
