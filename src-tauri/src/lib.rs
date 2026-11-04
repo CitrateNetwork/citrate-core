@@ -242,9 +242,13 @@ mod lsp_retired_tests;
 use tauri::Manager;
 
 /// The sidecar binaries we own. A leftover of ANY of these from a crashed run holds a data-dir LOCK
-/// (RocksDB node store, ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open
-/// its own. Each name resolves through the same resolver the app launches it with
+/// (RocksDB node store, ipfs datastore, mem-mcp store), a UDS socket or a loopback port, so a fresh
+/// launch can't open its own. Each name resolves through the same resolver the app launches it with
 /// ([`resolve_owned_sidecar`]); `owned_cleanup` tests pin this list against the bundle configs.
+///
+/// CORE-D1: `llama-server` is the one bundled binary both llama sidecars run (local chat in
+/// `serve.rs`, embeddings in `embed_serve.rs`). It resolves to the bundled `llama/llama-server` only,
+/// never a developer override, so a member's own llama-server elsewhere is never a candidate.
 const OWNED_SIDECARS: &[&str] = &[
     "citrate",
     "node-agent",
@@ -253,6 +257,7 @@ const OWNED_SIDECARS: &[&str] = &[
     "comms-member-daemon",
     "cluster-daemon",
     "hermes",
+    "llama-server",
 ];
 
 /// Resolve one owned sidecar's executable path with the resolver its manager launches it with.
@@ -268,6 +273,7 @@ fn resolve_owned_sidecar<R: tauri::Runtime>(
         "comms-member-daemon" => comms::resolve_comms_member_bin(app),
         "cluster-daemon" => cluster::resolve_cluster_daemon_bin(app),
         "hermes" => hermes::resolve_hermes_bin(app),
+        "llama-server" => serve::bundled_llama_bin(app),
         other => Err(format!("not an owned sidecar: {other}")),
     }
 }
@@ -481,6 +487,11 @@ pub fn run() {
             node::spawn_mining_watchdog(app.handle().clone());
             // Core #326: a node that followed a withdrawn branch moves its chain data aside.
             node::spawn_withdrawn_watch(app.handle().clone());
+            // CORE-D2: a running node whose head stands still while it has peers and the network
+            // moves on is restarted (never in initial sync, with a growing gap between restarts).
+            node::spawn_liveness_watch(app.handle().clone());
+            // CORE-D3: the main window hears when a sidecar fails (and when it comes back).
+            services::spawn_alert_watch(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
             // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
             // the per-session bearer is minted with OsRng, handed to the child via
@@ -1052,6 +1063,8 @@ pub fn run() {
             components::components_rollback,
             // K1a-2 — the services registry snapshot Node › Services reads (read-only).
             services::services_snapshot,
+            // CORE-D4 — every sidecar's health: state, counters, last crash, slow retry, log tail.
+            services::sidecars_health,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,

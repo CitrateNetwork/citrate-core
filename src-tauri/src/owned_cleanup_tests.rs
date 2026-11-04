@@ -93,7 +93,8 @@ fn the_parent_pid_is_read_after_the_last_paren() {
 
 /// Every sidecar binary the bundles ship next to the main executable is covered by the cleanup
 /// list, and every name on the list resolves through a launcher resolver. (llama-server is
-/// shipped in the `llama/` resource folder with its libraries and is not on the list.)
+/// shipped in the `llama/` resource folder with its libraries, not as an externalBin; CORE-D1 put
+/// it on the list, resolved to that bundled path: see `llama_server_is_an_owned_sidecar`.)
 #[test]
 fn the_owned_list_matches_the_bundled_sidecars() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -142,22 +143,28 @@ fn llama_server_is_an_owned_sidecar() {
 /// CORE-D1: the sweep's llama-server path is the bundled one inside this installation's
 /// resources (`llama/llama-server`), never a developer override such as
 /// `CITRATE_LLAMA_SERVER_BIN=/opt/homebrew/bin/llama-server`, which would make a member's own
-/// llama-server a sweep candidate.
+/// llama-server a sweep candidate. (Tauri's mock app has no resource dir, so the sweep's answer is
+/// compared with the bundled resolver's, and the bundled layout is checked on its own.)
 #[cfg(not(windows))]
 #[test]
 fn the_swept_llama_server_path_is_the_bundled_one() {
     let app = tauri::test::mock_app();
-    let path = crate::resolve_owned_sidecar(app.handle(), "llama-server")
-        .unwrap_or_else(|e| panic!("llama-server must resolve for the sweep: {e}"));
-    let resources = tauri::Manager::path(app.handle())
-        .resource_dir()
-        .unwrap_or_else(|e| panic!("resource dir: {e}"));
+    let swept = crate::resolve_owned_sidecar(app.handle(), "llama-server");
     assert_eq!(
-        path,
-        resources
+        swept,
+        crate::serve::bundled_llama_bin(app.handle()),
+        "the sweep resolves llama-server through the bundled resolver only"
+    );
+    assert_eq!(
+        crate::serve::bundled_llama_path(Path::new("/opt/citrate-test-install/Resources")),
+        PathBuf::from("/opt/citrate-test-install/Resources")
             .join("llama")
             .join(format!("llama-server{}", std::env::consts::EXE_SUFFIX)),
-        "the sweep resolves the bundled llama-server only"
+    );
+    let src = include_str!("lib.rs");
+    assert!(
+        src.contains("\"llama-server\" => serve::bundled_llama_bin(app),"),
+        "the sweep must not use resolve_llama_bin (it honours CITRATE_LLAMA_SERVER_BIN)"
     );
 }
 

@@ -125,3 +125,14 @@ describe("Node › Services › Health (sidecars_health)", () => {
     expect(until(NOW, NOW - 5_000)).toBe("in 0 s");
   });
 });
+
+describe("the member-facing alert line (store toast and the Health banner)", () => {
+  it("says what failed, why, and when it is tried again; and when it is back", async () => {
+    const { sidecarAlertText } = await import("../shell/sidecarAlert");
+    expect(
+      sidecarAlertText({ id: "node", label: "Node", kind: "failed", reason: "signal: 9", nextRetryAtUnixMs: NOW + 120_000, atUnixMs: NOW }),
+    ).toBe("Node failed (signal: 9). It is tried again in 2 min.");
+    expect(sidecarAlertText({ id: "node", label: "Node", kind: "failed", reason: null, nextRetryAtUnixMs: null, atUnixMs: NOW })).toBe("Node failed.");
+    expect(sidecarAlertText({ id: "ipfs", label: "IPFS", kind: "recovered", reason: null, nextRetryAtUnixMs: null, atUnixMs: NOW })).toBe("IPFS is running again.");
+  });
+});

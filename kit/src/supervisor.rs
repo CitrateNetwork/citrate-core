@@ -827,6 +827,25 @@ pub struct Observation {
     pub lifecycle: LifecycleSnapshot,
     pub last_transition: PhaseTransition,
     pub last_crash: Option<CrashRecord>,
+    /// While the service is `Failed` and a slow retry is configured (CORE-D3): when it is tried
+    /// next. `None` in every other phase, and when no slow retry is configured.
+    pub slow_retry: Option<SlowRetry>,
+}
+
+/// The slow retry of a `Failed` service (CORE-D3, [`SupervisorConfig::slow_retry`]). Counters
+/// cross to JavaScript as decimal strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlowRetry {
+    /// The period between slow retries.
+    #[serde(serialize_with = "decimal_u64")]
+    pub every_ms: u64,
+    /// When the next one is due, on the supervisor's injected clock.
+    #[serde(serialize_with = "decimal_u64")]
+    pub next_at_unix_ms: u64,
+    /// Slow retries run so far by this supervisor.
+    #[serde(serialize_with = "decimal_u64")]
+    pub attempts: u64,
 }
 
 fn decimal_u64<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -922,9 +941,27 @@ struct Cell {
     last_transition: PhaseTransition,
     /// The supervisor's injected clock, read when the phase changes.
     clock: Arc<dyn Clock>,
+    /// CORE-D3: the slow-retry period ([`SupervisorConfig::slow_retry`]), when the next one is due
+    /// (set when the service enters `Failed`) and how many have run.
+    slow_retry_every: Option<Duration>,
+    slow_retry_at: Option<u64>,
+    slow_retries: u64,
 }
 
 impl Cell {
+    /// The slow retry as observed: only while `Failed` with one scheduled.
+    fn slow_retry_view(&self) -> Option<SlowRetry> {
+        if self.phase != Phase::Failed {
+            return None;
+        }
+        let every = self.slow_retry_every?;
+        Some(SlowRetry {
+            every_ms: u64::try_from(every.as_millis()).unwrap_or(u64::MAX),
+            next_at_unix_ms: self.slow_retry_at?,
+            attempts: self.slow_retries,
+        })
+    }
+
     /// The one writer of `phase`. A change records the transition at the clock's current time; a
     /// write of the same phase records nothing.
     fn set_phase(&mut self, next: Phase) {
@@ -1178,6 +1215,14 @@ pub struct SupervisorConfig {
     /// lifecycle fixtures release the ticket there, so they prove the window waits for
     /// publications and not only for readers. `None` in production.
     pub settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// CORE-D3: after the retry budget is spent, try the service again once per this period.
+    /// `None` (the default) keeps SPEC-001's terminal `Failed`: only a member Start revives it.
+    ///
+    /// A slow retry is one attempt under the spent budget: if it fails, the service is `Failed`
+    /// again at once and the next one is a whole period away, so the bound stays one spawn per
+    /// period. If it stays up, health credit (attested or elapsed, as for any incarnation) resets
+    /// the budget. A Stop, a member Start or shutdown cancels a pending slow retry.
+    pub slow_retry: Option<Duration>,
 }
 
 impl SupervisorConfig {
@@ -1197,6 +1242,7 @@ impl SupervisorConfig {
             budget_barrier: None,
             collect_barrier: None,
             settle_barrier: None,
+            slow_retry: None,
         }
     }
 }
@@ -1401,6 +1447,9 @@ impl Supervisor {
                     at_unix_ms: config.clock.now_unix_ms(),
                 },
                 clock: config.clock.clone(),
+                slow_retry_every: config.slow_retry,
+                slow_retry_at: None,
+                slow_retries: 0,
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1567,6 +1616,7 @@ impl Supervisor {
             lifecycle: c.snapshot(self.shared.epoch),
             last_transition: c.last_transition,
             last_crash: c.status.last_crash.clone(),
+            slow_retry: c.slow_retry_view(),
         })
     }
 
@@ -2434,6 +2484,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         budget_barrier,
         collect_barrier,
         settle_barrier: _settle_barrier,
+        slow_retry,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -2510,8 +2561,18 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // desired == Running
         if failed_seq == Some(seq) {
-            shared.wait_wake(None);
-            continue;
+            // CORE-D3: without a slow retry, Failed waits for a newer intent (a member Start, a
+            // Stop) or shutdown. With one, the period is waited out and then exactly one attempt
+            // is made under the spent budget; a failure lands back here.
+            let Some(every) = slow_retry else {
+                shared.wait_wake(None);
+                continue;
+            };
+            if !slow_retry_wait(&shared, seq, every) {
+                continue;
+            }
+            failed_seq = None;
+            arm_slow_retry(&shared, backoff.max_retries);
         }
         // Before every spawn: the first one for a new Start intent and every automatic retry
         // under the same intent (core#397). However the previous incarnation ended (a Stop's
@@ -2880,6 +2941,12 @@ fn enter_failed(shared: &Shared, seq: u64, reason: &str, budget_member: u64) -> 
             return false;
         }
         c.apply_state(SupervisorState::Failed);
+        // CORE-D3: the next slow retry is published with the Failed phase, so no read sees a
+        // Failed service with a slow retry configured but none scheduled.
+        let now_ms = c.clock.now_unix_ms();
+        c.slow_retry_at = c.slow_retry_every.map(|every| {
+            now_ms.saturating_add(u64::try_from(every.as_millis()).unwrap_or(u64::MAX))
+        });
         c.settle(
             seq,
             IntentKind::Start,
@@ -3390,6 +3457,38 @@ fn backoff_wait(shared: &Shared, seq: u64, delay: Duration, clock: &dyn Clock) {
         }
         shared.wait_wake(Some(deadline - now));
     }
+}
+
+/// CORE-D3: wait out one slow-retry period of a `Failed` service. True when the period passed with
+/// intent `seq` still current; false when a newer intent or shutdown came first (the caller's loop
+/// handles it). Measured on the monotonic clock; a wakeup never restarts the wait. A period too
+/// large to add to the monotonic clock is waited like no slow retry at all.
+fn slow_retry_wait(shared: &Shared, seq: u64, every: Duration) -> bool {
+    let Some(deadline) = std::time::Instant::now().checked_add(every) else {
+        shared.wait_wake(None);
+        return false;
+    };
+    loop {
+        if shared.intent_changed(seq) {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        shared.wait_wake(Some(deadline - now));
+    }
+}
+
+/// CORE-D3: a slow retry is due. Count it, and leave the budget spent but for this one attempt
+/// (`max_retries` failures counted, so one more failure is over the cap and the service is `Failed`
+/// again at once).
+fn arm_slow_retry(shared: &Shared, max_retries: u32) {
+    let mut c = shared.lock();
+    c.slow_retry_at = None;
+    c.slow_retries = c.slow_retries.saturating_add(1);
+    c.counters.consecutive_failures = max_retries;
+    c.touch();
 }
 
 /// Record a crash into the shared status (bumps `restarts`, sets `last_crash`).

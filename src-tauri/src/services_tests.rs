@@ -356,7 +356,8 @@ fn the_log_tail_is_the_newest_lines_bounded_and_scrubbed() {
     assert!(!joined.contains("/Users/member"), "the home path is folded: {joined}");
     assert!(!joined.contains("0x1111111111111111111111111111111111111111"), "{joined}");
     assert!(joined.contains("<redacted>"));
-    if let Some(sup) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(sup) = taken {
         sup.stop();
     }
 }
