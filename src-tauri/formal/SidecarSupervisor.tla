@@ -845,8 +845,11 @@ INV_StoppedOwnsNothing == (phase = "Stopped") => (Cleanup = {})
 \* last member Start stay within the fork-bomb bound, whatever automated
 \* starts and restarts happen. The bound holds between member Starts; a
 \* member Start is a new budget by decision.
+\* Amended 2026-11-04 (owner decision; core#600, CORE-D3): each slow retry
+\* since the member Start adds one attempt to the bound, and no more. With
+\* SlowRetry = FALSE, slowSince = 0 and this is the original INV-17.
 INV_CrashBoundBetweenMemberStarts ==
-    ~CanHealthy => (sinceMember <= MaxRetries + 1)
+    ~CanHealthy => (sinceMember <= MaxRetries + 1 + slowSince)
 
 \* INV-17a (core#600): a slow retry is never a fresh budget. Until a health
 \* credit or a member Start, it adds at most one counted failure, and that
