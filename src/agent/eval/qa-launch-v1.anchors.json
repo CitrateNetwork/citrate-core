@@ -1,0 +1,19 @@
+{
+  "version": "qa-launch-v1",
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "800d03a0460d0dab3e5a37225da272a0659dc9a1",
+      "files": {
+        "content/chain/economics.md": {
+          "blob": "e420212f9439e846f89aeb6a167e61a9c9eb2542",
+          "anchors": [
+            "tokenomics-to-be-determined-before-launch",
+            "about-earlier-materials",
+            "questions-and-feedback"
+          ]
+        }
+      }
+    }
+  }
+}
