@@ -2578,7 +2578,9 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 continue;
             }
             failed_seq = None;
-            arm_slow_retry(&shared, backoff.max_retries);
+            if !arm_slow_retry(&shared, seq, backoff.max_retries) {
+                continue;
+            }
         }
         // Before every spawn: the first one for a new Start intent and every automatic retry
         // under the same intent (core#397). However the previous incarnation ended (a Stop's
@@ -3486,15 +3488,24 @@ fn slow_retry_wait(shared: &Shared, seq: u64, every: Duration) -> bool {
     }
 }
 
-/// CORE-D3: a slow retry is due. Count it, and leave the budget spent but for this one attempt
-/// (`max_retries` failures counted, so one more failure is over the cap and the service is `Failed`
-/// again at once).
-fn arm_slow_retry(shared: &Shared, max_retries: u32) {
+/// CORE-D3: a slow retry is due for intent `seq`. Count it, leave the budget spent but for this
+/// one attempt (`max_retries` failures counted, so one more failure is over the cap and the service
+/// is `Failed` again at once), and publish the attempt as `Starting`, all in one critical section:
+/// no read sees the service `Failed` with no slow retry scheduled (the model's `SlowRetryStep`).
+/// False, with nothing changed, when a newer intent or shutdown came first (INV-17b); the caller's
+/// loop then handles that intent. Spawn admission still checks the intent again.
+fn arm_slow_retry(shared: &Shared, seq: u64, max_retries: u32) -> bool {
     let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq {
+        return false;
+    }
     c.slow_retry_at = None;
     c.slow_retries = c.slow_retries.saturating_add(1);
     c.counters.consecutive_failures = max_retries;
+    c.status.state = SupervisorState::Starting;
+    c.set_phase(Phase::Starting);
     c.touch();
+    true
 }
 
 /// Record a crash into the shared status (bumps `restarts`, sets `last_crash`).

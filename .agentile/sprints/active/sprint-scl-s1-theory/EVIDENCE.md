@@ -1093,3 +1093,16 @@ here is affected (the attempt has not been admitted), but `enter_failed`'s comme
 a Failed service with a slow retry configured but none scheduled") does not hold for that
 instant. The new unit test tolerates it explicitly. A follow-up could publish Starting inside
 `arm_slow_retry`.
+
+### Follow-up 2026-11-04: the armed-slow-retry window closed (lead request)
+
+The refinement note above is fixed. `arm_slow_retry(shared, seq, max_retries)` now, under one
+lock, checks that intent `seq` is still current (else it changes nothing and returns false),
+counts the slow retry, leaves `max_retries` counted, clears `slow_retry_at` and publishes
+`Starting`. That is the model's `SlowRetryStep` as one step; the model changes only in its
+refinement comment. Red `06a6c094`:
+`an_armed_slow_retry_never_reads_failed_with_nothing_scheduled` holds the monitor at the budget
+seam after the arm and before admission, and read `Failed` with `slow_retry: None`. Green: the
+fix commit after it; `slow_retries_never_give_a_fresh_budget` now asserts that no observation is
+`Failed` with nothing scheduled. TLC re-run: 39/39 match. kit lib 629 → 630 passed (1 ignored),
+`lifecycle_faults` 81.

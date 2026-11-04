@@ -148,8 +148,7 @@ fn a_slow_retry_recovers_a_service_whose_cause_went_away() {
 /// - after the first `Failed`, no observation is ever `Backoff`, and the budget never drops below
 ///   `max_retries` counted: a slow retry is one attempt, never a fresh budget;
 /// - at every observation the failures stay within the bound, counting the one slow retry that
-///   may be in flight (including the instant between arming it and admitting its spawn, when the
-///   phase still reads `Failed` with nothing scheduled).
+///   may be in flight, and no observation reads `Failed` with no slow retry scheduled.
 #[test]
 fn slow_retries_never_give_a_fresh_budget() {
     for max_retries in [0_u32, 1, 2] {
@@ -170,18 +169,11 @@ fn slow_retries_never_give_a_fresh_budget() {
             let snap = &obs.lifecycle;
             let failures = u64::from(snap.restarts);
             let counted = snap.counters.consecutive_failures;
-            if snap.phase == Phase::Failed && obs.slow_retry.is_none() {
-                // A slow retry is armed (`arm_slow_retry`) but its spawn is not admitted yet: the
-                // phase is still Failed for that instant. One attempt is in flight.
-                assert_eq!(
-                    counted, max_retries,
-                    "max_retries {max_retries}: an armed slow retry leaves the budget spent"
-                );
-                assert!(
-                    failures <= bound(slow_seen + 1),
-                    "{failures} failures, armed"
-                );
-            } else if snap.phase == Phase::Failed {
+            assert!(
+                !(snap.phase == Phase::Failed && obs.slow_retry.is_none()),
+                "max_retries {max_retries}: Failed with no slow retry scheduled"
+            );
+            if snap.phase == Phase::Failed {
                 let slow = obs.slow_retry.expect("checked above");
                 assert!(
                     slow.attempts >= slow_seen,
