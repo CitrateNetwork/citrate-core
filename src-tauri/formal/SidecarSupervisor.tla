@@ -25,6 +25,14 @@
 (*   "SampleCredit"   credit from a sample count, no time span  -> INV-7   *)
 (*   "FirstNotRecorded" ProbeOk never stamps the first success  -> INV-7   *)
 (*   "StaleKeepsWindow" a stale tick does not end the window    -> INV-7   *)
+(*   "SlowRetryFreshBudget" a slow retry resets the budget  -> INV-17/17a *)
+(*   "SlowRetryIgnoresStop" a slow retry fires under a Stop -> INV-17b    *)
+(*                                                                         *)
+(* Amendment 2026-11-04 (owner decision, core#600, CORE-D3): with the      *)
+(* constant SlowRetry, a Failed cell is tried again once per period: one   *)
+(* spawn attempt under the spent budget (SlowRetryStep). INV-17 is amended *)
+(* to count those attempts; INV-17a and INV-17b pin that a slow retry is   *)
+(* never a fresh budget and never pre-empts a Stop or member intent.       *)
 (*                                                                         *)
 (* Refinement notes. Every action names the Rust arm it models today, and  *)
 (* the SCL work package that changes it. A WP that changes one of those    *)
@@ -62,12 +70,18 @@ CONSTANTS
     GraceTicks,        \* HealthCheck.grace, in ticks
     FreshTicks,        \* maximum success gap before Ready goes Stale
     MaxAge,            \* bound on ticks of one incarnation
+    SlowRetry,         \* SupervisorConfig::slow_retry is Some (CORE-D3): a Failed cell is
+                       \*   tried again once per period. FALSE keeps SPEC-001's terminal Failed.
+    MaxSlowRetries,    \* model bound on slow retries between member Starts (guard only)
+    SpawnFlaky,        \* the OS spawn can fail transiently for a child that is otherwise
+                       \*   healthy (a binary that is missing, then put back). Lets the
+                       \*   recovering configs reach Failed, so a slow retry can then recover.
     Mutant             \* "none" or one of the mutant names in the header
 
 Profiles == {"LivenessOnly", "Probed"}
 Mutants  == {"none", "StopOff", "ElapsedCredit", "TimeoutFrees", "StopIgnoresWorkers",
              "AutoStartResets", "StaleSuccess", "SampleCredit", "FirstNotRecorded",
-             "StaleKeepsWindow"}
+             "StaleKeepsWindow", "SlowRetryFreshBudget", "SlowRetryIgnoresStop"}
 
 ASSUME MaxRetries \in Nat /\ MaxCrashes \in Nat /\ MaxInc \in Nat
 ASSUME MaxIntents \in Nat \ {0} /\ MaxGen \in Nat
@@ -75,6 +89,7 @@ ASSUME CanHealthy \in BOOLEAN
 ASSUME Profile \in Profiles
 ASSUME HealthyAfterTicks \in Nat \ {0} /\ GraceTicks \in Nat
 ASSUME FreshTicks \in Nat \ {0} /\ MaxAge \in Nat
+ASSUME SlowRetry \in BOOLEAN /\ MaxSlowRetries \in Nat /\ SpawnFlaky \in BOOLEAN
 ASSUME Mutant \in Mutants
 
 Phases == {"Stopped", "Starting", "Alive", "Backoff", "Failed", "Stopping", "Quarantined"}
@@ -105,12 +120,16 @@ VARIABLES
     lastOk,        \* [g, i] of the last successful sample
     failures,      \* consecutive retry-budget counter
     crashes,       \* recorded failures (monotone; bounded by CONSTRAINT)
-    sinceMember    \* recorded failures since the last member Start (INV-17)
+    sinceMember,   \* recorded failures since the last member Start (INV-17)
+    slowSince,     \* slow retries taken since the last member Start (INV-17, amended)
+    slowOpen,      \* OBSERVER: a slow retry was taken and no credit or member Start since
+    slowFails      \* OBSERVER: failures recorded since the latest slow retry (INV-17a)
 
 ctrl    == << phase, desired, intentSeq, gen, inc, tickets, child, replacing >>
 probing == << probe, workers >>
 health  == << okWindow, okFirst, okLast, okAges, okSinceSpawn, credited, age, sinceOk, readiness, lastOk >>
-vars    == << ctrl, probing, health, failures, crashes, sinceMember >>
+slowObs == << slowSince, slowOpen, slowFails >>
+vars    == << ctrl, probing, health, failures, crashes, sinceMember, slowObs >>
 
 Min(a, b) == IF a < b THEN a ELSE b
 
@@ -173,6 +192,9 @@ TypeOK ==
     /\ failures \in 0..(MaxRetries + 1)
     /\ crashes \in Nat
     /\ sinceMember \in Nat
+    /\ slowSince \in 0..MaxSlowRetries
+    /\ slowOpen \in BOOLEAN
+    /\ slowFails \in Nat
 
 \* Supervisor::start publishes Starting with a Run intent already committed.
 Init ==
@@ -199,6 +221,9 @@ Init ==
     /\ failures = 0
     /\ crashes = 0
     /\ sinceMember = 0
+    /\ slowSince = 0
+    /\ slowOpen = FALSE
+    /\ slowFails = 0
 
 (***************************************************************************)
 (* A failed incarnation: record it, consume one unit of retry budget, and  *)
@@ -212,6 +237,8 @@ FailStep ==
     /\ sinceMember' = sinceMember + 1
     /\ failures' = failures + 1
     /\ phase' = IF failures + 1 > MaxRetries THEN "Failed" ELSE "Backoff"
+    /\ slowFails' = IF slowOpen THEN slowFails + 1 ELSE slowFails
+    /\ UNCHANGED << slowSince, slowOpen >>
     /\ ResetWindow
 
 (***************************************************************************)
@@ -235,6 +262,9 @@ MemberStart ==
     /\ phase' = IF phase = "Stopping" THEN "Stopping" ELSE "Starting"
     /\ failures' = 0
     /\ sinceMember' = 0
+    /\ slowSince' = 0
+    /\ slowOpen' = FALSE
+    /\ slowFails' = 0
     /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes >>
 
 \* Kept for readers of the first version: the explicit Start is the member's.
@@ -243,7 +273,9 @@ RequestStart == MemberStart
 \* Automated Start: no member asked (auto-start at launch, a lazy
 \* ensure_started from Hermes tools or another service). It carries the
 \* retry budget over, and it is refused while Failed or Quarantined: only a
-\* member Start revives those. Target: SCL-S2.3, S3.2.
+\* member Start revives those with a fresh budget. (Amended 2026-11-04,
+\* core#600: with SlowRetry, SlowRetryStep also leaves Failed, but with the
+\* budget left spent.) Target: SCL-S2.3, S3.2.
 \* Mutant "AutoStartResets": it resets the budget as a member Start does.
 AutoStart ==
     /\ intentSeq < MaxIntents
@@ -253,7 +285,8 @@ AutoStart ==
     /\ intentSeq' = intentSeq + 1
     /\ phase' = IF phase = "Stopping" THEN "Stopping" ELSE "Starting"
     /\ failures' = IF Mutant = "AutoStartResets" THEN 0 ELSE failures
-    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes, sinceMember >>
+    /\ UNCHANGED << gen, inc, tickets, child, replacing, probing, health, crashes, sinceMember,
+                    slowObs >>
 
 \* Automated restart: an internal stop then start of a running service, as
 \* one new Run intent (tickets of the old intent go to teardown, then
@@ -273,7 +306,7 @@ AutoRestart ==
     /\ ResetWindow
     /\ failures' = IF Mutant = "AutoStartResets" THEN 0 ELSE failures
     /\ UNCHANGED << desired, gen, inc, tickets, child, replacing, probing, lastOk,
-                    crashes, sinceMember >>
+                    crashes, sinceMember, slowObs >>
 
 \* Stop commits desired = Stop under a new sequence, closes spawn admission
 \* in every phase, and invalidates a pending replacement. A repeated
@@ -290,7 +323,7 @@ RequestStop ==
               /\ tickets' = {[s |-> intentSeq, g |-> gen, i |-> inc + 1]}
               /\ inc' = inc + 1
               /\ UNCHANGED << desired, intentSeq, gen, child, replacing,
-                              probing, health, failures, crashes, sinceMember >>
+                              probing, health, failures, crashes, sinceMember, slowObs >>
          ELSE UNCHANGED vars
     ELSE /\ intentSeq < MaxIntents
          /\ desired' = "Stop"
@@ -299,7 +332,8 @@ RequestStop ==
          /\ phase' = IF phase \in {"Starting", "Alive", "Backoff", "Stopping"}
                      THEN "Stopping" ELSE phase
          /\ ResetWindow
-         /\ UNCHANGED << gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember >>
+         /\ UNCHANGED << gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember,
+                         slowObs >>
 
 \* Replacement configuration: keep old resources, tear the old incarnation
 \* down, commit the new generation only after cleanup (ReplaceConfig).
@@ -314,7 +348,8 @@ RequestReplace ==
     /\ replacing' = TRUE
     /\ phase' = "Stopping"
     /\ ResetWindow
-    /\ UNCHANGED << desired, gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember >>
+    /\ UNCHANGED << desired, gen, inc, tickets, child, probing, lastOk, failures, crashes, sinceMember,
+                    slowObs >>
 
 (***************************************************************************)
 (* Spawn admission and its ticket.                                         *)
@@ -334,7 +369,7 @@ AdmitSpawn ==
     /\ tickets' = {[s |-> intentSeq, g |-> gen, i |-> inc + 1]}
     /\ inc' = inc + 1
     /\ UNCHANGED << phase, desired, intentSeq, gen, child, replacing,
-                    probing, health, failures, crashes, sinceMember >>
+                    probing, health, failures, crashes, sinceMember, slowObs >>
 
 \* The OS spawn returns a child. A ticket of the current intent and
 \* generation publishes Alive; a late return (Stop or replacement won the
@@ -356,14 +391,16 @@ SpawnReturns(t) ==
             /\ sinceOk' = 0
             /\ readiness' = SpawnReadiness
        ELSE UNCHANGED << phase, okWindow, okFirst, okLast, okAges, okSinceSpawn, credited, age, sinceOk, readiness >>
-    /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes, sinceMember >>
+    /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk, failures, crashes, sinceMember,
+                    slowObs >>
 
 \* The OS spawn fails (bad path, EACCES). Counted only for the current
 \* intent (SpawnFailCurrent); a late failure after Stop or replacement
 \* counts nothing (SpawnFailStale, INV-3). Today: `spawn_child` Err arm.
-\* Only in the crash-loop configs, as before.
+\* Only in the crash-loop configs, as before, and in the SpawnFlaky configs
+\* (a recovering child whose binary is missing for a while, CORE-D3).
 SpawnFailCurrent(t) ==
-    /\ ~CanHealthy
+    /\ ~CanHealthy \/ SpawnFlaky
     /\ t \in tickets
     /\ t.s = intentSeq /\ t.g = gen /\ desired = "Run" /\ phase = "Starting"
     /\ tickets' = tickets \ {t}
@@ -371,12 +408,12 @@ SpawnFailCurrent(t) ==
     /\ UNCHANGED << desired, intentSeq, gen, inc, replacing, probing, lastOk >>
 
 SpawnFailStale(t) ==
-    /\ ~CanHealthy
+    /\ ~CanHealthy \/ SpawnFlaky
     /\ t \in tickets
     /\ ~(t.s = intentSeq /\ t.g = gen /\ desired = "Run" /\ phase = "Starting")
     /\ tickets' = tickets \ {t}
     /\ UNCHANGED << phase, desired, intentSeq, gen, inc, child, replacing,
-                    probing, health, failures, crashes, sinceMember >>
+                    probing, health, failures, crashes, sinceMember, slowObs >>
 
 (***************************************************************************)
 (* Alive: crashes, retry credit, backoff.                                  *)
@@ -412,8 +449,11 @@ ResetCredit ==
        ELSE CanHealthy /\ age >= HealthyAfterTicks
     /\ failures' = 0
     /\ credited' = TRUE
+    \* A healthy run after a slow retry earns a fresh budget like any other (CORE-D3).
+    /\ slowOpen' = FALSE
+    /\ slowFails' = 0
     /\ UNCHANGED << ctrl, probing, okWindow, okFirst, okLast, okAges, okSinceSpawn, age, sinceOk, readiness,
-                    lastOk, crashes, sinceMember >>
+                    lastOk, crashes, sinceMember, slowSince >>
 
 \* Backoff elapsed: back to Starting; admission still checks the intent.
 \* Today: `backoff_or_control` Timeout arm.
@@ -422,7 +462,7 @@ RetryFromBackoff ==
     /\ desired = "Run"
     /\ phase' = "Starting"
     /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, child, replacing,
-                    probing, health, failures, crashes, sinceMember >>
+                    probing, health, failures, crashes, sinceMember, slowObs >>
 
 (***************************************************************************)
 (* Time. Ticks advance one incarnation's age. A Ready readiness whose last *)
@@ -451,7 +491,7 @@ TickStep ==
            /\ okAges' = IF stale THEN {} ELSE okAges
            /\ credited' = IF mutCredit THEN TRUE ELSE IF stale THEN FALSE ELSE credited
            /\ failures' = IF mutCredit THEN 0 ELSE failures
-    /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember >>
+    /\ UNCHANGED << ctrl, probing, okSinceSpawn, lastOk, crashes, sinceMember, slowObs >>
 
 GraceTick   == InGrace /\ TickStep
 ElapsedTick == ~InGrace /\ TickStep
@@ -472,7 +512,7 @@ ProbeBegin ==
     /\ probe = "Free"
     /\ probe' = "Busy"
     /\ workers' = workers \cup {[g |-> gen, i |-> inc, t |-> FALSE]}
-    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember >>
+    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember, slowObs >>
 
 \* A fresh success of the current incarnation: Ready at once, no credit by
 \* itself (credit is ResetCredit). Today: `runner.poll()` returns true.
@@ -499,7 +539,7 @@ ProbeOk(w) ==
     /\ readiness' = "Ready"
     /\ lastOk' = [g |-> w.g, i |-> w.i]
     /\ sinceOk' = 0
-    /\ UNCHANGED << ctrl, credited, age, failures, crashes, sinceMember >>
+    /\ UNCHANGED << ctrl, credited, age, failures, crashes, sinceMember, slowObs >>
 
 \* A failed sample. Inside the grace it is tolerated but ends the window;
 \* outside it the incarnation is unhealthy (teardown, one failure).
@@ -517,7 +557,8 @@ ProbeFail(w) ==
             /\ okAges' = {}
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
-            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
+            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember,
+                            slowObs >>
        ELSE /\ FailStep
             /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, replacing, lastOk >>
 
@@ -539,7 +580,8 @@ ProbeTimeout(w) ==
             /\ okAges' = {}
             /\ credited' = FALSE
             /\ readiness' = IF readiness = "Awaiting" THEN "Awaiting" ELSE "Unavailable"
-            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember >>
+            /\ UNCHANGED << ctrl, okSinceSpawn, age, sinceOk, lastOk, failures, crashes, sinceMember,
+                            slowObs >>
        ELSE /\ FailStep
             /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, replacing, lastOk >>
 
@@ -552,7 +594,7 @@ ProbeWorkerEnds(w) ==
     /\ ~CurrentWorker(w)
     /\ workers' = workers \ {w}
     /\ probe' = IF workers \ {w} = {} THEN "Free" ELSE probe
-    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember >>
+    /\ UNCHANGED << ctrl, health, failures, crashes, sinceMember, slowObs >>
 
 \* A worker that never ends: once it is past its observer deadline (or a
 \* Stop is waiting on it), the owner kills the child, keeps the permit and
@@ -568,7 +610,46 @@ ProbeNeverEnds ==
     /\ child' = FALSE
     /\ replacing' = FALSE
     /\ ResetWindow
-    /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, probing, lastOk, failures, crashes, sinceMember >>
+    /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, probing, lastOk, failures, crashes, sinceMember,
+                    slowObs >>
+
+(***************************************************************************)
+(* Slow retry (CORE-D3, core#600; INV-17 amended 2026-11-04 by owner        *)
+(* decision). While Failed, with SlowRetry on and no newer intent pending, *)
+(* once per period the monitor makes exactly one spawn attempt under the   *)
+(* spent budget: `failures` is left at MaxRetries, so one more failure is  *)
+(* over the cap and FailStep returns the cell to Failed at once. A healthy *)
+(* run earns credit through ResetCredit as any incarnation does. The period *)
+(* itself is not modelled (time in this model is one incarnation's age);   *)
+(* MaxSlowRetries bounds the attempts between member Starts for TLC.       *)
+(*                                                                         *)
+(* "No newer intent pending": in this model every intent is committed in   *)
+(* one step, and from Failed only RequestStop (desired = Stop) and         *)
+(* MemberStart (which leaves Failed) commit one, so `phase = "Failed" /\    *)
+(* desired = "Run"` is exactly "the Run intent that failed is current".    *)
+(* A Stop, a member Start or shutdown therefore cancels a pending one.     *)
+(* Cleanup = {} as for MemberStart: a worker still held is reconciled (or  *)
+(* quarantined) first.                                                     *)
+(*                                                                         *)
+(* Today: run_monitor's `failed_seq == Some(seq)` arm with                 *)
+(* `slow_retry = Some(every)`: `slow_retry_wait` then `arm_slow_retry`     *)
+(* (`consecutive_failures = max_retries`), then the ordinary admission.    *)
+(* Mutant "SlowRetryFreshBudget": the slow retry resets the budget to 0.   *)
+(* Mutant "SlowRetryIgnoresStop": the slow retry fires under a Stop intent. *)
+(***************************************************************************)
+SlowRetryStep ==
+    /\ SlowRetry
+    /\ phase = "Failed"
+    /\ (desired = "Run" \/ Mutant = "SlowRetryIgnoresStop")
+    /\ Cleanup = {}
+    /\ slowSince < MaxSlowRetries
+    /\ phase' = "Starting"
+    /\ failures' = IF Mutant = "SlowRetryFreshBudget" THEN 0 ELSE MaxRetries
+    /\ slowSince' = slowSince + 1
+    /\ slowOpen' = TRUE
+    /\ slowFails' = 0
+    /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, child, replacing,
+                    probing, health, crashes, sinceMember >>
 
 (***************************************************************************)
 (* Teardown.                                                               *)
@@ -581,7 +662,7 @@ TeardownChild ==
     /\ child
     /\ child' = FALSE
     /\ UNCHANGED << phase, desired, intentSeq, gen, inc, tickets, replacing,
-                    probing, health, failures, crashes, sinceMember >>
+                    probing, health, failures, crashes, sinceMember, slowObs >>
 
 \* Every owned resource is released: Stopped, or Starting for a Start queued
 \* behind the teardown. Stopped attests "no owned resources from the
@@ -594,7 +675,7 @@ StopComplete ==
     /\ IF Mutant = "StopIgnoresWorkers" THEN ~child /\ tickets = {} ELSE Cleanup = {}
     /\ phase' = IF desired = "Run" THEN "Starting" ELSE "Stopped"
     /\ UNCHANGED << desired, intentSeq, gen, inc, tickets, child, replacing,
-                    probing, health, failures, crashes, sinceMember >>
+                    probing, health, failures, crashes, sinceMember, slowObs >>
 
 \* The replacement commits its generation only after cleanup (INV-14).
 \* Target: SCL-S2.3.
@@ -605,7 +686,8 @@ ReplaceConfig ==
     /\ gen' = gen + 1
     /\ replacing' = FALSE
     /\ phase' = "Starting"
-    /\ UNCHANGED << desired, intentSeq, inc, tickets, child, probing, health, failures, crashes, sinceMember >>
+    /\ UNCHANGED << desired, intentSeq, inc, tickets, child, probing, health, failures, crashes, sinceMember,
+                    slowObs >>
 
 \* Settled phases may idle (behaviours are infinite, no deadlock artefact).
 TerminalStutter ==
@@ -631,6 +713,7 @@ Next ==
     \/ TeardownChild
     \/ StopComplete
     \/ ReplaceConfig
+    \/ SlowRetryStep
     \/ TerminalStutter
 
 Spec == Init /\ [][Next]_vars
@@ -650,6 +733,7 @@ ForkBombNext ==
     \/ ElapsedTick
     \/ ProbeBegin
     \/ \E w \in workers : ProbeOk(w) \/ ProbeFail(w) \/ ProbeTimeout(w) \/ ProbeWorkerEnds(w)
+    \/ SlowRetryStep
     \/ TerminalStutter
 
 ForkBombFairness ==
@@ -661,6 +745,8 @@ ForkBombFairness ==
     /\ WF_vars(ProbeBegin)
     /\ WF_vars(\E w \in workers : ProbeFail(w) \/ ProbeTimeout(w))
     /\ WF_vars(\E w \in workers : ProbeWorkerEnds(w))
+    \* The slow-retry timer fires (never enabled with SlowRetry = FALSE).
+    /\ WF_vars(SlowRetryStep)
 
 ForkBombSpec == Init /\ [][ForkBombNext]_vars /\ ForkBombFairness
 
@@ -759,7 +845,22 @@ INV_StoppedOwnsNothing == (phase = "Stopped") => (Cleanup = {})
 \* last member Start stay within the fork-bomb bound, whatever automated
 \* starts and restarts happen. The bound holds between member Starts; a
 \* member Start is a new budget by decision.
-INV_CrashBoundBetweenMemberStarts == ~CanHealthy => (sinceMember <= MaxRetries + 1)
+INV_CrashBoundBetweenMemberStarts ==
+    ~CanHealthy => (sinceMember <= MaxRetries + 1)
+
+\* INV-17a (core#600): a slow retry is never a fresh budget. Until a health
+\* credit or a member Start, it adds at most one counted failure, and that
+\* failure returns the cell to Failed at once (never to Backoff). Stated
+\* over the observers slowOpen/slowFails, which no guard reads.
+INV_SlowRetryOneAttempt ==
+    slowOpen => (slowFails <= 1 /\ (slowFails = 1 => phase # "Backoff"))
+
+\* INV-17b (core#600, action): a slow retry is taken only from Failed, with
+\* SlowRetry on, under the Run intent that failed: never while a Stop or a
+\* member intent is pending, and never from another phase. A step that
+\* raises slowSince is a slow retry (only SlowRetryStep raises it).
+INV_SlowRetryOnlyFromFailed ==
+    [][(slowSince' > slowSince) => (SlowRetry /\ phase = "Failed" /\ desired = "Run")]_vars
 
 \* INV-15 (state part): Quarantined holds no child and no ticket.
 INV_QuarantineHoldsNoChild == (phase = "Quarantined") => (~child /\ tickets = {})
@@ -779,7 +880,7 @@ StopNeverCounts ==
 \* which INV-13 catches.
 INV_StaleCompletionInert ==
     [][\A w \in workers : ProbeWorkerEnds(w) =>
-          UNCHANGED << phase, child, tickets, health, failures, crashes, sinceMember >>]_vars
+          UNCHANGED << phase, child, tickets, health, failures, crashes, sinceMember, slowObs >>]_vars
 
 \* INV-14 (action): the generation advances only when cleanup is empty.
 INV_ReplaceAfterCleanup == [][(gen' # gen) => (Cleanup = {})]_vars
@@ -794,6 +895,10 @@ INV_QuarantineNotRecycled ==
 (* LIVENESS (fork-bomb configs): a never-healthy child reaches Failed.     *)
 (***************************************************************************)
 EventuallyFailedIfNeverHealthy == <>(phase = "Failed")
+
+\* Slow-retry fork-bomb configs (core#600): every slow retry of a
+\* never-healthy child ends back in Failed.
+SlowRetryReturnsToFailed == (slowOpen /\ phase # "Failed") ~> (phase = "Failed")
 
 (***************************************************************************)
 (* REACHABILITY WITNESSES (RT-17). Each is an invariant TLC must report    *)
@@ -879,6 +984,18 @@ W_CreditFromSpan == ~(Profile = "Probed" /\ credited)
 \* or a timed-out one, still in flight.
 W_StaleWorkerWhileAlive ==
     ~(phase = "Alive" /\ child /\ \E w \in workers : ~(w.g = gen /\ w.i = inc /\ ~w.t))
+
+\* SlowRetryFreshBudget / CrashBound (on the green SlowRetryForkBomb base): a
+\* slow retry is taken and the cell is Failed again under it.
+W_SlowRetryFailedAgain == ~(phase = "Failed" /\ slowOpen /\ slowFails = 1)
+
+\* Positive control (on the green SlowRetry base, SpawnFlaky): a slow retry is
+\* taken and the incarnation it spawned then earns health credit.
+W_SlowRetryThenHealthy == ~(slowSince > 0 /\ credited)
+
+\* SlowRetryIgnoresStop (on the green SlowRetryCrashLoop base): a Failed
+\* cell under a Stop intent is reachable (where the mutant would retry).
+W_FailedUnderStop == ~(SlowRetry /\ phase = "Failed" /\ desired = "Stop" /\ Cleanup = {})
 
 (***************************************************************************)
 (* State constraint (model checking only) for the recovering configs,      *)
