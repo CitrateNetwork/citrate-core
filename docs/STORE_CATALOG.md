@@ -116,7 +116,7 @@ member-daemon tool set.
 | `memory_write` | `memory_assert` |
 | `journal_read` | `journal_read` |
 | `journal_write` | `journal_append` |
-| `chain_read` | `node_status`, `staking_status`, `contract_view`, `get_verified_source` |
+| `chain_read` | `node_status`, `staking_status`, `contract_view`, `get_verified_source`, `address_book_lookup`, `get_code`, `identify_contract`, `decode_calldata`, `decode_log`, `explain_tx` |
 | `groups_read` | `groups_list`, `group_roster` |
 | `models_read` / `skills_read` | `models_list` / `skills_list` |
 | `calendar_read` / `sheets_read` / `schedule_read` | `calendar_list` / `gsheets_read` / `schedule_list` |

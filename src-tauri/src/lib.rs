@@ -713,6 +713,13 @@ pub fn run() {
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
             contract_reader::contract_write_propose,
+            // CORE-A1 / CORE-A2 — find, identify and decode contracts (read-only).
+            contract_intel::contract_address_book_lookup,
+            contract_intel::contract_get_code,
+            contract_intel::contract_identify,
+            contract_intel::contract_abi_resolve,
+            contract_intel::abi_signature_lookup,
+            contract_intel::chain_tx_fetch,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
             // spend budget, quote-then-run, and the registry route's (disabled) status.
             // D-11 — cloud providers: status, usage (signed log), caps, halt/resume, one-way keys,

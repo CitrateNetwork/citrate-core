@@ -1400,14 +1400,18 @@ pub fn parse_memory_uri(uri: &str) -> Option<(String, String)> {
     Some((tenant.to_string(), q))
 }
 
-/// The embedded 40204 address book (`src-tauri/addresses/40204.json`, generated from the chain).
+/// The embedded 40204 address book: `addresses` is the generated subset this app reads
+/// (`src-tauri/addresses/40204.json`); `book` is every entry of the canonical book embedded next
+/// to it (`40204.canonical.json`, CORE-A1), with its section and bundled-ABI status.
 pub fn address_book() -> Result<Value, String> {
     let book: Value = serde_json::from_str(include_str!("../addresses/40204.json"))
         .map_err(|e| format!("embedded address book unreadable: {e}"))?;
+    let full = crate::contract_intel::book_entries()?;
     Ok(json!({
         "chainId": book.get("chainId"),
         "genesisHash": book.get("genesisHash"),
         "addresses": book.get("addresses"),
-        "note": "Only the contracts this app reads are listed. A contract missing here is not in this app's address book; it may still be deployed (citrate-chain contracts/addresses/40204.json is the full book).",
+        "book": full,
+        "note": "`addresses` are the contracts this app reads; `book` is the full canonical 40204 book this build was shipped with (every system contract at genesis). A contract missing from `book` is not a system contract of this genesis; it may still be deployed by someone.",
     }))
 }

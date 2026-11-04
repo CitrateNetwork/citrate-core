@@ -26,6 +26,7 @@ import type {
   ForkDryRunRequest,
 } from "../agent/deployGate";
 import type { VerifiedSourceView } from "../agent/verifiedSource";
+import type { AbiResolutionView, BookLookupView, CodeInfoView, IdentityView, SignatureMatchesView, TxFetchView } from "../agent/contractIntel";
 import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
 import type { StepDiff } from "../popout/diffModel";
 import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
@@ -2145,6 +2146,18 @@ export interface ContractsDomain {
   viewCall(target: string, address: string, calldata: string): Promise<string>;
   /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
   proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
+  /** CORE-A1 — find a contract by name or address: the embedded 40204 book + on-chain registries. */
+  addressBookLookup(query: string): Promise<BookLookupView>;
+  /** CORE-A1 — code size, code hash, proxy target and verified status of an address. */
+  getCode(address: string): Promise<CodeInfoView>;
+  /** CORE-A1 — what a contract is: book name, ABI source, ERC-165 / ERC-20 probes, code selectors. */
+  identify(address: string): Promise<IdentityView>;
+  /** CORE-A2 — the ABI to decode calls to an address (verified, then bundled book ABI, then partial). */
+  abiResolve(address: string): Promise<AbiResolutionView>;
+  /** CORE-A2 — selectors / topics in the bundled signature subset (no network). */
+  signatureLookup(selectors: string[], topics: string[]): Promise<SignatureMatchesView>;
+  /** CORE-A2 — a transaction and its receipt from the 40204 RPC. */
+  txFetch(hash: string): Promise<TxFetchView>;
   /** HUP-S6.6 — where a hello-mint project stands after its deploy (local reads). */
   postdeployStatus(projectDir: string): Promise<PostDeployStatus>;
   /** HUP-S6.6 — the deploy tx's receipt on 40204; null while pending. */
