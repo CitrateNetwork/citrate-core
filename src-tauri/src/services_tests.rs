@@ -442,7 +442,7 @@ fn a_sidecar_already_failed_at_the_first_read_is_alerted() {
 
 #[test]
 fn the_slow_retry_period_reads_its_override_and_refuses_churning_values() {
-    let env = |v: Option<&'static str>| move |k: &str| (k == SLOW_RETRY_SECS_ENV).then(|| v).flatten().map(str::to_string);
+    let env = |v: Option<&'static str>| move |k: &str| (k == SLOW_RETRY_SECS_ENV).then_some(v).flatten().map(str::to_string);
     assert_eq!(slow_retry_from(env(None)), Some(DEFAULT_SLOW_RETRY));
     assert_eq!(slow_retry_from(env(Some("0"))), None, "0 turns the slow retry off");
     assert_eq!(slow_retry_from(env(Some("off"))), None);
