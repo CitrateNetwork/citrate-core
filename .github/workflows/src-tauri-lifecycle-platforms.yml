@@ -52,8 +52,8 @@ jobs:
             cluster: 21
             total: 63
             hermes_self_skips: 1
-          - platform: macOS-14
-            runner: macos-14
+          - platform: macOS-15
+            runner: macos-15
             shutdown: 5
             owned: 13
             comms: 33
