@@ -49,6 +49,9 @@ const T_BOOTNODES = [
   `noise_${key("b3")}@boot3.citrate.ai:30303`,
   `noise_${key("c4")}@rpc.citrate.ai:30303`,
 ];
+// The provenance record of each node build: a runtime-deps release asset next to the node bytes,
+// named after them (lead decision on #605), with its sha256 pinned in runtime-deps.sha256.
+const prov = (target, b) => ({ asset: `citrate-${target}-${T_REV.slice(0, 12)}.PROVENANCE.txt`, sha256: b.repeat(32) });
 const filledCut = (cut) => ({
   ...cut,
   genesisHash: T_GENESIS,
@@ -63,9 +66,10 @@ const filledCut = (cut) => ({
       runtime_deps_asset: `citrate-aarch64-apple-darwin-${T_REV.slice(0, 12)}`,
       sha256: "7c".repeat(32),
       evidence: "test-only bytes (network-cut.test.mjs)",
+      provenance: prov("aarch64-apple-darwin", "8c"),
     },
-    "x86_64-unknown-linux-gnu": { sha256: "7d".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)" },
-    "aarch64-unknown-linux-gnu": { sha256: "7e".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)" },
+    "x86_64-unknown-linux-gnu": { sha256: "7d".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)", provenance: prov("x86_64-unknown-linux-gnu", "8d") },
+    "aarch64-unknown-linux-gnu": { sha256: "7e".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)", provenance: prov("aarch64-unknown-linux-gnu", "8e") },
   },
   pending: {},
 });
@@ -121,6 +125,16 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
     const r = py(["check"]);
     expect(r.code, r.err).toBe(0);
     expect(r.out).toMatch(/pending/);
+  });
+
+  it("check --release also fails while the applied pins lack a node build's provenance pin", () => {
+    writeJson("release/network-cut.json", filledCut(json("release/network-cut.json")));
+    expect(py(["apply", "--root", root]).code).toBe(0);
+    const deps = rd("src-tauri/runtime-deps.sha256").split("\n").filter((l) => !l.endsWith("x86_64-unknown-linux-gnu-" + T_REV.slice(0, 12) + ".PROVENANCE.txt"));
+    fs.writeFileSync(path.join(root, "src-tauri/runtime-deps.sha256"), deps.join("\n"));
+    const c = py(["check", "--release", "--root", root, "--cut-only"]);
+    expect(c.code).not.toBe(0);
+    expect(c.err).toMatch(/runtime-deps\.sha256.*x86_64-unknown-linux-gnu.*PROVENANCE/);
   });
 
   it("check --release refuses it and names every pending value", () => {
@@ -210,6 +224,10 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     expect(node.artifacts["aarch64-unknown-linux-gnu"].sha256).toBe("7e".repeat(32));
     expect(node.pending).toBeUndefined();
     expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${"7c".repeat(32)}  citrate-aarch64-apple-darwin-${T_REV.slice(0, 12)}`);
+    // Each node build's PROVENANCE record is pinned next to its bytes.
+    for (const [t, b] of [["aarch64-apple-darwin", "8c"], ["x86_64-unknown-linux-gnu", "8d"], ["aarch64-unknown-linux-gnu", "8e"]]) {
+      expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${b.repeat(32)}  citrate-${t}-${T_REV.slice(0, 12)}.PROVENANCE.txt`);
+    }
     for (const f of ["src-tauri/Cargo.toml", "kit/Cargo.toml"]) {
       const t = rd(f);
       expect(t, f).not.toMatch(/citrate-chain\.git", rev = "(?!(?:7a){20})/);
@@ -240,6 +258,9 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     ["a macOS asset of another rev", (c) => (c.node["aarch64-apple-darwin"].runtime_deps_asset = "citrate-aarch64-apple-darwin-000000000000"), /aarch64-apple-darwin/],
     ["a Linux pin with no evidence", (c) => (c.node["x86_64-unknown-linux-gnu"].evidence = ""), /x86_64-unknown-linux-gnu/],
     ["a value left in pending", (c) => (c.pending = { genesisHash: "still owed" }), /pending/],
+    ["a node build with no provenance record", (c) => delete c.node["x86_64-unknown-linux-gnu"].provenance, /x86_64-unknown-linux-gnu.*provenance/],
+    ["a provenance record not named after its node bytes", (c) => (c.node["aarch64-unknown-linux-gnu"].provenance.asset = "PROVENANCE-linux.txt"), /aarch64-unknown-linux-gnu.*provenance/],
+    ["a provenance record with a malformed digest", (c) => (c.node["aarch64-apple-darwin"].provenance.sha256 = "8c"), /aarch64-apple-darwin.*provenance/],
   ];
   for (const [what, edit, msg] of refusals) {
     it(`refuses ${what} and writes nothing`, () => {
