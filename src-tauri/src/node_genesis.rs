@@ -1821,4 +1821,126 @@ mod tests {
         reconcile_genesis(&d, NEW, never_running).unwrap();
         assert!(d.join("000999.sst").join("keep").exists());
     }
+
+    // ---- CORE-N3 (0.5.3): the previous network's chain data is set aside, never deleted ----
+
+    /// Block 0 of r1006 (network/profiles.json), so the backup is named after the profile.
+    const R1006: &str = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+    /// Every chain database file of `populate`, by name, with the bytes it was written with.
+    fn assert_db_in(dir: &Path) {
+        for f in DB {
+            assert_eq!(
+                std::fs::read(dir.join(f)).unwrap_or_else(|e| panic!("{f} in {}: {e}", dir.display())),
+                f.as_bytes(),
+                "{f} is kept byte for byte in {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn n3_a_genesis_change_sets_the_chain_db_aside_named_for_the_previous_profile() {
+        let d = tmp("n3-aside");
+        populate(&d);
+        write_marker(&d, R1006).unwrap();
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        let GenesisOutcome::Reset { chain_aside, removed, .. } = out else {
+            panic!("expected a reset: {out:?}");
+        };
+        let aside = d.join("chain.r1006.bak");
+        assert_eq!(chain_aside.as_deref(), Some(aside.as_path()));
+        assert_db_gone(&d);
+        assert_db_in(&aside);
+        assert_keys_kept(&d);
+        let mut want: Vec<String> = DB.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        let mut got = removed.clone();
+        got.sort();
+        assert_eq!(got, want, "every chain file is reported as set aside");
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&aside).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
+        }
+        // The next start keeps everything, the backup included.
+        assert_eq!(reconcile_genesis(&d, NEW, never_running).unwrap(), GenesisOutcome::Kept);
+        assert_db_in(&aside);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn n3_an_unknown_or_unrecorded_previous_genesis_names_the_backup_by_hash_or_unrecorded() {
+        let d = tmp("n3-unknown");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert_db_in(&d.join("chain.0x0f2b567f.bak"));
+        let d2 = tmp("n3-unrecorded");
+        populate(&d2);
+        reconcile_genesis(&d2, NEW, never_running).unwrap();
+        assert_db_in(&d2.join("chain.unrecorded.bak"));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    #[test]
+    fn n3_a_second_switch_from_the_same_network_never_writes_into_an_earlier_backup() {
+        let d = tmp("n3-second");
+        populate(&d);
+        write_marker(&d, R1006).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        // The member goes back to r1006 (an older build) and syncs again, then upgrades again.
+        for f in DB {
+            std::fs::write(d.join(f), format!("second {f}")).unwrap();
+        }
+        write_marker(&d, R1006).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert_db_in(&d.join("chain.r1006.bak"));
+        for f in DB {
+            assert_eq!(
+                std::fs::read_to_string(d.join("chain.r1006.bak-2").join(f)).unwrap(),
+                format!("second {f}")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A crash part way through the move: the next start finishes it into the SAME backup (the
+    /// intent names it), so the backup is one complete database and nothing is lost.
+    #[test]
+    fn n3_a_crash_mid_move_finishes_into_the_same_backup_on_the_next_start() {
+        for k in 0..DB.len() {
+            let d = tmp("n3-crash");
+            populate(&d);
+            write_marker(&d, R1006).unwrap();
+            test_hooks::STOP_WIPE_AFTER.with(|n| n.set(Some(k)));
+            let crashed = reconcile_genesis(&d, NEW, never_running);
+            test_hooks::STOP_WIPE_AFTER.with(|n| n.set(None));
+            assert!(crashed.is_err(), "k={k}: the injected stop fails the start");
+            assert_eq!(read_marker(&d).unwrap().as_deref(), Some(R1006), "k={k}: not committed");
+            let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+            assert!(matches!(out, GenesisOutcome::Reset { .. }), "k={k}: {out:?}");
+            assert_db_gone(&d);
+            assert_db_in(&d.join("chain.r1006.bak"));
+            assert!(!d.join("chain.r1006.bak-2").exists(), "k={k}: one backup, not two");
+            assert_keys_kept(&d);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn n3_the_notice_names_where_the_previous_chain_data_was_kept() {
+        let chain = Path::new("/data/node/chain.r1006.bak");
+        let n = reset_notice_with(None, Some(chain));
+        assert!(n.starts_with(CHAIN_RESET_NOTICE), "{n}");
+        assert!(n.contains("/data/node/chain.r1006.bak"), "{n}");
+        assert!(n.contains("delete"), "says it may be deleted to free space: {n}");
+        let cfg = Path::new("/data/node/node.toml.0xa3651a27");
+        let both = reset_notice_with(Some(cfg), Some(chain));
+        assert!(both.contains("node.toml.0xa3651a27") && both.contains("chain.r1006.bak"), "{both}");
+        assert_eq!(reset_notice_with(None, None), CHAIN_RESET_NOTICE);
+    }
 }

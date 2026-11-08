@@ -42,7 +42,7 @@ const NEW_MIN_CHAIN_REV: &str = "2026120100000000000000000000000000000c52";
 /// Where a switch from r1005 sets the previous `node.toml` aside (first 10 characters).
 const ASIDE: &str = "node.toml.0x1dcfc490";
 
-fn fixture_root() -> PathBuf {
+pub(crate) fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/upgrade-v0.5.1")
 }
 
@@ -51,7 +51,7 @@ fn golden_path() -> PathBuf {
 }
 
 /// A scratch root for one test: `app/` is the app data dir, `rt/` the key runtime dir.
-fn scratch(tag: &str) -> PathBuf {
+pub(crate) fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "citrate-upgrade-xgenesis-{tag}-{}",
         std::process::id()
@@ -71,9 +71,9 @@ fn install_v051_on_r1005(root: &Path) -> PathBuf {
 }
 
 #[derive(Clone, Default)]
-struct MapKeyring(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+pub(crate) struct MapKeyring(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
 impl MapKeyring {
-    fn from_fixture(name: &str) -> Self {
+    pub(crate) fn from_fixture(name: &str) -> Self {
         let m: serde_json::Value = serde_json::from_slice(&read(&fixture_root().join(name)))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let kr = MapKeyring::default();
@@ -90,7 +90,7 @@ impl MapKeyring {
         }
         kr
     }
-    fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
+    pub(crate) fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
@@ -149,7 +149,7 @@ fn new_network() -> crate::network_profile::ReadyNetwork {
 /// The node manager the app builds for this install (node.rs `build_node_state`), except that
 /// the binary is a file that is not executable: the start runs every step up to the spawn, and no
 /// process ever writes into the dir under test.
-fn manager(
+pub(crate) fn manager(
     root: &Path,
     app: &Path,
     node_keyring: &MapKeyring,
@@ -175,7 +175,7 @@ fn manager(
 /// Start for the new network, then stop. The migration runs before the spawn; the "binary"
 /// cannot be executed, so the supervisor never runs a process in the dir (it may report the
 /// spawn failure at once or retry it until the stop).
-fn start_for_new_network(mgr: &crate::node::NodeManager) {
+pub(crate) fn start_for_new_network(mgr: &crate::node::NodeManager) {
     match mgr.start() {
         Ok(()) | Err(crate::node::NodeError::Spawn(_)) => {}
         other => panic!("expected the migration to complete before the spawn: {other:?}"),
@@ -183,7 +183,7 @@ fn start_for_new_network(mgr: &crate::node::NodeManager) {
     mgr.stop();
 }
 
-fn names(dir: &Path) -> Vec<String> {
+pub(crate) fn names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
         .flatten()
