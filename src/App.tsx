@@ -7,6 +7,7 @@ import { wireDeepLinks } from "./shell/deepLink";
 import { AppState } from "./shell/state";
 import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
+import { AccessPassGate } from "./onboarding/AccessPassGate";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar, ROUTES } from "./shell/Sidebar";
@@ -184,7 +185,9 @@ function Root() {
   const body = needsAuth ? (
     <AuthGate />
   ) : s.stage !== "done" ? (
-    <Onboarding store={store} s={s} />
+    <AccessPassGate store={store} s={s}>
+      <Onboarding store={store} s={s} />
+    </AccessPassGate>
   ) : (
     <Shell s={s} />
   );

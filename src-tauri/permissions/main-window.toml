@@ -59,6 +59,8 @@ commands.allow = [
   "group_invite_check",
   "group_invite_decline",
   "group_invite_preview",
+  "access_pass_status",
+  "access_pass_verify",
   "group_invite_request",
   "group_invite_my_requests",
   "group_invite_dismiss",
