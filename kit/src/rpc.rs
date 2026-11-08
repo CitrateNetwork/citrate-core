@@ -555,6 +555,19 @@ impl<T: RpcTransport> RpcClient<T> {
             .ok_or_else(|| RpcError::MissingField("sendRawTransaction hash".into()))
     }
 
+    /// `citrate_nodeIdentity` → the node's own description of itself (chain id, genesis, build,
+    /// consensus fingerprint and, on nodes that have it, `syncState`), raw. Read from the spawned
+    /// node's local RPC (CORE-N4); a node without the method errors.
+    pub fn node_identity(&self) -> Result<Value, RpcError> {
+        self.request("citrate_nodeIdentity", json!([]))
+    }
+
+    /// `net_peerInfo` → the node's connected peers, raw (`id`, `addr`, `direction`, and on nodes
+    /// that expose it `headHeight`). Read from the spawned node's local RPC (CORE-N4).
+    pub fn peer_info(&self) -> Result<Value, RpcError> {
+        self.request("net_peerInfo", json!([]))
+    }
+
     /// `net_peerCount` → the node's live peer count (real value; CORE-C1.1
     /// NodeDomain status). Returned as a `0x`-prefixed hex quantity.
     pub fn peer_count(&self) -> Result<u64, RpcError> {

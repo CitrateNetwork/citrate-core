@@ -746,6 +746,8 @@ fn live_bounded_sync_proof() {
         blocked: None,
         mining_armed: false,
         mining_hold: None,
+        sync_state: None,
+        peer_tips: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();

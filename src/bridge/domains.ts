@@ -240,6 +240,10 @@ export interface NodeStatusView {
   miningArmed?: boolean;
   /** Why block production is held (the mining gate in node.rs); unset while armed. */
   miningHold?: string;
+  /** CORE-N4: the node's own citrate_nodeIdentity.syncState; unset when the node has none. */
+  syncState?: { state: string; reason: string | null; forkDepth: number | null; appliedHeight: number | null; highestSeen: number | null };
+  /** CORE-N4: head heights the node's peers announced (net_peerInfo); unset when not exposed. */
+  peerTips?: number[];
 }
 
 /** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */

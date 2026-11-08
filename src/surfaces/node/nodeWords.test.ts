@@ -118,7 +118,7 @@ describe("sync truth (CORE-N4, core#589): a quorum of peers' tips, the node's ow
   it("Synced needs every view it has: the public head AND the peers' quorum tip", () => {
     expect(w({ peerTips: [510_032, 510_031, 510_030] })).toBe("Synced");
     // The public head says Synced, but the peers' quorum is 2,000 ahead: not Synced.
-    expect(w({ peerTips: [512_030, 512_031, 512_032] })).toBe("Syncing · 2,000 blocks behind");
+    expect(w({ peerTips: [512_029, 512_030, 512_031] })).toBe("Syncing · 2,000 blocks behind");
     // Peers alone decide when the public head can't be read.
     expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031, 510_032] })).toBe("Synced");
     expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031] })).toBe("Sync unknown · network head unavailable");

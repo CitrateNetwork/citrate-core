@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[test]
 fn sync_state_is_read_from_node_identity_when_the_node_has_it() {
-    // citrate-chain r1007/recovery-wedge core/api/src/node_rpc.rs sync_state_json, wedged form.
+    // citrate-chain core/api/src/node_rpc.rs sync_state_json (r1007 nodes), wedged form.
     let id = json!({
         "syncState": {
             "state": "wedged", "reason": "refused a switch off a dead branch", "forkDepth": 5120,

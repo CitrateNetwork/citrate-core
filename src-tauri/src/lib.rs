@@ -118,6 +118,8 @@ mod node_holder;
 // CORE-D2: a wedged-but-running node is restarted after a sustained stall (never in initial sync).
 mod node_liveness;
 mod node_withdrawn;
+// CORE-N4: the node's own syncState and its peers' tips (local RPC, feature-detected).
+mod sync_truth;
 // C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
 mod broadcast_outcome;
 pub(crate) mod provider_anthropic;
