@@ -20,7 +20,9 @@ describe("first-run access check (download gate)", () => {
     const { AccessPassGate } = await import("./AccessPassGate");
     // Static render shows the loading state (null); the copy lives in the module source.
     expect(renderToStaticMarkup(<AccessPassGate store={{} as never} s={{} as never}>x</AccessPassGate>)).toBe("");
-    const src = (await import("node:fs")).readFileSync(new URL("./AccessPassGate.tsx", import.meta.url), "utf8");
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const src = readFileSync(resolve(process.cwd(), "src/onboarding/AccessPassGate.tsx"), "utf8");
     for (const banned of [/\bSALT\b/, /reward/i, /\$\d/, /—/]) expect(src).not.toMatch(banned);
   });
 });
