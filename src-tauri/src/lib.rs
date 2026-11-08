@@ -241,6 +241,9 @@ mod upgrade_xgenesis_tests;
 // CORE-N4: the node's own syncState and its peers' tips, read from its local RPC.
 #[cfg(test)]
 mod sync_truth_tests;
+// CORE-N3 follow-up: Remove old network data (chain.<profile>.bak).
+#[cfg(test)]
+mod chain_backup_tests;
 // CORE-N3: a 0.5.2 install on r1006 started by this build on r1007 (chain data set aside).
 #[cfg(test)]
 mod upgrade_r1007_tests;
