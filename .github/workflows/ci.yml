@@ -103,6 +103,11 @@ jobs:
       # active one is release-ready (the same check release.yml runs as the G0 gate).
       - name: network profile
         run: scripts/check-network-profile.sh --release
+      # CORE-N1: the network cut file (release/network-cut.json) is well formed and every value
+      # still pending names what sets it. Its --release form runs inside the check above once
+      # its profile is the active one.
+      - name: network cut
+        run: python3 -I scripts/network-cut.py check
       - name: typecheck
         run: npm run typecheck
       - name: test

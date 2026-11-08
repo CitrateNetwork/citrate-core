@@ -26,8 +26,16 @@ export type NetworkProfile = {
   addressBookSha256: string | null;
   /** The citrate-chain commit (40 lowercase hex) the bundled node must contain. */
   minChainRev: string | null;
+  /** CORE-N5: blocks a member node keeps (pruned chain store); absent = full history. At least
+   *  MIN_MEMBER_PRUNE_RETAIN (network_profile.rs). */
+  memberPruneRetain?: number | null;
+  /** CORE-N2: why the network is retired; a retired profile is refused like an unset one. */
+  retired?: string | null;
   pending: Record<string, string>;
 };
+
+/** The undo window (ADR CV-7a): the fewest blocks a pruning member may keep (network_profile.rs). */
+export const MIN_MEMBER_PRUNE_RETAIN = 10_000;
 
 type RawProfile = Omit<NetworkProfile, "id">;
 
@@ -133,7 +141,13 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   if (p === null) return ["no active network profile"];
   const missing = missingValues(p);
   if (missing.length > 0) return missing.map((m) => `${m.field} not set (${m.reason})`);
+  if (p.retired != null) {
+    return typeof p.retired === "string" && p.retired.trim() !== "" ? [`retired: ${p.retired}`] : ["retired is not a reason"];
+  }
   const out: string[] = [];
+  if (p.memberPruneRetain != null && !(Number.isSafeInteger(p.memberPruneRetain) && p.memberPruneRetain >= MIN_MEMBER_PRUNE_RETAIN)) {
+    out.push("memberPruneRetain is below the 10,000-block undo window");
+  }
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");
   // network_profile.rs ready(): a name the bundled node does not build is refused (fail closed).

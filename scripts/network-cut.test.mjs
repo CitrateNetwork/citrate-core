@@ -212,7 +212,7 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${"7c".repeat(32)}  citrate-aarch64-apple-darwin-${T_REV.slice(0, 12)}`);
     for (const f of ["src-tauri/Cargo.toml", "kit/Cargo.toml"]) {
       const t = rd(f);
-      expect(t, f).not.toMatch(/citrate-chain\.git", rev = "(?!7a{40})/);
+      expect(t, f).not.toMatch(/citrate-chain\.git", rev = "(?!(?:7a){20})/);
       expect(t, f).toContain(`rev = "${T_REV}"`);
     }
     // Every other component and model is byte-identical in meaning.

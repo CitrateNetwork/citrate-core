@@ -65,8 +65,12 @@ cors_origins = ["tauri://localhost"]
 data_dir = "{{DATA_DIR}}"
 # DAG pruning is controlled by the CITRATE_DAG_PRUNE_RETAIN env var, which
 # node.rs deliberately does NOT set — see NODE_DAG_PRUNE_RETAIN_ENV. This
-# `pruning` key is the separate CHAIN-STORE pruner; leave it off so a member
-# keeps full history and can serve peers.
+# `pruning` key is the separate CHAIN-STORE pruner. The values below are the full-history
+# form, kept for a profile with no `memberPruneRetain` (alpha-r1005, r1006): such a member keeps
+# every block and can serve a cold sync. A profile that sets `memberPruneRetain` (r1007: 10,000,
+# CORE-N5, ADR CV-7a undo window = retention) is rendered with `pruning = true` and
+# `keep_blocks` = that value (`network_profile::render_node_network`); its cold syncs are served
+# by the fleet's full-history nodes.
 pruning = false
 keep_blocks = 100000
 

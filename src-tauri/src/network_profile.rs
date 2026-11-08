@@ -82,8 +82,17 @@ struct RawProfile {
     address_book_sha256: Option<String>,
     min_chain_rev: Option<String>,
     #[serde(default)]
+    member_prune_retain: Option<u64>,
+    #[serde(default)]
+    retired: Option<String>,
+    #[serde(default)]
     pending: BTreeMap<String, String>,
 }
+
+/// The fewest blocks a member node may keep when it prunes: the undo window (ADR-2026-11-03
+/// CV-7a, undo window = retention; citrate-chain r1007 `REORG_UNDO_DEPTH` and `MAX_REORG_DEPTH`
+/// are 10,000). A node that pruned inside it could not undo a reorg it must follow.
+pub const MIN_MEMBER_PRUNE_RETAIN: u64 = 10_000;
 
 /// One network profile as written in `profiles.json`. `None` = not set.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +120,12 @@ pub struct NetworkProfile {
     /// The citrate-chain commit (40 lowercase hex) the bundled node must contain for this
     /// network; `MIN_CHAIN_REV` in `scripts/build-sidecar.sh` pins the active one.
     pub min_chain_rev: Option<String>,
+    /// CORE-N5: the blocks a member node keeps (`[storage] pruning = true`, `keep_blocks` = this);
+    /// `None` = full history (the template). Never below [`MIN_MEMBER_PRUNE_RETAIN`].
+    pub member_prune_retain: Option<u64>,
+    /// CORE-N2: why this network is retired. A retired profile stays known (a data dir from it is
+    /// still named, [`profile_for_genesis`]) but is refused like an unset one ([`Self::ready`]).
+    pub retired: Option<String>,
     /// For each unset field: what sets it.
     pub pending: BTreeMap<String, String>,
 }
@@ -136,6 +151,9 @@ pub struct ReadyNetwork {
     pub address_book_sha256: String,
     /// 40 lowercase hex, not zero.
     pub min_chain_rev: String,
+    /// The blocks a member node keeps, or `None` for full history (at least
+    /// [`MIN_MEMBER_PRUNE_RETAIN`]).
+    pub member_prune_retain: Option<u64>,
 }
 
 /// Why a profile cannot be used.
@@ -150,6 +168,8 @@ pub enum ProfileError {
         profile: String,
         missing: Vec<(String, String)>,
     },
+    /// The network is retired (CORE-N2): known, but no node starts on it and nothing is signed.
+    Retired { profile: String, why: String },
     /// A value is set but not well formed.
     Invalid {
         profile: String,
@@ -183,6 +203,11 @@ impl std::fmt::Display for ProfileError {
                     }
                 )
             }
+            ProfileError::Retired { profile, why } => write!(
+                f,
+                "network {profile:?} is retired ({why}); this build does not start a node or \
+                 sign on it"
+            ),
             ProfileError::Invalid {
                 profile,
                 field,
@@ -278,6 +303,8 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
             address_book: p.address_book,
             address_book_sha256: p.address_book_sha256,
             min_chain_rev: p.min_chain_rev,
+            member_prune_retain: p.member_prune_retain,
+            retired: p.retired,
             pending: p.pending,
         })
         .collect();
@@ -311,6 +338,16 @@ pub fn active_id() -> Result<&'static str, ProfileError> {
 /// The profile of the network this build targets (possibly not ready).
 pub fn active() -> Result<&'static NetworkProfile, ProfileError> {
     profile(active_id()?)
+}
+
+/// The known profile whose genesis is `genesis` (case-insensitive), retired or not: how a node
+/// data dir from an earlier network is named (CORE-N3, `chain.<profile>.bak`).
+pub fn profile_for_genesis(genesis: &str) -> Option<&'static NetworkProfile> {
+    profiles().ok()?.iter().find(|p| {
+        p.genesis_hash
+            .as_deref()
+            .is_some_and(|g| g.eq_ignore_ascii_case(genesis))
+    })
 }
 
 /// The network this build targets, with every value set and checked. Fails closed.
@@ -399,6 +436,25 @@ impl NetworkProfile {
             field,
             why,
         };
+        if let Some(why) = &self.retired {
+            if why.trim().is_empty() {
+                return Err(invalid("retired", "an empty reason".into()));
+            }
+            return Err(ProfileError::Retired {
+                profile: self.id.clone(),
+                why: why.clone(),
+            });
+        }
+        if let Some(n) = self.member_prune_retain {
+            if n < MIN_MEMBER_PRUNE_RETAIN {
+                return Err(invalid(
+                    "memberPruneRetain",
+                    format!(
+                        "{n} is below the {MIN_MEMBER_PRUNE_RETAIN}-block undo window (ADR CV-7a)"
+                    ),
+                ));
+            }
+        }
         // `missing()` is empty, so every Option below is Some; `unwrap_or_default` keeps the
         // code panic-free and an empty value is refused by the checks that follow.
         let chain_id = self.chain_id.unwrap_or_default();
@@ -485,6 +541,7 @@ impl NetworkProfile {
             address_book,
             address_book_sha256,
             min_chain_rev,
+            member_prune_retain: self.member_prune_retain,
         })
     }
 
@@ -556,16 +613,46 @@ pub const GENESIS_PROFILE_PLACEHOLDER: &str = "{{GENESIS_PROFILE}}";
 /// Fill the network values of the member node config template from `net`. The bootnode list is
 /// written one quoted entry per line (values are checked by [`NetworkProfile::ready`], so no
 /// quoting can be broken).
+///
+/// CORE-N5: a profile with a member retention ([`ReadyNetwork::member_prune_retain`]) gets a pruned
+/// chain store keeping that many blocks (`[storage] pruning = true`, `keep_blocks`); without one
+/// the template's full-history values are kept.
 pub fn render_node_network(template: &str, net: &ReadyNetwork) -> String {
     let nodes: Vec<String> = net
         .bootnodes
         .iter()
         .map(|b| format!("    \"{b}\","))
         .collect();
-    template
+    let out = template
         .replace(CHAIN_ID_PLACEHOLDER, &net.chain_id.to_string())
         .replace(GENESIS_PROFILE_PLACEHOLDER, &net.node_genesis.name)
-        .replace(BOOTNODES_PLACEHOLDER, &nodes.join("\n"))
+        .replace(BOOTNODES_PLACEHOLDER, &nodes.join("\n"));
+    match net.member_prune_retain {
+        Some(keep) => set_storage_retention(&out, keep),
+        None => out,
+    }
+}
+
+/// `[storage] pruning = true` and `keep_blocks = <keep>` in a rendered config: the two keys of the
+/// `[storage]` table are rewritten in place (every other line is kept byte for byte).
+fn set_storage_retention(config: &str, keep: u64) -> String {
+    let mut in_storage = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in config.split('\n') {
+        let t = line.trim_start();
+        if t.starts_with('[') {
+            in_storage = t.starts_with("[storage]");
+        }
+        let key = t.split('=').next().unwrap_or("").trim();
+        out.push(if in_storage && t.contains('=') && key == "pruning" {
+            "pruning = true".to_string()
+        } else if in_storage && t.contains('=') && key == "keep_blocks" {
+            format!("keep_blocks = {keep}")
+        } else {
+            line.to_string()
+        });
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]
