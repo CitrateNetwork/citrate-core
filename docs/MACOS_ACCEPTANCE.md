@@ -68,7 +68,7 @@ Any Apple-silicon Mac (macOS 14 or later) that you can wipe: a spare Mac, a fres
 account on a spare Mac, or a macOS VM (UTM, Tart). It must not have Citrate Core installed, any
 `~/Library/Application Support/ai.citrate.core`, a node on 8545/8546/30303, or a "Developer ID
 Application" signing identity in its keychain. The harness checks all of these and refuses.
-A GitHub-hosted `macos-14` runner is also a throwaway test machine; see "CI" below.
+A GitHub-hosted `macos-15` runner is also a throwaway test machine; see "CI" below.
 
 Needs: Node 22 (`brew install node@22` or nodejs.org), `git`, `gh` (only to fetch the pinned
 bytes), and the Xcode command line tools for the self-test (`xcode-select --install`).
@@ -185,7 +185,7 @@ launchd. That is why the marker is mandatory and why the machine must be one you
 
 ## CI
 
-`.github/workflows/macos-acceptance.yml` runs the self-test on `macos-14` for harness changes and on
+`.github/workflows/macos-acceptance.yml` runs the self-test on `macos-15` for harness changes and on
 dispatch. A dispatch with `dmg_url` and `dmg_sha256` also runs the harness against that DMG in the
 chosen mode (default `full`) on a fresh GitHub-hosted runner, with the pinned bytes fetched as in
 step 4. Whether a GitHub-hosted run counts for `g1-macos` instead of a physical test machine is the
