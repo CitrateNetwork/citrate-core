@@ -556,6 +556,7 @@ impl NodeManager {
             previous,
             removed,
             bytes,
+            chain_aside,
             retired_config,
         } = outcome
         {
@@ -585,11 +586,21 @@ impl NodeManager {
                     kept.display()
                 );
             }
+            // CORE-N3: the previous chain data was set aside, not deleted; the member is told
+            // where, so it is never lost silently and can be deleted to free space.
+            if let Some(aside) = &chain_aside {
+                eprintln!(
+                    "[node] the previous network's chain database was set aside in {}",
+                    aside.display()
+                );
+            }
             *self
                 .chain_reset_notice
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                Some(crate::node_genesis::reset_notice(kept.as_deref()));
+                .unwrap_or_else(|e| e.into_inner()) = Some(crate::node_genesis::reset_notice_with(
+                kept.as_deref(),
+                chain_aside.as_deref(),
+            ));
         }
         Ok(())
     }

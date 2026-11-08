@@ -7,8 +7,8 @@
 //! real), so it goes through the same `ready()` checks as a release profile.
 //!
 //! What must hold (UPGRADE_051_052 §2, K6_NETWORK_SWITCH §3.3, core#363 M1-M4):
-//! - the r1005 chain database leaves the node dir (deleted today; archived once D-K6-1 is
-//!   decided), the previous `node.toml` is set aside byte for byte, a new one is written from the
+//! - the r1005 chain database leaves the node dir and is set aside in `chain.alpha-r1005.bak`
+//!   (CORE-N3; deleted before 0.5.3), the previous `node.toml` is set aside byte for byte, a new one is written from the
 //!   profile, and the marker names the new genesis with the committing migration's nonce;
 //! - the wallet vault, keychain slots, invites, pins, Store/models, daemons, Hermes settings and
 //!   node keys are byte-identical afterwards, and the submitted-tx record reads as uncertain;
@@ -278,7 +278,8 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
     assert!(mgr.status().notice.is_none(), "no notice before the switch");
     start_for_new_network(&mgr);
 
-    // Chain database: every r1005 RocksDB file is gone (D-K6-1 open: deleted, not archived).
+    // Chain database: every r1005 RocksDB file leaves the node dir and is kept, byte for byte, in
+    // chain.alpha-r1005.bak (CORE-N3, 0.5.3: set aside, never deleted).
     let db: Vec<String> = names(&fixture_root().join("node-r1005"))
         .into_iter()
         .filter(|n| crate::node_genesis::is_chain_db_entry(n))
@@ -287,7 +288,12 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
     for f in &db {
         assert!(
             !node.join(f).exists(),
-            "r1005 chain file {f} must not survive"
+            "r1005 chain file {f} must not stay in the node dir"
+        );
+        assert_eq!(
+            read(&node.join("chain.alpha-r1005.bak").join(f)),
+            read(&fixture_root().join("node-r1005").join(f)),
+            "r1005 chain file {f} is kept in chain.alpha-r1005.bak"
         );
     }
     // M1/M2: the marker is the commit, carrying the migration nonce; the intent is cleaned up.
