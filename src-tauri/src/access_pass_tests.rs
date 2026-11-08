@@ -26,7 +26,10 @@ fn the_code_constant_is_43_chars() {
 fn parse_accepts_a_bare_code_and_an_access_link() {
     assert_eq!(parse_input(CODE).unwrap(), CODE);
     assert_eq!(parse_input(&format!("  {CODE}\n")).unwrap(), CODE);
-    assert_eq!(parse_input(&format!("citrate://access?code={CODE}")).unwrap(), CODE);
+    assert_eq!(
+        parse_input(&format!("citrate://access?code={CODE}")).unwrap(),
+        CODE
+    );
 }
 
 #[test]
@@ -49,7 +52,9 @@ fn parse_refuses_everything_else() {
 fn a_group_invite_link_gets_its_own_message_and_is_not_parsed() {
     let link = format!("citrate://invite?g=ab&t={CODE}&k=x&e=1");
     assert_eq!(parse_input(&link), Err(AccessError::GroupInviteLink));
-    assert!(AccessError::GroupInviteLink.message().contains("group invite"));
+    assert!(AccessError::GroupInviteLink
+        .message()
+        .contains("group invite"));
 }
 
 #[test]
@@ -65,27 +70,67 @@ fn gate_url_must_be_https_or_loopback_http() {
 fn answers_are_read_strictly() {
     assert_eq!(
         read_answer(200, r#"{"ok":true,"platform":"mac"}"#),
-        Answer::Recorded { platform: "mac".into() }
+        Answer::Recorded {
+            platform: "mac".into()
+        }
     );
-    assert_eq!(read_answer(200, r#"{"ok":true,"platform":"windows"}"#), Answer::Refused(AccessError::Unavailable));
-    assert_eq!(read_answer(200, r#"{"ok":true,"platform":"mac","x":1}"#), Answer::Refused(AccessError::Unavailable));
-    assert_eq!(read_answer(200, r#"{"ok":false,"platform":"mac"}"#), Answer::Refused(AccessError::Unavailable));
-    assert_eq!(read_answer(200, "<html>"), Answer::Refused(AccessError::Unavailable));
-    assert_eq!(read_answer(409, r#"{"ok":false,"reason":"used"}"#), Answer::Refused(AccessError::Used));
-    assert_eq!(read_answer(409, r#"{"ok":false,"reason":"expired"}"#), Answer::Refused(AccessError::Expired));
-    assert_eq!(read_answer(409, r#"{"ok":false,"reason":"revoked"}"#), Answer::Refused(AccessError::Revoked));
-    assert_eq!(read_answer(409, r#"{"ok":false,"reason":"other"}"#), Answer::Refused(AccessError::Unavailable));
+    assert_eq!(
+        read_answer(200, r#"{"ok":true,"platform":"windows"}"#),
+        Answer::Refused(AccessError::Unavailable)
+    );
+    assert_eq!(
+        read_answer(200, r#"{"ok":true,"platform":"mac","x":1}"#),
+        Answer::Refused(AccessError::Unavailable)
+    );
+    assert_eq!(
+        read_answer(200, r#"{"ok":false,"platform":"mac"}"#),
+        Answer::Refused(AccessError::Unavailable)
+    );
+    assert_eq!(
+        read_answer(200, "<html>"),
+        Answer::Refused(AccessError::Unavailable)
+    );
+    assert_eq!(
+        read_answer(409, r#"{"ok":false,"reason":"used"}"#),
+        Answer::Refused(AccessError::Used)
+    );
+    assert_eq!(
+        read_answer(409, r#"{"ok":false,"reason":"expired"}"#),
+        Answer::Refused(AccessError::Expired)
+    );
+    assert_eq!(
+        read_answer(409, r#"{"ok":false,"reason":"revoked"}"#),
+        Answer::Refused(AccessError::Revoked)
+    );
+    assert_eq!(
+        read_answer(409, r#"{"ok":false,"reason":"other"}"#),
+        Answer::Refused(AccessError::Unavailable)
+    );
     assert_eq!(read_answer(400, ""), Answer::Refused(AccessError::NotACode));
     assert_eq!(read_answer(404, ""), Answer::Refused(AccessError::GateOff));
-    assert_eq!(read_answer(429, ""), Answer::Refused(AccessError::RateLimited));
-    assert_eq!(read_answer(503, ""), Answer::Refused(AccessError::Unavailable));
+    assert_eq!(
+        read_answer(429, ""),
+        Answer::Refused(AccessError::RateLimited)
+    );
+    assert_eq!(
+        read_answer(503, ""),
+        Answer::Refused(AccessError::Unavailable)
+    );
 }
 
 #[test]
 fn a_build_without_a_gate_is_off_and_asks_nothing() {
     let p = path("off");
     let v = status_at(&p, None, false, NOW).unwrap();
-    assert_eq!(v, AccessPassView { gate: "off", required: false, recorded: None, platform: None });
+    assert_eq!(
+        v,
+        AccessPassView {
+            gate: "off",
+            required: false,
+            recorded: None,
+            platform: None
+        }
+    );
     assert!(!p.exists(), "nothing written when off");
     let called = RefCell::new(false);
     let r = verify_at(&p, None, CODE, NOW, |_, _| {
@@ -108,7 +153,15 @@ fn a_bad_gate_url_reads_as_off() {
 fn a_fresh_install_is_asked() {
     let p = path("fresh");
     let v = status_at(&p, Some(GATE), false, NOW).unwrap();
-    assert_eq!(v, AccessPassView { gate: "on", required: true, recorded: None, platform: None });
+    assert_eq!(
+        v,
+        AccessPassView {
+            gate: "on",
+            required: true,
+            recorded: None,
+            platform: None
+        }
+    );
 }
 
 #[test]
@@ -132,13 +185,27 @@ fn an_updating_install_is_recorded_as_existing_and_never_asked() {
 fn verify_records_the_code_and_never_stores_it() {
     let p = path("verify-ok");
     let seen = RefCell::new(String::new());
-    let v = verify_at(&p, Some(GATE), &format!("citrate://access?code={CODE}"), NOW, |url, body| {
-        assert_eq!(url, GATE);
-        *seen.borrow_mut() = body.to_string();
-        Ok((200, r#"{"ok":true,"platform":"mac"}"#.into()))
-    })
+    let v = verify_at(
+        &p,
+        Some(GATE),
+        &format!("citrate://access?code={CODE}"),
+        NOW,
+        |url, body| {
+            assert_eq!(url, GATE);
+            *seen.borrow_mut() = body.to_string();
+            Ok((200, r#"{"ok":true,"platform":"mac"}"#.into()))
+        },
+    )
     .unwrap();
-    assert_eq!(v, AccessPassView { gate: "on", required: false, recorded: Some("invited".into()), platform: Some("mac".into()) });
+    assert_eq!(
+        v,
+        AccessPassView {
+            gate: "on",
+            required: false,
+            recorded: Some("invited".into()),
+            platform: Some("mac".into())
+        }
+    );
     let sent: serde_json::Value = serde_json::from_str(&seen.borrow()).unwrap();
     assert_eq!(sent["code"], CODE);
     let stored = std::fs::read_to_string(&p).unwrap();
@@ -146,7 +213,7 @@ fn verify_records_the_code_and_never_stores_it() {
     let f = read_store(&p).unwrap().unwrap();
     assert_eq!(sent["install"], f.install_id.as_str());
     assert_eq!(f.recorded.as_deref(), Some("invited"));
-    assert_eq!(status_at(&p, Some(GATE), false, NOW).unwrap().required, false);
+    assert!(!status_at(&p, Some(GATE), false, NOW).unwrap().required);
 }
 
 #[test]
@@ -172,7 +239,9 @@ fn a_retry_after_a_lost_answer_is_the_same_install() {
 #[test]
 fn a_refused_code_records_nothing() {
     let p = path("refused");
-    let r = verify_at(&p, Some(GATE), CODE, NOW, |_, _| Ok((409, r#"{"ok":false,"reason":"used"}"#.into())));
+    let r = verify_at(&p, Some(GATE), CODE, NOW, |_, _| {
+        Ok((409, r#"{"ok":false,"reason":"used"}"#.into()))
+    });
     assert_eq!(r, Err(AccessError::Used));
     assert_eq!(read_store(&p).unwrap().unwrap().recorded, None);
     assert!(status_at(&p, Some(GATE), false, NOW).unwrap().required);
@@ -193,7 +262,11 @@ fn malformed_input_never_reaches_the_gate() {
 #[test]
 fn a_damaged_store_is_not_read_as_recorded() {
     let p = path("damaged");
-    std::fs::write(&p, br#"{"format":"citrate-access-pass-1","installId":"x","recorded":"invited"}"#).unwrap();
+    std::fs::write(
+        &p,
+        br#"{"format":"citrate-access-pass-1","installId":"x","recorded":"invited"}"#,
+    )
+    .unwrap();
     assert!(read_store(&p).is_err());
     assert!(status_at(&p, Some(GATE), false, NOW).unwrap().required);
     std::fs::write(&p, b"garbage").unwrap();
@@ -222,10 +295,15 @@ fn post_json_reads_a_non_2xx_answer_from_a_loopback_fake() {
     let url = format!("http://{addr}/api/access/verify");
     let (status, text) = post_json(&url, r#"{"code":"x","install":"y"}"#).unwrap();
     assert_eq!(status, 409);
-    assert_eq!(read_answer(status, &text), Answer::Refused(AccessError::Expired));
+    assert_eq!(
+        read_answer(status, &text),
+        Answer::Refused(AccessError::Expired)
+    );
     let req = server.join().unwrap();
     assert!(req.starts_with("POST /api/access/verify "));
-    assert!(req.to_ascii_lowercase().contains("content-type: application/json"));
+    assert!(req
+        .to_ascii_lowercase()
+        .contains("content-type: application/json"));
 }
 
 #[test]
@@ -234,8 +312,14 @@ fn the_commands_are_registered_and_allowed_for_the_main_window() {
     let lib = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
     let acl = std::fs::read_to_string(root.join("permissions/main-window.toml")).unwrap();
     for cmd in ["access_pass_status", "access_pass_verify"] {
-        assert!(lib.contains(&format!("access_pass::{cmd}")), "{cmd} in generate_handler");
-        assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
+        assert!(
+            lib.contains(&format!("access_pass::{cmd}")),
+            "{cmd} in generate_handler"
+        );
+        assert!(
+            acl.contains(&format!("\"{cmd}\"")),
+            "{cmd} in main-window.toml"
+        );
     }
 }
 

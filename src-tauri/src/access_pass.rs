@@ -47,7 +47,13 @@ const MAX_INPUT_LEN: usize = 512;
 const MAX_BODY: u64 = 4096;
 
 /// Platforms the gate can name (citrate-landing `GATE_PLATFORMS`).
-const PLATFORMS: &[&str] = &["mac", "linux-x86_64", "linux-aarch64", "linux-deb-x86_64", "linux-deb-aarch64"];
+const PLATFORMS: &[&str] = &[
+    "mac",
+    "linux-x86_64",
+    "linux-aarch64",
+    "linux-deb-x86_64",
+    "linux-deb-aarch64",
+];
 
 /// `pass.json`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -116,7 +122,9 @@ impl AccessError {
 }
 
 fn is_code(s: &str) -> bool {
-    s.len() == CODE_LEN && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    s.len() == CODE_LEN
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Read an access code from what was pasted or deep-linked: a bare code, or
@@ -154,7 +162,9 @@ pub(crate) fn parse_input(input: &str) -> Result<String, AccessError> {
 pub(crate) fn gate_url_ok(u: &str) -> bool {
     match url::Url::parse(u) {
         Ok(p) if p.scheme() == "https" => p.host_str().is_some(),
-        Ok(p) if p.scheme() == "http" => matches!(p.host_str(), Some("127.0.0.1") | Some("localhost")),
+        Ok(p) if p.scheme() == "http" => {
+            matches!(p.host_str(), Some("127.0.0.1") | Some("localhost"))
+        }
         _ => false,
     }
 }
@@ -183,7 +193,9 @@ struct NoBody {
 pub(crate) fn read_answer(status: u16, body: &str) -> Answer {
     match status {
         200 => match serde_json::from_str::<OkBody>(body) {
-            Ok(b) if b.ok && PLATFORMS.contains(&b.platform.as_str()) => Answer::Recorded { platform: b.platform },
+            Ok(b) if b.ok && PLATFORMS.contains(&b.platform.as_str()) => Answer::Recorded {
+                platform: b.platform,
+            },
             _ => Answer::Refused(AccessError::Unavailable),
         },
         409 => match serde_json::from_str::<NoBody>(body) {
@@ -215,8 +227,8 @@ fn new_install_id() -> String {
 pub(crate) fn read_store(path: &std::path::Path) -> Result<Option<PassFile>, AccessError> {
     match std::fs::read(path) {
         Ok(bytes) => {
-            let f: PassFile =
-                serde_json::from_slice(&bytes).map_err(|_| AccessError::Store("pass.json is damaged".into()))?;
+            let f: PassFile = serde_json::from_slice(&bytes)
+                .map_err(|_| AccessError::Store("pass.json is damaged".into()))?;
             if f.format != STORE_FORMAT || !is_code(&f.install_id) {
                 return Err(AccessError::Store("pass.json is in another format".into()));
             }
@@ -229,7 +241,8 @@ pub(crate) fn read_store(path: &std::path::Path) -> Result<Option<PassFile>, Acc
 
 pub(crate) fn write_store(path: &std::path::Path, f: &PassFile) -> Result<(), AccessError> {
     let bytes = serde_json::to_vec_pretty(f).map_err(|e| AccessError::Store(e.to_string()))?;
-    let staged = crate::atomic_file::stage_secret(path, &bytes).map_err(|e| AccessError::Store(e.to_string()))?;
+    let staged = crate::atomic_file::stage_secret(path, &bytes)
+        .map_err(|e| AccessError::Store(e.to_string()))?;
     crate::atomic_file::commit_staged(&staged, path).map_err(|e| AccessError::Store(e.to_string()))
 }
 
@@ -257,10 +270,20 @@ pub(crate) fn status_at(
     now: u64,
 ) -> Result<AccessPassView, AccessError> {
     let Some(url) = gate else {
-        return Ok(AccessPassView { gate: "off", required: false, recorded: None, platform: None });
+        return Ok(AccessPassView {
+            gate: "off",
+            required: false,
+            recorded: None,
+            platform: None,
+        });
     };
     if !gate_url_ok(url) {
-        return Ok(AccessPassView { gate: "off", required: false, recorded: None, platform: None });
+        return Ok(AccessPassView {
+            gate: "off",
+            required: false,
+            recorded: None,
+            platform: None,
+        });
     }
     let mut f = load_or_new(path)?;
     if f.recorded.is_none() && prior_install {
@@ -284,7 +307,9 @@ pub(crate) fn verify_at(
     now: u64,
     post: impl FnOnce(&str, &str) -> Result<(u16, String), String>,
 ) -> Result<AccessPassView, AccessError> {
-    let url = gate.filter(|u| gate_url_ok(u)).ok_or(AccessError::GateOff)?;
+    let url = gate
+        .filter(|u| gate_url_ok(u))
+        .ok_or(AccessError::GateOff)?;
     let code = parse_input(input)?;
     // The install id is saved BEFORE the request, so a retry after a lost answer is the same install.
     let mut f = load_or_new(path)?;
@@ -299,7 +324,12 @@ pub(crate) fn verify_at(
             f.platform = Some(platform);
             f.recorded_at = Some(now);
             write_store(path, &f)?;
-            Ok(AccessPassView { gate: "on", required: false, recorded: f.recorded, platform: f.platform })
+            Ok(AccessPassView {
+                gate: "on",
+                required: false,
+                recorded: f.recorded,
+                platform: f.platform,
+            })
         }
         Answer::Refused(e) => Err(e),
     }
@@ -338,7 +368,8 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AccessError>
         .app_data_dir()
         .map_err(|e| AccessError::Store(e.to_string()))?
         .join("access");
-    citrate_core_kit::fsutil::ensure_private_dir(&dir).map_err(|e| AccessError::Store(e.to_string()))?;
+    citrate_core_kit::fsutil::ensure_private_dir(&dir)
+        .map_err(|e| AccessError::Store(e.to_string()))?;
     Ok(dir.join("pass.json"))
 }
 
@@ -365,7 +396,10 @@ pub async fn access_pass_status(app: tauri::AppHandle) -> Result<AccessPassView,
 
 /// `access_pass_verify`: check a pasted code or `citrate://access` link with the gate and record it.
 #[tauri::command]
-pub async fn access_pass_verify(app: tauri::AppHandle, input: String) -> Result<AccessPassView, String> {
+pub async fn access_pass_verify(
+    app: tauri::AppHandle,
+    input: String,
+) -> Result<AccessPassView, String> {
     crate::blocking::off_main(move || {
         if GATE_URL.is_none() {
             return Err(AccessError::GateOff.message());
