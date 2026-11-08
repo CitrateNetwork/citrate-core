@@ -47,7 +47,7 @@
 //!   network profile that is not `ready()` before it touches the data dir, so no migration step
 //!   below runs for it (and no node starts). A bad book genesis refuses here too, touching nothing.
 //! - **I2. The marker is the single commit point.** The migration is a sequence of idempotent
-//!   steps: write the intent, delete the chain DB, set the previous `node.toml` aside, fsync the
+//!   steps: write the intent, set the chain DB aside, set the previous `node.toml` aside, fsync the
 //!   directory, write the marker. Only the marker rename commits it. Removing the intent after
 //!   the commit is cleanup. Every migration attempt mints a fresh random nonce and records it in
 //!   its intent and, at the commit, in the marker: an intent is committed only when the marker
@@ -57,7 +57,7 @@
 //!   then.** The intent ([`MIGRATION_INTENT_FILE`]) is made durable before the first destructive
 //!   step. While the marker does not carry its nonce, the data dir is mid-migration: the next
 //!   launch starts a new attempt (new nonce, same source genesis) to the genesis that launch
-//!   targets, and that attempt deletes every chain DB entry left before it writes any marker.
+//!   targets, and that attempt sets aside every chain DB entry left before it writes any marker.
 //!   This holds however many launches crash in a row and whatever genesis each one targets,
 //!   including the genesis the old marker names (a partly deleted database is never kept).
 //! - **I4. A node never opens a data dir that is mid-migration or of another network.** The node
@@ -74,8 +74,9 @@
 //! 3. No intent, no marker, no chain DB and no `node.toml`: a fresh data dir, marked.
 //! 4. Otherwise migrate, holding the database lock: write the intent with a fresh nonce (temp
 //!    file, fsync, rename, directory fsync; an existing uncommitted intent keeps its source
-//!    genesis and takes the new target), delete every chain DB entry (`CURRENT` first, so a
-//!    partly deleted directory never looks like a complete database) and check that none is
+//!    genesis and takes the new target), move every chain DB entry into the backup the intent
+//!    names (`CURRENT` first, so a partly moved directory never looks like a complete database)
+//!    and check that none is
 //!    left, set the previous network's `node.toml` aside ([`retire_node_config`]), fsync the
 //!    directory, write the marker (genesis and nonce) atomically, then remove the intent.
 //!
