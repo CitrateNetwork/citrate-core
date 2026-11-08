@@ -65,8 +65,9 @@ moves to r1007 and the old chain is kept in `node/chain.r1006.bak/` (CORE-N3,
    - public-read at `downloads/updater/latest.json` (feed 1);
    - as an asset of the **v0.5.3 GitHub release** (feed 2). That release carries only
      `latest.json`, the checksums (`SHA256SUMS`, `SHA256SUMS-linux`) and the signatures (`*.sig`),
-     no installers and no update files (they would be permanent and public). Whether the
-     `PROVENANCE*.txt` files go on the release or to the CDN is not covered by the decision: ask.
+     no installers and no update files (they would be permanent and public). The node builds'
+     PROVENANCE records ship as release assets next to the node bytes on the runtime-deps release,
+     pinned by the cut (lead decision on #605; [053-NETWORK.md](053-NETWORK.md) N1).
 5. **Verify anonymously** (no credentials, outside the org network): both feeds answer 200 with
    0.5.3; every manifest `url` answers 200 and matches `SHA256SUMS`; every installer under
    `downloads/v0.5.3/` answers 403. Then RC52 G8 (the plugin's own check and download with
@@ -102,6 +103,5 @@ is the same manifest if feed 1 is unreachable.
 
 ## 6. Left open
 
-- `PROVENANCE*.txt`: on the GitHub release or the CDN (step 4).
 - For 0.5.4 and later (GATE §9 step 7): a credentialed feed added by a later build, so update files
   can go private once every install has it. Not in 0.5.3.

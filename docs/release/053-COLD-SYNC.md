@@ -93,6 +93,6 @@ in CI (`upgrade_r1007_tests`).
 
 ## Owner and lead decisions this needs
 
-1. The aarch64 Linux machine for runs 2 and 4.
+1. The aarch64 Linux machine for runs 2 and 4 (open owner question).
 2. Whether run 3 must reach the tip, or a bounded height is acceptable on macOS.
-3. Confirmation of the member retention default (N5, [053-NETWORK.md](053-NETWORK.md)).
+3. (Decided) the member retention: 10,000 blocks, confirmed (N5).

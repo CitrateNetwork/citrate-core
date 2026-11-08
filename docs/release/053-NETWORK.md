@@ -26,7 +26,7 @@ The updater plan is [053-UPDATER.md](053-UPDATER.md); the clean-machine cold syn
 | N2 profile | `r1007` in `src-tauri/network/profiles.json` (chain id, hosts, book path, retention set; genesis values null with reasons); `retired` refuses a profile; the cut retires r1006 | genesis hash, genesis profile name, bootnode keys, book digest |
 | N3 migration | a genesis switch moves the chain database to `node/chain.<profile>.bak/` (never deleted), crash-safe, with fixture tests for 0.5.2 on r1006 | nothing (runs on the real r1007 profile once filled) |
 | N4 sync truth | "Synced" needs every network view: public head, the peers' quorum tip, the node's own highest-seen height; "ahead" is not synced (core#589); "Wedged" from `syncState` | an r1007 node that reports `syncState` (ADR CV-7b); peer heights in `net_peerInfo` (chain follow-up, below) |
-| N5 pruning | `memberPruneRetain` 10,000 on r1007, rendered as `[storage] pruning = true`, `keep_blocks = 10000` | owner confirmation (below) |
+| N5 pruning | `memberPruneRetain` 10,000 on r1007, rendered as `[storage] pruning = true`, `keep_blocks = 10000` (confirmed) | nothing |
 | N6 cold sync | harness checks the fingerprint and `not_wedged`; plan in [053-COLD-SYNC.md](053-COLD-SYNC.md) | a running r1007 fleet |
 
 ## N1: one file sets every pin
@@ -42,6 +42,7 @@ yet is `null` with what sets it in `pending`. Nothing is a placeholder (Rule 1).
 | `chainRev` | `MIN_CHAIN_REV` in `scripts/build-sidecar.sh`; `minChainRev` in `profiles.json`; the `citrate-node` source and federation rev in `release/components.json`; the citrate-chain crate revs in `src-tauri/Cargo.toml` and `kit/Cargo.toml` |
 | `node.aarch64-apple-darwin` (`runtime_deps_asset`, `sha256`, `evidence`) | `components.json` artifact + the pin line in `src-tauri/runtime-deps.sha256` |
 | `node.x86_64-unknown-linux-gnu`, `node.aarch64-unknown-linux-gnu` (`sha256`, `evidence`) | `components.json` artifacts |
+| `node.<target>.provenance` (`asset` = `citrate-<target>-<rev 12>.PROVENANCE.txt`, `sha256`), all three targets | a pin line each in `src-tauri/runtime-deps.sha256`: the build record ships as a runtime-deps release asset next to the node bytes, as the 0.5.2 PROVENANCE files record the runtime-deps node assets |
 | `consensusFingerprint` | checked, not written: the cold sync (N6) requires the running node to report it |
 | `retire` (`r1006`) | `profiles.json`: `retired` on r1006, so no build can target it again |
 
@@ -95,8 +96,13 @@ On the first start of 0.5.3 the node data dir still belongs to r1006. Before the
 Proof: `node_genesis` tests `n3_*` and `upgrade_r1007_tests` (fixtures/upgrade-v0.5.2-r1006).
 
 Disk: the move is a rename inside the data dir, so it costs no space at the switch, but the r1006
-chain stays on disk until the member deletes it. A full r1006 member is tens of GB. A Node page
-button to delete the backup is a follow-up (not in this PR).
+chain stays on disk until the member deletes it (tens of GB on a full member). Node › Advanced
+"Old network data" lists each `chain.<network>.bak` with its size and removes one after a single
+confirmation (`node_old_network_data`, `node_remove_old_network_data`, `chain_backup.rs`). Rust
+removes only a real directory of that name directly in the node data dir, holding only chain
+database files, at the size the member confirmed, while no switch is unfinished; it refuses every
+other path (traversal, absolute, symlinks, key or config files, the current chain) and removes
+files one by one, never recursively.
 
 ## N4: sync truth
 
@@ -122,8 +128,9 @@ core#589 item 2 (old rewards figures after a bond key change) is not in this PR.
 ## N5: member pruning (decision recorded)
 
 Default for r1007 members: **pruned, retention 10,000 blocks**, the undo window (ADR CV-7a:
-undo window = retention; the r1007 chain keeps reorg undo records for 10,000 heights). Taken as the lane brief's default; **the owner has not confirmed it** and can change it
-in one value (`memberPruneRetain` on the r1007 profile; removing it restores full history).
+undo window = retention; the r1007 chain keeps reorg undo records for 10,000 heights).
+**Confirmed by the owner (CV-7a accepted, 2026-11-07, relayed by the MAC lead).** It is one value
+(`memberPruneRetain` on the r1007 profile; removing it restores full history).
 
 What it does: the r1007 profile renders `[storage] pruning = true`, `keep_blocks = 10000`.
 Profiles without the key (alpha-r1005, r1006) keep full history, so this changes nothing for
@@ -151,8 +158,11 @@ boot, rpc and indexer nodes must stay full-history.
 8. G6 cold sync (N6) on macOS and Linux with `--expect-fingerprint`, then the updater path
    ([053-UPDATER.md](053-UPDATER.md)).
 
-**Blocker to plan for:** the app's Cargo git dependencies (`citrate-wallet-core`,
-`citrate-commd`) and `build-sidecar.sh` fetch from public `citrate-chain`, and
-`component-pins.mjs check` requires them to equal the node rev. The r1007 chain rev must therefore
-be on public citrate-chain before step 3; today it is not. When it is published is an owner and
-security decision, not an app change.
+**The cut waits for the public chain rev.** The app's Cargo git dependencies
+(`citrate-wallet-core`, `citrate-commd`) and `build-sidecar.sh` fetch from public `citrate-chain`,
+and `component-pins.mjs check` requires them to equal the node rev. The r1007 chain rev lands on
+public citrate-chain at the r1007 launch, as a signed merge of the advisory line (as 56cc2bc8 was
+for 0.5.2); steps 1 to 3 run after that merge, never against an unpublished rev.
+
+**Open input:** the aarch64 Linux builder for `node.aarch64-unknown-linux-gnu` (and its
+PROVENANCE record) is an open owner question; the cut cannot complete without it.
