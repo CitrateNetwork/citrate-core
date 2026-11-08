@@ -151,6 +151,9 @@ class H(BaseHTTPRequestHandler):
                     exit_now = True
                 if cfg.get("exitAfterProbeAfterHashOf") is not None and h == cfg["exitAfterProbeAfterHashOf"]:
                     probe_armed = True
+        elif method == "citrate_nodeIdentity" and cfg.get("identity") is not None:
+            # CORE-N6: what an r1007 node reports about itself (fingerprint, syncState).
+            result = cfg["identity"]
         else:
             result = None
         body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).encode()

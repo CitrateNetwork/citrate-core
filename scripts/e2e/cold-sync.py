@@ -21,6 +21,10 @@ starts it (src-tauri/src/node.rs), on the network a K6 profile names, and proves
                      fed#331). A block either side cannot serve on its walk fails the rule, and so
                      does a network walk longer than --walk-limit. On a mismatch the walks go on
                      down to the common ancestor and the first height above it is named;
+  fingerprint        with --expect-fingerprint: the node reports exactly that consensus fingerprint
+                     in citrate_nodeIdentity (the build the network cut pinned; CORE-N6);
+  not_wedged         a node that reports citrate_nodeIdentity.syncState is not `wedged` at the end
+                     (skipped for a node without syncState);
   peers              the node had at least --min-peers peers;
   at_rest            the data dir is encrypted at rest (encryption.meta);
   node_alive         the node did not exit during the run;
@@ -46,7 +50,8 @@ Usage
   cold-sync.py --node-bin <citrate> --out <dir> [--profiles src-tauri/network/profiles.json
       [--name <profile>] | --profile <one profile.json>] [--blocks N] [--timeout 30m]
       [--every 1000] [--lag 6] [--tip-slack 10] [--min-peers 1] [--rpc <url>]
-      [--address-book <file>] [--expect-sha256 <hex>] [--walk-limit 50000]
+      [--address-book <file>] [--expect-sha256 <hex>] [--expect-fingerprint <0x..>]
+      [--walk-limit 50000]
 
 Writes <out>/verdict.json (verdict PASS or FAIL, reasons, and one entry per rule with status ok,
 FAIL or skip, the same shape as scripts/soak/soak-monitor.py) and <out>/node.log.tail.
@@ -89,7 +94,10 @@ EXIT_GRACE_S = 1.0
 # storage key) removed and a verdict written. SIGHUP is a closed terminal or a dropped SSH session.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 RULES = ["profile", "launch", "node_binary", "endpoint_identity", "local_genesis", "node_chain_id",
-         "reaches_target", "agrees", "peers", "at_rest", "node_alive", "cleanup"]
+         "fingerprint", "reaches_target", "agrees", "not_wedged", "peers", "at_rest", "node_alive", "cleanup"]
+FINGERPRINT_RE = re.compile(r"^0x[0-9a-f]{32}$")
+# The undo window (ADR CV-7a): network_profile.rs MIN_MEMBER_PRUNE_RETAIN.
+MIN_MEMBER_PRUNE_RETAIN = 10_000
 
 
 class Refused(Exception):
@@ -135,6 +143,15 @@ def rpc(url, method, params=None, timeout=RPC_TIMEOUT_S):
     if not isinstance(doc, dict) or "error" in doc and doc["error"]:
         raise RpcError(f"{method}: error {doc.get('error') if isinstance(doc, dict) else doc!r}")
     return doc.get("result")
+
+
+def node_identity(url):
+    """`citrate_nodeIdentity` of the node, or None when it does not answer it (older nodes)."""
+    try:
+        r = rpc(url, "citrate_nodeIdentity")
+    except RpcError:
+        return None
+    return r if isinstance(r, dict) else None
 
 
 def rpc_int(url, method):
@@ -327,9 +344,14 @@ def check_profile(p, node_table):
         for n in nodes:
             if not isinstance(n, str) or not BOOTNODE_RE.match(n):
                 bad.append(f"bootnode {n!r} is not <key>@<host>:<port>")
+    keep = p.get("memberPruneRetain")
+    if keep is not None and (not isinstance(keep, int) or isinstance(keep, bool) or keep < MIN_MEMBER_PRUNE_RETAIN):
+        bad.append(f"memberPruneRetain {keep!r} is below the {MIN_MEMBER_PRUNE_RETAIN}-block undo window")
+    if p.get("retired") is not None:
+        bad.append(f"the profile is retired ({p.get('retired')})")
     if bad:
         raise Refused("profile", "profile not ready: " + "; ".join(bad))
-    return {"chainId": cid, "genesisHash": g, "genesisProfile": gp,
+    return {"chainId": cid, "genesisHash": g, "genesisProfile": gp, "memberPruneRetain": keep,
             "compiledActivations": entry.get("compiledActivations") is True, "nodeNetwork": net,
             "rpcUrl": url, "bootnodes": list(nodes), "addressBook": p.get("addressBook")}
 
@@ -411,6 +433,11 @@ def render_config(template, prof, data_dir, ports):
     t = set_in_section(t, "network", "listen_addr", toml_str(f"{p2p_host.group(1) if p2p_host else '0.0.0.0'}:{ports['p2p']}"))
     t = set_in_section(t, "rpc", "listen_addr", toml_str(f"127.0.0.1:{ports['rpc']}"))
     t = set_in_section(t, "rpc", "ws_addr", toml_str(f"127.0.0.1:{ports['ws']}"))
+    # CORE-N5: a profile with a member retention gets the pruned chain store the app writes
+    # (network_profile::render_node_network); without one, the template's full history.
+    if prof.get("memberPruneRetain") is not None:
+        t = set_in_section(t, "storage", "pruning", "true")
+        t = set_in_section(t, "storage", "keep_blocks", str(prof["memberPruneRetain"]))
     # Read back what the node will be given: mining must stay off (a fresh node is a follower).
     mining = re.search(r"(?ms)^\[mining\].*?^enabled\s*=\s*(\w+)", t)
     if not mining or mining.group(1) != "false":
@@ -662,6 +689,15 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
         return
     if not v.set("node_chain_id", nid == prof["chainId"], f"node chain {nid}, profile {prof['chainId']}"):
         return
+    # CORE-N6: the node is the build the cut pinned (release/network-cut.json consensusFingerprint).
+    if a.expect_fingerprint:
+        ident = node_identity(local)
+        fp = ident.get("consensusFingerprint") if isinstance(ident, dict) else None
+        v.doc["node"]["consensus_fingerprint"] = fp
+        if fp is None:
+            v.set("fingerprint", False, "the node does not report a consensus fingerprint (citrate_nodeIdentity)")
+        else:
+            v.set("fingerprint", fp == a.expect_fingerprint, f"node {fp}, expected {a.expect_fingerprint}")
     if not endpoint_ok:
         v.rules["reaches_target"] = ("skip", "not attempted: the network RPC failed endpoint_identity")
         return
@@ -752,6 +788,18 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
     else:
         v.set("reaches_target", reached,
               f"{what} in {elapsed:.0f}s" if reached else f"{what}: not reached in {a.timeout:.0f}s")
+    # CORE-N4/N6: the node's own syncState (citrate_nodeIdentity, r1007 nodes) must not be wedged at
+    # the end of the run. A node that does not report one skips the rule.
+    if proc.poll() is None:
+        ident = node_identity(local)
+        st = ident.get("syncState") if isinstance(ident, dict) else None
+        if isinstance(st, dict) and isinstance(st.get("state"), str):
+            v.doc["node"]["sync_state"] = st
+            v.set("not_wedged", st["state"] != "wedged",
+                  f"syncState {st['state']}" + (f" ({st.get('reason')}, fork depth {st.get('forkDepth')})"
+                                                if st["state"] == "wedged" else ""))
+        else:
+            v.rules["not_wedged"] = ("skip", "the node reports no syncState (citrate_nodeIdentity)")
     v.set("peers", max_peers >= a.min_peers, f"max peers {max_peers} (need >= {a.min_peers})")
     enc = (data / "encryption.meta").is_file()
     v.set("at_rest", enc, "encryption.meta present" if enc else "no encryption.meta: the data dir is not encrypted")
@@ -793,10 +841,15 @@ def main(argv=None):
     p.add_argument("--poll", type=float, default=5.0, help="seconds between polls (5)")
     p.add_argument("--rpc-port", type=int, default=0, help="the node's RPC port (default: a free one; refused if in use)")
     p.add_argument("--expect-sha256", help="refuse a node binary with another sha256")
+    p.add_argument("--expect-fingerprint",
+                   help="the consensus fingerprint the node must report in citrate_nodeIdentity (0x + 32 hex; "
+                        "release/network-cut.json consensusFingerprint)")
     p.add_argument("--work-root", help="where the temp dir is made (default: the system temp dir)")
     p.add_argument("--node-rs", default=str(SRC_TAURI / "src" / "node.rs"), help=argparse.SUPPRESS)
     p.add_argument("--member-config", default=str(SRC_TAURI / "config" / "member-node.toml"), help=argparse.SUPPRESS)
     a = p.parse_args(argv)
+    if a.expect_fingerprint is not None and not FINGERPRINT_RE.match(a.expect_fingerprint):
+        p.error("--expect-fingerprint must be 0x + 32 lowercase hex")
     if a.every < 1 or a.lag < 0 or a.tip_slack < 0 or (a.blocks is not None and a.blocks < 1) or a.walk_limit < 1:
         p.error("--every, --blocks and --walk-limit must be >= 1, --lag and --tip-slack >= 0")
 
