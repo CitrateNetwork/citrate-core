@@ -1988,6 +1988,38 @@ pub fn node_logs_sync(state: State<'_, NodeState>) -> std::result::Result<Vec<Lo
     Ok(state.0.logs())
 }
 
+/// CORE-N3 follow-up: the previous networks' chain data set aside in the node data dir
+/// (`chain.<profile>.bak`), with sizes. Data source: the node data dir ([`crate::chain_backup`]).
+#[tauri::command]
+pub async fn node_old_network_data(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<crate::chain_backup::ChainBackup>, String> {
+    crate::blocking::off_main(move || {
+        let st = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        crate::chain_backup::list_chain_backups(&st.0.data_dir)
+    })
+    .await
+}
+
+/// CORE-N3 follow-up: remove one set-aside chain backup, at the size the member confirmed.
+/// Refuses anything that is not a chain backup in the node data dir ([`crate::chain_backup`]).
+/// Returns the bytes freed.
+#[tauri::command]
+pub async fn node_remove_old_network_data(
+    app_h: tauri::AppHandle,
+    name: String,
+    confirmed_bytes: u64,
+) -> std::result::Result<u64, String> {
+    crate::blocking::off_main(move || {
+        let st = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        crate::chain_backup::remove_chain_backup(&st.0.data_dir, &name, confirmed_bytes)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     include!("node_tests.rs");

@@ -9,6 +9,7 @@
 //     genesis reset in node_genesis.rs) when the node's chain data was moved aside;
 //   - crash records: node_last_crash (the last record; a list is not exposed yet, N-8);
 //   - full log: node_logs, folded into AppState by Store.refreshNode (`s.logs`);
+//   - old network data: node_old_network_data / node_remove_old_network_data (OldNetworkData.tsx);
 //   - configuration: the existing Node configuration section (config_read / config_write).
 // =====================================================================
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -22,6 +23,7 @@ import type { Store } from "../../shell/store";
 import type { AppState } from "../../shell/state";
 import { Settings } from "../Settings";
 import { BoundedLog, PAGE, Panel, Row, StateCard, errText, logCaption } from "./parts";
+import { LIVE_OLD_NETWORK_DATA, OldNetworkData } from "./OldNetworkData";
 
 /** The two reads this tab makes itself (the log comes from the store's poll). */
 export interface AdvancedReads {
@@ -47,6 +49,7 @@ export function NodeAdvanced({ store, s }: { store: Store; s: AppState }) {
       liveGenesis={live}
       expectedGenesis={expected}
       reads={LIVE_READS}
+      oldData={<OldNetworkData reads={LIVE_OLD_NETWORK_DATA} mode={BRIDGE_MODE} />}
       config={<Settings store={store} s={{ ...s, sSec: sectionFor(NODE_SETTINGS, s.sSec) }} sections={NODE_SETTINGS} heading="Configuration" />}
     />
   );
@@ -60,6 +63,7 @@ export function NodeAdvancedView({
   expectedGenesis,
   reads,
   config,
+  oldData,
 }: {
   s: AppState;
   mode: "tauri" | "sim";
@@ -68,6 +72,8 @@ export function NodeAdvancedView({
   expectedGenesis: string | null;
   reads: AdvancedReads;
   config?: ReactNode;
+  /** CORE-N3 follow-up: the "Old network data" panel (OldNetworkData.tsx). */
+  oldData?: ReactNode;
 }) {
   const [notice, setNotice] = useState<Read<string | null>>({ state: "reading" });
   const [crash, setCrash] = useState<Read<{ reason: string; atUnixMs: number } | null>>({ state: "reading" });
@@ -189,6 +195,7 @@ export function NodeAdvancedView({
               )}
             </div>
           </Panel>
+          {oldData}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>

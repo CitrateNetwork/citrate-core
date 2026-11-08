@@ -118,6 +118,8 @@ mod node_holder;
 // CORE-D2: a wedged-but-running node is restarted after a sustained stall (never in initial sync).
 mod node_liveness;
 mod node_withdrawn;
+// CORE-N3 follow-up: list and remove the previous network's set-aside chain data.
+mod chain_backup;
 // CORE-N4: the node's own syncState and its peers' tips (local RPC, feature-detected).
 mod sync_truth;
 // C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
@@ -949,6 +951,9 @@ pub fn run() {
             // dropped in the GUI process). Honest empty when the node is off; no
             // fabricated template ever crosses this boundary (Rule 1).
             node::node_logs,
+            // CORE-N3 follow-up: Remove old network data (chain.<profile>.bak in the node dir).
+            node::node_old_network_data,
+            node::node_remove_old_network_data,
             // node-agent — the node-agent under the SidecarSupervisor (C1.2).
             // agent_status returns the supervisor state + whether a bearer
             // session exists (NEVER the token); agent_start spawns the daemon

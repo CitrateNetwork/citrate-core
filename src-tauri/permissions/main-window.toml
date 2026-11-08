@@ -299,6 +299,8 @@ commands.allow = [
   "node_last_crash",
   "device_id",
   "node_logs",
+  "node_old_network_data",
+  "node_remove_old_network_data",
   "agent_status",
   "agent_start",
   "agent_stop",

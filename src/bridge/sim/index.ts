@@ -449,6 +449,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       // Node LOG panel still renders in web-dev. Guarded by assertSimAllowed — it
       // can NEVER run in a packaged Tauri build, where the real node_logs runs
       // (Rule 1). An off/prov node has no stream → honest empty.
+      // CORE-N3 follow-up: the web preview has no node data dir, so no old network data.
+      async oldNetworkData() {
+        assertSimAllowed("node.oldNetworkData");
+        return [];
+      },
+      async removeOldNetworkData(): Promise<number> {
+        assertSimAllowed("node.removeOldNetworkData");
+        throw new Error("Removing old network data needs the desktop app.");
+      },
       async logs(): Promise<NodeLogLine[]> {
         assertSimAllowed("node.logs");
         const st = s();

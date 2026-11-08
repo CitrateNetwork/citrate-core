@@ -400,6 +400,23 @@ export interface NodeDomain {
    * out of packaged builds), so the web preview reads as a preview, not live.
    */
   logs(): Promise<NodeLogLine[]>;
+  /**
+   * CORE-N3 follow-up: the previous networks' chain data a genesis switch set aside in the node data
+   * dir (`chain.<profile>.bak`), with sizes. Tauri → `node_old_network_data`; sim has none.
+   */
+  oldNetworkData(): Promise<OldNetworkDataView[]>;
+  /**
+   * Remove one of them, at the size the member confirmed. Rust refuses anything that is not a chain
+   * backup in the node data dir (chain_backup.rs). Resolves to the bytes freed.
+   */
+  removeOldNetworkData(name: string, confirmedBytes: number): Promise<number>;
+}
+
+/** One set-aside chain database (Rust `chain_backup::ChainBackup`). */
+export interface OldNetworkDataView {
+  name: string;
+  bytes: number;
+  files: number;
 }
 
 /**
