@@ -38,6 +38,8 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+// First-run access check for invited installs (download gate); off unless CITRATE_ACCESS_GATE_URL is set at build time.
+mod access_pass;
 mod atomic_file;
 mod benchmark_share;
 mod blocking;
