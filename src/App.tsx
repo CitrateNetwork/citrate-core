@@ -7,6 +7,8 @@ import { wireDeepLinks } from "./shell/deepLink";
 import { AppState } from "./shell/state";
 import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
+import { AccessPassGate } from "./onboarding/AccessPassGate";
+import { accessPassStatus } from "./onboarding/accessPass";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar, ROUTES } from "./shell/Sidebar";
@@ -131,6 +133,14 @@ function AuthGate() {
 function Root() {
   const s = useStore();
 
+  // Download gate: an install whose saved state shows a finished onboarding is recorded as
+  // `existing` the first time the check runs, so it is never asked for a code later (a build
+  // without a gate does nothing). Best-effort: the Shell never waits on it.
+  const onboarded = s.stage === "done";
+  useEffect(() => {
+    if (onboarded) void accessPassStatus().catch(() => undefined);
+  }, [onboarded]);
+
   // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default)
   // AND on a consent that covers `joinSteps` (a pre-0.5.2 opt-in first sees JoinStepsNote).
   // Records the bare step id locally; it only leaves the machine inside a reviewed report.
@@ -184,7 +194,9 @@ function Root() {
   const body = needsAuth ? (
     <AuthGate />
   ) : s.stage !== "done" ? (
-    <Onboarding store={store} s={s} />
+    <AccessPassGate store={store} s={s}>
+      <Onboarding store={store} s={s} />
+    </AccessPassGate>
   ) : (
     <Shell s={s} />
   );

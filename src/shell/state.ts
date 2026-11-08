@@ -746,6 +746,12 @@ export interface AppState {
    */
   inviteLink: string | null;
   /**
+   * Download gate: an access link (`citrate://access?code=…`) from the download email, waiting on
+   * the first-run access check (src/onboarding/AccessPassGate.tsx). Not a group invite. Checked in
+   * Rust (`access_pass_verify`) only when the person presses Continue. Transient, not persisted.
+   */
+  pendingAccessLink: string | null;
+  /**
    * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
    * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
    * buyer paid with + an order id) so onboarding can (a) tell the user which account to
@@ -1008,6 +1014,7 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     inviteLink: null,
+    pendingAccessLink: null,
     pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",

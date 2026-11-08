@@ -38,6 +38,8 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+// First-run access check for invited installs (download gate); off unless CITRATE_ACCESS_GATE_URL is set at build time.
+mod access_pass;
 mod atomic_file;
 mod benchmark_share;
 mod blocking;
@@ -641,6 +643,9 @@ pub fn run() {
             invites::group_invite_request,
             invites::group_invite_my_requests,
             invites::group_invite_dismiss,
+            // Download gate: first-run access check for invited installs (off unless built with a gate URL).
+            access_pass::access_pass_status,
+            access_pass::access_pass_verify,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote

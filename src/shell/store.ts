@@ -83,6 +83,7 @@ import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
 import { parseClaimLink } from "../onboarding/claimLink";
 import { isInviteLink } from "../surfaces/inviteLink";
+import { isAccessLink } from "../onboarding/accessLink";
 import { groupsSlice } from "./slices/groups";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
@@ -2827,6 +2828,12 @@ export class Store {
     // HUP-S8.2 — a fleet pairing link goes to the "Connect my machines" wizard, filled in. It is
     // checked and used only when the member presses "Pair" (the wizard verifies the signature and
     // expiry first). It never falls through to the group-invite parser below.
+    // Download gate: an access link from the download email waits on the first-run access check.
+    // Only stashed; Rust checks it when the person presses Continue. Never a group invite.
+    if (isAccessLink(url)) {
+      this.setState({ pendingAccessLink: url.trim() });
+      return;
+    }
     if (url.startsWith("citrate://pair?")) {
       if (url.length <= 2048) {
         this.setState({ pendingPairLink: url });

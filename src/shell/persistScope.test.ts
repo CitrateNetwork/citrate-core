@@ -99,6 +99,7 @@ const STORAGE_ENTRIES: Record<string, string> = {
   "src/shell/store.ts STORAGE_KEY": "per key: PERSIST_SCOPE, stamped with its genesis",
   "src/ErrorBoundary.tsx STORAGE_KEY": "reads the telemetry consent (device)",
   "src/privacy/joinFunnel.ts STORAGE_KEY": "reads the telemetry consent (device)",
+  "src/onboarding/accessPass.ts STORAGE_KEY": "reads the onboarding stage (device): a finished onboarding marks an earlier install",
   "src/privacy/joinFunnel.ts JOIN_FUNNEL_STORAGE_KEY": "device: this install's join steps",
   "src/shell/slices/groups.ts HISTORY_KEY": "device: group chat history drained from the member's daemon",
   "src/agent/sidecarProvider.ts key": "device: the Hermes sidecar session",
