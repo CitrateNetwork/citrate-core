@@ -60,14 +60,17 @@ jobs:
           # when ark-relations bumps tracing. All other advisories are cleared
           # (rustls bumped to 0.23.45) or non-failing unmaintained warnings.
           # RUSTSEC-2026-0367/0368/0369 (zip < 9: set-id bits kept, symlink targets outside the
-          # destination, permissions applied through symlinks; all in ZipArchive::extract). Our
-          # own zip user, citrate-components, is on zip 9. The only zip < 9 left is
-          # tauri-plugin-updater's, which has no release on zip 9 yet (2.14.0 and 3.0.0-alpha.3
-          # still require ^4). That dependency is Windows-only, and the plugin unzips only an
-          # update payload whose minisign signature it has already checked against the pinned
-          # updater key (download() verifies before any install path sees the bytes). The guard
-          # below fails if anything else ever pulls a zip older than 9. Remove these ignores
-          # when the updater moves to zip >= 9.
+          # destination, permissions applied through symlinks; all in ZipArchive::extract) and
+          # RUSTSEC-2026-0429 (zip < 9: ZipArchive::extract aborts the process on a symlink entry
+          # with a large declared size; published 2026-10-22). Our own zip user,
+          # citrate-components, is on zip 9. The only zip < 9 left is tauri-plugin-updater
+          # 2.10.1's. tauri-plugin-updater 2.14.1 moves to zip ^9 but needs tauri ^2.12 and
+          # reqwest 0.13 (we are on tauri 2.11.5), so taking it is a Tauri upgrade of its own.
+          # That dependency is Windows-only, and the plugin unzips only an update payload whose
+          # minisign signature it has already checked against the pinned updater key
+          # (download() verifies before any install path sees the bytes), so a crafted archive
+          # cannot reach extract. The guard below fails if anything else ever pulls a zip older
+          # than 9. Remove these ignores with the move to tauri-plugin-updater >= 2.14.1.
           python3 scripts/check-zip-users.py
           # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6): multiple timing variability issues in
           # operations intended to be constant-time. EXPIRES 2026-11-09. elliptic-curve 0.13
@@ -78,6 +81,7 @@ jobs:
           python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
             --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0429 \
             --ignore RUSTSEC-2026-0387
 
   node:
