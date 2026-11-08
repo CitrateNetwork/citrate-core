@@ -18,7 +18,7 @@
 
 use crate::upgrade_v051_tests::{copy_dir, read};
 use crate::upgrade_xgenesis_tests::{
-    fixture_root, manager, names, scratch, start_for_new_network, MapKeyring,
+    fixture_root, manager, names, scratch, start_for_new_network, tree, MapKeyring,
 };
 use citrate_core_kit::custody::CustodyVault;
 use std::path::{Path, PathBuf};
@@ -246,25 +246,13 @@ fn while_r1007_is_not_set_the_r1006_install_is_not_touched() {
         .unwrap_or_else(|e| panic!("{e:?}"))
         .ready();
     assert!(unset.is_err(), "r1007 is not set in this build");
-    let before: Vec<(String, Vec<u8>)> = names(&app.join("node"))
-        .into_iter()
-        .map(|n| {
-            let b = read(&app.join("node").join(&n));
-            (n, b)
-        })
-        .collect();
+    let before = tree(&app.join("node"));
     let mgr = manager(&root, &app, &node_kr, unset);
     assert!(matches!(
         mgr.start(),
         Err(crate::node::NodeError::Network(_))
     ));
-    let after: Vec<(String, Vec<u8>)> = names(&app.join("node"))
-        .into_iter()
-        .map(|n| {
-            let b = read(&app.join("node").join(&n));
-            (n, b)
-        })
-        .collect();
+    let after = tree(&app.join("node"));
     assert_eq!(after, before, "an unset r1007 touches nothing");
     assert!(mgr.status().notice.is_none());
     let _ = std::fs::remove_dir_all(&root);

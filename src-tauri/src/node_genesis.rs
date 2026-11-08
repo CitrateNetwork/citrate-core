@@ -399,12 +399,12 @@ pub(crate) fn set_aside_chain_db(
         )));
     }
     let names = chain_db_entries(data_dir)?;
-    if names.is_empty() {
-        return Ok((names, 0));
-    }
     let dest_dir = data_dir.join(aside);
     let io = |what: &str, e: std::io::Error| GenesisGateError::Io(format!("{what}: {e}"));
+    // Nothing to keep: no backup directory is created. The test hooks below still run, so a
+    // crash point stays reachable whatever an earlier attempt moved.
     match std::fs::symlink_metadata(&dest_dir) {
+        _ if names.is_empty() => {}
         Ok(m) if m.is_dir() => {}
         Ok(_) => {
             return Err(GenesisGateError::Io(format!(
@@ -417,7 +417,7 @@ pub(crate) fn set_aside_chain_db(
         }
     }
     #[cfg(unix)]
-    {
+    if !names.is_empty() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest_dir, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| io("protect the chain backup", e))?;
@@ -448,7 +448,9 @@ pub(crate) fn set_aside_chain_db(
             Err(e) => return Err(io(&format!("move {name} into {aside}"), e)),
         }
     }
-    sync_dir(&dest_dir).map_err(|e| io("sync the chain backup", e))?;
+    if !names.is_empty() {
+        sync_dir(&dest_dir).map_err(|e| io("sync the chain backup", e))?;
+    }
     // A stop set for more entries than were left still stops the run here (a crash right after
     // the last move), so every crash point is reachable whatever an earlier attempt moved.
     #[cfg(test)]
@@ -522,6 +524,9 @@ pub(crate) fn set_aside_node_config(
 
 /// The member-facing notice for a reset: [`CHAIN_RESET_NOTICE`], plus where the previous network's
 /// node settings were kept when there were any, so a hand edit there is never dropped silently.
+/// The app uses [`reset_notice_with`], which also names the chain backup (CORE-N3); this form is
+/// the K6 tests' (no chain backup).
+#[cfg(test)]
 pub fn reset_notice(set_aside_config: Option<&Path>) -> String {
     reset_notice_with(set_aside_config, None)
 }

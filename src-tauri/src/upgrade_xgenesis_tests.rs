@@ -183,6 +183,28 @@ pub(crate) fn start_for_new_network(mgr: &crate::node::NodeManager) {
     mgr.stop();
 }
 
+/// Every file under `dir`, recursively, as (path relative to `dir`, bytes), sorted.
+pub(crate) fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for n in names(dir) {
+            let p = dir.join(&n);
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p
+                    .strip_prefix(base)
+                    .unwrap_or_else(|e| panic!("{e}"))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, read(&p)));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
 pub(crate) fn names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
@@ -514,13 +536,14 @@ fn the_launch_after_a_completed_switch_keeps_the_dir_and_reports_nothing() {
         "the first launch switched"
     );
     assert!(node.join(ASIDE).exists());
-    let before: Vec<(String, Vec<u8>)> = names(&node)
-        .into_iter()
-        .map(|n| {
-            let b = read(&node.join(&n));
-            (n, b)
-        })
-        .collect();
+    // The node dir, recursively: the chain backup (CORE-N3) is a directory in it.
+    let before = tree(&node);
+    assert!(
+        before
+            .iter()
+            .any(|(n, _)| n.starts_with("chain.alpha-r1005.bak/")),
+        "the backup is part of what must not change"
+    );
 
     let again = manager(&root, &app, &node_kr, Ok(new_network()));
     start_for_new_network(&again);
@@ -528,13 +551,7 @@ fn the_launch_after_a_completed_switch_keeps_the_dir_and_reports_nothing() {
         again.status().notice.is_none(),
         "a kept dir is not reported again"
     );
-    let after: Vec<(String, Vec<u8>)> = names(&node)
-        .into_iter()
-        .map(|n| {
-            let b = read(&node.join(&n));
-            (n, b)
-        })
-        .collect();
+    let after = tree(&node);
     assert_eq!(after, before, "nothing in the switched node dir changes");
     let _ = std::fs::remove_dir_all(&root);
 }
