@@ -88,7 +88,11 @@ fn removes_the_backup_and_touches_nothing_else() {
     let before = snapshot(&d);
     assert_eq!(remove_chain_backup(&d, "chain.r1006.bak", bytes), Ok(bytes));
     assert!(!d.join("chain.r1006.bak").exists());
-    assert_eq!(snapshot(&d), before, "keys, current chain, node.toml and marker unchanged");
+    assert_eq!(
+        snapshot(&d),
+        before,
+        "keys, current chain, node.toml and marker unchanged"
+    );
     assert_eq!(list_chain_backups(&d).unwrap(), vec![]);
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -124,13 +128,22 @@ fn refuses_any_name_that_is_not_a_backup_directly_in_the_node_dir() {
     ] {
         let r = remove_chain_backup(&d, name, bytes);
         assert!(
-            matches!(r, Err(BackupError::NotABackup(_)) | Err(BackupError::Absent(_))),
+            matches!(
+                r,
+                Err(BackupError::NotABackup(_)) | Err(BackupError::Absent(_))
+            ),
             "{name:?}: {r:?}"
         );
     }
-    assert!(d.join("chain.r1006.bak").is_dir(), "the backup is still there");
+    assert!(
+        d.join("chain.r1006.bak").is_dir(),
+        "the backup is still there"
+    );
     assert_eq!(snapshot(&d), before);
-    assert_eq!(std::fs::read(outside.join("CURRENT")).unwrap(), b"must survive");
+    assert_eq!(
+        std::fs::read(outside.join("CURRENT")).unwrap(),
+        b"must survive"
+    );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&outside);
 }
@@ -153,11 +166,18 @@ fn refuses_a_backup_that_is_a_symlink_or_holds_one() {
         .iter()
         .any(|b| b.name == "chain.r1005.bak"));
     // A backup holding a symlink (to the wallet, say) is not removed.
-    std::os::unix::fs::symlink(outside.join("CURRENT"), d.join("chain.r1006.bak/000700.sst")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("CURRENT"),
+        d.join("chain.r1006.bak/000700.sst"),
+    )
+    .unwrap();
     let r = remove_chain_backup(&d, "chain.r1006.bak", 0);
     assert!(matches!(r, Err(BackupError::Unexpected(_))), "{r:?}");
     assert!(d.join("chain.r1006.bak/CURRENT").exists());
-    assert_eq!(std::fs::read(outside.join("CURRENT")).unwrap(), b"must survive");
+    assert_eq!(
+        std::fs::read(outside.join("CURRENT")).unwrap(),
+        b"must survive"
+    );
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&outside);
 }
@@ -179,9 +199,15 @@ fn refuses_a_backup_holding_anything_but_chain_database_files() {
             std::fs::write(&p, b"keep me").unwrap();
         }
         let r = remove_chain_backup(&d, "chain.r1006.bak", bytes + 7);
-        assert!(matches!(r, Err(BackupError::Unexpected(_))), "{what}: {r:?}");
+        assert!(
+            matches!(r, Err(BackupError::Unexpected(_))),
+            "{what}: {r:?}"
+        );
         assert!(p.exists(), "{what} kept");
-        assert!(d.join("chain.r1006.bak/CURRENT").exists(), "{what}: nothing removed");
+        assert!(
+            d.join("chain.r1006.bak/CURRENT").exists(),
+            "{what}: nothing removed"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -191,7 +217,13 @@ fn refuses_when_the_size_is_not_the_one_the_member_confirmed() {
     let d = tmp("size");
     let bytes = switched_node_dir(&d);
     let r = remove_chain_backup(&d, "chain.r1006.bak", bytes + 1);
-    assert_eq!(r, Err(BackupError::Changed { confirmed: bytes + 1, now: bytes }));
+    assert_eq!(
+        r,
+        Err(BackupError::Changed {
+            confirmed: bytes + 1,
+            now: bytes
+        })
+    );
     assert!(d.join("chain.r1006.bak/CURRENT").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
