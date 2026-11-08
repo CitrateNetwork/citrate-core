@@ -15,24 +15,65 @@
 //! without it (every build so far) has the check off: [`access_pass_status`] says `gate: "off"` and
 //! nothing is asked or sent.
 //!
-//! **Updating installs are not asked.** An install that already holds app data from an earlier run
-//! (`config.json` in the app data dir) when the check first runs is recorded as `existing` and never
-//! asked, so members updating from an earlier version keep working.
+//! **The gate is www.citrate.ai only.** `CITRATE_ACCESS_GATE_URL` must start with
+//! `https://www.citrate.ai/` (checked at compile time by a const assertion, and again at run time by
+//! [`gate_url_ok`]: https, host `www.citrate.ai`, no other port, no credentials). The request is made
+//! by an https-only agent that follows no redirect: a 3xx is an answer, read as "unavailable".
 //!
-//! **Data source (Rule 7).** `POST <gate>` (`/api/access/verify` on citrate.ai), body
+//! **Updating installs are not asked.** An install that FINISHED onboarding in an earlier build is
+//! recorded as `existing` the first time the check runs and never asked, so members updating from an
+//! earlier version keep working. The one mark of a finished onboarding that 0.5.0 to 0.5.2 leave is
+//! the app's saved state holding `stage: "done"` (`citrate-core-proto-v2` in the webview's storage);
+//! the app reads it and passes it as `onboarded` (src/onboarding/accessPass.ts). Other app data is no
+//! sign of an earlier install: `config.json` is saved on every quit (tauri-plugin-store saves each
+//! loaded store on exit) and the custody envelope is made on every launch, so a fresh install that
+//! quit at the check has both. The saved state is the webview's own, the same state that already
+//! decides whether onboarding or the shell is shown, so passing it here opens nothing new.
+//!
+//! **Data source (Rule 7).** `POST <gate>` (`/api/access/verify` on www.citrate.ai), body
 //! `{"code","install"}`, backed by the `download_invites` table in the site database. Answers:
 //! 200 `{"ok":true,"platform"}`, 409 `{"ok":false,"reason":"used"|"expired"|"revoked"}`, 400, 404
 //! (gate off on the server), 429, 503.
 //!
 //! **Store.** `access/pass.json`, owner-only (`0600`) in an owner-only directory, written atomically
 //! ([`crate::atomic_file`]), one format ([`STORE_FORMAT`]). It keeps the install id (32 random bytes,
-//! made here, sent only to the gate), and once recorded the platform and time. The access code is
-//! never stored or logged.
+//! made here, sent only to the gate), and once recorded the platform and time. A new install id is
+//! saved before the first request that carries it, also when it replaces a damaged file, so a retry
+//! after a lost answer is the same install. The access code is never stored or logged.
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 /// The gate API this build checks against, fixed at build time. `None` = the check is off.
 pub(crate) const GATE_URL: Option<&str> = option_env!("CITRATE_ACCESS_GATE_URL");
+
+/// The only host a gate may be on (citrate-landing `docs/DOWNLOAD_GATE.md`).
+const GATE_HOST: &str = "www.citrate.ai";
+
+/// Every gate URL starts with this: https, the gate host, no port, no credentials.
+const GATE_PREFIX: &[u8] = b"https://www.citrate.ai/";
+
+/// The build-time rule for `CITRATE_ACCESS_GATE_URL`: absent, or `https://www.citrate.ai/<path>`.
+pub(crate) const fn build_gate_url_ok(u: Option<&str>) -> bool {
+    let Some(u) = u else { return true };
+    let u = u.as_bytes();
+    if u.len() <= GATE_PREFIX.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < GATE_PREFIX.len() {
+        if u[i] != GATE_PREFIX[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// A build whose CITRATE_ACCESS_GATE_URL is anything but https://www.citrate.ai/<path> does not compile.
+const _: () = assert!(
+    build_gate_url_ok(GATE_URL),
+    "CITRATE_ACCESS_GATE_URL must start with https://www.citrate.ai/"
+);
 
 /// The one `pass.json` format this build reads and writes.
 pub(crate) const STORE_FORMAT: &str = "citrate-access-pass-1";
@@ -158,14 +199,19 @@ pub(crate) fn parse_input(input: &str) -> Result<String, AccessError> {
     }
 }
 
-/// Whether a gate URL may be used: https, or plain http to this machine (local test fakes).
+/// Whether a gate URL may be used: https on `www.citrate.ai`, default port, no credentials. There is
+/// no plain-http or loopback exception in any build (tests drive the request through a fake `post`, or
+/// call [`post_json_with`] directly).
 pub(crate) fn gate_url_ok(u: &str) -> bool {
     match url::Url::parse(u) {
-        Ok(p) if p.scheme() == "https" => p.host_str().is_some(),
-        Ok(p) if p.scheme() == "http" => {
-            matches!(p.host_str(), Some("127.0.0.1") | Some("localhost"))
+        Ok(p) => {
+            p.scheme() == "https"
+                && p.host_str() == Some(GATE_HOST)
+                && p.port().is_none()
+                && p.username().is_empty()
+                && p.password().is_none()
         }
-        _ => false,
+        Err(_) => false,
     }
 }
 
@@ -246,27 +292,35 @@ pub(crate) fn write_store(path: &std::path::Path, f: &PassFile) -> Result<(), Ac
     crate::atomic_file::commit_staged(&staged, path).map_err(|e| AccessError::Store(e.to_string()))
 }
 
-fn load_or_new(path: &std::path::Path) -> Result<PassFile, AccessError> {
+/// The stored file, or a new one (nothing recorded, a new install id). `true` when it is new: no file,
+/// or a damaged or foreign file that it replaces. A new file is not on disk until it is written.
+fn load_or_new(path: &std::path::Path) -> Result<(PassFile, bool), AccessError> {
     let existing = match read_store(path) {
         Ok(f) => f,
         // A damaged or foreign file is replaced by a fresh one (nothing recorded), never trusted.
         Err(AccessError::Store(_)) if path.exists() => None,
         Err(e) => return Err(e),
     };
-    Ok(existing.unwrap_or_else(|| PassFile {
-        format: STORE_FORMAT.into(),
-        install_id: new_install_id(),
-        recorded: None,
-        platform: None,
-        recorded_at: None,
-    }))
+    Ok(match existing {
+        Some(f) => (f, false),
+        None => (
+            PassFile {
+                format: STORE_FORMAT.into(),
+                install_id: new_install_id(),
+                recorded: None,
+                platform: None,
+                recorded_at: None,
+            },
+            true,
+        ),
+    })
 }
 
-/// The status, recording `existing` the first time for an install that already had app data.
+/// The status, recording `existing` the first time for an install that finished onboarding earlier.
 pub(crate) fn status_at(
     path: &std::path::Path,
     gate: Option<&str>,
-    prior_install: bool,
+    onboarded: bool,
     now: u64,
 ) -> Result<AccessPassView, AccessError> {
     let Some(url) = gate else {
@@ -285,8 +339,8 @@ pub(crate) fn status_at(
             platform: None,
         });
     }
-    let mut f = load_or_new(path)?;
-    if f.recorded.is_none() && prior_install {
+    let (mut f, _) = load_or_new(path)?;
+    if f.recorded.is_none() && onboarded {
         f.recorded = Some("existing".into());
         f.recorded_at = Some(now);
         write_store(path, &f)?;
@@ -311,9 +365,10 @@ pub(crate) fn verify_at(
         .filter(|u| gate_url_ok(u))
         .ok_or(AccessError::GateOff)?;
     let code = parse_input(input)?;
-    // The install id is saved BEFORE the request, so a retry after a lost answer is the same install.
-    let mut f = load_or_new(path)?;
-    if !path.exists() {
+    // A new install id is saved BEFORE the request (also over a damaged file), so a retry after a
+    // lost answer is the same install.
+    let (mut f, new) = load_or_new(path)?;
+    if new {
         write_store(path, &f)?;
     }
     let body = serde_json::json!({ "code": code, "install": f.install_id }).to_string();
@@ -335,14 +390,27 @@ pub(crate) fn verify_at(
     }
 }
 
-/// POST JSON with a bounded deadline; non-2xx comes back as a status, not an error.
+/// POST JSON to the gate with a bounded deadline, https only, following no redirect. A non-2xx answer
+/// (a 3xx included) comes back as a status, not an error.
 pub(crate) fn post_json(url: &str, body: &str) -> Result<(u16, String), String> {
-    let mut resp = ureq::post(url)
-        .header("Content-Type", "application/json")
-        .config()
+    post_json_with(&gate_agent(true), url, body)
+}
+
+/// The gate's HTTP agent. `https_only` is false only for the plain-http loopback fakes in tests.
+fn gate_agent(https_only: bool) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .https_only(https_only)
+        .max_redirects(0)
         .http_status_as_error(false)
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
+        .new_agent()
+}
+
+fn post_json_with(agent: &ureq::Agent, url: &str, body: &str) -> Result<(u16, String), String> {
+    let mut resp = agent
+        .post(url)
+        .header("Content-Type", "application/json")
         .send(body)
         .map_err(|e| crate::deep_link_delivery::log_redact_text(&e.to_string()))?;
     let status = resp.status().as_u16();
@@ -362,34 +430,48 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AccessError> {
-    let dir = app
-        .path()
+fn data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AccessError> {
+    app.path()
         .app_data_dir()
-        .map_err(|e| AccessError::Store(e.to_string()))?
-        .join("access");
+        .map_err(|e| AccessError::Store(e.to_string()))
+}
+
+/// `<data_dir>/access/pass.json`, making `access/` owner-only.
+fn store_path_in(data_dir: &std::path::Path) -> Result<std::path::PathBuf, AccessError> {
+    let dir = data_dir.join("access");
     citrate_core_kit::fsutil::ensure_private_dir(&dir)
         .map_err(|e| AccessError::Store(e.to_string()))?;
     Ok(dir.join("pass.json"))
 }
 
-/// An earlier run of the app left its settings (`config.json`, written by every version since 0.2).
-fn prior_install(app: &tauri::AppHandle) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(|d| d.join("config.json").is_file())
-        .unwrap_or(false)
+/// The status for the app data dir `data_dir`. `onboarded`: the app's saved state shows a finished
+/// onboarding (the only mark of an earlier install, see the module doc). Nothing else in the data dir
+/// is looked at. A build without a gate touches nothing.
+pub(crate) fn status_in(
+    data_dir: &std::path::Path,
+    gate: Option<&str>,
+    onboarded: bool,
+    now: u64,
+) -> Result<AccessPassView, AccessError> {
+    if gate.is_none() {
+        return status_at(std::path::Path::new(""), None, false, now);
+    }
+    status_at(&store_path_in(data_dir)?, gate, onboarded, now)
 }
 
 /// `access_pass_status`: whether this build checks access, and whether setup must ask for a code.
+/// `onboarded` is the app's read of its own saved state (`stage: "done"`).
 #[tauri::command]
-pub async fn access_pass_status(app: tauri::AppHandle) -> Result<AccessPassView, String> {
+pub async fn access_pass_status(
+    app: tauri::AppHandle,
+    onboarded: bool,
+) -> Result<AccessPassView, String> {
     crate::blocking::off_main(move || {
         if GATE_URL.is_none() {
-            return status_at(std::path::Path::new(""), None, false, 0).map_err(|e| e.message());
+            return status_in(std::path::Path::new(""), None, false, 0).map_err(|e| e.message());
         }
-        let path = store_path(&app).map_err(|e| e.message())?;
-        status_at(&path, GATE_URL, prior_install(&app), now_unix()).map_err(|e| e.message())
+        let dir = data_dir(&app).map_err(|e| e.message())?;
+        status_in(&dir, GATE_URL, onboarded, now_unix()).map_err(|e| e.message())
     })
     .await
 }
@@ -404,7 +486,9 @@ pub async fn access_pass_verify(
         if GATE_URL.is_none() {
             return Err(AccessError::GateOff.message());
         }
-        let path = store_path(&app).map_err(|e| e.message())?;
+        let path = data_dir(&app)
+            .and_then(|d| store_path_in(&d))
+            .map_err(|e| e.message())?;
         verify_at(&path, GATE_URL, &input, now_unix(), post_json).map_err(|e| e.message())
     })
     .await
