@@ -26,7 +26,8 @@ apply [--root <dir>]
                                         its nodeGenesisProfiles entry, `retired` on each retired
       scripts/build-sidecar.sh          MIN_CHAIN_REV
       release/components.json           citrate-node source.rev, federation, the three artifacts
-      src-tauri/runtime-deps.sha256     the macOS node pin line
+      src-tauri/runtime-deps.sha256     the macOS node pin line, and a pin for each node build's
+                                        PROVENANCE record (a runtime-deps asset next to its bytes)
       src-tauri/Cargo.toml, kit/Cargo.toml   the citrate-chain crate revs
     Cargo.lock is cargo's: the command to regenerate it is printed, and `check --release` fails
     until it is run. So is the embedded address book (scripts/sync-addresses.py).
@@ -97,6 +98,13 @@ def mac_asset(rev: str) -> str:
     return f"citrate-{MAC}-{rev[:12]}"
 
 
+def provenance_asset(target: str, rev: str) -> str:
+    """The PROVENANCE record of a node build: a runtime-deps release asset next to the node bytes
+    (`citrate-<target>-<rev 12>`), named after them, as the 0.5.2 PROVENANCE files record the
+    runtime-deps node assets (lead decision on #605)."""
+    return f"citrate-{target}-{rev[:12]}.PROVENANCE.txt"
+
+
 def value_problems(cut: dict, profiles: dict) -> list:
     """Malformed values among those that are set (null = pending, checked separately)."""
     out = []
@@ -149,10 +157,21 @@ def value_problems(cut: dict, profiles: dict) -> list:
         a = node[t]
         if a is None:
             continue
-        want = {"runtime_deps_asset", "sha256", "evidence"} if t == MAC else {"sha256", "evidence"}
+        want = ({"runtime_deps_asset", "sha256", "evidence", "provenance"} if t == MAC
+                else {"sha256", "evidence", "provenance"})
         if not isinstance(a, dict) or set(a) != want:
-            out.append(f"node.{t} must have exactly {sorted(want)}")
+            out.append(f"node.{t} must have exactly {sorted(want)} (provenance: the build's PROVENANCE "
+                       "record, a runtime-deps asset next to the node bytes)")
             continue
+        pv = a["provenance"]
+        if not isinstance(pv, dict) or set(pv) != {"asset", "sha256"}:
+            out.append(f"node.{t}.provenance must be {{asset, sha256}}")
+        else:
+            if not (isinstance(pv["sha256"], str) and SHA256.fullmatch(pv["sha256"]) and nonzero(pv["sha256"])):
+                out.append(f"node.{t}.provenance.sha256 is not a sha256 digest")
+            if rev is not None and pv["asset"] != provenance_asset(t, rev):
+                out.append(f"node.{t}.provenance.asset {pv['asset']!r} is not the PROVENANCE record of the node "
+                           f"bytes (expected {provenance_asset(t, rev)})")
         if not (isinstance(a["sha256"], str) and SHA256.fullmatch(a["sha256"]) and nonzero(a["sha256"])):
             out.append(f"node.{t}.sha256 is not a sha256 digest")
         if not (isinstance(a["evidence"], str) and a["evidence"].strip()):
@@ -266,16 +285,30 @@ def applied_components(cut: dict, components: dict) -> dict:
     return d
 
 
-def applied_runtime_deps(cut: dict, text: str) -> str:
+def runtime_deps_lines(cut: dict) -> list:
+    """The runtime-deps pins the cut adds: the macOS node bytes, then each node build's PROVENANCE."""
     a = cut["node"][MAC]
-    line = f"{a['sha256']}  {a['runtime_deps_asset']}"
-    if line in text.split("\n"):
+    lines = [(a["runtime_deps_asset"], a["sha256"])]
+    lines += [(cut["node"][t]["provenance"]["asset"], cut["node"][t]["provenance"]["sha256"]) for t in TARGETS]
+    return lines
+
+
+def applied_runtime_deps(cut: dict, text: str) -> str:
+    have = text.split("\n")
+    new = []
+    for asset, digest in runtime_deps_lines(cut):
+        line = f"{digest}  {asset}"
+        if line in have:
+            continue
+        if re.search(rf"^[0-9a-f]{{64}}  {re.escape(asset)}$", text, re.M):
+            raise Refused(f"{RUNTIME_DEPS} already pins {asset} with another digest")
+        new.append(line)
+    if not new:
         return text
-    if re.search(rf"^[0-9a-f]{{64}}  {re.escape(a['runtime_deps_asset'])}$", text, re.M):
-        raise Refused(f"{RUNTIME_DEPS} already pins {a['runtime_deps_asset']} with another digest")
     head = text if text.endswith("\n") else text + "\n"
     return head + (f"# {cut['profile']} network cut (scripts/network-cut.py): citrate is citrate-chain "
-                   f"{cut['chainRev'][:12]} (the {cut['profile']} genesis commit, MIN_CHAIN_REV).\n{line}\n")
+                   f"{cut['chainRev'][:12]} (the {cut['profile']} genesis commit, MIN_CHAIN_REV); each node "
+                   "build's PROVENANCE record ships next to its bytes.\n" + "\n".join(new) + "\n")
 
 
 def applied_sidecar(cut: dict, text: str) -> str:
@@ -401,9 +434,10 @@ def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
             out.append(f"{COMPONENTS}: citrate-node still has pending targets {sorted(c['pending'])}")
     except (KeyError, ValueError, TypeError, Refused) as e:
         out.append(f"{COMPONENTS} cannot be read: {e}")
-    a = cut["node"][MAC]
-    if f"{a['sha256']}  {a['runtime_deps_asset']}" not in text(RUNTIME_DEPS).split("\n"):
-        out.append(f"{RUNTIME_DEPS}: no pin line for {a['runtime_deps_asset']}")
+    deps = text(RUNTIME_DEPS).split("\n")
+    for asset, digest in runtime_deps_lines(cut):
+        if f"{digest}  {asset}" not in deps:
+            out.append(f"{RUNTIME_DEPS}: no pin line for {asset}")
     for rel in CARGO_TOMLS:
         revs = sorted({m.group(2) for m in CHAIN_DEP.finditer(text(rel))})
         if revs != [rev]:
