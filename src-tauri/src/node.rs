@@ -353,6 +353,14 @@ pub struct NodeStatus {
     /// [`crate::mining_gate`]). Omitted when production is armed or was never requested.
     #[serde(rename = "miningHold", skip_serializing_if = "Option::is_none")]
     pub mining_hold: Option<String>,
+    /// CORE-N4: the node's own `citrate_nodeIdentity.syncState` (local RPC); omitted when the node
+    /// does not report one (nodes before r1007) or is not answering.
+    #[serde(rename = "syncState", skip_serializing_if = "Option::is_none", default)]
+    pub sync_state: Option<crate::sync_truth::NodeSyncState>,
+    /// CORE-N4: the head heights the node's peers announced (`net_peerInfo[].headHeight`, local
+    /// RPC); omitted when the node does not expose them.
+    #[serde(rename = "peerTips", skip_serializing_if = "Option::is_none", default)]
+    pub peer_tips: Option<Vec<u64>>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -556,6 +564,7 @@ impl NodeManager {
             previous,
             removed,
             bytes,
+            chain_aside,
             retired_config,
         } = outcome
         {
@@ -585,11 +594,21 @@ impl NodeManager {
                     kept.display()
                 );
             }
+            // CORE-N3: the previous chain data was set aside, not deleted; the member is told
+            // where, so it is never lost silently and can be deleted to free space.
+            if let Some(aside) = &chain_aside {
+                eprintln!(
+                    "[node] the previous network's chain database was set aside in {}",
+                    aside.display()
+                );
+            }
             *self
                 .chain_reset_notice
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) =
-                Some(crate::node_genesis::reset_notice(kept.as_deref()));
+                .unwrap_or_else(|e| e.into_inner()) = Some(crate::node_genesis::reset_notice_with(
+                kept.as_deref(),
+                chain_aside.as_deref(),
+            ));
         }
         Ok(())
     }
@@ -1055,6 +1074,12 @@ impl NodeManager {
         } else {
             (0, 0)
         };
+        // CORE-N4: what the node says about its own sync, only from a node that answers.
+        let (sync_state, peer_tips) = if running && height > 0 {
+            self.poll_sync_views()
+        } else {
+            (None, None)
+        };
         // REAL sync progress against the AUTHORITATIVE network tip.
         //
         // This was `if running && height > 0 { 100.0 }` — not a percentage at all,
@@ -1073,7 +1098,11 @@ impl NodeManager {
         let sync_pct = if !running || height == 0 {
             0.0
         } else {
-            sync_progress(height, self.cached_network_tip())
+            crate::sync_truth::sync_progress_for(
+                height,
+                self.cached_network_tip(),
+                sync_state.as_ref(),
+            )
         };
         NodeStatus {
             state: state.to_string(),
@@ -1099,6 +1128,8 @@ impl NodeManager {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone()
             },
+            sync_state,
+            peer_tips,
         }
     }
 
@@ -1125,6 +1156,22 @@ impl NodeManager {
         let height = client.block_number().ok()?;
         let peers = client.peer_count().unwrap_or(0);
         Some((height, peers))
+    }
+
+    /// CORE-N4: the node's own `syncState` (`citrate_nodeIdentity`) and its peers' announced head
+    /// heights (`net_peerInfo`), from the local RPC. Each is `None` when the node does not have
+    /// the read (feature detection: an error or a missing field is "not read", never a guess).
+    fn poll_sync_views(&self) -> (Option<crate::sync_truth::NodeSyncState>, Option<Vec<u64>>) {
+        let client = RpcClient::with_transport(HttpTransport::new(self.rpc_url.clone()));
+        let state = client
+            .node_identity()
+            .ok()
+            .and_then(|v| crate::sync_truth::parse_sync_state(&v));
+        let tips = client
+            .peer_info()
+            .ok()
+            .and_then(|v| crate::sync_truth::parse_peer_tips(&v));
+        (state, tips)
     }
 
     /// Core #326: once this node's chain reaches a rollback check height, compare its block
@@ -1939,6 +1986,38 @@ pub async fn node_logs(app_h: tauri::AppHandle) -> std::result::Result<Vec<LogLi
 /// Blocking body of [`node_logs`]; reached only through [`crate::blocking::off_main`].
 pub fn node_logs_sync(state: State<'_, NodeState>) -> std::result::Result<Vec<LogLine>, String> {
     Ok(state.0.logs())
+}
+
+/// CORE-N3 follow-up: the previous networks' chain data set aside in the node data dir
+/// (`chain.<profile>.bak`), with sizes. Data source: the node data dir ([`crate::chain_backup`]).
+#[tauri::command]
+pub async fn node_old_network_data(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<crate::chain_backup::ChainBackup>, String> {
+    crate::blocking::off_main(move || {
+        let st = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        crate::chain_backup::list_chain_backups(&st.0.data_dir)
+    })
+    .await
+}
+
+/// CORE-N3 follow-up: remove one set-aside chain backup, at the size the member confirmed.
+/// Refuses anything that is not a chain backup in the node data dir ([`crate::chain_backup`]).
+/// Returns the bytes freed.
+#[tauri::command]
+pub async fn node_remove_old_network_data(
+    app_h: tauri::AppHandle,
+    name: String,
+    confirmed_bytes: u64,
+) -> std::result::Result<u64, String> {
+    crate::blocking::off_main(move || {
+        let st = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        crate::chain_backup::remove_chain_backup(&st.0.data_dir, &name, confirmed_bytes)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[cfg(test)]

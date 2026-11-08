@@ -206,6 +206,8 @@ export function NodeStatusView({ store, s, publicHead, publicHeadAgeMs, publicHe
     peers: s.peers,
     peersZeroForMs,
     localStillForMs,
+    nodeSyncState: s.nodeSyncState,
+    peerTips: s.peerTips,
   });
   const headOk = headFresh({ publicHead, publicHeadAgeMs, publicHeadError });
   const bond = bondFlags(s);

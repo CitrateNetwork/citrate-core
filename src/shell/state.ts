@@ -430,6 +430,12 @@ export interface AppState {
   nodeBlocked: string | null;
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
+  /** CORE-N4: the node's own syncState, from `node_status.syncState` (citrate_nodeIdentity);
+   *  null when the node reports none. Observed state, never persisted. */
+  nodeSyncState: { state: string; reason: string | null; forkDepth: number | null; appliedHeight: number | null; highestSeen: number | null } | null;
+  /** CORE-N4: head heights the node's peers announced, from `node_status.peerTips`; null when the
+   *  node does not expose them. Observed state, never persisted. */
+  peerTips: number[] | null;
   syncPct: number;
   logs: LogLine[];
   /**
@@ -893,6 +899,8 @@ export function freshState(pid: string): AppState {
     nodeIntent: "run",
     nodeBlocked: null,
     miningHold: null,
+    nodeSyncState: null,
+    peerTips: null,
     syncPct: 0,
     logs: [],
     nodeStatusAt: null,

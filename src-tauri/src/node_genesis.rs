@@ -15,7 +15,8 @@
 //!
 //! | entry | written by | on a genesis change |
 //! |---|---|---|
-//! | `CURRENT`, `IDENTITY`, `LOCK`, `LOG`, `LOG.old.*`, `MANIFEST-*`, `OPTIONS-*`, `*.sst`, `*.log`, `*.blob`, `*.dbtmp` | RocksDB (blocks, DAG, state) | deleted |
+//! | `CURRENT`, `IDENTITY`, `LOCK`, `LOG`, `LOG.old.*`, `MANIFEST-*`, `OPTIONS-*`, `*.sst`, `*.log`, `*.blob`, `*.dbtmp` | RocksDB (blocks, DAG, state) | set aside in `chain.<previous profile>.bak/` (CORE-N3) |
+//! | `chain.<profile>.bak[-n]/` | core (this module, an earlier switch) | kept |
 //! | `proposer.key` | node (`--mine` path; validator registration signs with it) | kept |
 //! | `noise.key` (and any `noise.key.*` copy) | node (P2P Noise static identity) | kept |
 //! | `peer.id` | node (legacy peer id) | kept |
@@ -25,16 +26,28 @@
 //! | [`GENESIS_MARKER_FILE`] | core (this module) | rewritten last (the commit point) |
 //! | [`MIGRATION_INTENT_FILE`] | core (this module) | written first, removed after the commit |
 //!
-//! Deletion is by positive match on RocksDB's own file names
+//! The set-aside is by positive match on RocksDB's own file names
 //! ([`is_chain_db_entry`]): anything not recognised as a database file is
-//! kept, so key material the node adds later survives by default.
+//! kept in place, so key material the node adds later survives by default.
+//!
+//! ## The previous chain is set aside, not deleted (CORE-N3, 0.5.3)
+//! Until 0.5.2 the reset deleted the chain database. From 0.5.3 it moves every chain database
+//! file, byte for byte, into `<data dir>/chain.<tag>.bak/` (owner-only), where `<tag>` is the id
+//! of the known network profile whose genesis the old marker names (`chain.r1006.bak`), else the
+//! first 10 characters of that genesis, else `unrecorded`. A second switch from the same network
+//! gets `chain.<tag>.bak-2` and so on: an earlier backup is never written into. The backup's
+//! name is recorded in the migration intent before the first file moves, so a crash part way
+//! through is finished into the same backup on the next start (one complete database, nothing
+//! lost). The member is told where it is and that it may be deleted to free space. The node never
+//! reads it (RocksDB ignores subdirectories of its database directory; citrate-chain's own cold
+//! resync keeps `chain-aside/` the same way). Below, "delete" in the steps means this move.
 //!
 //! ## Invariants (K6, crash safety)
 //! - **I1. Nothing runs on a profile that is not ready.** `NodeManager::start` refuses a
 //!   network profile that is not `ready()` before it touches the data dir, so no migration step
 //!   below runs for it (and no node starts). A bad book genesis refuses here too, touching nothing.
 //! - **I2. The marker is the single commit point.** The migration is a sequence of idempotent
-//!   steps: write the intent, delete the chain DB, set the previous `node.toml` aside, fsync the
+//!   steps: write the intent, set the chain DB aside, set the previous `node.toml` aside, fsync the
 //!   directory, write the marker. Only the marker rename commits it. Removing the intent after
 //!   the commit is cleanup. Every migration attempt mints a fresh random nonce and records it in
 //!   its intent and, at the commit, in the marker: an intent is committed only when the marker
@@ -44,7 +57,7 @@
 //!   then.** The intent ([`MIGRATION_INTENT_FILE`]) is made durable before the first destructive
 //!   step. While the marker does not carry its nonce, the data dir is mid-migration: the next
 //!   launch starts a new attempt (new nonce, same source genesis) to the genesis that launch
-//!   targets, and that attempt deletes every chain DB entry left before it writes any marker.
+//!   targets, and that attempt sets aside every chain DB entry left before it writes any marker.
 //!   This holds however many launches crash in a row and whatever genesis each one targets,
 //!   including the genesis the old marker names (a partly deleted database is never kept).
 //! - **I4. A node never opens a data dir that is mid-migration or of another network.** The node
@@ -61,8 +74,9 @@
 //! 3. No intent, no marker, no chain DB and no `node.toml`: a fresh data dir, marked.
 //! 4. Otherwise migrate, holding the database lock: write the intent with a fresh nonce (temp
 //!    file, fsync, rename, directory fsync; an existing uncommitted intent keeps its source
-//!    genesis and takes the new target), delete every chain DB entry (`CURRENT` first, so a
-//!    partly deleted directory never looks like a complete database) and check that none is
+//!    genesis and takes the new target), move every chain DB entry into the backup the intent
+//!    names (`CURRENT` first, so a partly moved directory never looks like a complete database)
+//!    and check that none is
 //!    left, set the previous network's `node.toml` aside ([`retire_node_config`]), fsync the
 //!    directory, write the marker (genesis and nonce) atomically, then remove the intent.
 //!
@@ -99,6 +113,11 @@ use std::path::{Path, PathBuf};
 
 /// The marker file naming the genesis this node data dir belongs to.
 pub const GENESIS_MARKER_FILE: &str = "chain-genesis";
+
+/// The prefix of a chain database backup directory in the node data dir (CORE-N3).
+pub const CHAIN_ASIDE_PREFIX: &str = "chain.";
+/// The suffix of a chain database backup directory (before any `-n`).
+pub const CHAIN_ASIDE_SUFFIX: &str = ".bak";
 
 /// The migration intent: present from before the first destructive step of a migration until
 /// after its commit (the marker write). See the module doc, invariants I2 and I3.
@@ -159,10 +178,14 @@ pub enum GenesisOutcome {
     Reset {
         /// The genesis the old marker named, if there was one.
         previous: Option<String>,
-        /// The entries deleted, by file name, sorted.
+        /// The chain database entries this attempt set aside, by file name, sorted.
         removed: Vec<String>,
         /// Their total size in bytes.
         bytes: u64,
+        /// CORE-N3: the backup directory holding the previous network's chain database, when it
+        /// exists (this attempt or an interrupted earlier one moved files into it); `None` when
+        /// there was no chain database to keep.
+        chain_aside: Option<PathBuf>,
         /// Where the previous network's `node.toml` was set aside; `None` when there was
         /// none (or an interrupted earlier attempt already set it aside).
         retired_config: Option<PathBuf>,
@@ -288,12 +311,119 @@ pub fn reset_log_message(
     )
 }
 
-/// Delete the chain DB entries in `data_dir` and return their names. Exposed
-/// to the tests so they can stop between the delete and the marker write.
+/// Test-only: delete the chain DB entries in `data_dir`, the way builds before 0.5.3 reset the
+/// chain. The tests use it to leave a data dir exactly as an older build's interrupted switch
+/// left it.
+#[cfg(test)]
 pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), GenesisGateError> {
     let names = chain_db_entries(data_dir)?;
     let mut bytes = 0u64;
-    // Tests can stop the delete after the first `k` entries, as a crash there would.
+    for name in &names {
+        let path = data_dir.join(name);
+        bytes = bytes.saturating_add(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(GenesisGateError::Io(format!("remove {name}: {e}"))),
+        }
+    }
+    Ok((names, bytes))
+}
+
+/// A backup directory name this module writes: `chain.<tag>.bak` or `chain.<tag>.bak-<n>`, with
+/// `<tag>` of ASCII letters, digits, `-` and `_` only (never a path).
+pub fn is_chain_aside_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(CHAIN_ASIDE_PREFIX) else {
+        return false;
+    };
+    let (tag, n) = match rest.rsplit_once(CHAIN_ASIDE_SUFFIX) {
+        Some((tag, n)) => (tag, n),
+        None => return false,
+    };
+    let n_ok = n.is_empty()
+        || n.strip_prefix('-')
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+    !tag.is_empty()
+        && tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && n_ok
+}
+
+/// The tag a backup of `previous_genesis`'s chain is named with: the known profile's id
+/// (`r1006`), else the first 10 characters of the genesis, else `unrecorded`.
+fn chain_aside_tag(previous_genesis: Option<&str>) -> String {
+    let by_profile = previous_genesis
+        .and_then(crate::network_profile::profile_for_genesis)
+        .map(|p| p.id.clone())
+        .filter(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        });
+    by_profile.unwrap_or_else(|| aside_tag(previous_genesis))
+}
+
+/// A fresh backup directory name for `previous_genesis` in `data_dir`: `chain.<tag>.bak`, or the
+/// first free `chain.<tag>.bak-<n>` (n >= 2), so an earlier backup is never written into.
+fn new_chain_aside_name(data_dir: &Path, previous_genesis: Option<&str>) -> String {
+    let base = format!(
+        "{CHAIN_ASIDE_PREFIX}{}{CHAIN_ASIDE_SUFFIX}",
+        chain_aside_tag(previous_genesis)
+    );
+    if std::fs::symlink_metadata(data_dir.join(&base)).is_err() {
+        return base;
+    }
+    let mut n = 2u32;
+    loop {
+        let name = format!("{base}-{n}");
+        if std::fs::symlink_metadata(data_dir.join(&name)).is_err() {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+/// Move the chain DB entries of `data_dir` into `data_dir/<aside>` (created owner-only), byte for
+/// byte, and return their names and total size. A name already present in the backup (only a file
+/// a stray process wrote after an interrupted attempt can collide) is kept beside it as
+/// `<name>.dup-<n>`: nothing is overwritten. With no chain DB entries it creates nothing.
+pub(crate) fn set_aside_chain_db(
+    data_dir: &Path,
+    aside: &str,
+) -> Result<(Vec<String>, u64), GenesisGateError> {
+    if !is_chain_aside_name(aside) {
+        return Err(GenesisGateError::Io(format!(
+            "{aside:?} is not a chain backup directory name"
+        )));
+    }
+    let names = chain_db_entries(data_dir)?;
+    let dest_dir = data_dir.join(aside);
+    let io = |what: &str, e: std::io::Error| GenesisGateError::Io(format!("{what}: {e}"));
+    // Nothing to keep: no backup directory is created. The test hooks below still run, so a
+    // crash point stays reachable whatever an earlier attempt moved.
+    match std::fs::symlink_metadata(&dest_dir) {
+        _ if names.is_empty() => {}
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => {
+            return Err(GenesisGateError::Io(format!(
+                "{} exists and is not a directory",
+                dest_dir.display()
+            )))
+        }
+        Err(_) => {
+            std::fs::create_dir(&dest_dir).map_err(|e| io("create the chain backup", e))?;
+        }
+    }
+    #[cfg(unix)]
+    if !names.is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| io("protect the chain backup", e))?;
+    }
+    let mut bytes = 0u64;
+    // Tests can stop the move after the first `k` entries, as a crash there would.
     #[cfg(test)]
     let stop_at = test_hooks::STOP_WIPE_AFTER.with(|n| n.get());
     #[cfg(test)]
@@ -304,21 +434,28 @@ pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), Genes
     #[cfg(not(test))]
     let todo: &[String] = &names;
     for name in todo {
-        let path = data_dir.join(name);
-        bytes = bytes.saturating_add(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
+        let src = data_dir.join(name);
+        let mut dest = dest_dir.join(name);
+        let mut n = 1u32;
+        while std::fs::symlink_metadata(&dest).is_ok() {
+            dest = dest_dir.join(format!("{name}.dup-{n}"));
+            n += 1;
+        }
+        let len = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        match std::fs::rename(&src, &dest) {
+            Ok(()) => bytes = bytes.saturating_add(len),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(GenesisGateError::Io(format!("remove {name}: {e}"))),
+            Err(e) => return Err(io(&format!("move {name} into {aside}"), e)),
         }
     }
+    if !names.is_empty() {
+        sync_dir(&dest_dir).map_err(|e| io("sync the chain backup", e))?;
+    }
     // A stop set for more entries than were left still stops the run here (a crash right after
-    // the last unlink), so every crash point is reachable whatever an earlier attempt deleted.
+    // the last move), so every crash point is reachable whatever an earlier attempt moved.
     #[cfg(test)]
     if stop_at.is_some() {
-        return Err(GenesisGateError::Io(
-            "injected stop mid-delete (test)".into(),
-        ));
+        return Err(GenesisGateError::Io("injected stop mid-move (test)".into()));
     }
     #[cfg(test)]
     if let Some(name) = test_hooks::APPEAR_AFTER_WIPE.with(|n| n.take()) {
@@ -387,15 +524,33 @@ pub(crate) fn set_aside_node_config(
 
 /// The member-facing notice for a reset: [`CHAIN_RESET_NOTICE`], plus where the previous network's
 /// node settings were kept when there were any, so a hand edit there is never dropped silently.
+/// The app uses [`reset_notice_with`], which also names the chain backup (CORE-N3); this form is
+/// the K6 tests' (no chain backup).
+#[cfg(test)]
 pub fn reset_notice(set_aside_config: Option<&Path>) -> String {
-    match set_aside_config {
-        Some(p) => format!(
-            "{CHAIN_RESET_NOTICE}. The previous network's node settings were kept in {}; new \
-             settings were written for this network.",
+    reset_notice_with(set_aside_config, None)
+}
+
+/// [`reset_notice`], plus where the previous network's chain data was kept (CORE-N3) and that the
+/// member may delete it to free space.
+pub fn reset_notice_with(set_aside_config: Option<&Path>, chain_aside: Option<&Path>) -> String {
+    let mut out = CHAIN_RESET_NOTICE.to_string();
+    if let Some(p) = set_aside_config {
+        out.push_str(&format!(
+            ". The previous network's node settings were kept in {}; new settings were written \
+             for this network.",
             p.display()
-        ),
-        None => CHAIN_RESET_NOTICE.to_string(),
+        ));
     }
+    if let Some(p) = chain_aside {
+        out.push_str(&format!(
+            "{} The previous network's chain data was kept in {}; this node no longer reads it, \
+             and you can delete that folder to free disk space.",
+            if set_aside_config.is_some() { "" } else { "." },
+            p.display()
+        ));
+    }
+    out
 }
 
 /// Make the directory entries of `dir` (deletions, renames) durable before a later step
@@ -422,10 +577,10 @@ pub(crate) mod test_hooks {
         /// The migration stops (returns an error, as a crash would leave the disk) right after
         /// this step.
         pub static STOP_AFTER: Cell<Option<super::Step>> = const { Cell::new(None) };
-        /// `wipe_chain_db` stops after deleting this many entries (a crash mid-delete), or after
-        /// the last one when fewer were left.
+        /// `set_aside_chain_db` stops after moving this many entries (a crash mid-move), or
+        /// after the last one when fewer were left.
         pub static STOP_WIPE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
-        /// A chain database file of this name appears once `wipe_chain_db` has deleted the
+        /// A chain database file of this name appears once `set_aside_chain_db` has moved the
         /// entries it listed (one written between the listing and the end of the delete).
         pub static APPEAR_AFTER_WIPE: Cell<Option<&'static str>> = const { Cell::new(None) };
     }
@@ -564,6 +719,9 @@ fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> 
 pub struct MigrationIntent {
     /// The genesis the data belonged to when the migration began (`None`: not recorded).
     pub from: Option<String>,
+    /// CORE-N3: the backup directory (`chain.<tag>.bak[-n]`) this migration moves the chain
+    /// database into; `None` in an intent an older build wrote (a fresh name is chosen).
+    pub aside: Option<String>,
     /// The genesis the migration was moving to (`None`: unreadable).
     pub to: Option<String>,
     /// This attempt's nonce (`None`: missing or unreadable, which never matches a marker, so
@@ -602,6 +760,7 @@ pub fn read_intent(data_dir: &Path) -> Result<Option<MigrationIntent>, GenesisGa
                 eprintln!("[node] the migration intent is unreadable ({e}); rolling forward");
                 return Ok(Some(MigrationIntent {
                     from: None,
+                    aside: None,
                     to: None,
                     nonce: None,
                 }));
@@ -619,8 +778,14 @@ pub fn read_intent(data_dir: &Path) -> Result<Option<MigrationIntent>, GenesisGa
         .lines()
         .find_map(|l| l.strip_prefix("nonce "))
         .and_then(parse_nonce);
+    let aside = text
+        .lines()
+        .find_map(|l| l.strip_prefix("aside "))
+        .map(|v| v.trim().to_string())
+        .filter(|v| is_chain_aside_name(v));
     Ok(Some(MigrationIntent {
         from: field("from "),
+        aside,
         to: field("to "),
         nonce,
     }))
@@ -630,10 +795,15 @@ fn write_intent(data_dir: &Path, intent: &MigrationIntent) -> Result<(), Genesis
     let from = intent.from.as_deref().unwrap_or("unrecorded");
     let to = intent.to.as_deref().unwrap_or("unrecorded");
     let nonce = intent.nonce.as_deref().unwrap_or("unrecorded");
+    let aside = intent
+        .aside
+        .as_deref()
+        .map(|a| format!("aside {a}\n"))
+        .unwrap_or_default();
     write_durable(
         data_dir,
         MIGRATION_INTENT_FILE,
-        &format!("nonce {nonce}\nfrom {from}\nto {to}\n"),
+        &format!("nonce {nonce}\nfrom {from}\nto {to}\n{aside}"),
     )
     .map_err(|e| GenesisGateError::Io(format!("write the migration intent: {e}")))
 }
@@ -709,25 +879,33 @@ pub fn reconcile_genesis(
         Some(i) => i.from.clone(),
         None => marker.clone(),
     };
+    // CORE-N3: an uncommitted earlier attempt keeps moving into its own backup, so one backup
+    // holds the whole previous database; otherwise a fresh name (never an earlier backup).
+    let aside = intent
+        .as_ref()
+        .and_then(|i| i.aside.clone())
+        .unwrap_or_else(|| new_chain_aside_name(data_dir, previous.as_deref()));
     let nonce = new_nonce();
     write_intent(
         data_dir,
         &MigrationIntent {
             from: previous.clone(),
+            aside: Some(aside.clone()),
             to: Some(book.clone()),
             nonce: Some(nonce.clone()),
         },
     )?;
     checkpoint("intent")?;
-    let (removed, bytes) = wipe_chain_db(data_dir)?;
-    // The delete is complete before any marker is written: whatever an earlier attempt left.
+    let (removed, bytes) = set_aside_chain_db(data_dir, &aside)?;
+    // The set-aside is complete before any marker is written: whatever an earlier attempt left.
     let left = chain_db_entries(data_dir)?;
     if !left.is_empty() {
         return Err(GenesisGateError::Io(format!(
-            "chain database entries remain after the delete: {}",
+            "chain database entries remain after the set-aside: {}",
             left.join(", ")
         )));
     }
+    let chain_aside = Some(data_dir.join(&aside)).filter(|p| p.is_dir());
     checkpoint("wipe")?;
     // K6: the previous network's node.toml goes before the marker commits the switch.
     let retired_config = retire_node_config(data_dir, previous.as_deref())
@@ -744,6 +922,7 @@ pub fn reconcile_genesis(
         previous,
         removed,
         bytes,
+        chain_aside,
         retired_config,
     })
 }
@@ -1007,6 +1186,8 @@ mod tests {
                 previous: Some(OLD.to_string()),
                 removed: vec![],
                 bytes: 0,
+                // An older build's delete left nothing to keep.
+                chain_aside: None,
                 retired_config: Some(d.join(OLD_CONFIG_ASIDE)),
             },
             "a rerun still reports the reset so the member sees the notice"
@@ -1039,6 +1220,8 @@ mod tests {
                 previous: Some(OLD.to_string()),
                 removed: vec![],
                 bytes: 0,
+                // An older build's delete left nothing to keep.
+                chain_aside: None,
                 retired_config: None,
             }
         );
@@ -1448,6 +1631,7 @@ mod tests {
             &d,
             &MigrationIntent {
                 from: Some(OLD.into()),
+                aside: None,
                 to: Some(NEW.into()),
                 nonce: Some(n),
             },
@@ -1485,6 +1669,7 @@ mod tests {
                 &d,
                 &MigrationIntent {
                     from: Some(OLD.into()),
+                    aside: None,
                     to: Some(OLD.into()),
                     nonce: intent_nonce.map(str::to_string),
                 },
@@ -1820,5 +2005,152 @@ mod tests {
         std::fs::write(d.join("000999.sst").join("keep"), b"k").unwrap();
         reconcile_genesis(&d, NEW, never_running).unwrap();
         assert!(d.join("000999.sst").join("keep").exists());
+    }
+
+    // ---- CORE-N3 (0.5.3): the previous network's chain data is set aside, never deleted ----
+
+    /// Block 0 of r1006 (network/profiles.json), so the backup is named after the profile.
+    const R1006: &str = "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4";
+
+    /// Every chain database file of `populate`, by name, with the bytes it was written with.
+    fn assert_db_in(dir: &Path) {
+        for f in DB {
+            assert_eq!(
+                std::fs::read(dir.join(f))
+                    .unwrap_or_else(|e| panic!("{f} in {}: {e}", dir.display())),
+                f.as_bytes(),
+                "{f} is kept byte for byte in {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn n3_a_genesis_change_sets_the_chain_db_aside_named_for_the_previous_profile() {
+        let d = tmp("n3-aside");
+        populate(&d);
+        write_marker(&d, R1006).unwrap();
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        let GenesisOutcome::Reset {
+            chain_aside,
+            removed,
+            ..
+        } = out
+        else {
+            panic!("expected a reset: {out:?}");
+        };
+        let aside = d.join("chain.r1006.bak");
+        assert_eq!(chain_aside.as_deref(), Some(aside.as_path()));
+        assert_db_gone(&d);
+        assert_db_in(&aside);
+        assert_keys_kept(&d);
+        let mut want: Vec<String> = DB.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        let mut got = removed.clone();
+        got.sort();
+        assert_eq!(got, want, "every chain file is reported as set aside");
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(NEW));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&aside).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
+        }
+        // The next start keeps everything, the backup included.
+        assert_eq!(
+            reconcile_genesis(&d, NEW, never_running).unwrap(),
+            GenesisOutcome::Kept
+        );
+        assert_db_in(&aside);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn n3_an_unknown_or_unrecorded_previous_genesis_names_the_backup_by_hash_or_unrecorded() {
+        let d = tmp("n3-unknown");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert_db_in(&d.join("chain.0x0f2b567f.bak"));
+        let d2 = tmp("n3-unrecorded");
+        populate(&d2);
+        reconcile_genesis(&d2, NEW, never_running).unwrap();
+        assert_db_in(&d2.join("chain.unrecorded.bak"));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    #[test]
+    fn n3_a_second_switch_from_the_same_network_never_writes_into_an_earlier_backup() {
+        let d = tmp("n3-second");
+        populate(&d);
+        write_marker(&d, R1006).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        // The member goes back to r1006 (an older build) and syncs again, then upgrades again.
+        for f in DB {
+            std::fs::write(d.join(f), format!("second {f}")).unwrap();
+        }
+        write_marker(&d, R1006).unwrap();
+        reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert_db_in(&d.join("chain.r1006.bak"));
+        for f in DB {
+            assert_eq!(
+                std::fs::read_to_string(d.join("chain.r1006.bak-2").join(f)).unwrap(),
+                format!("second {f}")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A crash part way through the move: the next start finishes it into the SAME backup (the
+    /// intent names it), so the backup is one complete database and nothing is lost.
+    #[test]
+    fn n3_a_crash_mid_move_finishes_into_the_same_backup_on_the_next_start() {
+        for k in 0..DB.len() {
+            let d = tmp("n3-crash");
+            populate(&d);
+            write_marker(&d, R1006).unwrap();
+            test_hooks::STOP_WIPE_AFTER.with(|n| n.set(Some(k)));
+            let crashed = reconcile_genesis(&d, NEW, never_running);
+            test_hooks::STOP_WIPE_AFTER.with(|n| n.set(None));
+            assert!(crashed.is_err(), "k={k}: the injected stop fails the start");
+            assert_eq!(
+                read_marker(&d).unwrap().as_deref(),
+                Some(R1006),
+                "k={k}: not committed"
+            );
+            let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+            assert!(
+                matches!(out, GenesisOutcome::Reset { .. }),
+                "k={k}: {out:?}"
+            );
+            assert_db_gone(&d);
+            assert_db_in(&d.join("chain.r1006.bak"));
+            assert!(
+                !d.join("chain.r1006.bak-2").exists(),
+                "k={k}: one backup, not two"
+            );
+            assert_keys_kept(&d);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn n3_the_notice_names_where_the_previous_chain_data_was_kept() {
+        let chain = Path::new("/data/node/chain.r1006.bak");
+        let n = reset_notice_with(None, Some(chain));
+        assert!(n.starts_with(CHAIN_RESET_NOTICE), "{n}");
+        assert!(n.contains("/data/node/chain.r1006.bak"), "{n}");
+        assert!(
+            n.contains("delete"),
+            "says it may be deleted to free space: {n}"
+        );
+        let cfg = Path::new("/data/node/node.toml.0xa3651a27");
+        let both = reset_notice_with(Some(cfg), Some(chain));
+        assert!(
+            both.contains("node.toml.0xa3651a27") && both.contains("chain.r1006.bak"),
+            "{both}"
+        );
+        assert_eq!(reset_notice_with(None, None), CHAIN_RESET_NOTICE);
     }
 }

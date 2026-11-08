@@ -240,6 +240,10 @@ export interface NodeStatusView {
   miningArmed?: boolean;
   /** Why block production is held (the mining gate in node.rs); unset while armed. */
   miningHold?: string;
+  /** CORE-N4: the node's own citrate_nodeIdentity.syncState; unset when the node has none. */
+  syncState?: { state: string; reason: string | null; forkDepth: number | null; appliedHeight: number | null; highestSeen: number | null };
+  /** CORE-N4: head heights the node's peers announced (net_peerInfo); unset when not exposed. */
+  peerTips?: number[];
 }
 
 /** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */
@@ -396,6 +400,23 @@ export interface NodeDomain {
    * out of packaged builds), so the web preview reads as a preview, not live.
    */
   logs(): Promise<NodeLogLine[]>;
+  /**
+   * CORE-N3 follow-up: the previous networks' chain data a genesis switch set aside in the node data
+   * dir (`chain.<profile>.bak`), with sizes. Tauri → `node_old_network_data`; sim has none.
+   */
+  oldNetworkData(): Promise<OldNetworkDataView[]>;
+  /**
+   * Remove one of them, at the size the member confirmed. Rust refuses anything that is not a chain
+   * backup in the node data dir (chain_backup.rs). Resolves to the bytes freed.
+   */
+  removeOldNetworkData(name: string, confirmedBytes: number): Promise<number>;
+}
+
+/** One set-aside chain database (Rust `chain_backup::ChainBackup`). */
+export interface OldNetworkDataView {
+  name: string;
+  bytes: number;
+  files: number;
 }
 
 /**

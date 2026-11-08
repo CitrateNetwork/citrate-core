@@ -1863,6 +1863,9 @@ export class Store {
       // The mining gate holds or disarms production (node.rs). A producer the backend disarmed
       // is no longer armed here either, so the re-arm path above retries it (still gated).
       patch.miningHold = st.miningHold ?? null;
+      // CORE-N4: the node's own syncState and its peers' announced heights (feature-detected).
+      patch.nodeSyncState = st.syncState ?? null;
+      patch.peerTips = st.peerTips ?? null;
       // 0.5.2 RC52 — sync progress and an honest ETA: this node's height (local eth_blockNumber, only
       // while running) against the public head (eth_blockNumber on the profile RPC, throttled).
       patch.syncProgress = this.syncTracker.fold(st.state === "running" ? st.height : null, () => this.chainReads.publicHead(), st.peers);

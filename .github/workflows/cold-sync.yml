@@ -144,6 +144,22 @@ jobs:
           if [ -n "$IN_BLOCKS" ]; then
             args+=(--blocks "$IN_BLOCKS")
           fi
+          # CORE-N6: on the network cut's profile, the node must report the cut's consensus
+          # fingerprint (release/network-cut.json); never typed by hand.
+          fp="$(IN_PROFILE_NAME="${IN_PROFILE_NAME:-}" python3 -I - <<'PY'
+          import json, os
+          try:
+              cut = json.load(open("release/network-cut.json"))
+              name = os.environ.get("IN_PROFILE_NAME") or json.load(open("src-tauri/network/profiles.json"))["active"]
+          except (OSError, ValueError, KeyError):
+              cut, name = {}, None
+          if name and name == cut.get("profile") and cut.get("consensusFingerprint"):
+              print(cut["consensusFingerprint"])
+          PY
+          )"
+          if [ -n "$fp" ]; then
+            args+=(--expect-fingerprint "$fp")
+          fi
           set +e
           python3 scripts/e2e/cold-sync.py "${args[@]}"
           code=$?

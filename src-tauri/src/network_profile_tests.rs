@@ -1117,3 +1117,129 @@ fn a_malformed_node_genesis_table_is_refused() {
     }
     assert!(parse_node_genesis(PROFILES_JSON).is_ok());
 }
+
+// ---- r1007 (0.5.3, CORE-N2): known now, pending until the genesis cut ----
+
+const R1007: &str = "r1007";
+
+fn r1007() -> &'static NetworkProfile {
+    profile(R1007).expect("the r1007 profile exists")
+}
+
+/// CORE-N2: r1007 is in the build so cutting 0.5.3 is a fill, not an edit. Its values known
+/// today are set (chain id 40204 is permanent; the fleet's RPC, explorer and faucet hosts; the
+/// embedded book's path; the member pruning default). Its genesis values are null with a reason,
+/// so the profile is not ready, no node starts on it and nothing is signed against it.
+#[test]
+fn r1007_is_known_and_pending_until_the_genesis_cut() {
+    let p = r1007();
+    let missing: Vec<String> = p.missing().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(
+        missing,
+        [
+            "genesisHash",
+            "genesisProfile",
+            "bootnodes",
+            "addressBookSha256",
+            "minChainRev"
+        ],
+        "only the values the r1007 genesis cut produces are unset"
+    );
+    for (field, why) in p.missing() {
+        assert!(
+            why.contains("r1007") && why.contains("network-cut"),
+            "{field}: the reason names the r1007 cut and the tool that fills it: {why:?}"
+        );
+    }
+    assert_eq!(p.chain_id, Some(40204));
+    assert_eq!(p.node_network.as_deref(), Some("testnet"));
+    assert_eq!(p.rpc_url.as_deref(), Some("https://rpc.citrate.ai"));
+    assert_eq!(p.explorer_url.as_deref(), Some("https://explorer.citrate.ai"));
+    assert_eq!(p.faucet_url.as_deref(), Some("https://faucet.citrate.ai"));
+    assert_eq!(p.address_book.as_deref(), Some("addresses/40204.json"));
+    assert_eq!(p.member_prune_retain, Some(10_000), "CORE-N5 / CV-7a");
+    assert_eq!(p.retired, None);
+    assert!(matches!(p.ready(), Err(ProfileError::NotSet { .. })));
+    let gate = p.expected_network();
+    assert_eq!((gate.chain_id, gate.genesis_hash), (None, None));
+    // Main keeps a network that is ready until the cut flips `active`.
+    assert_ne!(active_id().unwrap(), R1007);
+}
+
+/// CORE-N2: a retired profile stays known (a data dir from it can be named and set aside), but
+/// it is refused like an unset one: no node starts on it and the gate refuses every signature,
+/// even with every value set.
+#[test]
+fn a_retired_profile_is_refused_even_with_every_value_set() {
+    let json = profiles_json_with(|v| {
+        v["profiles"]["r1006"]["retired"] = "replaced by r1007 (0.5.3)".into();
+    });
+    let (_, ps) = parse(&json).expect("a retired profile parses");
+    let p = ps.into_iter().find(|p| p.id == "r1006").expect("r1006");
+    assert!(p.missing().is_empty(), "every value is set");
+    match p.ready() {
+        Err(ProfileError::Retired { profile, why }) => {
+            assert_eq!(profile, "r1006");
+            assert_eq!(why, "replaced by r1007 (0.5.3)");
+        }
+        other => panic!("a retired profile must be refused: {other:?}"),
+    }
+    let gate = p.expected_network();
+    assert_eq!((gate.chain_id, gate.genesis_hash), (None, None));
+    let msg = format!("{}", p.ready().unwrap_err());
+    assert!(msg.contains("r1006") && msg.contains("retired"), "{msg}");
+    // An empty reason is a malformed value, not "not retired".
+    let mut empty = p.clone();
+    empty.retired = Some("  ".into());
+    assert!(matches!(
+        empty.ready(),
+        Err(ProfileError::Invalid { field: "retired", .. })
+    ));
+}
+
+#[test]
+fn the_active_profile_is_not_retired() {
+    assert_eq!(active().unwrap().retired, None);
+}
+
+/// CORE-N5 / CV-7a: a member keeps at least the 10,000-height undo window; less is refused.
+#[test]
+fn a_member_retention_below_the_undo_window_is_refused() {
+    for bad in [0, 1_000, 9_999] {
+        let mut p = active().unwrap().clone();
+        p.member_prune_retain = Some(bad);
+        assert!(
+            matches!(
+                p.ready(),
+                Err(ProfileError::Invalid { field: "memberPruneRetain", .. })
+            ),
+            "{bad}"
+        );
+    }
+    let mut p = active().unwrap().clone();
+    p.member_prune_retain = Some(10_000);
+    assert_eq!(p.ready().expect("ready").member_prune_retain, Some(10_000));
+}
+
+/// CORE-N5: a profile with a member retention renders a pruned chain store keeping that many
+/// blocks; a profile without one keeps the template's full history.
+#[test]
+fn a_pruned_profile_renders_a_pruned_node_config_and_others_keep_full_history() {
+    let template = include_str!("../config/member-node.toml");
+    let storage = |net: &ReadyNetwork| -> (bool, i64) {
+        let t: toml::Table = render_node_network(template, net)
+            .replace("{{DATA_DIR}}", "/tmp/x")
+            .parse()
+            .expect("valid TOML");
+        (
+            t["storage"]["pruning"].as_bool().expect("pruning"),
+            t["storage"]["keep_blocks"].as_integer().expect("keep_blocks"),
+        )
+    };
+    let mut p = active().unwrap().clone();
+    p.member_prune_retain = Some(10_000);
+    assert_eq!(storage(&p.ready().expect("ready")), (true, 10_000));
+    let mut archive = active().unwrap().clone();
+    archive.member_prune_retain = None;
+    assert_eq!(storage(&archive.ready().expect("ready")), (false, 100_000));
+}

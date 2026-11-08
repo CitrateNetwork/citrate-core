@@ -35,6 +35,7 @@ import type {
   ActivationStatusView,
   ModelStatus,
   NodeLogLine,
+  OldNetworkDataView,
   NodeStatusView,
   ConnectionInfo,
   ChatRoute,
@@ -269,6 +270,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // fabricated template ever crosses this boundary (Rule 1).
       async logs() {
         return invoke<NodeLogLine[]>("node_logs");
+      },
+      // CORE-N3 follow-up: the node data dir's chain.<profile>.bak folders (chain_backup.rs).
+      async oldNetworkData() {
+        return invoke<OldNetworkDataView[]>("node_old_network_data");
+      },
+      async removeOldNetworkData(name: string, confirmedBytes: number) {
+        return invoke<number>("node_remove_old_network_data", { name, confirmedBytes });
       },
     },
     // ---- model: the local Gemma download + verify + llama-server sidecar (BC-3) ----

@@ -1,7 +1,7 @@
 // K3 (ported from #362, adapted to main): Node › Status words (UI truth contract §1 "Network and node"). Unknown is never zero, nothing
 // not-live is shown as running, and the words are exactly the contract's.
 import { describe, expect, it } from "vitest";
-import { activationOffer, directPeers, heightLine, nodeWord, statusSentence, type NodeWordInput } from "./nodeWords";
+import { activationOffer, directPeers, heightLine, nodeWord, quorumTip, statusSentence, SYNC_AHEAD, type NodeWordInput } from "./nodeWords";
 import { canOfferActivation } from "../../shell/chainTruth";
 
 const base: NodeWordInput = {
@@ -100,6 +100,56 @@ describe("node word (contract §1)", () => {
       const r = nodeWord({ ...base, ...p });
       expect(r.word + " " + r.why).not.toMatch(/final|validating|producing|earning|%/i);
     }
+  });
+});
+
+describe("sync truth (CORE-N4, core#589): a quorum of peers' tips, the node's own syncState", () => {
+  const wedged = { state: "wedged", reason: "held on a dead branch", forkDepth: 5_120, appliedHeight: 509_000, highestSeen: 510_032 };
+
+  it("the quorum tip is the highest height a strict majority of the reporting peers are at or above", () => {
+    expect(quorumTip([])).toBeNull();
+    expect(quorumTip([510_032])).toBeNull(); // one peer is not a quorum
+    expect(quorumTip([510_032, 510_031])).toBe(510_031);
+    expect(quorumTip([510_032, 510_031, 12])).toBe(510_031);
+    expect(quorumTip([900_000, 510_032, 510_031, 510_030])).toBe(510_031); // one peer far ahead does not lead
+    expect(quorumTip([510_032, 12, 11])).toBe(12); // the majority is behind: so is the network view
+  });
+
+  it("Synced needs every view it has: the public head AND the peers' quorum tip", () => {
+    expect(w({ peerTips: [510_032, 510_031, 510_030] })).toBe("Synced");
+    // The public head says Synced, but the peers' quorum is 2,000 ahead: not Synced.
+    expect(w({ peerTips: [512_029, 512_030, 512_031] })).toBe("Syncing · 2,000 blocks behind");
+    // Peers alone decide when the public head can't be read.
+    expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031, 510_032] })).toBe("Synced");
+    expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031] })).toBe("Sync unknown · network head unavailable");
+    // A peer list without heights (today's node: net_peerInfo has none) is the public head alone, as before.
+    expect(w({ peerTips: null })).toBe("Synced");
+    const why = nodeWord({ ...base, peerTips: [510_032, 510_031, 510_030] }).why;
+    expect(why).toMatch(/3 peers/);
+    expect(why).toMatch(/public RPC head/);
+  });
+
+  it("a node more than 5 blocks AHEAD of the network view is not Synced (core#589)", () => {
+    expect(w({ localHeight: 510_037, publicHead: 510_032 })).toBe("Synced");
+    expect(w({ localHeight: 510_038, publicHead: 510_032 })).toBe(SYNC_AHEAD);
+    expect(w({ localHeight: 600_000, peerTips: [510_031, 510_032] })).toBe(SYNC_AHEAD);
+    expect(nodeWord({ ...base, localHeight: 510_038 }).tone).not.toBe("ok");
+  });
+
+  it("Wedged from the node's own syncState, which beats every height comparison", () => {
+    const r = nodeWord({ ...base, nodeSyncState: wedged });
+    expect(r.word).toBe("Wedged · 5,120 blocks deep on a dead branch");
+    expect(r.tone).toBe("bad");
+    expect(r.why).toMatch(/syncState/);
+    expect(r.why).toMatch(/held on a dead branch/);
+    expect(nodeWord({ ...base, nodeSyncState: { ...wedged, forkDepth: null } }).word).toBe("Wedged · on a dead branch");
+    // A synced or catching-up syncState changes nothing by itself; an absent one (older node) neither.
+    expect(w({ nodeSyncState: { state: "synced", reason: null, forkDepth: null, appliedHeight: 510_030, highestSeen: 510_032 } })).toBe("Synced");
+    expect(w({ nodeSyncState: null })).toBe("Synced");
+    // The node's own highest-seen height is a view too: it says the network is ahead.
+    expect(w({ nodeSyncState: { state: "catching_up", reason: "behind", forkDepth: null, appliedHeight: 510_030, highestSeen: 520_030 } })).toBe("Syncing · 10,000 blocks behind");
+    // Still a refused start or an unset network wins (the node is not ours to read then).
+    expect(w({ nodeSyncState: wedged, compat: "unset" })).toBe("Update required");
   });
 });
 

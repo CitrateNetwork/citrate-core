@@ -30,6 +30,24 @@ describe("network profile (K6)", () => {
     expect(missing.every((m) => m.reason !== "not recorded" && m.reason.length > 0)).toBe(true);
   });
 
+  it("r1007 (0.5.3) is known and not ready until the genesis cut; a retired profile is refused", () => {
+    const r1007 = PROFILES.find((p) => p.id === "r1007");
+    expect(r1007).toBeDefined();
+    expect(isReady(r1007!)).toBe(false);
+    expect(gateGenesis(r1007!)).toBeNull();
+    expect(missingValues(r1007!).map((m) => m.field)).toEqual(["genesisHash", "genesisProfile", "bootnodes", "addressBookSha256", "minChainRev"]);
+    expect(r1007!.memberPruneRetain).toBe(10_000);
+    expect(ACTIVE_PROFILE_ID).not.toBe("r1007");
+    // The Rust rule: retired is refused even with every value set; an empty reason is malformed.
+    const retired: NetworkProfile = { ...ACTIVE_PROFILE!, retired: "replaced by r1007" };
+    expect(isReady(retired)).toBe(false);
+    expect(profileProblems(retired)).toEqual([expect.stringMatching(/retired.*replaced by r1007/)]);
+    expect(gateGenesis(retired)).toBeNull();
+    expect(profileProblems({ ...ACTIVE_PROFILE!, retired: " " })).toContain("retired is not a reason");
+    expect(profileProblems({ ...ACTIVE_PROFILE!, memberPruneRetain: 9_999 })).toContain("memberPruneRetain is below the 10,000-block undo window");
+    expect(isReady({ ...ACTIVE_PROFILE!, memberPruneRetain: 10_000 })).toBe(true);
+  });
+
   it("a zero or malformed genesis counts as not set", () => {
     const base = { ...ACTIVE_PROFILE! };
     expect(expectedGenesis({ ...base, genesisHash: "0x" + "0".repeat(64) })).toBeNull();
