@@ -10,6 +10,15 @@ file ipfs/pins.json sha256:1fb679ccef07923835c31ac137043dd151a5d8faacd3545da06bd
 file models/gemma-4-E4B-it-Q4_0.gguf sha256:46a909ba9bd4f9d8d2cca42f76e7c07f7257fadf01dcfadb0584bba68d1d1ae9
 file models/gemma-4-E4B-it-Q4_0.gguf.status.json sha256:348f299cf43d57826c76c5ef7c8ccc37668b45161b857d4ef09f7125f3381be9
 file node/chain-genesis present
+file node/chain.alpha-r1005.bak/000623.log sha256:0b2674e4b0914a1153e8a05a242c666d1fc1d4803207b4358d45911ccce2e45c
+file node/chain.alpha-r1005.bak/000624.sst sha256:25b49ed0317a78adfed849b03e14ccfed6ed7046696f27028c58c55be9b94b67
+file node/chain.alpha-r1005.bak/CURRENT sha256:8d86f0879813fe8e95d8a59d4939e216beac5d4ec27ccf3eeca4a88251823bab
+file node/chain.alpha-r1005.bak/IDENTITY sha256:7caf9ae92f85006fb1af5c1443b27c394207c066b5d0fcaa0d40d4388694df61
+file node/chain.alpha-r1005.bak/LOCK sha256:4a0098bdf898ec9ed44e3d5052d433e222edad6d456722f68968ea1672a9ef2e
+file node/chain.alpha-r1005.bak/LOG sha256:5a7a07279c4b77953a373e76b3536339c0a740f718f7f5867d9ba2ee26292f2a
+file node/chain.alpha-r1005.bak/LOG.old.1792300000000000 sha256:73a9b1fd14c45f8959c3270756bab9db0701ec1efad319e286fdfd525cb9bfc6
+file node/chain.alpha-r1005.bak/MANIFEST-000005 sha256:ac6a9077d1c5046a899e542cbdef3a45ab03efad641b572c8cfb3bc591216c27
+file node/chain.alpha-r1005.bak/OPTIONS-000007 sha256:fe96f4dc3c310e857e203b87d7717cd7b7f944d2cc42a85b5232ff85f2d20838
 file node/crash-records.jsonl sha256:5d79ee38a9cd65ecceb295f58b72a68544174a36f035f115c473eee4ecf3fc51
 file node/encryption.meta sha256:8789454e2a03af108a524be8022b5313260cde7646f2e57913d7276524d031c0
 file node/node.toml present
