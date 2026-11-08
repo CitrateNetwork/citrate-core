@@ -10,11 +10,18 @@
 //   - public head: eth_blockNumber on the profile's RPC (wagmi useBlockNumber);
 //   - genesis check: block 0 of the public chain against the active network profile
 //     (networkCompat.ts, K6).
-// `eth_syncing` is not read by any command yet, so "Synced" uses the contract's "within 5 blocks of
-// a public RPC head read in the last 60 s" half and says so in its reason. A public head that is
-// missing, 0x0, errored or older than 60 s is "Sync unknown · network head unavailable" (contract
-// v1.1 §1), never Synced or Syncing. Unknown is never zero: a local height of 0 means "RPC not
-// answering yet" (the call returns 0x0 on error), never block 0.
+//   - CORE-N4 (core#589): the node's own `citrate_nodeIdentity.syncState` and the head heights its
+//     peers announced (`net_peerInfo[].headHeight`), both from `node_status` (`s.nodeSyncState`,
+//     `s.peerTips`) and both feature-detected: a node without them (before r1007) gives null.
+// "Synced" means this node is within 5 blocks of EVERY network view this build has: the public
+// RPC head read in the last 60 s, the peers' quorum tip (the height a strict majority of at least
+// two reporting peers are at or above, so one peer far ahead or behind does not decide), and the
+// node's own highest-seen height. With no view it is "Sync unknown · network head unavailable"
+// (contract v1.1 §1), never Synced or Syncing. A node more than 5 blocks AHEAD of the views is
+// "Sync unknown · this node is ahead of the network head" (core#589: a local chain the network
+// does not have). A node that reports `syncState: wedged` reads "Wedged", whatever its height.
+// Unknown is never zero: a local height of 0 means "RPC not answering yet" (the call returns 0x0
+// on error), never block 0.
 // =====================================================================
 import type { AppState } from "../../shell/state";
 import { UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, validatorDash, validatorWord } from "../../shell/chainTruth";
@@ -28,6 +35,31 @@ export const NO_PEERS_AFTER_MS = 60_000;
 export const FRESH_MS = 60_000;
 /** The contract v1.1 §1 word for a node whose sync can't be checked against the network. */
 export const SYNC_UNKNOWN = "Sync unknown · network head unavailable";
+/** core#589: a node more than SYNCED_WITHIN_BLOCKS ahead of every network view. */
+export const SYNC_AHEAD = "Sync unknown · this node is ahead of the network head";
+/** The fewest peers whose announced heights form a view of the network (one peer is not a quorum). */
+export const QUORUM_MIN_PEERS = 2;
+
+/** `citrate_nodeIdentity.syncState` as node_status passes it (sync_truth.rs `NodeSyncState`). */
+export interface NodeSyncStateView {
+  state: string;
+  reason: string | null;
+  forkDepth: number | null;
+  appliedHeight: number | null;
+  highestSeen: number | null;
+}
+
+/**
+ * The peers' view of the network tip: the highest height a strict majority of the reporting peers
+ * are at or above, or null with fewer than QUORUM_MIN_PEERS reports. Sorted high to low, that is
+ * the entry at index floor(n / 2).
+ */
+export function quorumTip(tips: readonly number[]): number | null {
+  const ok = tips.filter((t) => Number.isSafeInteger(t) && t > 0);
+  if (ok.length < QUORUM_MIN_PEERS) return null;
+  const sorted = [...ok].sort((a, b) => b - a);
+  return sorted[Math.floor(sorted.length / 2)];
+}
 
 export type NodeTone = "off" | "busy" | "ok" | "warn" | "bad";
 
@@ -52,6 +84,10 @@ export interface NodeWordInput {
   peersZeroForMs: number;
   /** How long the local height has been unchanged while the node answers RPC (ms). */
   localStillForMs: number;
+  /** CORE-N4: `node_status.syncState` (citrate_nodeIdentity); null/absent = the node has none. */
+  nodeSyncState?: NodeSyncStateView | null;
+  /** CORE-N4: `node_status.peerTips` (net_peerInfo head heights); null/absent = not exposed. */
+  peerTips?: number[] | null;
 }
 
 export interface NodeWord {
@@ -98,6 +134,18 @@ export function nodeWord(i: NodeWordInput): NodeWord {
   if (i.node === "prov" || i.localHeight <= 0) {
     return { word: "Starting", why: "The process started but its RPC isn't answering yet.", tone: "busy", running: true };
   }
+  if (i.nodeSyncState?.state === "wedged") {
+    const d = i.nodeSyncState.forkDepth;
+    return {
+      word: d != null && d > 0 ? `Wedged · ${fmt(d)} blocks deep on a dead branch` : "Wedged · on a dead branch",
+      why:
+        "The node reports syncState wedged (citrate_nodeIdentity): its applied tip is held on a branch the network does not continue, so it stops serving and producing on it" +
+        (i.nodeSyncState.reason ? ` (${i.nodeSyncState.reason}).` : ".") +
+        " A node built with the guarded cold resync moves that chain data aside and syncs again by itself.",
+      tone: "bad",
+      running: true,
+    };
+  }
   if (i.node === "stalled" || (i.peers > 0 && i.localStillForMs >= FRESH_MS)) {
     return {
       word: "Sync stalled",
@@ -114,19 +162,37 @@ export function nodeWord(i: NodeWordInput): NodeWord {
       running: true,
     };
   }
-  if (!headFresh(i) || i.publicHead == null) {
+  // The network views this build has (CORE-N4), each named for the reason line.
+  const views: { label: string; tip: number }[] = [];
+  if (headFresh(i) && i.publicHead != null) views.push({ label: "the public RPC head read in the last 60 s", tip: i.publicHead });
+  const reporting = (i.peerTips ?? []).filter((t) => Number.isSafeInteger(t) && t > 0).length;
+  const peerTip = quorumTip(i.peerTips ?? []);
+  if (peerTip != null) views.push({ label: `the height a majority of ${reporting} peers announced`, tip: peerTip });
+  const seen = i.nodeSyncState?.highestSeen;
+  if (seen != null && seen > 0) views.push({ label: "the highest network height this node has seen", tip: seen });
+  if (views.length === 0) {
     return {
       word: SYNC_UNKNOWN,
-      why: "The public RPC head couldn't be read in the last 60 s (error, timeout, 0x0 or not read yet), so this node's height can't be checked against the network.",
+      why: "The public RPC head couldn't be read in the last 60 s (error, timeout, 0x0 or not read yet) and no quorum of peers announced a height, so this node's height can't be checked against the network.",
       tone: "busy",
       running: true,
     };
   }
-  const behind = i.publicHead - i.localHeight;
+  const top = Math.max(...views.map((v) => v.tip));
+  const named = views.map((v) => v.label).join(", ");
+  if (i.localHeight - top > SYNCED_WITHIN_BLOCKS) {
+    return {
+      word: SYNC_AHEAD,
+      why: `This node's height is ${fmt(i.localHeight - top)} blocks above every network view (${named}), so it may be on a chain the network does not have; it is not counted as synced.`,
+      tone: "warn",
+      running: true,
+    };
+  }
+  const behind = top - i.localHeight;
   if (behind <= SYNCED_WITHIN_BLOCKS) {
     return {
       word: "Synced",
-      why: `This node's height is within ${SYNCED_WITHIN_BLOCKS} blocks of a public RPC head read in the last 60 s. eth_syncing is not read by this build yet.`,
+      why: `This node's height is within ${SYNCED_WITHIN_BLOCKS} blocks of every network view this build has: ${named}.`,
       tone: "ok",
       running: true,
     };

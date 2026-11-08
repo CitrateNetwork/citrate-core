@@ -210,7 +210,7 @@ describe("fill-network-profile.sh", SLOW, () => {
     ["a 41-hex chain rev", { rev: REV + "a" }, /--min-chain-rev must be a full 40-hex commit/],
     ["a 39-hex chain rev", { rev: REV.slice(1) }, /--min-chain-rev must be a full 40-hex commit/],
     ["r1005's genesis hash for r1006", { genesis: "SHIPPED_R1005" }, /is already the genesis of profile alpha-r1005/],
-    ["an unknown profile", { profile: "r1007" }, /no profile 'r1007'/],
+    ["an unknown profile", { profile: "r9999" }, /no profile 'r9999'/],
     ["a profile with other values unset (genesis-2026-12)", { profile: "genesis-2026-12" }, /also has .* unset/],
   ];
   for (const [what, over, msg] of refusals) {
@@ -292,7 +292,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
   it("positive control: the shipped profiles pass the release check, r1006 required (G0)", () => {
     const r = run(check, ["--release", "--require-active", "r1006"]);
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toMatch(/OK \(active r1006, release; not set \(inactive\): genesis-2026-12\)/);
+    expect(r.out).toMatch(/OK \(active r1006, release; not set \(inactive\): r1007, genesis-2026-12\)/);
   });
 
   it("negative control: the shipped file with the unfilled r1006 active fails the release check", () => {

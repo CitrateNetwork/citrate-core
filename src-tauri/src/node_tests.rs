@@ -746,6 +746,8 @@ fn live_bounded_sync_proof() {
         blocked: None,
         mining_armed: false,
         mining_hold: None,
+        sync_state: None,
+        peer_tips: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();
@@ -1010,8 +1012,16 @@ fn start_resets_old_genesis_chain_db_and_keeps_keys() {
     mgr.start().expect("stub node starts after the reset");
     mgr.stop();
 
+    // CORE-N3 (0.5.3): the old chain leaves the data dir and is kept, byte for byte, in the
+    // backup named for its genesis (not a known profile here, so its first 10 characters).
+    let backup = data.join("chain.0x0f2b567f.bak");
     for f in ["CURRENT", "MANIFEST-000624", "000013.sst", "000623.log"] {
-        assert!(!data.join(f).exists(), "{f} must be deleted");
+        assert!(!data.join(f).exists(), "{f} must leave the data dir");
+        assert_eq!(
+            std::fs::read(backup.join(f)).unwrap(),
+            b"old chain",
+            "{f} is kept in the backup"
+        );
     }
     assert_eq!(
         std::fs::read(data.join(crate::validator::PROPOSER_KEY_FILE)).unwrap(),
@@ -1022,10 +1032,19 @@ fn start_resets_old_genesis_chain_db_and_keeps_keys() {
         crate::node_genesis::read_marker(&data).unwrap().as_deref(),
         Some(REROLL_NEW_GENESIS)
     );
+    // The notice is the reset notice, naming where the old chain data is.
     assert_eq!(
-        mgr.status().notice.as_deref(),
-        Some(crate::node_genesis::CHAIN_RESET_NOTICE)
+        mgr.status().notice,
+        Some(crate::node_genesis::reset_notice_with(
+            None,
+            Some(backup.as_path())
+        ))
     );
+    assert!(mgr
+        .status()
+        .notice
+        .unwrap_or_default()
+        .starts_with(crate::node_genesis::CHAIN_RESET_NOTICE));
 }
 
 /// A zero or unparsable book genesis refuses the start: no spawn, data untouched.

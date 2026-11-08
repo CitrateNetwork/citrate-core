@@ -118,6 +118,10 @@ mod node_holder;
 // CORE-D2: a wedged-but-running node is restarted after a sustained stall (never in initial sync).
 mod node_liveness;
 mod node_withdrawn;
+// CORE-N3 follow-up: list and remove the previous network's set-aside chain data.
+mod chain_backup;
+// CORE-N4: the node's own syncState and its peers' tips (local RPC, feature-detected).
+mod sync_truth;
 // C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
 mod broadcast_outcome;
 pub(crate) mod provider_anthropic;
@@ -236,6 +240,15 @@ mod upgrade_v051_tests;
 // RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
 #[cfg(test)]
 mod upgrade_xgenesis_tests;
+// CORE-N4: the node's own syncState and its peers' tips, read from its local RPC.
+#[cfg(test)]
+mod sync_truth_tests;
+// CORE-N3 follow-up: Remove old network data (chain.<profile>.bak).
+#[cfg(test)]
+mod chain_backup_tests;
+// CORE-N3: a 0.5.2 install on r1006 started by this build on r1007 (chain data set aside).
+#[cfg(test)]
+mod upgrade_r1007_tests;
 // D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
 #[cfg(test)]
 mod lsp_retired_tests;
@@ -938,6 +951,9 @@ pub fn run() {
             // dropped in the GUI process). Honest empty when the node is off; no
             // fabricated template ever crosses this boundary (Rule 1).
             node::node_logs,
+            // CORE-N3 follow-up: Remove old network data (chain.<profile>.bak in the node dir).
+            node::node_old_network_data,
+            node::node_remove_old_network_data,
             // node-agent — the node-agent under the SidecarSupervisor (C1.2).
             // agent_status returns the supervisor state + whether a bearer
             // session exists (NEVER the token); agent_start spawns the daemon

@@ -553,3 +553,53 @@ describe("tripwire: the network lives in the K6 profile and the member config on
     expect(hits).toEqual([]);
   });
 });
+
+// CORE-N5/N6 (0.5.3, r1007): the clean-machine cold sync of a pruned member on r1007 also proves
+// the node is the build the cut pinned (its consensus fingerprint) and that it did not end wedged.
+// Several harness runs per case: a longer limit than the file's 60 s per-case default.
+describe("r1007 acceptance (CORE-N6)", { timeout: 240_000 }, () => {
+  const FP = "0x" + "7f".repeat(16);
+  const identity = (over = {}) => ({ consensusFingerprint: FP, chainId: "0x9d0c", genesisHash: GENESIS, ...over });
+
+  it("a profile with memberPruneRetain gets the pruned chain store the app writes (CORE-N5)", async () => {
+    const r = await run({ prof: profile({ memberPruneRetain: 10000 }) });
+    expect(r.v.verdict, r.stderr).toBe("PASS");
+    const storage = r.rec.config.match(/\[storage\]([^[]*)/s)[1];
+    expect(storage).toMatch(/^pruning = true$/m);
+    expect(storage).toMatch(/^keep_blocks = 10000$/m);
+    // Without it, the template's full history.
+    const full = await run();
+    const s2 = full.rec.config.match(/\[storage\]([^[]*)/s)[1];
+    expect(s2).toMatch(/^pruning = false$/m);
+    expect(s2).toMatch(/^keep_blocks = 100000$/m);
+  });
+
+  it("refuses a member retention below the 10,000-block undo window", async () => {
+    const r = await run({ prof: profile({ memberPruneRetain: 9999 }) });
+    expect(r.code).toBe(2);
+    expect(r.v.rules[0]).toMatchObject({ rule: "profile", status: "FAIL" });
+    expect(r.v.rules[0].detail).toMatch(/memberPruneRetain/);
+  });
+
+  it("--expect-fingerprint: the node must report exactly that consensus fingerprint", async () => {
+    const ok = await run({ behaviour: { identity: identity() }, extra: ["--expect-fingerprint", FP] });
+    expect(ok.v.verdict, ok.stderr).toBe("PASS");
+    expect(status(ok.v, "fingerprint")).toBe("ok");
+    const other = await run({ behaviour: { identity: identity({ consensusFingerprint: "0x" + "01".repeat(16) }) }, extra: ["--expect-fingerprint", FP] });
+    expect(failed(other.v)).toEqual(["fingerprint"]);
+    const none = await run({ extra: ["--expect-fingerprint", FP] });
+    expect(failed(none.v)).toEqual(["fingerprint"]);
+    expect(none.v.rules.find((x) => x.rule === "fingerprint").detail).toMatch(/not report/);
+    // Not asked: skipped, never a pass.
+    expect(status((await run()).v, "fingerprint")).toBe("skip");
+  });
+
+  it("a node that reports syncState wedged fails; a node without syncState skips the rule", async () => {
+    const wedged = await run({ behaviour: { identity: identity({ syncState: { state: "wedged", reason: "dead branch", forkDepth: 40 } }) } });
+    expect(failed(wedged.v)).toEqual(["not_wedged"]);
+    const synced = await run({ behaviour: { identity: identity({ syncState: { state: "synced", reason: null, forkDepth: null } }) } });
+    expect(synced.v.verdict, synced.stderr).toBe("PASS");
+    expect(status(synced.v, "not_wedged")).toBe("ok");
+    expect(status((await run()).v, "not_wedged")).toBe("skip");
+  });
+});

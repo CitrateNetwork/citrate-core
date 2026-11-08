@@ -66,7 +66,16 @@ FIELDS = [
     "addressBookSha256",
     "minChainRev",
 ]
-KNOWN = set(FIELDS) | {"label", "pending"}
+# Optional keys (absent = not set): `memberPruneRetain` (CORE-N5, blocks a member keeps, at least
+# MIN_MEMBER_PRUNE_RETAIN) and `retired` (CORE-N2, why the network is retired; refused like unset).
+OPTIONAL = ["memberPruneRetain", "retired"]
+KNOWN = set(FIELDS) | {"label", "pending"} | set(OPTIONAL)
+# The undo window (ADR CV-7a): network_profile.rs MIN_MEMBER_PRUNE_RETAIN.
+MIN_MEMBER_PRUNE_RETAIN = 10_000
+# The r1007 cut file (CORE-N1): when its profile is the active one, a release also needs the cut
+# complete and applied (scripts/network-cut.py check --release).
+CUT = REPO / "release" / "network-cut.json"
+CUT_PY = REPO / "scripts" / "network-cut.py"
 # What a reroll produces; the only values `fill` writes.
 FILLED = ["genesisHash", "addressBookSha256", "minChainRev"]
 
@@ -126,6 +135,18 @@ def load(path: Path) -> dict:
         if absent:
             raise Refused(f"profile {pid} lacks {absent} (an unset value is null, not absent)")
     return data
+
+
+def optional_problems(p: dict) -> list:
+    """The optional keys, where present and set: the same rule as network_profile.rs ready()."""
+    out = []
+    n = p.get("memberPruneRetain")
+    if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < MIN_MEMBER_PRUNE_RETAIN):
+        out.append(f"memberPruneRetain {n!r} is below the {MIN_MEMBER_PRUNE_RETAIN}-block undo window (ADR CV-7a)")
+    r = p.get("retired")
+    if r is not None and not (isinstance(r, str) and r.strip()):
+        out.append("retired is not a reason")
+    return out
 
 
 def unset(p: dict) -> list:
@@ -296,6 +317,14 @@ def embedded_book_problems(book_path: Path, p: dict) -> list:
     return []
 
 
+def cut_profile():
+    """The profile the cut file (release/network-cut.json) targets, or None without one."""
+    try:
+        return json.loads(CUT.read_text()).get("profile")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def write_atomic(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     mode = path.stat().st_mode & 0o777
@@ -380,18 +409,26 @@ def cmd_check(a) -> None:
     node = data["nodeGenesisProfiles"]
     for pid, p in data["profiles"].items():
         errors += [f"profile {pid}: {e}" for e in set_problems(p, node)]
+        errors += [f"profile {pid}: {e}" for e in optional_problems(p)]
         errors += [f"profile {pid}: {e}" for e in genesis_binding(p, node)]
         errors += pending_problems(pid, p)
     active = data["active"]
     if active not in data["profiles"]:
         errors.append(f"active profile {active!r} does not exist")
+    elif data["profiles"][active].get("retired") is not None:
+        # CORE-N2: never the target of a build, release or not.
+        errors.append(f"active profile {active} is retired ({data['profiles'][active]['retired']}); "
+                      "a build may not target a retired network")
     elif a.release:
         p = data["profiles"][active]
         miss = unset(p)
+        cut = cut_profile()
         if miss:
+            how = ("the r1007 cut: fill release/network-cut.json, then scripts/network-cut.py apply"
+                   if cut == active else "scripts/fill-network-profile.sh")
             errors.append(
                 f"active profile {active} has unset values {miss}; a release build must not ship "
-                "a profile that refuses to sign (fill it: scripts/fill-network-profile.sh)"
+                f"a profile that refuses to sign (fill it: {how})"
             )
         else:
             errors += [f"active profile {active}: {e}" for e in problems(p, node)]
@@ -423,6 +460,12 @@ def cmd_check(a) -> None:
                     raise Refused(f"{a.canonical_book} cannot be read: {e}")
                 if d != p["addressBookSha256"]:
                     errors.append(f"{a.canonical_book} sha256 {d} != profile addressBookSha256 {p['addressBookSha256']}")
+        # CORE-N1: the cut file that targets the active profile must be complete and applied.
+        if cut == active and Path(a.profiles).resolve() == PROFILES.resolve():
+            r = subprocess.run([sys.executable, "-I", str(CUT_PY), "check", "--release", "--cut-only"],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                errors += [f"network-cut: {l}" for l in (r.stderr or r.stdout).strip().splitlines()]
     if a.require_active and active != a.require_active:
         errors.append(f"active profile is {active!r}, required {a.require_active!r}")
     if errors:

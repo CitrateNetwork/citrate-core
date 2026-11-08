@@ -7,8 +7,8 @@
 //! real), so it goes through the same `ready()` checks as a release profile.
 //!
 //! What must hold (UPGRADE_051_052 §2, K6_NETWORK_SWITCH §3.3, core#363 M1-M4):
-//! - the r1005 chain database leaves the node dir (deleted today; archived once D-K6-1 is
-//!   decided), the previous `node.toml` is set aside byte for byte, a new one is written from the
+//! - the r1005 chain database leaves the node dir and is set aside in `chain.alpha-r1005.bak`
+//!   (CORE-N3; deleted before 0.5.3), the previous `node.toml` is set aside byte for byte, a new one is written from the
 //!   profile, and the marker names the new genesis with the committing migration's nonce;
 //! - the wallet vault, keychain slots, invites, pins, Store/models, daemons, Hermes settings and
 //!   node keys are byte-identical afterwards, and the submitted-tx record reads as uncertain;
@@ -42,7 +42,7 @@ const NEW_MIN_CHAIN_REV: &str = "2026120100000000000000000000000000000c52";
 /// Where a switch from r1005 sets the previous `node.toml` aside (first 10 characters).
 const ASIDE: &str = "node.toml.0x1dcfc490";
 
-fn fixture_root() -> PathBuf {
+pub(crate) fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/upgrade-v0.5.1")
 }
 
@@ -51,7 +51,7 @@ fn golden_path() -> PathBuf {
 }
 
 /// A scratch root for one test: `app/` is the app data dir, `rt/` the key runtime dir.
-fn scratch(tag: &str) -> PathBuf {
+pub(crate) fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "citrate-upgrade-xgenesis-{tag}-{}",
         std::process::id()
@@ -71,9 +71,9 @@ fn install_v051_on_r1005(root: &Path) -> PathBuf {
 }
 
 #[derive(Clone, Default)]
-struct MapKeyring(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+pub(crate) struct MapKeyring(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
 impl MapKeyring {
-    fn from_fixture(name: &str) -> Self {
+    pub(crate) fn from_fixture(name: &str) -> Self {
         let m: serde_json::Value = serde_json::from_slice(&read(&fixture_root().join(name)))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let kr = MapKeyring::default();
@@ -90,7 +90,7 @@ impl MapKeyring {
         }
         kr
     }
-    fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
+    pub(crate) fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
@@ -149,7 +149,7 @@ fn new_network() -> crate::network_profile::ReadyNetwork {
 /// The node manager the app builds for this install (node.rs `build_node_state`), except that
 /// the binary is a file that is not executable: the start runs every step up to the spawn, and no
 /// process ever writes into the dir under test.
-fn manager(
+pub(crate) fn manager(
     root: &Path,
     app: &Path,
     node_keyring: &MapKeyring,
@@ -175,7 +175,7 @@ fn manager(
 /// Start for the new network, then stop. The migration runs before the spawn; the "binary"
 /// cannot be executed, so the supervisor never runs a process in the dir (it may report the
 /// spawn failure at once or retry it until the stop).
-fn start_for_new_network(mgr: &crate::node::NodeManager) {
+pub(crate) fn start_for_new_network(mgr: &crate::node::NodeManager) {
     match mgr.start() {
         Ok(()) | Err(crate::node::NodeError::Spawn(_)) => {}
         other => panic!("expected the migration to complete before the spawn: {other:?}"),
@@ -183,7 +183,29 @@ fn start_for_new_network(mgr: &crate::node::NodeManager) {
     mgr.stop();
 }
 
-fn names(dir: &Path) -> Vec<String> {
+/// Every file under `dir`, recursively, as (path relative to `dir`, bytes), sorted.
+pub(crate) fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for n in names(dir) {
+            let p = dir.join(&n);
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p
+                    .strip_prefix(base)
+                    .unwrap_or_else(|e| panic!("{e}"))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, read(&p)));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+pub(crate) fn names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
         .flatten()
@@ -278,7 +300,8 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
     assert!(mgr.status().notice.is_none(), "no notice before the switch");
     start_for_new_network(&mgr);
 
-    // Chain database: every r1005 RocksDB file is gone (D-K6-1 open: deleted, not archived).
+    // Chain database: every r1005 RocksDB file leaves the node dir and is kept, byte for byte, in
+    // chain.alpha-r1005.bak (CORE-N3, 0.5.3: set aside, never deleted).
     let db: Vec<String> = names(&fixture_root().join("node-r1005"))
         .into_iter()
         .filter(|n| crate::node_genesis::is_chain_db_entry(n))
@@ -287,7 +310,12 @@ fn a_v051_install_on_r1005_switches_to_the_new_genesis_and_keeps_everything_else
     for f in &db {
         assert!(
             !node.join(f).exists(),
-            "r1005 chain file {f} must not survive"
+            "r1005 chain file {f} must not stay in the node dir"
+        );
+        assert_eq!(
+            read(&node.join("chain.alpha-r1005.bak").join(f)),
+            read(&fixture_root().join("node-r1005").join(f)),
+            "r1005 chain file {f} is kept in chain.alpha-r1005.bak"
         );
     }
     // M1/M2: the marker is the commit, carrying the migration nonce; the intent is cleaned up.
@@ -508,13 +536,14 @@ fn the_launch_after_a_completed_switch_keeps_the_dir_and_reports_nothing() {
         "the first launch switched"
     );
     assert!(node.join(ASIDE).exists());
-    let before: Vec<(String, Vec<u8>)> = names(&node)
-        .into_iter()
-        .map(|n| {
-            let b = read(&node.join(&n));
-            (n, b)
-        })
-        .collect();
+    // The node dir, recursively: the chain backup (CORE-N3) is a directory in it.
+    let before = tree(&node);
+    assert!(
+        before
+            .iter()
+            .any(|(n, _)| n.starts_with("chain.alpha-r1005.bak/")),
+        "the backup is part of what must not change"
+    );
 
     let again = manager(&root, &app, &node_kr, Ok(new_network()));
     start_for_new_network(&again);
@@ -522,13 +551,7 @@ fn the_launch_after_a_completed_switch_keeps_the_dir_and_reports_nothing() {
         again.status().notice.is_none(),
         "a kept dir is not reported again"
     );
-    let after: Vec<(String, Vec<u8>)> = names(&node)
-        .into_iter()
-        .map(|n| {
-            let b = read(&node.join(&n));
-            (n, b)
-        })
-        .collect();
+    let after = tree(&node);
     assert_eq!(after, before, "nothing in the switched node dir changes");
     let _ = std::fs::remove_dir_all(&root);
 }

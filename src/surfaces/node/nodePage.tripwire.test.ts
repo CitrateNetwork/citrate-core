@@ -98,7 +98,8 @@ describe("tripwire — Rule 7: every Node page figure names its source", () => {
       expect(body, f).not.toMatch(/\bs\.(blocksProposed|claimable|liquid|syncPct|cpu|ram|peerRows|crashes|earnSource)\b/);
     }
     const bridgeCalls = PAGE_FILES.flatMap((f) => [...read(f).matchAll(/bridge\.(\w+\.\w+)\(/g)].map((m) => m[1]));
-    expect([...new Set(bridgeCalls)].sort()).toEqual(["node.lastCrash", "node.status"]);
+    // CORE-N3 follow-up: the old-network-data list and its one remove (the node data dir, chain_backup.rs).
+    expect([...new Set(bridgeCalls)].sort()).toEqual(["node.lastCrash", "node.oldNetworkData", "node.removeOldNetworkData", "node.status"]);
   });
 });
 

@@ -1,0 +1,31 @@
+{
+  "_comment": "The r1007 network cut (0.5.3, CORE-N1/N2): the ONE file holding every value the r1007 genesis produces that this build pins. A value not known yet is null, with what sets it in `pending`; it is never a placeholder. `scripts/network-cut.py check` (CI) keeps this file well formed; `scripts/network-cut.py apply` refuses while anything is pending, and once every value is set writes them to src-tauri/network/profiles.json (the r1007 profile, its nodeGenesisProfiles entry, `active`, `retired` on the profiles in `retire`), scripts/build-sidecar.sh (MIN_CHAIN_REV), release/components.json (the citrate-node rev and its three per-target pins), src-tauri/runtime-deps.sha256 (the macOS node pin and each node build's PROVENANCE record, a runtime-deps asset next to its bytes) and src-tauri/Cargo.toml + kit/Cargo.toml (the app's citrate-chain crate revs). `check --release` (run by scripts/check-network-profile.sh --release while r1007 is active) fails until the cut is complete and applied. Runbook: docs/release/053-NETWORK.md.",
+  "profile": "r1007",
+  "retire": {
+    "r1006": "replaced by r1007 in 0.5.3; a 0.5.2 node data dir on r1006 is set aside as chain.r1006.bak"
+  },
+  "genesisHash": null,
+  "genesisProfile": null,
+  "compiledActivations": null,
+  "bootnodes": null,
+  "addressBookSha256": null,
+  "chainRev": null,
+  "consensusFingerprint": null,
+  "node": {
+    "aarch64-apple-darwin": null,
+    "x86_64-unknown-linux-gnu": null,
+    "aarch64-unknown-linux-gnu": null
+  },
+  "pending": {
+    "genesisHash": "block 0 of the r1007 genesis commit, read from the first producer after S4-1 (planset 05 S4-1) and agreed by every fleet node",
+    "genesisProfile": "the [chain] genesis_profile name the r1007 node compiles for that block 0 (citrate-chain node/src/genesis.rs at chainRev)",
+    "compiledActivations": "whether the r1007 genesis compiles its ValidatorRegistry and activation height (citrate-chain genesis::resolve_validator_registry at chainRev); true means the app passes no CITRATE_VALIDATOR_* override",
+    "bootnodes": "the Noise static keys of boot1.citrate.ai, boot2.citrate.ai, boot3.citrate.ai and rpc.citrate.ai on the r1007 fleet (S4-2), each @<host>:30303",
+    "addressBookSha256": "sha256 of the canonical address book exported after the r1007 genesis contract deploy (S4-3), the file scripts/sync-addresses.py keeps as src-tauri/addresses/40204.canonical.json",
+    "chainRev": "the citrate-chain r1007 genesis commit (40 hex), tagged and signed at S4-1; becomes MIN_CHAIN_REV, the citrate-node source rev and the app's citrate-chain crate rev, and must be on public citrate-chain for the app's git dependencies",
+    "consensusFingerprint": "`citrate --config <the rendered r1007 node.toml> consensus --json` fingerprint of the node built at chainRev (0x + 32 hex); the cold-sync acceptance (N6) checks the running node reports it in citrate_nodeIdentity",
+    "node.aarch64-apple-darwin": "the release Mac: scripts/build-sidecar.sh --print-digest at chainRev, uploaded to the runtime-deps prerelease as citrate-aarch64-apple-darwin-<chainRev 12>; {runtime_deps_asset, sha256, evidence, provenance: {asset: citrate-aarch64-apple-darwin-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes",
+    "node.x86_64-unknown-linux-gnu": "citrate-core-linux-build: the fixed-asset recipe in docs/RELEASE_LINUX.md at chainRev (reproducible per core#586 once merged); {sha256, evidence, provenance: {asset: citrate-x86_64-unknown-linux-gnu-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes",
+    "node.aarch64-unknown-linux-gnu": "an aarch64 Linux builder (an open owner question: the DGX is sold; this is a documented input of the cut): the fixed-asset recipe in docs/RELEASE_LINUX.md at chainRev; {sha256, evidence, provenance: {asset: citrate-aarch64-unknown-linux-gnu-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes"
+  }
+}
