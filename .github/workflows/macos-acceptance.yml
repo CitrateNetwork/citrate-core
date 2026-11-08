@@ -43,7 +43,7 @@ concurrency:
 jobs:
   self-test:
     name: harness self-test (stand-in app)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -80,7 +80,7 @@ jobs:
     name: acceptance of a DMG (${{ inputs.mode }})
     if: github.event_name == 'workflow_dispatch' && inputs.dmg_url != ''
     needs: self-test
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
