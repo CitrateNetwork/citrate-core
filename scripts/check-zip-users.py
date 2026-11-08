@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail unless every crate that depends on a zip older than 9 is tauri-plugin-updater.
 
-RUSTSEC-2026-0367/0368/0369 are ignored in the CI audit step only because the updater's
+RUSTSEC-2026-0367/0368/0369/0429 are ignored in the CI audit step only because the updater's
 Windows-only zip unpacks nothing but signature-verified update payloads. Any other crate pulling
 an old zip would not be covered by that reasoning, so it must fail CI here.
 """
