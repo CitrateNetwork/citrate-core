@@ -49,8 +49,11 @@ fn install_v052_on_r1006(root: &Path) -> PathBuf {
     std::fs::remove_dir_all(app.join("node")).unwrap_or_else(|e| panic!("rm node: {e}"));
     copy_dir(&fixture_root().join("node-r1005"), &app.join("node"));
     for f in ["node.toml", "chain-genesis"] {
-        std::fs::copy(v052_fixture().join("node").join(f), app.join("node").join(f))
-            .unwrap_or_else(|e| panic!("{f}: {e}"));
+        std::fs::copy(
+            v052_fixture().join("node").join(f),
+            app.join("node").join(f),
+        )
+        .unwrap_or_else(|e| panic!("{f}: {e}"));
     }
     app
 }
@@ -115,7 +118,9 @@ fn a_v052_install_on_r1006_moves_to_r1007_with_its_chain_data_set_aside_and_noth
     let app_before = kept_app_files(&app);
     assert!(
         app_before.iter().any(|(r, _)| r == "ipfs/pins.json")
-            && app_before.iter().any(|(r, _)| r == "hermes/terminal-settings.json")
+            && app_before
+                .iter()
+                .any(|(r, _)| r == "hermes/terminal-settings.json")
             && app_before.iter().any(|(r, _)| r.starts_with("models/"))
             && app_before.iter().any(|(r, _)| r == "custody.enc"),
         "the fixture holds the wallet, pins, Store models and Hermes settings"
@@ -138,7 +143,10 @@ fn a_v052_install_on_r1006_moves_to_r1007_with_its_chain_data_set_aside_and_noth
         .collect();
     assert_eq!(db.len(), 9, "the fixture holds a full RocksDB file set");
     for f in &db {
-        assert!(!node.join(f).exists(), "r1006 chain file {f} left in the node dir");
+        assert!(
+            !node.join(f).exists(),
+            "r1006 chain file {f} left in the node dir"
+        );
         assert_eq!(
             read(&node.join(CHAIN_ASIDE).join(f)),
             read(&fixture_node.join(f)),
@@ -169,17 +177,34 @@ fn a_v052_install_on_r1006_moves_to_r1007_with_its_chain_data_set_aside_and_noth
         .clone()
         .unwrap_or_default()
     {
-        assert!(!toml.contains(b.as_str()), "r1006 bootnode {b} left in node.toml");
+        assert!(
+            !toml.contains(b.as_str()),
+            "r1006 bootnode {b} left in node.toml"
+        );
     }
     let t: toml::Table = toml.parse().unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(t["storage"]["pruning"].as_bool(), Some(true), "CORE-N5");
     assert_eq!(t["storage"]["keep_blocks"].as_integer(), Some(10_000));
     // Node keys kept.
-    for f in ["proposer.key", "noise.key", "peer.id", "encryption.meta", "crash-records.jsonl"] {
-        assert_eq!(read(&node.join(f)), read(&fixture_node.join(f)), "{f} is kept");
+    for f in [
+        "proposer.key",
+        "noise.key",
+        "peer.id",
+        "encryption.meta",
+        "crash-records.jsonl",
+    ] {
+        assert_eq!(
+            read(&node.join(f)),
+            read(&fixture_node.join(f)),
+            "{f} is kept"
+        );
     }
     // Everything outside the node dir is byte-identical; the keychain is unchanged.
-    assert_eq!(kept_app_files(&app), app_before, "wallet, pins, Store, Hermes, invites, daemons");
+    assert_eq!(
+        kept_app_files(&app),
+        app_before,
+        "wallet, pins, Store, Hermes, invites, daemons"
+    );
     assert_eq!(custody_kr.snapshot(), custody_before);
     assert_eq!(node_kr.snapshot(), node_key_before);
     let meta: serde_json::Value =
@@ -191,14 +216,20 @@ fn a_v052_install_on_r1006_moves_to_r1007_with_its_chain_data_set_aside_and_noth
         .unwrap_or_else(|e| panic!("the 0.5.2 vault must open after the switch: {e}"));
     let info = citrate_core_kit::wallet::address(&vault).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(Some(info.address.as_str()), meta["walletAddress"].as_str());
-    assert!(!crate::hermes_terminal::enabled(&app.join("hermes")), "Hermes setting kept");
+    assert!(
+        !crate::hermes_terminal::enabled(&app.join("hermes")),
+        "Hermes setting kept"
+    );
 
     // The member is told, with both places named.
     let notice = mgr
         .status()
         .notice
         .unwrap_or_else(|| panic!("the switch must be reported"));
-    assert!(notice.starts_with(crate::node_genesis::CHAIN_RESET_NOTICE), "{notice}");
+    assert!(
+        notice.starts_with(crate::node_genesis::CHAIN_RESET_NOTICE),
+        "{notice}"
+    );
     for p in [node.join(CONFIG_ASIDE), node.join(CHAIN_ASIDE)] {
         let p = p.to_string_lossy().to_string();
         assert!(notice.contains(&p), "the notice names {p}: {notice}");
@@ -223,7 +254,10 @@ fn while_r1007_is_not_set_the_r1006_install_is_not_touched() {
         })
         .collect();
     let mgr = manager(&root, &app, &node_kr, unset);
-    assert!(matches!(mgr.start(), Err(crate::node::NodeError::Network(_))));
+    assert!(matches!(
+        mgr.start(),
+        Err(crate::node::NodeError::Network(_))
+    ));
     let after: Vec<(String, Vec<u8>)> = names(&app.join("node"))
         .into_iter()
         .map(|n| {

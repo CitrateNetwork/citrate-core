@@ -27,10 +27,16 @@ fn sync_state_is_read_from_node_identity_when_the_node_has_it() {
     );
     let synced = json!({"syncState": {"state": "synced", "reason": null, "forkDepth": null,
         "appliedHeight": 12, "highestSeen": null}});
-    assert_eq!(parse_sync_state(&synced).map(|s| s.state), Some("synced".to_string()));
+    assert_eq!(
+        parse_sync_state(&synced).map(|s| s.state),
+        Some("synced".to_string())
+    );
     let catching = json!({"syncState": {"state": "catching_up", "reason": "x", "forkDepth": null,
         "appliedHeight": 12, "highestSeen": 99}});
-    assert_eq!(parse_sync_state(&catching).and_then(|s| s.highest_seen), Some(99));
+    assert_eq!(
+        parse_sync_state(&catching).and_then(|s| s.highest_seen),
+        Some(99)
+    );
 }
 
 #[test]
@@ -39,7 +45,10 @@ fn a_node_without_sync_state_or_with_an_unknown_one_is_not_read() {
     assert_eq!(parse_sync_state(&json!({"chainId": "0x9d0c"})), None);
     assert_eq!(parse_sync_state(&json!(null)), None);
     assert_eq!(parse_sync_state(&json!({"syncState": "wedged"})), None);
-    assert_eq!(parse_sync_state(&json!({"syncState": {"state": "maybe"}})), None);
+    assert_eq!(
+        parse_sync_state(&json!({"syncState": {"state": "maybe"}})),
+        None
+    );
     assert_eq!(parse_sync_state(&json!({"syncState": {"state": 3}})), None);
 }
 
@@ -73,7 +82,10 @@ fn a_wedged_node_never_reports_sync_progress_as_caught_up() {
     assert_eq!(sync_progress_for(100, Some(100), Some(&wedged)), -1.0);
     // Otherwise the height rule as before.
     assert_eq!(sync_progress_for(100, Some(100), None), 100.0);
-    let synced = NodeSyncState { state: "synced".into(), ..wedged.clone() };
+    let synced = NodeSyncState {
+        state: "synced".into(),
+        ..wedged.clone()
+    };
     assert_eq!(sync_progress_for(100, Some(100), Some(&synced)), 100.0);
     assert_eq!(sync_progress_for(100, None, None), -1.0);
 }

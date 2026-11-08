@@ -453,9 +453,7 @@ pub(crate) fn set_aside_chain_db(
     // the last move), so every crash point is reachable whatever an earlier attempt moved.
     #[cfg(test)]
     if stop_at.is_some() {
-        return Err(GenesisGateError::Io(
-            "injected stop mid-move (test)".into(),
-        ));
+        return Err(GenesisGateError::Io("injected stop mid-move (test)".into()));
     }
     #[cfg(test)]
     if let Some(name) = test_hooks::APPEAR_AFTER_WIPE.with(|n| n.take()) {
@@ -2013,7 +2011,8 @@ mod tests {
     fn assert_db_in(dir: &Path) {
         for f in DB {
             assert_eq!(
-                std::fs::read(dir.join(f)).unwrap_or_else(|e| panic!("{f} in {}: {e}", dir.display())),
+                std::fs::read(dir.join(f))
+                    .unwrap_or_else(|e| panic!("{f} in {}: {e}", dir.display())),
                 f.as_bytes(),
                 "{f} is kept byte for byte in {}",
                 dir.display()
@@ -2027,7 +2026,12 @@ mod tests {
         populate(&d);
         write_marker(&d, R1006).unwrap();
         let out = reconcile_genesis(&d, NEW, never_running).unwrap();
-        let GenesisOutcome::Reset { chain_aside, removed, .. } = out else {
+        let GenesisOutcome::Reset {
+            chain_aside,
+            removed,
+            ..
+        } = out
+        else {
             panic!("expected a reset: {out:?}");
         };
         let aside = d.join("chain.r1006.bak");
@@ -2048,7 +2052,10 @@ mod tests {
             assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
         }
         // The next start keeps everything, the backup included.
-        assert_eq!(reconcile_genesis(&d, NEW, never_running).unwrap(), GenesisOutcome::Kept);
+        assert_eq!(
+            reconcile_genesis(&d, NEW, never_running).unwrap(),
+            GenesisOutcome::Kept
+        );
         assert_db_in(&aside);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -2102,12 +2109,22 @@ mod tests {
             let crashed = reconcile_genesis(&d, NEW, never_running);
             test_hooks::STOP_WIPE_AFTER.with(|n| n.set(None));
             assert!(crashed.is_err(), "k={k}: the injected stop fails the start");
-            assert_eq!(read_marker(&d).unwrap().as_deref(), Some(R1006), "k={k}: not committed");
+            assert_eq!(
+                read_marker(&d).unwrap().as_deref(),
+                Some(R1006),
+                "k={k}: not committed"
+            );
             let out = reconcile_genesis(&d, NEW, never_running).unwrap();
-            assert!(matches!(out, GenesisOutcome::Reset { .. }), "k={k}: {out:?}");
+            assert!(
+                matches!(out, GenesisOutcome::Reset { .. }),
+                "k={k}: {out:?}"
+            );
             assert_db_gone(&d);
             assert_db_in(&d.join("chain.r1006.bak"));
-            assert!(!d.join("chain.r1006.bak-2").exists(), "k={k}: one backup, not two");
+            assert!(
+                !d.join("chain.r1006.bak-2").exists(),
+                "k={k}: one backup, not two"
+            );
             assert_keys_kept(&d);
             let _ = std::fs::remove_dir_all(&d);
         }
@@ -2119,10 +2136,16 @@ mod tests {
         let n = reset_notice_with(None, Some(chain));
         assert!(n.starts_with(CHAIN_RESET_NOTICE), "{n}");
         assert!(n.contains("/data/node/chain.r1006.bak"), "{n}");
-        assert!(n.contains("delete"), "says it may be deleted to free space: {n}");
+        assert!(
+            n.contains("delete"),
+            "says it may be deleted to free space: {n}"
+        );
         let cfg = Path::new("/data/node/node.toml.0xa3651a27");
         let both = reset_notice_with(Some(cfg), Some(chain));
-        assert!(both.contains("node.toml.0xa3651a27") && both.contains("chain.r1006.bak"), "{both}");
+        assert!(
+            both.contains("node.toml.0xa3651a27") && both.contains("chain.r1006.bak"),
+            "{both}"
+        );
         assert_eq!(reset_notice_with(None, None), CHAIN_RESET_NOTICE);
     }
 }
