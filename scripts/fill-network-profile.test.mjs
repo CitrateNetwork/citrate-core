@@ -425,6 +425,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
   });
 
   // The Python rule (release gate) and the TypeScript rule (the webview's gate) agree.
+  const NODE_CHECKPOINT_BAD = "nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers";
   const malformed = [
     [{ chainId: 0 }, "chainId is not a chain id"],
     [{ genesisHash: "0x" + "0".repeat(64) }, "genesisHash is not a block hash"],
@@ -459,6 +460,12 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     [{ genesisProfile: "" }, "genesisProfile is not a genesis profile the bundled node builds"],
     [{ genesisProfile: "testnet_beta\n" }, "genesisProfile is not a genesis profile the bundled node builds"],
     [{ genesisProfile: "Testnet_Beta" }, "genesisProfile is not a genesis profile the bundled node builds"],
+    // r1007 cut: the [checkpoint] values the node config repeats (network_profile.rs NodeCheckpoint).
+    [{ nodeCheckpoint: { interval: 0, committeeSize: 100, voteDepth: 3 } }, NODE_CHECKPOINT_BAD],
+    [{ nodeCheckpoint: { interval: 50, committeeSize: 100 } }, NODE_CHECKPOINT_BAD],
+    [{ nodeCheckpoint: { interval: 50, committeeSize: 100, voteDepth: 3, quorum: 67 } }, NODE_CHECKPOINT_BAD],
+    [{ nodeCheckpoint: { interval: 50, committeeSize: "100", voteDepth: 3 } }, NODE_CHECKPOINT_BAD],
+    [{ nodeCheckpoint: { interval: 50.5, committeeSize: 100, voteDepth: 3 } }, NODE_CHECKPOINT_BAD],
   ];
   for (const [patch, why] of malformed) {
     it(`both rules refuse ${JSON.stringify(patch)}`, () => {

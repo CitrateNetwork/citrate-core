@@ -1,0 +1,23 @@
+{
+  "_comment": "CANDIDATE TEST FIXTURE, NOT A RELEASE VALUE. The r1007 genesis values as the chain's r1007 genesis notes record them before the r1007 consensus lanes are integrated (2026-11-09). The block-0 hash WILL change at integration, and the chain parameters marked pending owner there may change. Release values go only into release/network-cut.json, filled at the cut. Used by scripts/network-cut.test.mjs (the cut, applied to a copy of the repo with these values, must produce r1007-candidate.applied.json) and src-tauri/src/network_profile_tests.rs (the node config rendered from that profile must carry the [checkpoint] values the r1007 node requires).",
+  "status": "candidate",
+  "genesisHash": "0x4e0465e0015f5bd712c4e8b9267d7fd831b4d1b488f83f2f86ca115820eaad29",
+  "genesisProfile": "r1007",
+  "compiledActivations": true,
+  "rpcUrl": "https://rpc.citrate.ai",
+  "chainParams": {
+    "slot_duration_secs": 1,
+    "max_future_drift_secs": 15,
+    "pruning_depth": 10000,
+    "undo_window": 10000,
+    "ghostdag_k": 18,
+    "max_parents": 10,
+    "merge_depth": 100,
+    "checkpoint_interval": 50,
+    "committee_size": 100,
+    "checkpoint_vote_depth": 3,
+    "include_gas_limit": 30000000,
+    "accept_gas_limit": 60000000,
+    "validator_activation_height": 1000
+  }
+}
