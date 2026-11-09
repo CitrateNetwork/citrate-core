@@ -79,14 +79,22 @@ describe("component-pins check", () => {
 
   // The Linux packages bundle every cargo sidecar, and build-component.sh installs one only if
   // its bytes match a pin for that exact triple; a component with no Linux pin stops the Linux
-  // release at the build step. Each pin is an inline sha256 recorded by the Linux builder.
+  // release at the build step. An x86_64 pin is an inline sha256 recorded by the Linux builder;
+  // an aarch64 pin is the line of its runtime-deps asset (release.yml's Linux aarch64 job stages
+  // those bytes, as the macOS job does).
   it("pins every cargo sidecar for both Linux triples", () => {
     const m = JSON.parse(read(repo, "release/components.json"));
+    const pins = parsePins(read(repo, "src-tauri/runtime-deps.sha256"));
     const missing = [];
     for (const c of m.components.filter((x) => x.build && x.build.kind === "cargo")) {
       for (const t of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {
-        const a = (c.artifacts || {})[t];
-        if (!a || !/^[0-9a-f]{64}$/.test(a.sha256 || "")) missing.push(`${c.id} ${t}`);
+        let d = "";
+        try {
+          d = pinnedDigest(m, pins, c.id, t);
+        } catch {
+          d = "";
+        }
+        if (!/^[0-9a-f]{64}$/.test(d)) missing.push(`${c.id} ${t}`);
       }
     }
     expect(missing).toEqual([]);
@@ -187,7 +195,60 @@ describe("component-pins check", () => {
   it("refuses release.yml that fetches Kubo without the pinned engine", () => {
     const r = fixture();
     edit(r, ".github/workflows/release.yml", "scripts/build-component.sh kubo --target aarch64-apple-darwin", "cp /tmp/ipfs src-tauri/binaries/ipfs-aarch64-apple-darwin");
-    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' from a pinned source/);
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' for aarch64-apple-darwin from a pinned source/);
+  });
+
+  // The Linux aarch64 job (ubuntu-24.04-arm) stages like the macOS one: every sidecar from its
+  // pinned runtime-deps asset, Kubo through the pinned engine, requirements verified.
+  it("refuses release.yml that does not stage a pinned Linux aarch64 sidecar", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-unknown-linux-gnu-05243c72bd52\n", "");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar' for aarch64-unknown-linux-gnu \(hermes-aarch64-unknown-linux-gnu-05243c72bd52\)/);
+  });
+
+  it("refuses release.yml that stages the Linux aarch64 llama-server outside its pin", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "              llama-server-aarch64-unknown-linux-gnu-b9438\n", "");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'llama.cpp' for aarch64-unknown-linux-gnu/);
+  });
+
+  it("refuses release.yml that fetches Kubo for Linux aarch64 without the pinned engine", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "scripts/build-component.sh kubo --target aarch64-unknown-linux-gnu", "cp /tmp/ipfs src-tauri/binaries/ipfs-aarch64-unknown-linux-gnu");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' for aarch64-unknown-linux-gnu from a pinned source/);
+  });
+
+  it("refuses release.yml that does not verify the Linux aarch64 sidecars' requirements", () => {
+    const r = fixture();
+    const wf = read(r, ".github/workflows/release.yml");
+    expect(wf).toContain("verify-staged src-tauri/binaries aarch64-unknown-linux-gnu");
+    write(r, ".github/workflows/release.yml", wf.split("\n").filter((l) => !l.includes("verify-staged src-tauri/binaries aarch64-unknown-linux-gnu")).join("\n"));
+    expect(errorsOf(r)).toMatch(/release.yml does not run `component-pins.mjs verify-staged src-tauri\/binaries aarch64-unknown-linux-gnu`/);
+  });
+
+  it("does not demand a pending Linux aarch64 target of release.yml", () => {
+    const r = fixture();
+    const m = manifest(r);
+    delete comp(m, "node-agent").artifacts["aarch64-unknown-linux-gnu"];
+    comp(m, "node-agent").pending = { "aarch64-unknown-linux-gnu": "release.yml dry run on ubuntu-24.04-arm: build-component.sh --print-digest, then upload and pin" };
+    setManifest(r, m);
+    edit(r, ".github/workflows/release.yml", "              node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a\n", "");
+    edit(r, "src-tauri/runtime-deps.sha256", "  node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a\n", "  node-agent-aarch64-unknown-linux-gnu-unused\n");
+    expect(check(r)).toEqual([]);
+  });
+
+  // GitHub stopped starting macos-14 jobs ("The configuration 'macos-14-arm64-us-default' is not
+  // supported"): a release job on a retired image never runs, and a tag push publishes nothing.
+  it("refuses a release job on a runner image GitHub no longer starts", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "    runs-on: macos-15\n", "    runs-on: macos-14\n");
+    expect(errorsOf(r)).toMatch(/release.yml runs a job on macos-14, a runner image GitHub no longer starts/);
+  });
+
+  it("runs the release jobs on macos-15 and ubuntu-24.04-arm", () => {
+    const wf = read(repo, ".github/workflows/release.yml");
+    const labels = [...wf.matchAll(/^ {4}runs-on: (\S+)$/gm)].map((x) => x[1]);
+    expect(labels.sort()).toEqual(["macos-15", "ubuntu-24.04-arm"]);
   });
 
   it("refuses a signing or publishing step that runs in a dry run", () => {

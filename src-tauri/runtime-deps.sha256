@@ -46,6 +46,24 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
 9a1353624efda5218d695fb64e3ac21088a74e168605057bac67bccaace942bc  cluster-daemon-aarch64-apple-darwin-755cf2172260
 08c50ba7ec462324d12c46518447f8ba8e76da2f0c567092a30b2437993533a3  hermes-aarch64-apple-darwin-05243c72bd52
+# 2026-11-08 Linux aarch64 (release.yml release-linux-aarch64, ubuntu-24.04-arm): the bytes 0.5.2
+# shipped for aarch64-unknown-linux-gnu, moved here from inline sha256s in release/components.json
+# (same digests) so release.yml stages them from runtime-deps as it does the macOS ones. Built by the
+# DGX lane on spark-2e01 (Ubuntu 24.04, glibc 2.39); each equals its file in the published v0.5.2
+# Citrate-Core-linux-aarch64.deb (usr/bin/<bin>; deb sha256 b1ac4043... in SHA256SUMS-linux),
+# re-checked 2026-11-08. Uploaded: citrate-...-56cc2bc80439 only (verified by download 2026-11-08).
+# Not uploaded yet: the other six; until the owner uploads exactly these bytes (from that deb, or a
+# release.yml dry-run build that reproduces them), the Linux aarch64 release fails closed at the
+# download.
+ed0af8063e9806ff0478d09f0f3c03061aac791337a92fc5e0441251fcc97cdf  citrate-aarch64-unknown-linux-gnu-56cc2bc80439
+d62e5233773d2353f1e80da44d5702381fa2717de1639507f05c0f5faa637161  node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
+a3fcf5480cd1636a5039d708b6672df0d7d0f541e3505ea31f6d434d67598a77  mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
+db8415872b35685a9e5946bed91fbee3c226c72ff23db0779c2c7354392fb36b  comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c
+b6d0683bfd1e911e9352e5355973a195a1b4b8b24bd7ef07339a217730f4f956  cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260
+23e36abb2d965d9dbc6e4c6c2de8f20a867ba2ccf4d22240fa8109dfce82773f  hermes-aarch64-unknown-linux-gnu-05243c72bd52
+# llama.cpp b9438 (d749821d), CPU-only, built by the DGX lane; the llama-server 0.5.1 and 0.5.2 shipped
+# for Linux aarch64 (usr/bin/llama-server and usr/lib/Citrate Core/llama/llama-server in the v0.5.2 deb).
+8a622da403c99117853fbccf0bd3cd6fc839c146967c726a6c3b435f5901dcd3  llama-server-aarch64-unknown-linux-gnu-b9438
 # v0.5.0-rc.4 llama runtime for macOS arm64 (2026-10-11, release Mac): llama.cpp tag b10909 (commit
 # a2878d30df0130dde503a7d9ba30d3d21bd71b9f) built from source with upstream's macos-arm64 release
 # options (GGML_METAL_EMBED_LIBRARY, deployment target 13.3, @loader_path rpath, BoringSSL, RPC,

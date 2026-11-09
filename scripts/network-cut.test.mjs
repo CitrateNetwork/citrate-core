@@ -69,7 +69,13 @@ const filledCut = (cut) => ({
       provenance: prov("aarch64-apple-darwin", "8c"),
     },
     "x86_64-unknown-linux-gnu": { sha256: "7d".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)", provenance: prov("x86_64-unknown-linux-gnu", "8d") },
-    "aarch64-unknown-linux-gnu": { sha256: "7e".repeat(32), evidence: "test-only bytes (network-cut.test.mjs)", provenance: prov("aarch64-unknown-linux-gnu", "8e") },
+    // release.yml's Linux aarch64 job stages the node from runtime-deps, as the macOS job does.
+    "aarch64-unknown-linux-gnu": {
+      runtime_deps_asset: `citrate-aarch64-unknown-linux-gnu-${T_REV.slice(0, 12)}`,
+      sha256: "7e".repeat(32),
+      evidence: "test-only bytes (network-cut.test.mjs)",
+      provenance: prov("aarch64-unknown-linux-gnu", "8e"),
+    },
   },
   pending: {},
 });
@@ -221,9 +227,13 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
       evidence: "test-only bytes (network-cut.test.mjs)",
     });
     expect(node.artifacts["x86_64-unknown-linux-gnu"].sha256).toBe("7d".repeat(32));
-    expect(node.artifacts["aarch64-unknown-linux-gnu"].sha256).toBe("7e".repeat(32));
+    expect(node.artifacts["aarch64-unknown-linux-gnu"]).toEqual({
+      runtime_deps_asset: `citrate-aarch64-unknown-linux-gnu-${T_REV.slice(0, 12)}`,
+      evidence: "test-only bytes (network-cut.test.mjs)",
+    });
     expect(node.pending).toBeUndefined();
     expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${"7c".repeat(32)}  citrate-aarch64-apple-darwin-${T_REV.slice(0, 12)}`);
+    expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${"7e".repeat(32)}  citrate-aarch64-unknown-linux-gnu-${T_REV.slice(0, 12)}`);
     // Each node build's PROVENANCE record is pinned next to its bytes.
     for (const [t, b] of [["aarch64-apple-darwin", "8c"], ["x86_64-unknown-linux-gnu", "8d"], ["aarch64-unknown-linux-gnu", "8e"]]) {
       expect(rd("src-tauri/runtime-deps.sha256")).toContain(`${b.repeat(32)}  citrate-${t}-${T_REV.slice(0, 12)}.PROVENANCE.txt`);
@@ -256,6 +266,8 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     ["a missing bootnode host", (c) => (c.bootnodes = T_BOOTNODES.slice(0, 3)), /bootnodes/],
     ["a malformed fingerprint", (c) => (c.consensusFingerprint = "0x1234"), /consensusFingerprint/],
     ["a macOS asset of another rev", (c) => (c.node["aarch64-apple-darwin"].runtime_deps_asset = "citrate-aarch64-apple-darwin-000000000000"), /aarch64-apple-darwin/],
+    ["a Linux aarch64 asset of another rev", (c) => (c.node["aarch64-unknown-linux-gnu"].runtime_deps_asset = "citrate-aarch64-unknown-linux-gnu-000000000000"), /aarch64-unknown-linux-gnu.*runtime_deps_asset/],
+    ["a Linux aarch64 node with no runtime-deps asset", (c) => delete c.node["aarch64-unknown-linux-gnu"].runtime_deps_asset, /node.aarch64-unknown-linux-gnu must have exactly/],
     ["a Linux pin with no evidence", (c) => (c.node["x86_64-unknown-linux-gnu"].evidence = ""), /x86_64-unknown-linux-gnu/],
     ["a value left in pending", (c) => (c.pending = { genesisHash: "still owed" }), /pending/],
     ["a node build with no provenance record", (c) => delete c.node["x86_64-unknown-linux-gnu"].provenance, /x86_64-unknown-linux-gnu.*provenance/],

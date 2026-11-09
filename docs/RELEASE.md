@@ -351,6 +351,52 @@ publishing step loses its `env.DRY_RUN != 'true'` guard. The runner's sidecar di
 the pins (another build root), so a dry run proves the sources build and bundle, not the pinned
 bytes.
 
+## Runners (2026-11-08)
+
+- **macOS:** `release-macos-arm` runs on `macos-15`. GitHub no longer starts `macos-14` jobs ("The
+  configuration 'macos-14-arm64-us-default' is not supported"), so a tag or manual run on it never
+  began. The step "Select Xcode 16.4" pins the Xcode that the SDK, `codesign`, `notarytool` and
+  `stapler` come from (16.4 is the default on macos-15-arm64 20261104, which also carries 16.0 to
+  16.3 and 26.x). If an image drops 16.4 the step fails; choose the new Xcode there in a reviewed
+  PR. No deployment target is set in `tauri.conf.json`, so Tauri's default minimum macOS applies
+  as before. The bundler imports the Developer ID certificate from `APPLE_CERTIFICATE` into a
+  temporary keychain and notarizes with `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`; neither
+  depends on the runner image beyond the selected Xcode.
+- **Linux aarch64:** `release-linux-aarch64` runs on `ubuntu-24.04-arm`
+  ([RELEASE_LINUX.md](RELEASE_LINUX.md#linux-aarch64-in-ci-release-linux-aarch64)).
+- `node scripts/component-pins.mjs check` (CI) fails if a release job runs on a retired image.
+
+Not changed here: in the macOS job `tauri-action` still uploads the DMG and the update tarball to
+the GitHub release. [053-UPDATER.md](release/053-UPDATER.md) decision 2 says that from 0.5.3 the
+GitHub release carries only `latest.json`, the checksums and the signatures. Until that job is
+changed, a 0.5.3 tag run would publish files the plan keeps off GitHub. Cut 0.5.3 with the local
+fallback below, or change the job first.
+
+## Local fallback (the release Mac)
+
+If GitHub cannot run the macOS job, the release Mac builds, signs and notarizes the release itself.
+0.5.0 to 0.5.2 shipped this way. The release Mac is an Apple M2 on macOS 15.6.1 with the Command
+Line Tools only (`xcode-select -p` = `/Library/Developer/CommandLineTools`, `notarytool` 1.0.0). No
+full Xcode is needed for `codesign`, `notarytool`, `stapler` or the Tauri bundler. Never launch the
+built app on the release Mac, not even `--version`: it starts the full app against the owner's own
+data. Never run the install tests there either.
+
+1. Stage the inputs exactly as release.yml does (section 3 above): the pinned sidecars, the llama
+   runtime, the BGE models, the corpus, the skills bundle and Kubo. Then run
+   `node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin` and
+   `node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256`.
+2. Export the updater key for this build only (One-time setup, section 1), then build signed:
+   `APPLE_SIGNING_IDENTITY="Developer ID Application: Larry Klosowski (DDHUG44QC7)" npx tauri build
+   --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json`. Output goes to
+   `target/aarch64-apple-darwin/release/bundle/`: `dmg/`, plus `macos/*.app.tar.gz` and its `.sig`.
+3. Notarize and staple with the owner's notarytool keychain profile:
+   `xcrun notarytool submit <dmg> --keychain-profile citrate --wait`, then `xcrun stapler staple` the
+   DMG and the `.app`. Check the app inside the mounted DMG with `spctl -a -t exec -vvv` (expect
+   `source=Notarized Developer ID`); for the DMG itself use `xcrun stapler validate`.
+4. Write the feed entry with `node scripts/updater-feed.mjs fragment ... darwin-aarch64`, merge it
+   with the Linux fragments (`updater-feed.mjs merge`), and publish as
+   [053-UPDATER.md](release/053-UPDATER.md) section 3 says.
+
 ## First-run caveat (honest)
 Every tag run of this workflow so far (v0.4.2 to v0.5.1, and the Windows tags) failed at staging,
 before any build: v0.5.0-rc.1 found no skills bundle on `runtime-deps`, the later runs no Gemma GGUF

@@ -10,8 +10,8 @@ them is written from it, so cutting the release is a fill of this file plus `app
 check [--release] [--root <dir>] [--cut-only]
 
     The file is well formed: known keys only; every value null or well formed; the bootnodes are
-    exactly boot1-3.citrate.ai and rpc.citrate.ai on 30303 with distinct keys; the macOS node
-    asset is named after the chain rev; `pending` names exactly the null values, each with a
+    exactly boot1-3.citrate.ai and rpc.citrate.ai on 30303 with distinct keys; the macOS and
+    Linux aarch64 node assets are named after the chain rev; `pending` names exactly the null values, each with a
     reason; the target and retired profiles exist in profiles.json.
     With --release: nothing is pending, and the cut is applied: profiles.json, build-sidecar.sh,
     components.json, runtime-deps.sha256, the two Cargo.toml files and Cargo.lock all carry its
@@ -26,8 +26,9 @@ apply [--root <dir>]
                                         its nodeGenesisProfiles entry, `retired` on each retired
       scripts/build-sidecar.sh          MIN_CHAIN_REV
       release/components.json           citrate-node source.rev, federation, the three artifacts
-      src-tauri/runtime-deps.sha256     the macOS node pin line, and a pin for each node build's
-                                        PROVENANCE record (a runtime-deps asset next to its bytes)
+      src-tauri/runtime-deps.sha256     the macOS and Linux aarch64 node pin lines, and a pin for
+                                        each node build's PROVENANCE record (a runtime-deps asset
+                                        next to its bytes)
       src-tauri/Cargo.toml, kit/Cargo.toml   the citrate-chain crate revs
     Cargo.lock is cargo's: the command to regenerate it is printed, and `check --release` fails
     until it is run. So is the embedded address book (scripts/sync-addresses.py).
@@ -64,6 +65,10 @@ VALUES = [
 ]
 TARGETS = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 MAC = "aarch64-apple-darwin"
+# The targets whose node bytes release.yml stages from runtime-deps (its macOS job and, since
+# 2026-11-08, its Linux aarch64 job on ubuntu-24.04-arm): their pin is a runtime_deps_asset named
+# after the rev plus its line in runtime-deps.sha256. Linux x86_64 stays an inline sha256.
+STAGED = (MAC, "aarch64-unknown-linux-gnu")
 KEYS = {"_comment", "profile", "retire", "node", "pending"} | set(VALUES)
 # The r1007 fleet's P2P entry points (owner decision: boot1-3 + rpc.citrate.ai).
 BOOT_HOSTS = ["boot1.citrate.ai:30303", "boot2.citrate.ai:30303", "boot3.citrate.ai:30303", "rpc.citrate.ai:30303"]
@@ -94,8 +99,8 @@ def read_json(root: Path, rel: str) -> dict:
         raise Refused(f"{rel} cannot be read: {e}")
 
 
-def mac_asset(rev: str) -> str:
-    return f"citrate-{MAC}-{rev[:12]}"
+def node_asset(target: str, rev: str) -> str:
+    return f"citrate-{target}-{rev[:12]}"
 
 
 def provenance_asset(target: str, rev: str) -> str:
@@ -157,7 +162,7 @@ def value_problems(cut: dict, profiles: dict) -> list:
         a = node[t]
         if a is None:
             continue
-        want = ({"runtime_deps_asset", "sha256", "evidence", "provenance"} if t == MAC
+        want = ({"runtime_deps_asset", "sha256", "evidence", "provenance"} if t in STAGED
                 else {"sha256", "evidence", "provenance"})
         if not isinstance(a, dict) or set(a) != want:
             out.append(f"node.{t} must have exactly {sorted(want)} (provenance: the build's PROVENANCE "
@@ -176,9 +181,9 @@ def value_problems(cut: dict, profiles: dict) -> list:
             out.append(f"node.{t}.sha256 is not a sha256 digest")
         if not (isinstance(a["evidence"], str) and a["evidence"].strip()):
             out.append(f"node.{t}.evidence is empty (where and how these bytes were built)")
-        if t == MAC and rev is not None and a["runtime_deps_asset"] != mac_asset(rev):
+        if t in STAGED and rev is not None and a["runtime_deps_asset"] != node_asset(t, rev):
             out.append(f"node.{t}.runtime_deps_asset {a['runtime_deps_asset']!r} is not the build of chainRev "
-                       f"(expected {mac_asset(rev)})")
+                       f"(expected {node_asset(t, rev)})")
     return out
 
 
@@ -278,7 +283,7 @@ def applied_components(cut: dict, components: dict) -> dict:
     arts = {}
     for t in TARGETS:
         a = cut["node"][t]
-        arts[t] = ({"runtime_deps_asset": a["runtime_deps_asset"], "evidence": a["evidence"]} if t == MAC
+        arts[t] = ({"runtime_deps_asset": a["runtime_deps_asset"], "evidence": a["evidence"]} if t in STAGED
                    else {"sha256": a["sha256"], "evidence": a["evidence"]})
     c["artifacts"] = arts
     c.pop("pending", None)
@@ -286,9 +291,9 @@ def applied_components(cut: dict, components: dict) -> dict:
 
 
 def runtime_deps_lines(cut: dict) -> list:
-    """The runtime-deps pins the cut adds: the macOS node bytes, then each node build's PROVENANCE."""
-    a = cut["node"][MAC]
-    lines = [(a["runtime_deps_asset"], a["sha256"])]
+    """The runtime-deps pins the cut adds: the staged node bytes (macOS, Linux aarch64), then each
+    node build's PROVENANCE."""
+    lines = [(cut["node"][t]["runtime_deps_asset"], cut["node"][t]["sha256"]) for t in STAGED]
     lines += [(cut["node"][t]["provenance"]["asset"], cut["node"][t]["provenance"]["sha256"]) for t in TARGETS]
     return lines
 
@@ -427,7 +432,7 @@ def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
                        f"the cut has {rev}")
         for t in TARGETS:
             a, have = cut["node"][t], c.get("artifacts", {}).get(t, {})
-            key = "runtime_deps_asset" if t == MAC else "sha256"
+            key = "runtime_deps_asset" if t in STAGED else "sha256"
             if have.get(key) != a[key] or have.get("evidence") != a["evidence"]:
                 out.append(f"{COMPONENTS}: citrate-node {t} is not the cut's pin")
         if c.get("pending"):

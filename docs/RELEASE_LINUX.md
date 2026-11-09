@@ -265,6 +265,66 @@ Then ping the DGX team in `docs/GROW_COORDINATION.md` to point
 (the `.deb` link can sit beside it for apt users). That closes the Linux half of
 the tri-platform download contract.
 
+## Linux aarch64 in CI (`release-linux-aarch64`)
+
+Since 2026-11-08 the aarch64 packages are built by `.github/workflows/release.yml` on the
+GitHub-hosted arm64 runner `ubuntu-24.04-arm` (owner decision 2026-11-08), not by hand on the DGX
+(sold). x86_64 is unchanged: built on `citrate-core-linux-build` with the steps above.
+
+**Why Ubuntu 24.04 and not 22.04-arm.** The x86_64 packages come from Ubuntu 22.04 (glibc 2.35).
+The aarch64 bytes a release ships are the pinned ones, built on the DGX on Ubuntu 24.04 (glibc
+2.39, GCC 13.3). They need glibc 2.39 whatever the runner, so building the app on 22.04-arm would
+not lower the floor, and the dry run's rebuilds reproduce a 24.04 build only on 24.04. So the
+aarch64 packages need glibc 2.39 or later (Ubuntu 24.04+, Debian 13+), as 0.5.1 and 0.5.2 did.
+Lowering that floor to 2.35 means re-pinning every aarch64 sidecar from 22.04-arm builds, in a
+reviewed PR.
+
+**What the job does**, on a tag or a manual run, beside the macOS job:
+
+1. The same gates as macOS: network profile (K6), skills bundle, corpus pre-bundle check, notices.
+2. It stages the pinned aarch64 bytes from `runtime-deps`, verified against
+   `src-tauri/runtime-deps.sha256` before anything is installed: the six cargo sidecars
+   (`<bin>-aarch64-unknown-linux-gnu-<rev12>`) and `llama-server-aarch64-unknown-linux-gnu-b9438`.
+   It stages Kubo through `build-component.sh kubo`. Their pins are `runtime_deps_asset` lines, as
+   the macOS ones are. `component-pins.mjs check` fails CI if release.yml stops staging one of them.
+3. `npx tauri build --target aarch64-unknown-linux-gnu --config src-tauri/tauri.bundle-linux.conf.json`.
+   The outputs are renamed to the contract names `Citrate-Core-linux-aarch64.AppImage` and `.deb`,
+   with `SHA256SUMS-linux-aarch64`.
+4. Release run only: `tauri signer sign` signs both with the updater key (repo secret). Then
+   `node scripts/updater-feed.mjs fragment` writes `latest.linux-aarch64.json`, the `linux-aarch64`
+   and `linux-aarch64-deb` entries with `url` under `downloads/updater/v<version>/` on the nyc3 CDN
+   ([053-UPDATER.md](release/053-UPDATER.md) section 3).
+5. Everything goes up as the workflow artifact `citrate-core-linux-aarch64-<tag>`, kept 7 days, never
+   as a GitHub Release asset. The release step copies the files to the CDN. It merges the fragment
+   with the macOS and x86_64 ones (`updater-feed.mjs merge`) into the one `latest.json`.
+
+**Owed before the first aarch64 release run.** Only `citrate-aarch64-unknown-linux-gnu-56cc2bc80439`
+is on `runtime-deps` (its sha256 was checked against the pin by download on 2026-11-08). The other
+six assets must be uploaded under the pinned names, or the job fails closed at the download. Their
+bytes are in the published v0.5.2 `Citrate-Core-linux-aarch64.deb`: each `usr/bin/<bin>` equals its
+pin, re-checked 2026-11-08. A dry run's rebuild that reproduces a pin also works.
+
+```bash
+gh release download v0.5.2 -R CitrateNetwork/citrate-core -p Citrate-Core-linux-aarch64.deb -p SHA256SUMS-linux
+grep aarch64.deb SHA256SUMS-linux | sha256sum -c
+dpkg-deb -x Citrate-Core-linux-aarch64.deb deb
+mkdir rd
+for f in node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369 \
+  comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260 \
+  hermes-aarch64-unknown-linux-gnu-05243c72bd52; do cp "deb/usr/bin/${f%-aarch64-unknown-linux-gnu-*}" "rd/$f"; done
+cp deb/usr/bin/llama-server rd/llama-server-aarch64-unknown-linux-gnu-b9438
+grep -E '  (node-agent|mem-mcp|comms-member-daemon|cluster-daemon|hermes|llama-server)-aarch64-unknown-linux-gnu-' \
+  src-tauri/runtime-deps.sha256 | (cd rd && sha256sum -c --strict)
+gh release upload runtime-deps rd/* -R CitrateNetwork/citrate-core
+```
+
+**Dry run** (`dry_run: true`): the job builds the six sidecars at their pinned revs and llama.cpp
+b9438 on the runner. The summary compares each digest with its pin, and the bytes are in the
+artifact (`dry-run-sidecars/`). Then it bundles unsigned, with no key and nothing published. When a
+pin moves (a new node rev), this is how the first aarch64 build of that rev is made. Review it, pin
+it, then upload it. If a component's aarch64 pin is owed, list it under `pending`; the check then
+does not demand it of release.yml, and the Linux bundle build fails closed until it is pinned.
+
 ## Deferred (owner / infra gated)
 
 - **Auto-update.** The Linux config ships `createUpdaterArtifacts: false`. Flip it

@@ -259,6 +259,16 @@ export function workflowSteps(text) {
   return steps;
 }
 
+// The targets release.yml builds a bundle for: macOS arm64 (release-macos-arm, macos-15) and Linux
+// aarch64 (release-linux-aarch64, ubuntu-24.04-arm). Linux x86_64 is still built on its own host
+// (docs/RELEASE_LINUX.md), so its pins stay inline and release.yml does not stage it.
+export const MAC_TARGET = "aarch64-apple-darwin";
+export const RELEASE_TARGETS = [MAC_TARGET, "aarch64-unknown-linux-gnu"];
+// Hosted runner images GitHub has retired: a job on one is never started, so a tag push would
+// build and publish nothing (macos-14 stopped in 2026-11: "The configuration
+// 'macos-14-arm64-us-default' is not supported").
+const RETIRED_RUNNER = /^(macos-1[0-4](-.*)?|ubuntu-(18|20)\.04(-.*)?)$/;
+
 // The dry-run contract of release.yml: a dry run is only ever a manual dispatch with dry_run, every
 // step that signs, notarizes or publishes is skipped in a dry run, and the dry-run-only steps read
 // no secret but the job's own GITHUB_TOKEN.
@@ -409,20 +419,27 @@ export function check(root) {
     if (c.build && c.build.script && !c.build.script.startsWith("scripts/")) err(`'${c.id}': build.script must live in scripts/`);
   }
 
-  // release.yml stages exactly the pinned macOS bytes: every runtime-deps asset it downloads that
-  // is a sidecar is the manifest's aarch64-apple-darwin asset, and every component is staged.
+  // release.yml stages exactly the pinned bytes for each target it builds (RELEASE_TARGETS): every
+  // runtime-deps asset it downloads that is a sidecar is the manifest's asset for that target, and
+  // every component is staged. A Linux target still `pending` on its builder is not demanded here;
+  // the Linux job then has no bytes for it and its bundle build fails closed.
   const wf = readIf(path.join(root, ".github", "workflows", "release.yml"));
   if (wf) {
     const assets = new Set(releaseAssets(wf));
-    const T = "aarch64-apple-darwin";
-    for (const c of comps) {
-      const a = (c.artifacts || {})[T];
-      if (!a) {
-        err(`'${c.id}': no ${T} artifact, but release.yml builds the ${T} bundle`);
-        continue;
+    for (const T of RELEASE_TARGETS) {
+      for (const c of comps) {
+        const a = (c.artifacts || {})[T];
+        if (!a) {
+          if (T !== MAC_TARGET && c.pending && c.pending[T]) continue;
+          err(`'${c.id}': no ${T} artifact, but release.yml builds the ${T} bundle`);
+          continue;
+        }
+        if (a.runtime_deps_asset) {
+          if (!assets.has(a.runtime_deps_asset)) err(`release.yml does not stage '${c.id}' for ${T} (${a.runtime_deps_asset})`);
+        } else if (!(c.build && c.build.kind === "download" && wf.includes(`build-component.sh ${c.id} --target ${T}`))) {
+          err(`release.yml does not stage '${c.id}' for ${T} from a pinned source`);
+        }
       }
-      if (a.runtime_deps_asset && !assets.has(a.runtime_deps_asset)) err(`release.yml does not stage '${c.id}' (${a.runtime_deps_asset})`);
-      if (!a.runtime_deps_asset && !(c.build && c.build.kind === "download" && wf.includes(`build-component.sh ${c.id}`))) err(`release.yml does not stage '${c.id}' from a pinned source`);
     }
     const known = new Set([
       ...comps.flatMap((c) => Object.values(c.artifacts || {}).map((a) => a.runtime_deps_asset).filter(Boolean)),
@@ -432,10 +449,17 @@ export function check(root) {
     ]);
     for (const a of assets) if (!known.has(a)) err(`release.yml stages runtime-deps asset ${a}, which release/components.json does not name`);
     for (const a of known) if (!pins.has(a)) err(`runtime-deps asset ${a} (named in release/components.json) has no pin in src-tauri/runtime-deps.sha256`);
+    for (const x of wf.matchAll(/^\s*runs-on:\s*(\S+)\s*$/gm)) {
+      if (RETIRED_RUNNER.test(x[1])) err(`release.yml runs a job on ${x[1]}, a runner image GitHub no longer starts`);
+    }
   }
 
-  if (wf && comps.some((c) => c.requires) && !/component-pins\.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin/.test(wf)) {
-    err("release.yml does not run `component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin` on the staged sidecars");
+  if (wf && comps.some((c) => c.requires)) {
+    for (const T of RELEASE_TARGETS) {
+      if (!wf.includes(`component-pins.mjs verify-staged src-tauri/binaries ${T}`)) {
+        err(`release.yml does not run \`component-pins.mjs verify-staged src-tauri/binaries ${T}\` on the staged sidecars`);
+      }
+    }
   }
   if (wf) for (const e of dryRunGuardErrors(wf)) err(e);
 
