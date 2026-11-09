@@ -245,6 +245,28 @@ describe("component-pins check", () => {
     expect(errorsOf(r)).toMatch(/release.yml runs a job on macos-14, a runner image GitHub no longer starts/);
   });
 
+  // 053-UPDATER decision 2: from 0.5.3 the GitHub release carries only latest.json, the checksums
+  // and the signatures; installers and update files never go to a (public, permanent) release.
+  // release.yml builds into workflow artifacts and the release ceremony publishes.
+  const UPLOADS = /release.yml step .* writes to a GitHub release.*053-UPDATER decision 2/;
+  it("refuses a release job that uploads an installer to a GitHub release with gh", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      - name: Knowledge corpus staged (pre-bundle check)\n", "      - name: Upload the DMG\n        if: ${{ env.DRY_RUN != 'true' }}\n        run: gh release upload \"$TAG\" out/Citrate-Core_0.5.3_aarch64.dmg\n\n      - name: Knowledge corpus staged (pre-bundle check)\n");
+    expect(errorsOf(r)).toMatch(UPLOADS);
+  });
+
+  it("refuses tauri-action, which creates a release and uploads the bundle to it", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      - name: Knowledge corpus staged (pre-bundle check)\n", "      - name: Build and publish\n        if: ${{ env.DRY_RUN != 'true' }}\n        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0\n        with:\n          tagName: v0.5.3\n\n      - name: Knowledge corpus staged (pre-bundle check)\n");
+    expect(errorsOf(r)).toMatch(UPLOADS);
+  });
+
+  it("refuses a release job that can write the repository's releases", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      contents: read\n", "      contents: write\n");
+    expect(errorsOf(r)).toMatch(/release.yml grants contents: write/);
+  });
+
   it("runs the release jobs on macos-15 and ubuntu-24.04-arm", () => {
     const wf = read(repo, ".github/workflows/release.yml");
     const labels = [...wf.matchAll(/^ {4}runs-on: (\S+)$/gm)].map((x) => x[1]);
@@ -253,8 +275,8 @@ describe("component-pins check", () => {
 
   it("refuses a signing or publishing step that runs in a dry run", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "        if: ${{ env.DRY_RUN != 'true' }}\n        uses: tauri-apps/tauri-action", "        uses: tauri-apps/tauri-action");
-    expect(errorsOf(r)).toMatch(/step 'Build · sign · notarize · publish updater artifacts' signs or publishes but is not guarded/);
+    edit(r, ".github/workflows/release.yml", "      - name: Build · sign · notarize (macOS arm64)\n        if: ${{ env.DRY_RUN != 'true' }}\n", "      - name: Build · sign · notarize (macOS arm64)\n");
+    expect(errorsOf(r)).toMatch(/step 'Build · sign · notarize \(macOS arm64\)' signs or publishes but is not guarded/);
   });
 
   it("refuses a dry-run step that reads a signing secret", () => {

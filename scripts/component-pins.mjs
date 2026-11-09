@@ -282,10 +282,29 @@ export function dryRunGuardErrors(text) {
     const ifLine = (/^ {8}if: (.*)$/m.exec(step) || [])[1] || "";
     if (PUBLISHES.test(step) && !ifLine.includes("env.DRY_RUN != 'true'")) errors.push(`release.yml step '${name}' signs or publishes but is not guarded by env.DRY_RUN != 'true'`);
     if (ifLine.includes("env.DRY_RUN == 'true'")) {
-      for (const s of step.match(/secrets\.[A-Z_]+/g) || []) if (s !== "secrets.GITHUB_TOKEN") errors.push(`release.yml dry-run step '${name}' reads ${s}`);
+      // The job's own token, and the optional federation read token in a step that only clones.
+      const allowed = new Set(["secrets.GITHUB_TOKEN", ...(/^Clone /.test(name) ? ["secrets.CITRATE_CHAIN_READ_TOKEN"] : [])]);
+      for (const s of step.match(/secrets\.[A-Z_]+/g) || []) if (!allowed.has(s)) errors.push(`release.yml dry-run step '${name}' reads ${s}`);
       if (/gh release (create|edit|upload|delete)/.test(step)) errors.push(`release.yml dry-run step '${name}' writes a release`);
     }
   }
+  return errors;
+}
+
+// 053-UPDATER decision 2: from 0.5.3 the GitHub release carries only latest.json, the checksums
+// and the signatures, and the release ceremony puts them there. Installers and update files never
+// go to a GitHub release (this repository is public, and a release asset is permanent). So no
+// release.yml step creates, edits or uploads to a release (tauri-action does all three), and no job
+// may write the repository's contents (which includes its releases).
+const RELEASE_WRITE = /tauri-apps\/tauri-action|softprops\/action-gh-release|ncipollo\/release-action|gh release (create|upload|edit|delete)|gh api [^\n]*\/releases/;
+export function releaseUploadErrors(text) {
+  const errors = [];
+  for (const step of workflowSteps(text)) {
+    const name = (/name: (.*)/.exec(step) || [])[1] || step.split("\n")[0].trim();
+    const code = step.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+    if (RELEASE_WRITE.test(code)) errors.push(`release.yml step '${name}' writes to a GitHub release; installers and update files go to workflow artifacts, the ceremony publishes (053-UPDATER decision 2)`);
+  }
+  for (const m of text.matchAll(/^\s*contents:\s*write\b.*$/gm)) errors.push(`release.yml grants contents: write (it may create GitHub releases; 053-UPDATER decision 2): '${m[0].trim()}'`);
   return errors;
 }
 
@@ -462,6 +481,7 @@ export function check(root) {
     }
   }
   if (wf) for (const e of dryRunGuardErrors(wf)) err(e);
+  if (wf) for (const e of releaseUploadErrors(wf)) err(e);
 
   // The node sidecar rev is the rev the app's own chain crates and build-sidecar.sh's
   // activation-hardening gate pin.

@@ -160,11 +160,11 @@ That needs a check of the install names before anyone changes the bundling.
 Locally, after a build, as step 5 of [`docs/RELEASE.md`](../docs/RELEASE.md) "Cutting a release".
 
 In CI it is **manual only**: `.github/workflows/release.yml` has a `size_gate` dispatch input
-(boolean, default `false`). A tag push never runs it and builds and publishes exactly as before. A
-manual run with `size_gate: true` creates the release as a draft, runs
+(boolean, default `false`). A tag push never runs it. A manual run with `size_gate: true` runs
 `node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64`
-into the job summary, and publishes the draft only if the gate passes; an over-budget build stays
-a draft for review. Pinned by `scripts/release-size-gate.test.mjs`.
+into the job summary after the build and before the workflow artifact upload; an over-budget build
+fails the job and uploads nothing. release.yml publishes nothing either way (no draft, no GitHub
+release; docs/release/053-UPDATER.md decision 2). Pinned by `scripts/release-size-gate.test.mjs`.
 
 Before anyone dispatches it: `release.yml` builds the **node** overlay
 (`tauri.bundle-node.conf.json`), which also bundles the Gemma 4 E4B GGUF, while the shipped

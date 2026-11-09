@@ -294,8 +294,10 @@ reviewed PR.
    `node scripts/updater-feed.mjs fragment` writes `latest.linux-aarch64.json`, the `linux-aarch64`
    and `linux-aarch64-deb` entries with `url` under `downloads/updater/v<version>/` on the nyc3 CDN
    ([053-UPDATER.md](release/053-UPDATER.md) section 3).
-5. Everything goes up as the workflow artifact `citrate-core-linux-aarch64-<tag>`, kept 7 days, never
-   as a GitHub Release asset. The release step copies the files to the CDN. It merges the fragment
+5. Everything goes up as the workflow artifact `citrate-core-linux-aarch64-<tag>`, kept 2 days, never
+   as a GitHub Release asset. This repository is public, and any logged-in GitHub user can download
+   its workflow artifacts until they expire. The packages are the bytes that become public update
+   files at the release, but before it they are early, so run the ceremony promptly after the tag. The release step copies the files to the CDN. It merges the fragment
    with the macOS and x86_64 ones (`updater-feed.mjs merge`) into the one `latest.json`.
 
 **Owed before the first aarch64 release run.** Only `citrate-aarch64-unknown-linux-gnu-56cc2bc80439`
@@ -320,7 +322,7 @@ gh release upload runtime-deps rd/* -R CitrateNetwork/citrate-core
 
 **Dry run** (`dry_run: true`): the job builds the six sidecars at their pinned revs and llama.cpp
 b9438 on the runner. The summary compares each digest with its pin, and the bytes are in the
-artifact (`dry-run-sidecars/`). Then it bundles unsigned, with no key and nothing published. When a
+artifact (`dry-run-sidecars/`, kept 2 days). Then it bundles unsigned, with no key and nothing published. When a
 pin moves (a new node rev), this is how the first aarch64 build of that rev is made. Review it, pin
 it, then upload it. If a component's aarch64 pin is owed, list it under `pending`; the check then
 does not demand it of release.yml, and the Linux bundle build fails closed until it is pinned.

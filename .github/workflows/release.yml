@@ -2,12 +2,18 @@
 # author: Claude (Opus 4.8), directed by @SaulBuilds
 # status: active
 #
-# W2.3 + W2.5 — signed release pipeline. On a version tag (v*), builds the
-# macOS ARM app, signs (Developer ID) + notarizes + staples, produces the
-# SIGNED updater artifacts (.app.tar.gz + .sig via createUpdaterArtifacts), and
-# publishes them + a `latest.json` feed to a GitHub Release. The in-app updater
-# (tauri-plugin-updater, pubkey pinned in tauri.conf.json) reads that feed, so
-# every subsequent patch reaches the beta testers with no manual DMG reinstall.
+# W2.3 + W2.5 — signed release builds. On a version tag (v*), builds the macOS ARM app, signs
+# (Developer ID) + notarizes + staples it, produces the SIGNED update file (.app.tar.gz + .sig via
+# createUpdaterArtifacts) and its latest.json entry (scripts/updater-feed.mjs fragment). The in-app
+# updater (tauri-plugin-updater, pubkey pinned in tauri.conf.json) reads that feed.
+#
+# This workflow PUBLISHES NOTHING (053-UPDATER decision 2, 2026-11-07). Each job writes its files to
+# a short-lived workflow artifact; the release ceremony (docs/release/053-UPDATER.md section 3) puts
+# the installers on the private CDN, the update files at the public update path, latest.json on both
+# feeds, and only latest.json + checksums + signatures on the GitHub release. No step creates, edits
+# or uploads to a GitHub release, and no job can write the repository: `component-pins.mjs check`
+# fails CI otherwise. (Until 2026-11-08 tauri-action created the release and uploaded the DMG, the
+# update tarball and a latest.json to it.)
 #
 # Runners (2026-11-08): macOS on macos-15 (GitHub no longer starts macos-14: "The configuration
 # 'macos-14-arm64-us-default' is not supported"), Xcode pinned in a step; Linux aarch64 on the
@@ -27,7 +33,9 @@
 #   APPLE_SIGNING_IDENTITY              Developer ID Application: Larry Klosowski (DDHUG44QC7)
 #   KEYCHAIN_PASSWORD                   any throwaway string (temp keychain in CI)
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
-#   CITRATE_CHAIN_READ_TOKEN            fine-grained PAT, Contents:read on citrate-chain
+#   CITRATE_CHAIN_READ_TOKEN            optional; fine-grained PAT, Contents:read, only if a federation
+#                                       repo goes private again. Only the dry run's clone steps get it
+#                                       (never a step that builds code), as a one-command git header.
 # Runtime deps (sidecars, llama runtime, BGE models, corpus) are NOT in git: they are uploaded to
 # the GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them and
 # verifies each against src-tauri/runtime-deps.sha256 before staging (PBA-L7b-005). Which bytes
@@ -39,11 +47,19 @@
 #
 # ── Dry run (workflow_dispatch, dry_run: true) ────────────────────────────────────────────────
 # Builds every release input from the pinned sources on a clean runner and bundles the app,
-# UNSIGNED, with no updater artifacts: no secret is read, nothing is signed, notarized, uploaded or
-# published, and no tag or release is created. The sidecars are built from the pinned revs with
-# the release build scripts (not taken from runtime-deps), and the step summary compares each
-# digest with its pin. Steps that sign or publish carry `if: env.DRY_RUN != 'true'`;
+# UNSIGNED, with no updater artifacts: no signing secret is read, nothing is signed or notarized,
+# nothing is published, and no tag or release is created. The sidecars are built from the pinned
+# revs with the release build scripts (not taken from runtime-deps), and the step summary compares
+# each digest with its pin. The macOS job uploads nothing; the Linux job uploads its unsigned
+# packages and rebuilt sidecars as a 2-day workflow artifact (any logged-in GitHub user can
+# download a public repository's artifacts). Steps that sign carry `if: env.DRY_RUN != 'true'`;
 # `component-pins.mjs check` fails CI if one does not.
+#
+# ── Tag ───────────────────────────────────────────────────────────────────────────────────────
+# A tag push builds that tag. A manual release run checks out refs/tags/<tag input>, not the ref it
+# was dispatched from, and each job's first step refuses a tag that is not v<x.y.z> equal to the
+# app version in src-tauri/tauri.conf.json, before anything is staged or signed. In a dry run the
+# tag input is only a label (letters, digits, . _ -).
 
 name: release
 
@@ -56,10 +72,10 @@ on:
         description: "Version tag to build (e.g. v0.2.0)"
         required: true
       size_gate:
-        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true, the release
-        # is created as a DRAFT, scripts/size-budget.mjs checks the bundle against
-        # release/budgets.json, and the draft is published only if that passes.
-        description: "Run the installer size gate; publish only if within budget"
+        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true,
+        # scripts/size-budget.mjs checks the bundle against release/budgets.json before the
+        # artifact upload; over budget fails the job and uploads nothing.
+        description: "Run the installer size gate; upload the build only if within budget"
         type: boolean
         required: false
         default: false
@@ -75,17 +91,36 @@ concurrency:
 
 jobs:
   release-macos-arm:
-    name: build · sign · notarize · publish (macOS arm64)
+    name: build · sign · notarize (macOS arm64)
     runs-on: macos-15
+    # Builds only; the release ceremony publishes (053-UPDATER decision 2).
     permissions:
-      contents: write # create/update the GitHub Release + upload assets
+      contents: read
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # true only for a manual run with dry_run; a tag push is never a dry run.
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
-      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # A manual release builds the tag it names, not the branch it was dispatched from.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      # Before anything is staged or signed: a release builds v<x.y.z>, the app's own version.
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          if [ "$DRY_RUN" = true ]; then
+            [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::dry-run label '$TAG' must be letters, digits, . _ -"; exit 1; }
+            echo "dry run: '$TAG' is a label; app version $V"
+          else
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$TAG' is not v<x.y.z>"; exit 1; }
+            [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not name the app version $V (src-tauri/tauri.conf.json)"; exit 1; }
+            echo "release $TAG = app version $V"
+          fi
 
       # macos-15 images carry several Xcodes (16.0 to 16.4 and 26.x on macos-15-arm64 20261104) and
       # move the default between image versions. The SDK the app links against and the codesign,
@@ -103,14 +138,9 @@ jobs:
           xcrun --find stapler
           xcrun --find codesign
 
-      # The federation repos the app and its sidecars build from are public; a token is only
-      # needed if one goes private again. An empty token in the rewrite would break every fetch.
-      - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ env.CHAIN_TOKEN != '' }}
-        run: |
-          git config --global \
-            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
-            "https://github.com/"
+      # No credential is configured for the build: the federation repos the app (cargo git deps) and
+      # its sidecars build from are public. CITRATE_CHAIN_READ_TOKEN, if set, reaches only the dry
+      # run's clone step, never a step that runs a build.
 
       # The toolchain release/components.json pins (toolchain.rust) for the sidecars, also used for
       # the app so a release does not move with whatever `stable` is that day.
@@ -162,15 +192,28 @@ jobs:
       #    pins (the pins are the release Mac's builds; a different build root changes the Mach-O
       #    UUID), so they are staged only for this unsigned, unpublished bundle; the summary says
       #    for each one whether it matches its pin.
+      - name: Clone the pinned sidecar sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token (only if a federation repo is private again) is a header for each clone
+          # command, never written to a git config the build steps would read.
+          auth=()
+          if [ -n "$CHAIN_TOKEN" ]; then
+            auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHAIN_TOKEN" | base64 | tr -d '\n')")
+          fi
+          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
+            # Full clones: the build scripts take the pinned commit from this object store.
+            git ${auth[@]+"${auth[@]}"} clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
+          done
+
       - name: Build sidecars from the pinned sources (dry run)
         if: ${{ env.DRY_RUN == 'true' }}
         run: |
           set -euo pipefail
           export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
-          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
-            # Full clones: build-component.sh takes the pinned commit from this object store.
-            git clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
-          done
           {
             echo "### Sidecars built from the pinned sources (dry run)"
             echo
@@ -311,14 +354,16 @@ jobs:
           node scripts/third-party-notices.mjs check
           node scripts/licence-inventory.mjs --require-notices
 
-      - name: Build · sign · notarize · publish updater artifacts
+      # Release run: the bundler signs every binary with the Developer ID (certificate imported from
+      # APPLE_CERTIFICATE into a temporary keychain), notarizes and staples the .app, and signs the
+      # update tarball with the updater key. The DMG is then notarized and stapled here, as the
+      # release ceremony does. Outputs keep the 0.5.2 names; the feed entry points at the public
+      # update path (053-UPDATER section 3, step 3). Nothing is uploaded to a GitHub release.
+      - name: Build · sign · notarize (macOS arm64)
         if: ${{ env.DRY_RUN != 'true' }}
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
-          # Updater artifact signing (Ed25519; pubkey pinned in tauri.conf.json).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Apple Developer ID signing + notarization.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -326,21 +371,40 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        with:
-          # The overlay merges the externalBin sidecars onto the base config
-          # (which carries the updater plugin + createUpdaterArtifacts).
+        run: |
+          set -euo pipefail
+          for v in TAURI_SIGNING_PRIVATE_KEY APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is not set"; exit 1; }
+          done
           # bundle-lite: what the macOS releases ship (no Gemma in the bundle; first-run download).
-          args: --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
-          # A manual run with size_gate drafts the release; the size gate below publishes it.
-          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate == true }}
-          prerelease: true
-          # Generate + upload latest.json (the feed the app polls). Default true;
-          # explicit here because it is the whole point of W2.
-          includeUpdaterJson: true
+          npx tauri build --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          B=target/aarch64-apple-darwin/release/bundle
+          dmg=( "$B"/dmg/*_"$V"_aarch64.dmg ); tgz=( "$B"/macos/*.app.tar.gz )
+          [ "${#dmg[@]}" = 1 ] && [ -f "${dmg[0]}" ] && [ "${#tgz[@]}" = 1 ] && [ -f "${tgz[0]}" ] && [ -s "${tgz[0]}.sig" ] \
+            || { echo "::error::expected one $V DMG and one signed .app.tar.gz under $B"; ls -R "$B" | head -40; exit 1; }
+          res="$(xcrun notarytool submit "${dmg[0]}" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --output-format json)"
+          echo "$res"
+          [ "$(node -p 'JSON.parse(process.argv[1]).status' "$res")" = Accepted ] \
+            || { echo "::error::notarization of the DMG was not accepted"; exit 1; }
+          xcrun stapler staple "${dmg[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          mkdir -p out
+          cp "${dmg[0]}" "out/Citrate-Core_${V}_aarch64.dmg"
+          cp "${tgz[0]}" out/Citrate-Core.app.tar.gz
+          cp "${tgz[0]}.sig" out/Citrate-Core.app.tar.gz.sig
+          (cd out && shasum -a 256 "Citrate-Core_${V}_aarch64.dmg" Citrate-Core.app.tar.gz > SHA256SUMS-macos)
+          node scripts/updater-feed.mjs fragment --version "$V" \
+            --base-url "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v$V" \
+            --dir out darwin-aarch64 > out/latest.darwin-aarch64.json
+          {
+            echo "### macOS arm64 release files (version $V, signed, notarized, stapled)"
+            echo
+            echo '```'
+            cat out/SHA256SUMS-macos
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Dry run: the same bundle, unsigned and without updater artifacts (so no updater key is
       # needed). Nothing leaves the runner; the summary records what was built.
@@ -363,18 +427,23 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md), and every
-      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job and leaves the
-      # release a draft for review.
+      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job before the
+      # upload, so an over-budget build leaves no artifact.
       - name: Size gate (manual, size_gate input or dry run)
         if: ${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}
         run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish the draft release (size gate passed)
-        if: ${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.tag }}
-        run: gh release edit "$TAG" --draft=false
+      # Release run: the files the ceremony publishes (053-UPDATER section 3), never a GitHub
+      # release. Kept 2 days; any logged-in GitHub user can download a public repository's
+      # artifacts, and the DMG is the member installer, so the ceremony collects it promptly.
+      - name: Upload the macOS release files
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: citrate-core-macos-arm64-${{ env.TAG }}
+          path: out
+          if-no-files-found: error
+          retention-days: 2
 
   # ── Linux aarch64 (2026-11-08; GitHub-hosted arm64, owner OK). Replaces the hand build on the DGX
   #    (sold). ubuntu-24.04-arm, not 22.04-arm: the aarch64 bytes a release ships are the pinned
@@ -395,18 +464,28 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # true only for a manual run with dry_run; a tag push is never a dry run.
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
-      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       TRIPLE: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # A manual release builds the tag it names, not the branch it was dispatched from.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
 
-      - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ env.CHAIN_TOKEN != '' }}
+      # Before anything is staged or signed: a release builds v<x.y.z>, the app's own version.
+      - name: Check the tag
         run: |
-          git config --global \
-            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
-            "https://github.com/"
+          set -euo pipefail
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          if [ "$DRY_RUN" = true ]; then
+            [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::dry-run label '$TAG' must be letters, digits, . _ -"; exit 1; }
+            echo "dry run: '$TAG' is a label; app version $V"
+          else
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$TAG' is not v<x.y.z>"; exit 1; }
+            [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not name the app version $V (src-tauri/tauri.conf.json)"; exit 1; }
+            echo "release $TAG = app version $V"
+          fi
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -449,14 +528,28 @@ jobs:
       #    on this runner, as the macOS dry run does. The summary says whether each matches its pin,
       #    and the bytes are uploaded with the run, so a rebuild that reproduces a pin (or a new
       #    rev's first aarch64 build) can be reviewed, uploaded to runtime-deps and pinned.
+      - name: Clone the pinned sidecar sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token (only if a federation repo is private again) is a header for each clone
+          # command, never written to a git config the build steps would read.
+          auth=()
+          if [ -n "$CHAIN_TOKEN" ]; then
+            auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHAIN_TOKEN" | base64 | tr -d '\n')")
+          fi
+          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
+            # Full clones: the build scripts take the pinned commit from this object store.
+            git ${auth[@]+"${auth[@]}"} clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
+          done
+
       - name: Build sidecars and llama-server from the pinned sources (dry run)
         if: ${{ env.DRY_RUN == 'true' }}
         run: |
           set -euo pipefail
           export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
-          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
-            git clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
-          done
           mkdir -p src-tauri/binaries src-tauri/llama out/dry-run-sidecars
           {
             echo "### Linux aarch64 sidecars built from the pinned sources (dry run)"
@@ -582,9 +675,6 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 npx tauri build --target "$TRIPLE" \
             --config src-tauri/tauri.bundle-linux.conf.json
           V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
-          if [ "$DRY_RUN" != true ] && [ "$TAG" != "v$V" ]; then
-            echo "::error::tag $TAG does not name the app version $V (src-tauri/tauri.conf.json)"; exit 1
-          fi
           B="target/$TRIPLE/release/bundle"
           ai=( "$B"/appimage/*_"$V"_*.AppImage ); deb=( "$B"/deb/*_"$V"_*.deb )
           [ "${#ai[@]}" = 1 ] && [ -f "${ai[0]}" ] && [ "${#deb[@]}" = 1 ] && [ -f "${deb[0]}" ] \
@@ -623,12 +713,13 @@ jobs:
             --dir out linux-aarch64 linux-aarch64-deb > out/latest.linux-aarch64.json
           cat out/latest.linux-aarch64.json
 
-      # Visible to anyone who can read this repository for 7 days. The AppImage and .deb are the
-      # same bytes that become public update files at the release (053-UPDATER.md step 3).
+      # Kept 2 days. Any logged-in GitHub user can download a public repository's artifacts; the
+      # AppImage and .deb are the same bytes that become public update files at the release
+      # (053-UPDATER.md step 3), but before it they are early, so the ceremony collects them promptly.
       - name: Upload the Linux aarch64 packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: citrate-core-linux-aarch64-${{ env.TAG }}
           path: out
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2

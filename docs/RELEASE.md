@@ -7,9 +7,11 @@ status: active
 
 # Releasing Citrate Core (in-app auto-update pipeline — W2)
 
-Every tagged release is built, Developer-ID signed, notarized, stapled, and its
-**signed updater artifacts** (`*.app.tar.gz` + `*.sig`) plus a `latest.json` feed
-are published to a GitHub Release. The shipped app runs `tauri-plugin-updater`,
+Every tagged release is built, Developer-ID signed, notarized and stapled, with its
+**signed updater artifacts** (`*.app.tar.gz` + `*.sig`) and its `latest.json` entry. The release
+ceremony publishes them ([053-UPDATER.md](release/053-UPDATER.md) section 3); from 0.5.3 the GitHub
+release carries only `latest.json`, the checksums and the signatures (decision 2), and
+`release.yml` publishes nothing itself. The shipped app runs `tauri-plugin-updater`,
 which polls that feed, verifies the Ed25519 signature against the **public** key
 pinned in `src-tauri/tauri.conf.json`, downloads, and installs on restart. Testers
 never reinstall a DMG for a patch.
@@ -256,7 +258,7 @@ release path fails closed instead:
   It refuses a README-only directory, a corpus the stager did not record or that changed after
   staging (digest, node count, file hashes), a dev-staged corpus (`--allow-dirty`,
   `--allow-unembedded`; pass `--allow-dev` for a dev build), and one not staged from the pinned
-  `knowledge-corpus.tar.gz`. release.yml runs it before `tauri-action`, and
+  `knowledge-corpus.tar.gz`. release.yml runs it before its first `npx tauri build`, and
   `scripts/ci/check-release-pins.sh` fails CI if that step is removed or moved after the build.
   Linux and Windows: [`RELEASE_LINUX.md`](RELEASE_LINUX.md) and
   [`RELEASE_WINDOWS.md`](RELEASE_WINDOWS.md) step 2b.
@@ -279,15 +281,20 @@ node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
    git tag v0.2.0 && git push origin v0.2.0
    ```
    (or run the `release` workflow manually with the tag input).
-3. The workflow builds, signs, notarizes, and publishes the release + `latest.json`.
+3. The workflow builds, signs and notarizes, and uploads the files plus each platform's
+   `latest.json` fragment as short-lived workflow artifacts (`citrate-core-macos-arm64-<tag>`,
+   `citrate-core-linux-aarch64-<tag>`, kept 2 days). Publish them with the release ceremony in
+   [053-UPDATER.md](release/053-UPDATER.md) section 3: installers to the private CDN, update files to
+   the public update path, `updater-feed.mjs merge` of the fragments into `latest.json` on both
+   feeds, and only `latest.json`, the checksums and the signatures on the GitHub release.
 4. Verify: an older installed build shows the **Update available** card within its
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
 5. Size gate (HUP-S11.0): on the machine that built the bundle, run
    `node scripts/size-budget.mjs` (reads `target/release/bundle`, compares with
    `release/budgets.json`, exits 1 when anything is over budget). In CI it is manual only:
-   dispatch `release` with `size_gate: true` and the release stays a draft unless the gate
-   passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
+   dispatch `release` with `size_gate: true` and the job fails before its artifact upload unless
+   the gate passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
 6. Licence check (gate g3-licence): `node scripts/licence-inventory.mjs --corpus
    src-tauri/knowledge-corpus` must pass (every sidecar, resource, tool, library, skills and
    corpus source has a licence entry and its texts ship in `licenses/`). Before the first
@@ -345,8 +352,10 @@ Dispatch `release` with `dry_run: true` from any branch (the `tag` input is only
 builds the six cargo sidecars from their pinned revs on a clean runner with the scripts above,
 stages the pinned llama runtime, BGE models, corpus and Kubo, bundles the app **unsigned** with no
 updater artifacts, and writes the sidecar digests (against their pins), the bundle checksums and
-the size report to the run summary. It reads no secret, signs, notarizes, uploads and publishes
-nothing, and creates no tag or release; `component-pins.mjs check` fails CI if a signing or
+the size report to the run summary. It reads no signing secret (only the optional federation read
+token, in its clone steps), signs, notarizes and publishes nothing, and creates no tag or release.
+The Linux aarch64 job uploads its unsigned packages and rebuilt sidecars as a 2-day workflow
+artifact (downloadable by any logged-in GitHub user, as the repository is public); `component-pins.mjs check` fails CI if a signing or
 publishing step loses its `env.DRY_RUN != 'true'` guard. The runner's sidecar digests differ from
 the pins (another build root), so a dry run proves the sources build and bundle, not the pinned
 bytes.
@@ -366,11 +375,15 @@ bytes.
   ([RELEASE_LINUX.md](RELEASE_LINUX.md#linux-aarch64-in-ci-release-linux-aarch64)).
 - `node scripts/component-pins.mjs check` (CI) fails if a release job runs on a retired image.
 
-Not changed here: in the macOS job `tauri-action` still uploads the DMG and the update tarball to
-the GitHub release. [053-UPDATER.md](release/053-UPDATER.md) decision 2 says that from 0.5.3 the
-GitHub release carries only `latest.json`, the checksums and the signatures. Until that job is
-changed, a 0.5.3 tag run would publish files the plan keeps off GitHub. Cut 0.5.3 with the local
-fallback below, or change the job first.
+**Nothing in CI publishes** ([053-UPDATER.md](release/053-UPDATER.md) decision 2). The macOS job no
+longer uses `tauri-action`, which created the GitHub release and uploaded the DMG, the update
+tarball and a macOS-only `latest.json` to it. It runs `npx tauri build` with the signing
+environment, notarizes and staples the DMG, and uploads `Citrate-Core_<v>_aarch64.dmg`,
+`Citrate-Core.app.tar.gz` (+ `.sig`), `SHA256SUMS-macos` and `latest.darwin-aarch64.json` as a
+workflow artifact kept 2 days. Any logged-in GitHub user can download a public repository's
+artifacts, so the DMG is reachable there until it expires: run the ceremony promptly after the tag.
+`component-pins.mjs check` fails CI if any release.yml step creates, edits or uploads to a GitHub
+release, or a job is granted `contents: write`.
 
 ## Local fallback (the release Mac)
 
@@ -393,9 +406,14 @@ data. Never run the install tests there either.
    `xcrun notarytool submit <dmg> --keychain-profile citrate --wait`, then `xcrun stapler staple` the
    DMG and the `.app`. Check the app inside the mounted DMG with `spctl -a -t exec -vvv` (expect
    `source=Notarized Developer ID`); for the DMG itself use `xcrun stapler validate`.
-4. Write the feed entry with `node scripts/updater-feed.mjs fragment ... darwin-aarch64`, merge it
-   with the Linux fragments (`updater-feed.mjs merge`), and publish as
-   [053-UPDATER.md](release/053-UPDATER.md) section 3 says.
+4. Name the files as the CI job does (`Citrate-Core_<v>_aarch64.dmg`, `Citrate-Core.app.tar.gz` and
+   its `.sig`), then write the feed entry: `node scripts/updater-feed.mjs fragment --version <v>
+   --base-url https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v<v> --dir <dir>
+   darwin-aarch64`. Merge it with the Linux fragments (`updater-feed.mjs merge`).
+5. Publish only as [053-UPDATER.md](release/053-UPDATER.md) section 3 says: the DMG to the private CDN
+   under `downloads/v<v>/`, the update tarball and its `.sig` to the public `downloads/updater/v<v>/`,
+   `latest.json` to both feeds, and on the GitHub release only `latest.json`, the checksums and the
+   signatures. Never attach the DMG or the update tarball to a GitHub release.
 
 ## First-run caveat (honest)
 Every tag run of this workflow so far (v0.4.2 to v0.5.1, and the Windows tags) failed at staging,
