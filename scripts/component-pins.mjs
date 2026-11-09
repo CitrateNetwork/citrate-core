@@ -259,6 +259,16 @@ export function workflowSteps(text) {
   return steps;
 }
 
+// The targets release.yml builds a bundle for: macOS arm64 (release-macos-arm, macos-15) and Linux
+// aarch64 (release-linux-aarch64, ubuntu-24.04-arm). Linux x86_64 is still built on its own host
+// (docs/RELEASE_LINUX.md), so its pins stay inline and release.yml does not stage it.
+export const MAC_TARGET = "aarch64-apple-darwin";
+export const RELEASE_TARGETS = [MAC_TARGET, "aarch64-unknown-linux-gnu"];
+// Hosted runner images GitHub has retired: a job on one is never started, so a tag push would
+// build and publish nothing (macos-14 stopped in 2026-11: "The configuration
+// 'macos-14-arm64-us-default' is not supported").
+const RETIRED_RUNNER = /^(macos-1[0-4](-.*)?|ubuntu-(18|20)\.04(-.*)?)$/;
+
 // The dry-run contract of release.yml: a dry run is only ever a manual dispatch with dry_run, every
 // step that signs, notarizes or publishes is skipped in a dry run, and the dry-run-only steps read
 // no secret but the job's own GITHUB_TOKEN.
@@ -272,10 +282,29 @@ export function dryRunGuardErrors(text) {
     const ifLine = (/^ {8}if: (.*)$/m.exec(step) || [])[1] || "";
     if (PUBLISHES.test(step) && !ifLine.includes("env.DRY_RUN != 'true'")) errors.push(`release.yml step '${name}' signs or publishes but is not guarded by env.DRY_RUN != 'true'`);
     if (ifLine.includes("env.DRY_RUN == 'true'")) {
-      for (const s of step.match(/secrets\.[A-Z_]+/g) || []) if (s !== "secrets.GITHUB_TOKEN") errors.push(`release.yml dry-run step '${name}' reads ${s}`);
+      // The job's own token, and the optional federation read token in a step that only clones.
+      const allowed = new Set(["secrets.GITHUB_TOKEN", ...(/^Clone /.test(name) ? ["secrets.CITRATE_CHAIN_READ_TOKEN"] : [])]);
+      for (const s of step.match(/secrets\.[A-Z_]+/g) || []) if (!allowed.has(s)) errors.push(`release.yml dry-run step '${name}' reads ${s}`);
       if (/gh release (create|edit|upload|delete)/.test(step)) errors.push(`release.yml dry-run step '${name}' writes a release`);
     }
   }
+  return errors;
+}
+
+// 053-UPDATER decision 2: from 0.5.3 the GitHub release carries only latest.json, the checksums
+// and the signatures, and the release ceremony puts them there. Installers and update files never
+// go to a GitHub release (this repository is public, and a release asset is permanent). So no
+// release.yml step creates, edits or uploads to a release (tauri-action does all three), and no job
+// may write the repository's contents (which includes its releases).
+const RELEASE_WRITE = /tauri-apps\/tauri-action|softprops\/action-gh-release|ncipollo\/release-action|gh release (create|upload|edit|delete)|gh api [^\n]*\/releases/;
+export function releaseUploadErrors(text) {
+  const errors = [];
+  for (const step of workflowSteps(text)) {
+    const name = (/name: (.*)/.exec(step) || [])[1] || step.split("\n")[0].trim();
+    const code = step.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+    if (RELEASE_WRITE.test(code)) errors.push(`release.yml step '${name}' writes to a GitHub release; installers and update files go to workflow artifacts, the ceremony publishes (053-UPDATER decision 2)`);
+  }
+  for (const m of text.matchAll(/^\s*contents:\s*write\b.*$/gm)) errors.push(`release.yml grants contents: write (it may create GitHub releases; 053-UPDATER decision 2): '${m[0].trim()}'`);
   return errors;
 }
 
@@ -409,20 +438,27 @@ export function check(root) {
     if (c.build && c.build.script && !c.build.script.startsWith("scripts/")) err(`'${c.id}': build.script must live in scripts/`);
   }
 
-  // release.yml stages exactly the pinned macOS bytes: every runtime-deps asset it downloads that
-  // is a sidecar is the manifest's aarch64-apple-darwin asset, and every component is staged.
+  // release.yml stages exactly the pinned bytes for each target it builds (RELEASE_TARGETS): every
+  // runtime-deps asset it downloads that is a sidecar is the manifest's asset for that target, and
+  // every component is staged. A Linux target still `pending` on its builder is not demanded here;
+  // the Linux job then has no bytes for it and its bundle build fails closed.
   const wf = readIf(path.join(root, ".github", "workflows", "release.yml"));
   if (wf) {
     const assets = new Set(releaseAssets(wf));
-    const T = "aarch64-apple-darwin";
-    for (const c of comps) {
-      const a = (c.artifacts || {})[T];
-      if (!a) {
-        err(`'${c.id}': no ${T} artifact, but release.yml builds the ${T} bundle`);
-        continue;
+    for (const T of RELEASE_TARGETS) {
+      for (const c of comps) {
+        const a = (c.artifacts || {})[T];
+        if (!a) {
+          if (T !== MAC_TARGET && c.pending && c.pending[T]) continue;
+          err(`'${c.id}': no ${T} artifact, but release.yml builds the ${T} bundle`);
+          continue;
+        }
+        if (a.runtime_deps_asset) {
+          if (!assets.has(a.runtime_deps_asset)) err(`release.yml does not stage '${c.id}' for ${T} (${a.runtime_deps_asset})`);
+        } else if (!(c.build && c.build.kind === "download" && wf.includes(`build-component.sh ${c.id} --target ${T}`))) {
+          err(`release.yml does not stage '${c.id}' for ${T} from a pinned source`);
+        }
       }
-      if (a.runtime_deps_asset && !assets.has(a.runtime_deps_asset)) err(`release.yml does not stage '${c.id}' (${a.runtime_deps_asset})`);
-      if (!a.runtime_deps_asset && !(c.build && c.build.kind === "download" && wf.includes(`build-component.sh ${c.id}`))) err(`release.yml does not stage '${c.id}' from a pinned source`);
     }
     const known = new Set([
       ...comps.flatMap((c) => Object.values(c.artifacts || {}).map((a) => a.runtime_deps_asset).filter(Boolean)),
@@ -432,12 +468,20 @@ export function check(root) {
     ]);
     for (const a of assets) if (!known.has(a)) err(`release.yml stages runtime-deps asset ${a}, which release/components.json does not name`);
     for (const a of known) if (!pins.has(a)) err(`runtime-deps asset ${a} (named in release/components.json) has no pin in src-tauri/runtime-deps.sha256`);
+    for (const x of wf.matchAll(/^\s*runs-on:\s*(\S+)\s*$/gm)) {
+      if (RETIRED_RUNNER.test(x[1])) err(`release.yml runs a job on ${x[1]}, a runner image GitHub no longer starts`);
+    }
   }
 
-  if (wf && comps.some((c) => c.requires) && !/component-pins\.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin/.test(wf)) {
-    err("release.yml does not run `component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin` on the staged sidecars");
+  if (wf && comps.some((c) => c.requires)) {
+    for (const T of RELEASE_TARGETS) {
+      if (!wf.includes(`component-pins.mjs verify-staged src-tauri/binaries ${T}`)) {
+        err(`release.yml does not run \`component-pins.mjs verify-staged src-tauri/binaries ${T}\` on the staged sidecars`);
+      }
+    }
   }
   if (wf) for (const e of dryRunGuardErrors(wf)) err(e);
+  if (wf) for (const e of releaseUploadErrors(wf)) err(e);
 
   // The node sidecar rev is the rev the app's own chain crates and build-sidecar.sh's
   // activation-hardening gate pin.

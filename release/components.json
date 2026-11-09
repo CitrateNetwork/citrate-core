@@ -2,7 +2,7 @@
   "$comment": [
     "Release component pins: where every bundled sidecar and model comes from, and which bytes a release may ship. Read by scripts/build-component.sh (builds or fetches a component at its pin and installs it only if its sha256 matches) and checked by `node scripts/component-pins.mjs check` (CI, node job), which fails when this file, the build scripts, the bundle overlays, src-tauri/runtime-deps.sha256, release.yml and src-tauri/src/model.rs disagree.",
     "Each artifact's digest lives in one place: its own sha256, or, for bytes uploaded to the runtime-deps prerelease, the pin of its runtime_deps_asset in src-tauri/runtime-deps.sha256 (release.yml verifies that pin before staging). Digests are of the bytes staged into src-tauri/binaries before bundling; Tauri then signs each externalBin with the Developer ID, so the copies inside a signed macOS app differ.",
-    "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are DGX-lane builds (v0.5.1 PROVENANCE-linux.txt for the components that did not move). A component whose rev moved lists its Linux targets under `pending`, with who builds them and how, until the DGX records them with build-component.sh --print-digest; nothing builds or stages a pending target (`component-pins.mjs pending` lists them).",
+    "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are DGX-lane builds (v0.5.1 PROVENANCE-linux.txt for the components that did not move). A component whose rev moved lists its Linux targets under `pending`, with who builds them and how, until the DGX records them with build-component.sh --print-digest; nothing builds or stages a pending target (`component-pins.mjs pending` lists them). Since 2026-11-08 the aarch64-unknown-linux-gnu bytes are runtime_deps_asset pins that release.yml's release-linux-aarch64 job (ubuntu-24.04-arm) stages; with the DGX sold, a moved aarch64 pin is first built by that job's dry run (docs/RELEASE_LINUX.md).",
     "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR."
   ],
   "version": 1,
@@ -45,7 +45,7 @@
           "evidence": "DGX lane fixed asset, built on citrate-core-linux-build 2026-10-30: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at 56cc2bc8 (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6511916347; consensus --json fingerprint with no config 0x2c3d93ac9f214cb7a946f398e0b4c28c on the macOS build of the same rev"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "ed0af8063e9806ff0478d09f0f3c03061aac791337a92fc5e0441251fcc97cdf",
+          "runtime_deps_asset": "citrate-aarch64-unknown-linux-gnu-56cc2bc80439",
           "evidence": "DGX lane fixed asset, built on the DGX 2026-10-30: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at 56cc2bc8 (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6511916347; consensus --json fingerprint with no config 0x2c3d93ac9f214cb7a946f398e0b4c28c on the macOS build of the same rev"
         }
       }
@@ -82,7 +82,7 @@
           "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27; same bytes from a second clean build. Replaces the 0.5.1 pin c92d52eb, which a hand build made (cargo build without -p/--target), not this script"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "d62e5233773d2353f1e80da44d5702381fa2717de1639507f05c0f5faa637161",
+          "runtime_deps_asset": "node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a",
           "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root. Replaces the 0.5.1 pin 3fbd39c8, which a hand build made (cargo build without -p/--target), not this script"
         }
       }
@@ -129,7 +129,7 @@
           "evidence": "build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "a3fcf5480cd1636a5039d708b6672df0d7d0f541e3505ea31f6d434d67598a77",
+          "runtime_deps_asset": "mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369",
           "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
         }
       }
@@ -166,7 +166,7 @@
           "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "db8415872b35685a9e5946bed91fbee3c226c72ff23db0779c2c7354392fb36b",
+          "runtime_deps_asset": "comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c",
           "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
         }
       }
@@ -203,7 +203,7 @@
           "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "b6d0683bfd1e911e9352e5355973a195a1b4b8b24bd7ef07339a217730f4f956",
+          "runtime_deps_asset": "cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260",
           "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
         }
       }
@@ -240,7 +240,7 @@
           "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), x86_64 on citrate-core-linux-build (O-17), 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "23e36abb2d965d9dbc6e4c6c2de8f20a867ba2ccf4d22240fa8109dfce82773f",
+          "runtime_deps_asset": "hermes-aarch64-unknown-linux-gnu-05243c72bd52",
           "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), aarch64 on the DGX spark-2e01, 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
         }
       }
@@ -320,7 +320,7 @@
           "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt"
         },
         "aarch64-unknown-linux-gnu": {
-          "sha256": "8a622da403c99117853fbccf0bd3cd6fc839c146967c726a6c3b435f5901dcd3",
+          "runtime_deps_asset": "llama-server-aarch64-unknown-linux-gnu-b9438",
           "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt"
         }
       }

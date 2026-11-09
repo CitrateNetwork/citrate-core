@@ -859,7 +859,14 @@ describe("tripwires", () => {
     const conf = JSON.parse(read(path.join(repo, "src-tauri", "tauri.conf.json")));
     expect(conf.identifier).toBe(H.BUNDLE_ID);
     expect(`${conf.productName}.app`).toBe(H.APP_DIR_NAME);
-    const rel = read(path.join(repo, ".github", "workflows", "release.yml"));
+    // The macOS job's overlays only; release-linux-aarch64 bundles with the Linux overlay.
+    const wf = read(path.join(repo, ".github", "workflows", "release.yml"));
+    const start = wf.indexOf("\n  release-macos-arm:\n");
+    expect(start).toBeGreaterThan(0);
+    const next = wf.slice(start + 1).search(/\n {2}[a-z0-9-]+:\n/);
+    const rel = next < 0 ? wf.slice(start) : wf.slice(start, start + 1 + next);
+    expect(rel).toContain("runs-on: macos-15");
+    expect(rel).not.toContain("release-linux-aarch64");
     const overlays = [...rel.matchAll(/--config (src-tauri\/tauri\.[a-z-]+\.conf\.json)/g)].map((m) => m[1]);
     expect(overlays.length).toBeGreaterThan(0);
     for (const o of overlays) expect(o).toBe(H.RELEASE_OVERLAY);

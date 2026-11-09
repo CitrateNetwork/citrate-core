@@ -13,15 +13,39 @@ stops being true:
    delete it, and this check with it);
 3. today is after EXPIRES (decide again; do not renew by reflex).
 
+Re-verified 2026-11-08 (renewed from 2026-11-09 to 2027-01-31, the window of
+citrate-chain's identical ignore in its audit.toml):
+
+- Cargo.lock holds one crypto-bigint, 0.5.5, and its only user is
+  elliptic-curve 0.13.8. That is reached by k256 0.13.4 (citrate-core and
+  citrate-core-kit directly, citrate-wallet-core from citrate-chain, bip32
+  0.5.3), p256 0.13.2 (a dev-dependency: the test OIDC authority), ecdsa
+  0.16.9 and primeorder 0.13.6.
+- Reachable: k256 0.13's Scalar adds, subtracts and negates with
+  crypto-bigint's U256 add_mod / sub_mod / neg_mod and range-checks secret
+  bytes with ct_lt, so wallet ECDSA signing and the comms-key check run
+  crypto-bigint 0.5 code on secret scalars. The advisory's UintRef and
+  BoxedMontyForm findings are 0.7 APIs that 0.5 does not have; its
+  compiler-dependent branch class cannot be ruled out for 0.5. Exposure:
+  signing is on the member's own device, one signature per approval in the
+  SignatureCeremony, RFC 6979 nonces, no remote signing service; an attacker
+  needs fine-grained timing or microarchitectural observation of that device.
+- No compatible upgrade: elliptic-curve 0.14.3 (crypto-bigint ^0.7.8) and
+  k256 0.14.0 are a semver-major move, and citrate-wallet-core at the pinned
+  citrate-chain rev (the bundled node's rev) still uses k256 0.13 and bip32
+  0.5.3 (bip32 0.6 is the k256 0.14 line). The 0.5.5 entry leaves the lock
+  only when citrate-chain and citrate-core move to the 0.14 curve line
+  together (tracking issue: CitrateNetwork/citrate-core#607).
+
 Usage: check-crypto-bigint-users.py [--lock Cargo.lock] [--self-test]
 """
 import argparse
 import sys
 import tomllib
-from datetime import date
+from datetime import date, timedelta
 
 ADVISORY = "RUSTSEC-2026-0387"
-EXPIRES = date(2026, 11, 9)
+EXPIRES = date(2027, 1, 31)
 FIXED = (0, 7, 6)
 ALLOWED_USER = "elliptic-curve"
 ALLOWED_USER_LINE = (0, 13)
@@ -68,11 +92,15 @@ def _lock(*pkgs: tuple[str, str, list[str]]) -> dict:
 
 
 def self_test() -> None:
-    ok_day = date(2026, 10, 25)
+    # Dates derive from EXPIRES, so renewing the window can never leave the
+    # expiry case testing a day that is no longer past it.
+    ok_day = EXPIRES - timedelta(days=30)
     base = [("crypto-bigint", "0.5.5", []), ("elliptic-curve", "0.13.8", ["crypto-bigint"])]
     cases = [
         ("allowed user only", _lock(*base), ok_day, 0),
-        ("expired", _lock(*base), date(2026, 11, 10), 1),
+        ("last day of the window", _lock(*base), EXPIRES, 0),
+        ("expired", _lock(*base), EXPIRES + timedelta(days=1), 1),
+        ("expired long ago", _lock(*base), EXPIRES + timedelta(days=365), 1),
         ("new direct user", _lock(*base, ("rsa", "0.9.8", ["crypto-bigint"])), ok_day, 1),
         ("elliptic-curve 0.14 on old bigint",
          _lock(("crypto-bigint", "0.5.5", []), ("elliptic-curve", "0.14.3", ["crypto-bigint"])), ok_day, 1),
