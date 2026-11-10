@@ -375,6 +375,8 @@ commands.allow = [
   "components_rollback",
   "services_snapshot",
   "sidecars_health",
+  "update_prepare",
+  "update_prepare_cancel",
   "store_catalog",
   "store_stage",
   "store_install",

@@ -16,6 +16,7 @@ export function UpdateBanner() {
     (state.status === "available" ||
       state.status === "downloading" ||
       state.status === "ready" ||
+      state.status === "installing" ||
       state.status === "error");
   if (!visible) return null;
 
@@ -48,6 +49,8 @@ export function UpdateBanner() {
         <span style={{ fontSize: 13.5, fontWeight: 600, flex: 1 }}>
           {state.status === "ready"
             ? "Update ready to install"
+            : state.status === "installing"
+              ? "Stopping services and installing…"
             : state.status === "downloading"
               ? "Downloading update…"
               : state.status === "error"
@@ -96,7 +99,7 @@ export function UpdateBanner() {
       )}
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        {state.status !== "downloading" && (
+        {state.status !== "downloading" && state.status !== "installing" && (
           <button className="btn btn-ghost btn-sm" onClick={dismiss}>
             {state.status === "ready" ? "Later" : "Dismiss"}
           </button>

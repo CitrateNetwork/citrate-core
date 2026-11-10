@@ -7,9 +7,15 @@
 //   - Only ever runs in a packaged Tauri build. In sim/web the whole flow is a
 //     no-op ("idle") — no fabricated "update available", no fake progress.
 //   - Progress bytes are the REAL bytes the plugin reports, not a synthetic bar.
-//   - The app is never yanked out from under the user: install stages the
+//   - The app is never yanked out from under the user: the download stages the
 //     update, and the RESTART is always an explicit click (even for a
 //     critical patch, which only auto-*downloads*).
+//   - CORE-D6 (0.5.3): the update is installed only after the sidecars are
+//     drained. On the restart click: `update_prepare` (Rust update_drain.rs)
+//     holds every new sidecar start and stops every sidecar through its owner;
+//     only when it reports every one stopped does `install()` run, then the
+//     relaunch. If the drain is incomplete or the install fails, the hold is
+//     released (`update_prepare_cancel`) and the member is told why.
 //
 // The plugin modules are dynamically imported inside the Tauri-gated path so the
 // web bundle never eagerly loads Tauri internals.
@@ -27,6 +33,7 @@ export type UpdateStatus =
   | "available"
   | "downloading"
   | "ready" // downloaded + staged; awaiting an explicit restart
+  | "installing" // CORE-D6: services drained, the update being installed, then the relaunch
   | "error";
 
 export interface UpdateState {
@@ -88,10 +95,62 @@ export function progressFraction(s: Pick<UpdateState, "downloadedBytes" | "total
 type PluginUpdate = {
   version: string;
   body?: string | null;
-  downloadAndInstall: (
+  download: (
     onEvent: (e: { event: "Started" | "Progress" | "Finished"; data?: { contentLength?: number; chunkLength?: number } }) => void,
   ) => Promise<void>;
+  install: () => Promise<void>;
 };
+
+/** CORE-D6: what `update_prepare` reports. Mirrors Rust `update_drain::DrainReport`. */
+export interface DrainReport {
+  allStopped: boolean;
+  services: { id: string; label: string; before: string; after: string; stopped: boolean }[];
+  tookMs: number;
+}
+
+/** CORE-D6: the steps of applying a downloaded update, injected so the order is testable. */
+export interface ApplySteps {
+  /** Hold new sidecar starts and stop every sidecar (`update_prepare`). */
+  drain: () => Promise<DrainReport>;
+  /** Release the hold (`update_prepare_cancel`); the sidecars stay stopped. */
+  cancel: () => Promise<void>;
+  /** The plugin's install of the downloaded bytes (on Windows it starts the installer and exits). */
+  install: () => Promise<void>;
+  relaunch: () => Promise<void>;
+}
+
+const msgOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * CORE-D6: drain, then install, then relaunch. The update is installed only when the drain
+ * reports every sidecar stopped. Returns an error for the member on any refusal or failure,
+ * after releasing the hold.
+ */
+export async function applyStagedUpdate(steps: ApplySteps): Promise<{ ok: true } | { ok: false; error: string }> {
+  let report: DrainReport;
+  try {
+    report = await steps.drain();
+  } catch (e) {
+    await steps.cancel().catch(() => undefined);
+    return { ok: false, error: `The update was not installed: the services could not be stopped (${msgOf(e)}).` };
+  }
+  if (!report.allStopped) {
+    const left = report.services.filter((s) => !s.stopped).map((s) => `${s.label} (${s.after})`);
+    await steps.cancel().catch(() => undefined);
+    return {
+      ok: false,
+      error: `The update was not installed: ${left.join(", ") || "a service"} did not stop. Services stay stopped until you start them or restart the app.`,
+    };
+  }
+  try {
+    await steps.install();
+  } catch (e) {
+    await steps.cancel().catch(() => undefined);
+    return { ok: false, error: `The update could not be installed: ${msgOf(e)}. Services stay stopped until you start them or restart the app.` };
+  }
+  await steps.relaunch();
+  return { ok: true };
+}
 
 /**
  * React hook: auto-check on mount (Tauri only) + every {@link UPDATE_CHECK_INTERVAL_MS},
@@ -115,12 +174,12 @@ export function useAppUpdate() {
   const check = useCallback(async () => {
     if (BRIDGE_MODE !== "tauri") return; // honest no-op off-desktop
     // Don't clobber an in-flight download/ready with a re-check.
-    setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "checking", error: null }));
+    setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "checking", error: null }));
     try {
       const { check: pluginCheck } = await import("@tauri-apps/plugin-updater");
       const update = (await pluginCheck()) as PluginUpdate | null;
       if (!update) {
-        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate" }));
+        setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate" }));
         return;
       }
       pending.current = update;
@@ -155,7 +214,8 @@ export function useAppUpdate() {
     patch({ status: "downloading", downloadedBytes: 0, totalBytes: null, error: null });
     try {
       let downloaded = 0;
-      await update.downloadAndInstall((e) => {
+      // CORE-D6: download only; the install runs after the drain, on the restart click.
+      await update.download((e) => {
         if (e.event === "Started") {
           patch({ totalBytes: e.data?.contentLength ?? null });
         } else if (e.event === "Progress") {
@@ -172,10 +232,20 @@ export function useAppUpdate() {
   }, [patch]);
 
   const restart = useCallback(async () => {
-    if (BRIDGE_MODE !== "tauri") return;
+    const update = pending.current;
+    if (!update || BRIDGE_MODE !== "tauri") return;
+    patch({ status: "installing", error: null });
+    const { invoke } = await import("../bridge/tauri/invoke");
     const { relaunch } = await import("@tauri-apps/plugin-process");
-    await relaunch();
-  }, []);
+    const r = await applyStagedUpdate({
+      // Each sidecar may take its full stop grace; the drain gets three minutes.
+      drain: () => invoke<DrainReport>("update_prepare", {}, 180_000),
+      cancel: () => invoke<void>("update_prepare_cancel", {}),
+      install: () => update.install(),
+      relaunch,
+    });
+    if (!r.ok) patch({ status: "error", error: r.error });
+  }, [patch]);
 
   const dismiss = useCallback(() => patch({ dismissed: true }), [patch]);
 

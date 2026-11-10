@@ -169,11 +169,11 @@ mod serve;
 mod serve_plan;
 mod services;
 // CORE-D6 (0.5.3): drain the sidecars before an update is installed.
-mod update_drain;
 mod shell;
 mod skill_registry;
 mod skills_local;
 mod telemetry;
+mod update_drain;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -1096,6 +1096,9 @@ pub fn run() {
             services::services_snapshot,
             // CORE-D4 — every sidecar's health: state, counters, last crash, slow retry, log tail.
             services::sidecars_health,
+            // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
+            update_drain::update_prepare,
+            update_drain::update_prepare_cancel,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
