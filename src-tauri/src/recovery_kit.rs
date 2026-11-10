@@ -51,7 +51,7 @@ pub(crate) struct DeviceKeySpec {
     pub len: usize,
 }
 
-/// The keys the kit backs up. Names match `node.rs` and `memory.rs`.
+/// The keys the kit backs up. Names match `node.rs`, `memory.rs` and `deploy_records.rs`.
 pub(crate) const DEVICE_KEYS: &[DeviceKeySpec] = &[
     DeviceKeySpec {
         account: "node-storage-key",
@@ -63,6 +63,12 @@ pub(crate) const DEVICE_KEYS: &[DeviceKeySpec] = &[
         account: "memory-store-key",
         label: "Journal and memory key",
         covers: "the memory store your journal's daily entry draws from",
+        len: 32,
+    },
+    DeviceKeySpec {
+        account: "deploy-records-key",
+        label: "Deploy records key",
+        covers: "the saved records of your contract deploys on this computer",
         len: 32,
     },
 ];

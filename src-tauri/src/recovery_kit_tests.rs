@@ -73,7 +73,10 @@ fn snapshot(k: &MemKeyring) -> HashMap<String, Vec<u8>> {
 #[test]
 fn covers_exactly_the_device_minted_keys_and_never_the_wallet() {
     let accounts: Vec<&str> = DEVICE_KEYS.iter().map(|k| k.account).collect();
-    assert_eq!(accounts, vec!["node-storage-key", "memory-store-key"]);
+    assert_eq!(
+        accounts,
+        vec!["node-storage-key", "memory-store-key", "deploy-records-key"]
+    );
     for k in DEVICE_KEYS {
         assert!(
             !k.account.starts_with("custody-"),
@@ -402,8 +405,11 @@ fn status_reports_presence_and_fingerprints_but_no_key_bytes() {
     let k = provisioned();
     let st = status_of(&k, &dir);
     assert!(st.keyring_reachable);
-    assert_eq!(st.keys.len(), 2);
-    assert!(st.keys.iter().all(|e| e.present));
+    // Every covered key is listed; the deploy records key is minted on the first saved deploy.
+    assert_eq!(st.keys.len(), DEVICE_KEYS.len());
+    for e in &st.keys {
+        assert_eq!(e.present, e.account != "deploy-records-key", "{}", e.account);
+    }
     assert!(st.keys.iter().all(|e| e.recorded_fingerprint.is_none()));
     let json = serde_json::to_string(&st).unwrap();
     assert!(!json.contains(&hex::encode([0x11u8; 32])));
