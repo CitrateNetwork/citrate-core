@@ -168,6 +168,8 @@ mod seam;
 mod serve;
 mod serve_plan;
 mod services;
+// CORE-D6 (0.5.3): drain the sidecars before an update is installed.
+mod update_drain;
 mod shell;
 mod skill_registry;
 mod skills_local;

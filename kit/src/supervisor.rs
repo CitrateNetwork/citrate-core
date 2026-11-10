@@ -3539,4 +3539,7 @@ mod tests {
 
     // CORE-D3: the slow retry after Failed.
     include!("supervisor_slow_retry_tests.rs");
+
+    // CORE-D6: the spawn gate held during an update install. Platform-neutral.
+    include!("supervisor_spawn_gate_tests.rs");
 }
