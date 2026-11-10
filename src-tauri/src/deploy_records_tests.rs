@@ -470,3 +470,32 @@ fn every_deploy_record_command_names_its_data_source() {
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} is allowed for the main window");
     }
 }
+
+#[test]
+fn every_seal_uses_a_fresh_nonce() {
+    let d = TestDir::new("nonce");
+    let p = project(&d);
+    let kr = MemKeyring::default();
+    let dir = d.path().join(RECORDS_DIR);
+    let store = DeployRecordStore::new(&dir, &kr);
+    let base = assemble(
+        &p,
+        read_creation(&client(ChainRpc::creation(&format!("{CREATION_HEX}{ARGS_HEX}"))), TX).unwrap(),
+        read_artifact(&p).unwrap(),
+        &gate_with(Verdict::Ready),
+        Err("n/a".into()),
+        1,
+    )
+    .unwrap();
+    let pid = project_id(&p.root);
+    let file = dir.join(format!("{pid}.sealed"));
+    let mut nonces = std::collections::BTreeSet::new();
+    for i in 0..8u64 {
+        let mut r = base.clone();
+        r.tx_hash = format!("0x{i:064x}");
+        store.save(&pid, r).unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(nonces.insert(bytes[9..21].to_vec()), "a nonce was reused");
+        assert_ne!(&bytes[9..21], &[0u8; 12], "never the zero nonce");
+    }
+}

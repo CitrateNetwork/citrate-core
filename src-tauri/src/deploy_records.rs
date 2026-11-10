@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -405,15 +405,15 @@ impl<'a> DeployRecordStore<'a> {
 
     fn seal(key: &[u8], project_id: &str, file: &ProjectFile) -> Result<Vec<u8>, String> {
         let plain = Zeroizing::new(serde_json::to_vec(file).map_err(|e| e.to_string())?);
-        let mut nonce = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        // A fresh random 96-bit nonce from the OS RNG for every seal.
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let mut head = MAGIC.to_vec();
         head.push(FORMAT_VERSION);
         head.extend_from_slice(&nonce);
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
         let ct = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &nonce,
                 Payload {
                     msg: &plain,
                     aad: &Self::aad(&head, project_id),
