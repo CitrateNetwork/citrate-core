@@ -18,6 +18,7 @@ fn log_config(tmp: &TmpDir, filter: Option<crate::sidecar_log::LineFilter>) -> c
         max_bytes: 1 << 20,
         keep: 2,
         filter,
+        queue: 4096,
     }
 }
 
@@ -78,7 +79,7 @@ fn the_configured_filter_keeps_a_key_off_the_disk_but_not_out_of_the_ring() {
     let mut cfg = SupervisorConfig::new(spec, tmp.path("crashes.jsonl"));
     let filter: crate::sidecar_log::LineFilter = {
         let shape = shape.clone();
-        Arc::new(move |l: &str| l.replace(&shape, "<redacted>"))
+        Arc::new(move |l: &str| Some(l.replace(&shape, "<redacted>")))
     };
     cfg.log_file = Some(log_config(&tmp, Some(filter)));
     let sup = Supervisor::start(cfg).expect("supervisor starts");
@@ -101,5 +102,43 @@ fn without_a_log_file_nothing_is_written() {
     assert!(logs.iter().any(|x| x.line == "ONLY_IN_RING"));
     assert!(sup.log_file_status().is_none());
     assert!(!tmp.path("logs").exists());
+    sup.stop();
+}
+
+/// #613 review (P2): the disk write runs off the output readers. A log writer that stalls (here a
+/// filter that blocks until released, standing in for a stalled disk) never stops capture into the
+/// ring, so the child never blocks on a full pipe; lines past the queue are counted as dropped.
+#[test]
+fn a_stalled_log_writer_never_blocks_capture() {
+    let tmp = TmpDir::new("logfile-stall");
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let g = gate.clone();
+    let filter: crate::sidecar_log::LineFilter = Arc::new(move |l: &str| {
+        let (m, cv) = &*g;
+        let mut open = m.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            open = cv.wait(open).unwrap_or_else(|e| e.into_inner());
+        }
+        Some(l.to_string())
+    });
+    let script = "i=0; while [ $i -lt 300 ]; do echo LINE_$i; i=$((i+1)); done; exec sleep 60".to_string();
+    let spec = SidecarSpec::new("printer", sh_bin(), vec!["-c".into(), script]);
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crashes.jsonl"));
+    let mut lf = log_config(&tmp, Some(filter));
+    lf.queue = 4;
+    cfg.log_file = Some(lf);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+    let logs = wait_for_logs(&sup, |l| l.iter().any(|x| x.line == "LINE_299"), Duration::from_secs(10));
+    assert!(logs.iter().any(|x| x.line == "LINE_299"), "capture went on while the writer was stalled");
+    let st = sup.log_file_status().expect("a log file is configured");
+    assert!(st.lines_dropped > 0, "lines past the queue are counted: {st:?}");
+    {
+        let (m, cv) = &*gate;
+        *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+    }
+    let path = tmp.path("logs").join("printer.log");
+    let text = wait_for_file(&path, |t| t.contains("LINE_0"), Duration::from_secs(5));
+    assert!(text.contains("LINE_0"), "the queued lines land once the writer moves again");
     sup.stop();
 }

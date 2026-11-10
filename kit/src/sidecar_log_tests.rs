@@ -29,6 +29,7 @@ fn config(dir: &Path, max_bytes: u64, keep: usize) -> LogFileConfig {
         max_bytes,
         keep,
         filter: None,
+        queue: 16,
     }
 }
 
@@ -119,7 +120,7 @@ fn a_tiny_bound_is_raised_to_the_minimum() {
 fn the_filter_runs_before_the_disk() {
     let t = Tmp::new("filter");
     let mut c = config(&t.0, 1 << 20, 1);
-    c.filter = Some(Arc::new(|l: &str| l.replace("sk-SECRETSECRETSECRET", "<redacted>")));
+    c.filter = Some(Arc::new(|l: &str| Some(l.replace("sk-SECRETSECRETSECRET", "<redacted>"))));
     let mut log = RotatingLog::new(c);
     log.append(5, "out", "key=sk-SECRETSECRETSECRET ok");
     let text = read(&t.0.join("sidecars/node.log"));
@@ -181,4 +182,44 @@ fn existing_files_lists_oldest_first_and_ignores_missing() {
     std::fs::write(&path, "c").unwrap();
     assert_eq!(existing_files(&path, 3), vec![rotated_path(&path, 2), path.clone()]);
     assert_eq!(rotated_path(&path, 1).file_name().unwrap(), "node.log.1");
+}
+
+#[test]
+fn a_line_the_filter_withholds_is_counted_and_never_written() {
+    let t = Tmp::new("withhold");
+    let mut c = config(&t.0, 1 << 20, 1);
+    c.filter = Some(Arc::new(|l: &str| (!l.contains("prompt")).then(|| l.to_string())));
+    let mut log = RotatingLog::new(c);
+    log.append(1, "out", "listening on 127.0.0.1:18090");
+    log.append(2, "out", "prompt: the member's private question");
+    log.append(3, "err", "error: slot 0 failed");
+    let text = read(&t.0.join("sidecars/node.log"));
+    assert_eq!(text, "1 out listening on 127.0.0.1:18090\n3 err error: slot 0 failed\n");
+    let st = log.status();
+    assert_eq!(st.lines_withheld, 1);
+    assert_eq!(st.write_failures, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_at_the_log_name_fails_at_once_instead_of_blocking() {
+    let t = Tmp::new("fifo");
+    std::fs::create_dir_all(t.0.join("sidecars")).unwrap();
+    let fifo = t.0.join("sidecars/node.log");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("INCONCLUSIVE: mkfifo is not available here");
+        return;
+    }
+    let cfg = config(&t.0, 1 << 20, 1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut log = RotatingLog::new(cfg);
+        log.append(1, "out", "x");
+        let _ = tx.send(log.status());
+    });
+    let st = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the append returned instead of blocking on a FIFO with no reader");
+    assert_eq!(st.write_failures, 1);
 }

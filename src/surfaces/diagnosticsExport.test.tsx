@@ -105,6 +105,9 @@ describe("CORE-D5: Save diagnostics bundle", () => {
     const text = $(el, "diag-export-out")?.textContent ?? "";
     expect(text).toContain(`Saved ${done.path} (51 KB, 1234 log lines from citrate, hermes)`);
     expect(text).toMatch(/Read it before you share it/);
+    // #613 review: the scrub is best effort, and the text says so.
+    expect(text).toMatch(/best-effort/);
+    expect(text).toMatch(/model, memory, messaging and Hermes logs keep only start, stop and error lines/);
     expect(text).toMatch(/Nothing was sent\./);
   });
 

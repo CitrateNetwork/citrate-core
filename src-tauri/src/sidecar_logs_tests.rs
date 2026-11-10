@@ -32,25 +32,31 @@ impl Drop for Tmp {
 }
 
 #[test]
-fn a_line_on_disk_keeps_hashes_and_addresses_but_never_a_key_or_email() {
+fn a_line_on_disk_keeps_addresses_tags_64_hex_and_never_keeps_a_key_token_or_email() {
     let line = format!("imported {BLOCK_HASH} from {ADDR} key={} auth: eyJhbGciOiJIUzI1NiJ9.payload.sig mail=member@example.com", vendor_shape());
-    let out = disk_filter(&line);
-    assert!(out.contains(BLOCK_HASH), "{out}");
+    let out = disk_filter(&line, LogPolicy::Full).expect("a full-policy line is kept");
+    // #613 review: a 64-hex value is private-key shaped, so even a block hash becomes a short tag.
+    assert!(!out.contains(&BLOCK_HASH[2..]), "{out}");
+    assert!(out.contains("<hex64 "), "{out}");
     assert!(out.contains(ADDR), "{out}");
     assert!(!out.contains("PLANTED"), "{out}");
     assert!(!out.contains("eyJhbGci"), "{out}");
     assert!(!out.contains("member@example.com"), "{out}");
-    assert_eq!(disk_filter("Validated and imported 32/32 blocks"), "Validated and imported 32/32 blocks");
+    assert_eq!(
+        disk_filter("Validated and imported 32/32 blocks", LogPolicy::Full).as_deref(),
+        Some("Validated and imported 32/32 blocks")
+    );
 }
 
 #[test]
 fn each_sidecar_gets_its_own_bounded_file_under_the_log_folder() {
     let dir = Path::new("/var/log/ai.citrate.core/sidecars");
-    let c = config_in(dir, "citrate-node");
+    let c = config_in(dir, "citrate-node", LogPolicy::Full);
     assert_eq!(c.path, dir.join("citrate-node.log"));
     assert_eq!(c.max_bytes, MAX_LOG_BYTES);
     assert_eq!(c.keep, KEEP_ROTATED);
-    assert!(c.filter.as_ref().is_some_and(|f| !f(&format!("k={}", vendor_shape())).contains("PLANTED")));
+    assert!(c.filter.as_ref().is_some_and(|f| f(&format!("k={}", vendor_shape())).is_some_and(|l| !l.contains("PLANTED"))));
+    assert_eq!(c.queue, LOG_QUEUE_LINES);
     assert_eq!(file_stem("llama/serve chat"), "llama-serve-chat");
     assert_eq!(file_stem("../x"), "---x");
     assert_eq!(file_stem(""), "sidecar");
@@ -62,7 +68,7 @@ fn each_sidecar_gets_its_own_bounded_file_under_the_log_folder() {
 fn attach_sets_the_log_file_and_records_the_owners_crash_file() {
     let spec = citrate_core_kit::supervisor::SidecarSpec::new("d5-attach-probe", "/bin/true", vec![]);
     let mut cfg = citrate_core_kit::supervisor::SupervisorConfig::new(spec, "/tmp/d5-attach-probe/crash.jsonl");
-    attach(&mut cfg);
+    attach(&mut cfg, LogPolicy::Full);
     assert_eq!(
         cfg.log_file.as_ref().map(|c| c.path.clone()),
         log_dir().map(|d| d.join("d5-attach-probe.log")),
@@ -70,7 +76,7 @@ fn attach_sets_the_log_file_and_records_the_owners_crash_file() {
     );
     assert!(crash_files_seen()
         .iter()
-        .any(|(n, p)| n == "d5-attach-probe" && p == Path::new("/tmp/d5-attach-probe/crash.jsonl")));
+        .any(|(n, p, pol)| n == "d5-attach-probe" && p == Path::new("/tmp/d5-attach-probe/crash.jsonl") && *pol == LogPolicy::Full));
 }
 
 /// Tripwire (CORE-D5): every registry owner attaches the log file before it starts its supervisor.
@@ -82,7 +88,12 @@ fn every_registry_owner_keeps_its_sidecar_output_on_disk() {
         let src = std::fs::read_to_string(&file).unwrap_or_default();
         let new_at = src.find("SupervisorConfig::new(").unwrap_or_else(|| panic!("{} builds a supervisor config", d.owner));
         let rest = &src[new_at..];
-        let attach_at = rest.find("crate::sidecar_logs::attach(&mut config);").unwrap_or_else(|| panic!("{} must attach its log file", d.owner));
+        // #613 review (P2): sidecars whose output can carry prompts, memory results or message
+        // previews keep only lifecycle and error lines.
+        let content = ["src-tauri/src/hermes.rs", "src-tauri/src/memory.rs", "src-tauri/src/comms.rs", "src-tauri/src/serve.rs", "src-tauri/src/embed_serve.rs"];
+        let want = if content.contains(&d.owner) { "LogPolicy::LifecycleOnly" } else { "LogPolicy::Full" };
+        let call = format!("crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::{want});");
+        let attach_at = rest.find(&call).unwrap_or_else(|| panic!("{} must attach its log file with {want}", d.owner));
         let start_at = rest.find("Supervisor::start(").unwrap_or_else(|| panic!("{} starts its supervisor", d.owner));
         assert!(attach_at < start_at, "{} attaches the log file before Supervisor::start", d.owner);
     }
@@ -123,7 +134,7 @@ fn only_this_apps_log_names_are_listed() {
     assert_eq!(log_names(&t.0), vec!["hermes".to_string(), "node".to_string()]);
 }
 
-fn inputs<'a>(dir: Option<&'a Path>, crash: Vec<(String, PathBuf)>, panic: Option<PathBuf>) -> BundleInputs<'a> {
+fn inputs<'a>(dir: Option<&'a Path>, crash: Vec<(String, PathBuf, LogPolicy)>, panic: Option<PathBuf>) -> BundleInputs<'a> {
     BundleInputs {
         app_version: "0.5.3",
         os: "macos",
@@ -149,7 +160,7 @@ fn the_bundle_holds_health_logs_crashes_and_panics_and_no_secret() {
     let panic = t.0.join("last-panic.log");
     std::fs::write(&panic, "panic at src/node.rs:10: boom\n").unwrap();
 
-    let (text, sidecars, n) = build_bundle(&inputs(Some(&logs), vec![("node".into(), crash)], Some(panic))).unwrap();
+    let (text, sidecars, n) = build_bundle(&inputs(Some(&logs), vec![("node".into(), crash, LogPolicy::Full)], Some(panic))).unwrap();
     assert_eq!(sidecars, vec!["hermes".to_string(), "node".to_string()]);
     assert_eq!(n, 8);
     assert!(text.contains("app 0.5.3 on macos"));
@@ -176,8 +187,8 @@ fn the_key_tripwire_refuses_anything_key_shaped() {
     assert!(bundle_tripwire(&format!("pk {}", hex64())).is_err());
     // Shorter hex (a peer id fragment, a 40-hex value behind 0x was already scrubbed) is fine.
     assert!(bundle_tripwire("peer 12D3KooW deadbeefcafe").is_ok());
-    assert_eq!(bundle_scrub(&format!("a {} b", hex64()), HOME), "a <redacted> b");
-    assert_eq!(bundle_scrub(&format!("{}ff", hex64()), HOME), "<redacted>", "longer runs too");
+    assert!(!bundle_scrub(&format!("a {} b", hex64()), HOME).contains(&hex64()));
+    assert!(!bundle_scrub(&format!("{}ff", hex64()), HOME).contains(&hex64()), "longer runs too");
 }
 
 #[test]
@@ -209,7 +220,95 @@ fn the_bundle_is_written_only_to_an_absolute_txt_path_owner_only() {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(write_bundle(&link, "x").is_err(), "a link at the path is refused");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        // #613 review (P2): the refusal is the platform-neutral pre-check (Windows has no O_NOFOLLOW).
+        assert!(refuse_link(&link).unwrap_err().contains("link"));
+        assert!(refuse_link(&dest).is_ok());
+        assert!(refuse_link(&t.0.join("not-there.txt")).is_ok());
     }
+}
+
+// ---- #613 review fixes ----
+
+#[test]
+fn the_bundle_scrub_and_tripwire_cover_every_corpus_shape() {
+    for (shape, line, secret) in crate::secret_shapes::test_corpus() {
+        assert!(bundle_tripwire(&line).is_err(), "{shape}: the tripwire refuses it unredacted");
+        let out = bundle_scrub(&line, HOME);
+        assert!(!out.contains(&secret), "{shape}: {out}");
+        bundle_tripwire(&out).unwrap_or_else(|e| panic!("{shape}: {e} in {out}"));
+    }
+}
+
+#[test]
+fn a_bundle_with_every_planted_shape_carries_none_of_them() {
+    let t = Tmp::new("corpus-bundle");
+    let logs = t.0.join("sidecars");
+    std::fs::create_dir_all(&logs).unwrap();
+    let corpus = crate::secret_shapes::test_corpus();
+    let body: String = corpus.iter().enumerate().map(|(i, (_, l, _))| format!("{i} out {l}\n")).collect();
+    std::fs::write(logs.join("node.log"), body).unwrap();
+    let (text, _, n) = build_bundle(&inputs(Some(&logs), vec![], None)).unwrap();
+    assert_eq!(n, corpus.len());
+    for (shape, _, secret) in &corpus {
+        assert!(!text.contains(secret.as_str()), "{shape} survived into the bundle");
+    }
+}
+
+#[test]
+fn the_bundle_says_what_the_scrub_does_and_no_more() {
+    let (text, _, _) = build_bundle(&inputs(None, vec![], None)).unwrap();
+    assert!(!text.contains("holds no wallet, key or seed"), "a claim the code does not establish");
+    assert!(text.contains("best-effort"), "{text}");
+    assert!(text.contains("Read this file before you share it"), "{text}");
+}
+
+#[test]
+fn content_bearing_sidecars_keep_only_cut_lifecycle_and_error_lines() {
+    let f = |l: &str| disk_filter(l, LogPolicy::LifecycleOnly);
+    assert_eq!(f("server listening on 127.0.0.1:18090").as_deref(), Some("server listening on 127.0.0.1:18090"));
+    assert!(f("error: slot 0 failed to load").is_some());
+    for body in [
+        "the member asked about their savings plan",
+        "{\"role\":\"user\",\"content\":\"my private note\"}",
+        "memory.search result: dentist appointment friday",
+        "preview: hi, are we still on for tonight?",
+        "error while handling {\"prompt\": \"my private note\"}",
+    ] {
+        assert_eq!(f(body), None, "{body}");
+    }
+    let long = format!("warn: {}", "x".repeat(1000));
+    let kept = f(&long).expect("a warning is kept");
+    assert!(kept.chars().count() <= LIFECYCLE_LINE_CHARS + 16, "{}", kept.len());
+    assert!(kept.ends_with(" [cut]"));
+    // Secrets are still redacted on the lines that are kept.
+    let pw = ["hunter2", "hunter2"].concat();
+    assert_eq!(f(&format!("error: login failed password={pw}")).as_deref(), Some("error: login failed password=<redacted>"));
+    // The full policy keeps prose.
+    assert!(disk_filter("the member asked about their savings plan", LogPolicy::Full).is_some());
+}
+
+#[test]
+fn crash_records_of_content_bearing_sidecars_drop_their_stderr_tail() {
+    let t = Tmp::new("crash-content");
+    let crash = t.0.join("crashes.log");
+    std::fs::write(
+        &crash,
+        "{\"name\":\"hermes\",\"at_unix_ms\":5,\"exit\":\"exit status: 1\",\"stderr_tail\":\"user said: my private note\",\"restart_attempt\":1}\nnot json at all: my private note\n",
+    )
+    .unwrap();
+    let (text, _, _) = build_bundle(&inputs(None, vec![("hermes".into(), crash, LogPolicy::LifecycleOnly)], None)).unwrap();
+    assert!(text.contains("== hermes crash records =="));
+    assert!(text.contains("exit status: 1"));
+    assert!(!text.contains("my private note"), "{text}");
+    assert!(text.contains("stderr tail withheld"));
+}
+
+#[test]
+fn the_home_folder_falls_back_to_userprofile() {
+    let env = |vars: &'static [(&'static str, &'static str)]| move |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+    assert_eq!(home_from(env(&[("HOME", "/Users/m"), ("USERPROFILE", "C:\\Users\\m")])), "/Users/m");
+    assert_eq!(home_from(env(&[("USERPROFILE", "C:\\Users\\m")])), "C:\\Users\\m");
+    assert_eq!(home_from(env(&[("HOME", "")])), "");
 }
 
 #[test]
