@@ -3635,6 +3635,10 @@ mod tests {
     #[cfg(unix)]
     include!("supervisor_tests.rs");
 
+    // CORE-D5: captured output kept on disk in rotating files (uses the unix helpers above).
+    #[cfg(unix)]
+    include!("supervisor_log_file_tests.rs");
+
     #[cfg(windows)]
     include!("supervisor_windows_tests.rs");
 

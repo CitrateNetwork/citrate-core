@@ -42,6 +42,7 @@ pub mod fsutil;
 pub mod oidc;
 pub mod rpc;
 pub mod secret;
+pub mod sidecar_log;
 pub mod siwe;
 pub mod submitted_log;
 pub mod supervisor;

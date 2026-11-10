@@ -170,6 +170,8 @@ mod seam;
 mod serve;
 mod serve_plan;
 mod services;
+// CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
+mod sidecar_logs;
 mod shell;
 mod skill_registry;
 mod skills_local;
