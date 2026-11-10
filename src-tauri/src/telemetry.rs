@@ -16,7 +16,7 @@ use std::path::Path;
 pub(crate) const TELEMETRY_INGEST_URL: &str = "https://telemetry.citrate.ai/report";
 
 /// The local crash file the panic hook appends to (under the app data dir).
-const CRASH_FILE: &str = "diagnostics/last-panic.log";
+pub(crate) const CRASH_FILE: &str = "diagnostics/last-panic.log";
 
 // --------------------------------------------------------------------------
 // WP-T.3 — scrub (pure). Best-effort PII strip; over-redaction is safe (Rule 1).
@@ -162,6 +162,12 @@ fn redact_key_shapes(s: &str) -> String {
         i += c.len_utf8();
     }
     out
+}
+
+/// CORE-D5: what a sidecar log line keeps on disk: key shapes, emails and secret tokens redacted,
+/// hashes and addresses kept (they are what a node log is read for). Pure.
+pub(crate) fn redact_secrets(s: &str) -> String {
+    redact_tokens(&redact_key_shapes(s))
 }
 
 /// Scrub a text field: HOME→`~`, then redact hex blobs (addresses/hashes) and email/secret

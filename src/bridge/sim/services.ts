@@ -16,5 +16,8 @@ export function simServices(_host: SimHost): ServicesDomain {
     async onAlert() {
       return () => {};
     },
+    async exportDiagnostics() {
+      throw new Unavailable("services", "exportDiagnostics", "the browser preview has no sidecar logs to bundle");
+    },
   };
 }

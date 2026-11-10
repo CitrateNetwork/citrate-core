@@ -485,6 +485,8 @@ pub struct SidecarHealth {
     pub log_lines_kept: Option<usize>,
     /// The owner's note for the member (the node's liveness note, CORE-D2).
     pub note: Option<String>,
+    /// CORE-D5: the sidecar's log file on disk (its path, scrubbed, and any write failures).
+    pub log_file: Option<citrate_core_kit::sidecar_log::LogFileStatus>,
 }
 
 /// What `sidecars_health` returns.
@@ -513,16 +515,28 @@ pub(crate) fn health_entry(
                 line: crate::telemetry::scrub(&l.line, home),
             })
             .collect();
-        (obs.lifecycle.counters, obs.slow_retry, log_tail, kept)
+        let log_file = sup.log_file_status().map(|mut f| {
+            f.path = crate::telemetry::scrub(&f.path, home);
+            f.last_error = f.last_error.map(|e| crate::telemetry::scrub(&e, home));
+            f
+        });
+        (
+            obs.lifecycle.counters,
+            obs.slow_retry,
+            log_tail,
+            kept,
+            log_file,
+        )
     });
     match extra {
-        Some((counters, slow_retry, log_tail, kept)) => SidecarHealth {
+        Some((counters, slow_retry, log_tail, kept, log_file)) => SidecarHealth {
             service,
             counters: Some(counters),
             slow_retry,
             log_tail,
             log_lines_kept: Some(kept),
             note: None,
+            log_file,
         },
         None => SidecarHealth {
             service,
@@ -531,6 +545,7 @@ pub(crate) fn health_entry(
             log_tail: Vec::new(),
             log_lines_kept: None,
             note: None,
+            log_file: None,
         },
     }
 }
