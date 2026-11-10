@@ -759,8 +759,21 @@ fn set_table_keys(config: &str, table: &str, keys: &[(&str, String)]) -> String 
         .map(|((k, v), _)| format!("{k} = {v}"))
         .collect();
     if !missing.is_empty() {
-        if let Some(at) = last_key_line {
-            out.splice(at + 1..at + 1, missing);
+        match last_key_line {
+            Some(at) => {
+                out.splice(at + 1..at + 1, missing);
+            }
+            // core#611: no such table in the template. Write it at the end, so the values are
+            // never dropped silently (the node would fall back to its defaults).
+            None => {
+                while out.last().is_some_and(|l| l.trim().is_empty()) {
+                    out.pop();
+                }
+                out.push(String::new());
+                out.push(header);
+                out.extend(missing);
+                out.push(String::new());
+            }
         }
     }
     out.join("\n")
