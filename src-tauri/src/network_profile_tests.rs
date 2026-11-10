@@ -1459,3 +1459,36 @@ fn a_malformed_node_checkpoint_is_refused() {
         );
     }
 }
+
+/// core#611: a template with no `[checkpoint]` (or no `[storage]`) table still gets the profile's
+/// values. They used to be dropped silently, so the node would fall back to its defaults: the
+/// thing `nodeCheckpoint` exists to prevent. The missing table is written at the end with every key.
+#[test]
+fn a_template_without_the_table_still_gets_the_checkpoint_and_retention_values() {
+    let net = applied_r1007();
+    let cp = net.node_checkpoint.expect("the cut sets [checkpoint]");
+    let full = include_str!("../config/member-node.toml");
+    let cut_table = |t: &str, table: &str| -> String {
+        let start = t.find(&format!("\n[{table}]")).expect("the template has the table");
+        let rest = &t[start + 1..];
+        let end = rest[1..].find("\n[").map_or(rest.len(), |i| i + 2);
+        format!("{}{}", &t[..start + 1], &rest[end..])
+    };
+    for table in ["checkpoint", "storage"] {
+        let template = cut_table(full, table);
+        assert!(!template.contains(&format!("[{table}]")), "{table} removed from the fixture");
+        let cfg: toml::Table = render_node_network(&template, &net)
+            .replace("{{DATA_DIR}}", "/tmp/x")
+            .parse()
+            .expect("valid TOML");
+        let sec = cfg.get(table).and_then(|v| v.as_table()).unwrap_or_else(|| panic!("[{table}] written"));
+        if table == "checkpoint" {
+            assert_eq!(sec["interval"].as_integer(), Some(cp.interval as i64));
+            assert_eq!(sec["committee_size"].as_integer(), Some(cp.committee_size as i64));
+            assert_eq!(sec["vote_depth"].as_integer(), Some(cp.vote_depth as i64));
+        } else {
+            assert_eq!(sec["pruning"].as_bool(), Some(true));
+            assert!(sec["keep_blocks"].as_integer().is_some());
+        }
+    }
+}
