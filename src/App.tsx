@@ -7,6 +7,8 @@ import { wireDeepLinks } from "./shell/deepLink";
 import { AppState } from "./shell/state";
 import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
+import { AccessPassGate } from "./onboarding/AccessPassGate";
+import { accessPassStatus } from "./onboarding/accessPass";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar, ROUTES } from "./shell/Sidebar";
@@ -15,6 +17,7 @@ import { registerFor } from "./shell/places";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { NetworkCompatGate } from "./shell/NetworkCompatGate";
+import { useNetworkLabel } from "./shell/networkCompat";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
 import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
@@ -63,6 +66,8 @@ function Shell({ s }: { s: AppState }) {
  * `stage: "done"` booted straight into the Shell showing the sim persona.
  */
 function AuthGate() {
+  // Join 3 V-02 (fed#353): the genesis-checked network name, never the chain id alone.
+  const networkName = useNetworkLabel();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const signIn = async () => {
@@ -119,7 +124,7 @@ function AuthGate() {
       )}
       {err && <div style={{ fontSize: 12.5, color: "var(--danger)", maxWidth: 420 }}>{err}</div>}
       <div className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-        Chain 40204 · testnet-beta · session never stored on disk
+        {networkName} · session never stored on disk
       </div>
     </div>
   );
@@ -127,6 +132,14 @@ function AuthGate() {
 
 function Root() {
   const s = useStore();
+
+  // Download gate: an install whose saved state shows a finished onboarding is recorded as
+  // `existing` the first time the check runs, so it is never asked for a code later (a build
+  // without a gate does nothing). Best-effort: the Shell never waits on it.
+  const onboarded = s.stage === "done";
+  useEffect(() => {
+    if (onboarded) void accessPassStatus().catch(() => undefined);
+  }, [onboarded]);
 
   // 0.5.2 Join funnel — gated on the live telemetry toggle (Settings › Telemetry, off by default)
   // AND on a consent that covers `joinSteps` (a pre-0.5.2 opt-in first sees JoinStepsNote).
@@ -152,9 +165,7 @@ function Root() {
         .catch(() => {
           /* honest: a failed read leaves defaults; no fabricated values */
         });
-      // GROW-S1 — an invite Rust is still holding from before a restart (status only), then catch
-      // deep links (cold-start or while running).
-      void store.refreshPendingJoin();
+      // Deep links (cold-start or while running): invite, pairing and claim links.
       void wireDeepLinks(store);
     }
     const onHash = () => {
@@ -183,7 +194,9 @@ function Root() {
   const body = needsAuth ? (
     <AuthGate />
   ) : s.stage !== "done" ? (
-    <Onboarding store={store} s={s} />
+    <AccessPassGate store={store} s={s}>
+      <Onboarding store={store} s={s} />
+    </AccessPassGate>
   ) : (
     <Shell s={s} />
   );

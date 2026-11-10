@@ -23,7 +23,7 @@ fn copy_of_v051(tag: &str) -> PathBuf {
     dst
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap_or_else(|e| panic!("mkdir {}: {e}", dst.display()));
     let entries = std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
     for entry in entries.flatten() {
@@ -37,7 +37,7 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
-fn read(p: &Path) -> Vec<u8> {
+pub(crate) fn read(p: &Path) -> Vec<u8> {
     std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
@@ -161,47 +161,52 @@ fn a_damaged_pin_index_is_kept_not_overwritten_by_the_next_pin() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D-12: 0.5.2 has one invite flow (request and approve) and does not read 0.5.1 invites. A 0.5.1
+/// data dir opens cleanly: the first read sets the old `pending.json` aside, owner-only with its
+/// bytes (and keys) untouched, and reads as no invites; the next invite starts the new format next
+/// to it. `referral-log.json` is no longer read or written and is left as it was.
 #[test]
-fn v051_invites_load_with_their_keys_and_links() {
+fn v051_invites_are_set_aside_kept_and_a_new_store_starts() {
     let dir = copy_of_v051("invites");
-    // invites.rs `load`: serde_json::from_slice::<Vec<PendingInvite>> of invites/pending.json.
-    let v: Vec<crate::invites::PendingInvite> =
-        serde_json::from_slice(&read(&dir.join("invites/pending.json")))
-            .unwrap_or_else(|e| panic!("a 0.5.1 pending.json must load: {e}"));
-    assert_eq!(v.len(), 2);
-    // Compared through the serialized form, so the check holds whatever in-memory type holds the
-    // key: written back, every 0.5.1 field is there with its 0.5.1 value.
-    let back = serde_json::to_value(&v).unwrap_or_else(|e| panic!("serialize: {e}"));
-    let orig: serde_json::Value = serde_json::from_slice(&read(&dir.join("invites/pending.json")))
-        .unwrap_or_else(|e| panic!("{e}"));
-    for (i, rec) in orig
-        .as_array()
-        .unwrap_or_else(|| panic!("not a list"))
-        .iter()
-        .enumerate()
+    let path = dir.join("invites/pending.json");
+    let old = read(&path);
+    let referrals = read(&dir.join("invites/referral-log.json"));
+    let group = "abababababababababababababababab";
+    let now = 1_800_000_000;
+    assert_eq!(
+        crate::invites::invite_views_at(&path, group, now),
+        Ok(Vec::new()),
+        "a 0.5.1 store opens as no invites, not an error"
+    );
+    let aside: Vec<PathBuf> = std::fs::read_dir(dir.join("invites"))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("pending.json.earlier-"))
+        })
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(read(&aside[0]), old, "kept byte for byte");
+    #[cfg(unix)]
     {
-        for (k, val) in rec.as_object().unwrap_or_else(|| panic!("not an object")) {
-            assert_eq!(&back[i][k], val, "invite {i} field {k}");
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&aside[0])
+            .unwrap_or_else(|e| panic!("{e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
     }
-    assert_eq!(back[0]["forHandle"], "@alice");
+    let made = crate::invites::create_at(&path, group, "", "", "Garden club", now)
+        .unwrap_or_else(|e| panic!("a new invite on the upgraded dir: {e}"));
     assert_eq!(
-        back[0]["privKey"].as_str().map(str::len),
-        Some(64),
-        "the invite key is kept"
+        crate::invites::invite_views_at(&path, group, now).map(|v| v.len()),
+        Ok(1)
     );
-    assert!(
-        back[1].get("privKey").is_none(),
-        "the pre-S1 record has no key"
-    );
-    let referrals: Vec<crate::invites::ReferralEvent> =
-        serde_json::from_slice(&read(&dir.join("invites/referral-log.json")))
-            .unwrap_or_else(|e| panic!("a 0.5.1 referral-log.json must load: {e}"));
-    assert_eq!(referrals.len(), 1);
-    assert_eq!(
-        referrals[0].token_hash,
-        crate::invites::blake3_token_hash(back[0]["token"].as_str().unwrap_or_default())
-    );
+    assert!(made.link.contains("&e="), "a link of this version");
+    assert_eq!(read(&aside[0]), old, "still kept");
+    assert_eq!(read(&dir.join("invites/referral-log.json")), referrals);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -281,11 +286,17 @@ fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
         v.sort();
         v
     };
-    let out =
-        crate::node_genesis::reconcile_genesis(&node, crate::addresses::genesis_hash(), || {
-            panic!("a kept data dir never needs the running-node probe")
-        })
-        .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
+    // The 0.5.1 fixture is an r1005 node; this build may target another network (r1006 since the
+    // RC52 fill, whose switch upgrade_xgenesis_tests.rs covers), so "same genesis" is r1005's.
+    let r1005 = crate::network_profile::profile("alpha-r1005")
+        .unwrap_or_else(|e| panic!("{e:?}"))
+        .genesis_hash
+        .clone()
+        .unwrap_or_else(|| panic!("r1005 genesis"));
+    let out = crate::node_genesis::reconcile_genesis(&node, &r1005, || {
+        panic!("a kept data dir never needs the running-node probe")
+    })
+    .unwrap_or_else(|e| panic!("reconcile: {e:?}"));
     assert_eq!(out, crate::node_genesis::GenesisOutcome::Kept);
     let mut after: Vec<String> = std::fs::read_dir(&node)
         .unwrap_or_else(|e| panic!("{e}"))
@@ -297,15 +308,40 @@ fn a_v051_node_data_dir_on_the_same_genesis_is_kept() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D-9 (2026-10-26): the liquid staking pool is retired. A 0.5.1 install holds no pool state in its
+/// app data (no file names or carries a pool address, selector, event or field), so the only pool
+/// value an upgrade meets is the webview's saved self-stake, which loadState drops
+/// (src/shell/upgradeV051.test.ts).
 #[test]
-fn a_v051_install_has_no_withdrawal_scan_and_starts_from_the_pool_deployment() {
-    let dir = copy_of_v051("scan");
-    let file = dir.join("withdrawal-scans.json");
-    assert!(!file.exists(), "0.5.1 never wrote a scan file");
-    let scan = crate::staking::load_scan(&file, "any-key");
-    assert_eq!(scan, crate::staking::WithdrawalScan::default());
-    assert!(scan.cursor.is_none() && scan.rows.is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
+fn a_v051_install_holds_no_pool_state_in_its_app_data() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    walk(&fixtures(), &mut all);
+    assert!(all.len() > 10, "the 0.5.1 app data fixture is missing");
+    let mut found = Vec::new();
+    for p in all {
+        let name = p.to_string_lossy().to_string();
+        let body = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).to_string();
+        for h in crate::lsp_retired_tests::retired_hits(&format!("{name}\n{body}")) {
+            found.push(format!("{name}: {h}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "0.5.1 app data with pool state: {found:?}"
+    );
 }
 
 #[test]

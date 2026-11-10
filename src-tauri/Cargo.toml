@@ -1,7 +1,7 @@
 [package]
 license = "BUSL-1.1"
 name = "citrate-core"
-version = "0.5.1"
+version = "0.5.2"
 description = "citrate-core — the federation desktop house (Tauri full-node app). T1."
 authors = ["Citrate Network"]
 edition = "2021"
@@ -103,14 +103,21 @@ bip39 = { version = "1.2", features = ["std", "zeroize"] }
 # reqwest/tokio/citrate-consensus. Rule 12 [[drift]] landed first in citrate-federation.
 # 2026-09-26: wallet-core + commd re-pinned to chain f9f6257b (activation hardening, #240),
 #   the same rev scripts/build-sidecar.sh requires for the bundled node.
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "c384fc982882f830306142c70dd643b59fcda1f6", default-features = false, features = ["crypto"] }
+# 2026-10-27 (RC52 WP-S1-REPIN): wallet-core + commd (and kit's wallet-core) at chain 9a32147e, the
+#   r1006 node rev. Neither crate's source changed since c384fc98; component-pins.mjs check keeps
+#   every workspace crate on the bundled node's rev.
+# 2026-10-28 (RC52, r1006 restart): moved with the node to chain ad11ed9d (fed#331). Neither
+#   crate's source changed since 9a32147e; the rev moves only to stay on the bundled node's rev.
+# 2026-10-30 (RC52 recut, the split-healing and restart-safe reorg fix, chain main 56cc2bc8): moved with the node to chain 56cc2bc8 (fed#331).
+#   Neither crate's source changed since ad11ed9d; the rev moves only to stay on the bundled node's rev.
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "56cc2bc80439c350dd9eca8817f173c1986096e6", default-features = false, features = ["crypto"] }
 # CX-S2.2 — the canonical CommD/dataCommit the IPFSIncentivesV3 model bond registers. Pinned at
 # citrate-chain 763d764 (the #170 sound-CommD fix + the 40204 redeploy, PR #179). Lean by design:
 # ark-bn254 + Poseidon only (NO groth16/nova/tracing-subscriber — verified via `cargo tree`), and
 # it is NOT on the key path (it hashes; it never signs), so wallet-core stays at its reviewed
 # 47a6f92 (Cargo carries both revs as separate git sources). Byte-exactness is pinned by a
 # storage_tests vector check against citrate-commd's frozen `commd_frozen_v1.rs`. Rule 12 [[drift]].
-citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "c384fc982882f830306142c70dd643b59fcda1f6" }
+citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "56cc2bc80439c350dd9eca8817f173c1986096e6" }
 # W1.1 — proposer identity. The node's block-signing (proposer) key is a deterministic
 # ed25519 key seeded from Sha3_256(domain ‖ coinbase32); the app must derive the SAME
 # public value to read validatorInfo(pubkey) and drive registration. We reimplement the
@@ -150,6 +157,12 @@ socket2 = { version = "0.6", features = ["all"] }
 # lock (it was a dev-dependency for the ACL tests, which still use it).
 toml = "0.9"
 
+# RC52 G8 — updater end to end. A test build only (K1-L `update-e2e`, docs/UPDATER_E2E.md): the app
+# checks, verifies, installs and restarts by itself once at start-up (src/updater_e2e.rs). No release
+# build enables it; upgrade_updater_feed_tests fails if a release path or `default` names it.
+[features]
+updater-e2e = []
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -157,6 +170,12 @@ libc = "0.2"
 # worker thread with a caller-side deadline, and on expiry `CancelSynchronousIo` aborts the worker's
 # blocked pipe read/write. windows-sys 0.61 is ALREADY in the tree (interprocess depends on it), so
 # naming it directly adds NO new compiled crate. Windows-only.
+# RC52 G8 test-only: run tauri-plugin-updater's own check/download/verify against a loopback feed in a
+# mock app (`test` adds no crates). Not on Windows: a test binary built with tauri's mock runtime there
+# fails to load (STATUS_ENTRYPOINT_NOT_FOUND), and the Windows build ships no updater artifacts.
+[target.'cfg(not(windows))'.dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }
 
@@ -180,3 +199,6 @@ citrate-templates = { path = "../templates/renderer" }
 # K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
 # prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
 blake2 = "0.10"
+# RC52 G8 test-only: check the golden signatures as `minisign -V` does (minisign-verify is already in
+# Cargo.lock: tauri-plugin-updater and citrate-components use it).
+minisign-verify = "0.2"

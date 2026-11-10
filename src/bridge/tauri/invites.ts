@@ -1,33 +1,39 @@
-// CX bridge impl — group invites (INVITE-S2 self-admit + CONNECT-S1 claim-back), TAURI.
+// CX bridge impl — group invites (D-12: request and approve), TAURI. Mirrors src-tauri/src/invites.rs.
 import { invoke } from "./invoke";
-import type { InviteClaim, InviteMinted, InvitesDomain, PendingInvite, ReferralEvent } from "../domains";
+import type { HeldCheck, IncomingRequest, InviteNotice, InvitePreview, InvitesDomain, InviteView, MyInviteRequest } from "../domains";
 
 export const tauriInvites: InvitesDomain = {
-  create(group: string, forHandle: string): Promise<InviteMinted> {
-    return invoke<InviteMinted>("group_invite_create", { group, forHandle });
+  create(group, label, inviter) {
+    return invoke<InviteView>("group_invite_create", { group, label, inviter });
   },
-  async redeem(link: string): Promise<void> {
-    await invoke("group_invite_redeem", { link });
+  list(group) {
+    return invoke<InviteView[]>("group_invites", { group });
   },
-  list(group: string): Promise<PendingInvite[]> {
-    return invoke<PendingInvite[]>("group_invites", { group });
+  revoke(group, id) {
+    return invoke<InviteNotice>("group_invite_revoke", { group, id });
   },
-  verifyConsume(group: string, token: string): Promise<boolean> {
-    return invoke<boolean>("group_invite_verify_consume", { group, token });
+  requests(group) {
+    return invoke<IncomingRequest[]>("group_invite_requests", { group });
   },
-  async revoke(group: string, token: string): Promise<void> {
-    await invoke("group_invite_revoke", { group, token });
+  async approve(group, id, address) {
+    await invoke("group_invite_approve", { group, id, address });
   },
-  async submitClaim(link: string): Promise<void> {
-    await invoke("group_invite_submit_claim", { link });
+  check(group, id) {
+    return invoke<HeldCheck>("group_invite_check", { group, id });
   },
-  pollClaims(group: string): Promise<InviteClaim[]> {
-    return invoke<InviteClaim[]>("group_invite_poll_claims", { group });
+  decline(group, id, address) {
+    return invoke<InviteNotice>("group_invite_decline", { group, id, address });
   },
-  referralLog(): Promise<ReferralEvent[]> {
-    return invoke<ReferralEvent[]>("group_referral_log");
+  preview(link) {
+    return invoke<InvitePreview>("group_invite_preview", { link });
   },
-  exportReferralLog(): Promise<string> {
-    return invoke<string>("group_referral_export");
+  request(link) {
+    return invoke<MyInviteRequest>("group_invite_request", { link });
+  },
+  myRequests() {
+    return invoke<MyInviteRequest[]>("group_invite_my_requests");
+  },
+  async dismiss(id) {
+    await invoke("group_invite_dismiss", { id });
   },
 };

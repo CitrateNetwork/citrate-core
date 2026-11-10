@@ -8,7 +8,9 @@
 // 2. No setting can make an intent skip the signature ceremony. The only exception is the budgeted
 //    web sign-in (SIWE) in Budgets. So no frontend file reads or writes a signature-policy value,
 //    and no copy offers an allowlist that skips the ceremony.
-// 3. The wallet is a key on this device; no copy calls it a passkey validator.
+// 3. The wallet is a key on this device (core#425). No copy anywhere in src/ calls it a smart
+//    wallet or account, ERC-4337, a passkey validator or signer, guardian recovery, a UserOp, or
+//    something that deploys lazily: 0.5.2 has none of these, and device loss is wallet loss (O-21).
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -59,9 +61,14 @@ describe("tripwire: money tiles carry no hard-coded balance", () => {
   });
 });
 
-// Files allowed to mention the forbidden phrases, and why. Each entry is a known gap, not a pass.
-const PASSKEY_KNOWN: Record<string, string> = {
-  "onboarding/Onboarding.tsx": "the 0.5.1 S4 wallet card; rewritten with the onboarding port, listed as a gap in the PR",
+// A claim that the member's wallet is something 0.5.2 does not have.
+const WALLET_KIND_CLAIM =
+  /smart[ -]?(wallet|account)|ERC-?4337|passkey (validator|signer)|guardian (module|recovery)|configure guardians|\bUserOps?\b|deploys? lazily|counterfactual/i;
+
+// Files allowed to use those words, and why. Each entry must say why it is not a claim about the
+// member's wallet; a gap in the member's own wallet copy is never listed here.
+const WALLET_KIND_KNOWN: Record<string, string> = {
+  "data/seed.ts": "chain-facts catalog: describes the deployed EntryPoint contract and the SDK's features, not the member's wallet",
 };
 
 describe("tripwire: no setting skips the signature ceremony", () => {
@@ -93,24 +100,43 @@ describe("tripwire: no setting skips the signature ceremony", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("no copy calls the wallet a passkey validator", () => {
+});
+
+describe("tripwire: the wallet is a key on this device (core#425)", () => {
+  it("no copy claims a smart wallet, passkey signer, guardian recovery, UserOp or lazy deployment", () => {
     const offenders: string[] = [];
     for (const f of files(SRC)) {
       const r = rel(f);
-      if (PASSKEY_KNOWN[r]) continue;
+      if (WALLET_KIND_KNOWN[r]) continue;
       readFileSync(f, "utf8")
         .split("\n")
         .forEach((line, i) => {
           if (isComment(line)) return;
-          if (/passkey validator/i.test(line)) offenders.push(`${r}:${i + 1}: ${line.trim()}`);
+          if (WALLET_KIND_CLAIM.test(line)) offenders.push(`${r}:${i + 1}: ${line.trim()}`);
         });
     }
     expect(offenders).toEqual([]);
   });
 
-  it("every known-gap entry still exists and still has the phrase (no stale entries)", () => {
-    for (const r of Object.keys(PASSKEY_KNOWN)) {
-      expect(readFileSync(join(SRC, r), "utf8")).toMatch(/passkey validator/i);
+  it("the scanner flags each claim form and skips comments", () => {
+    for (const claim of [
+      "Smart wallet · ERC-4337",
+      "Your smart wallet already exists",
+      "Passkey validator (WebAuthn P-256)",
+      "Guardian module — configure guardians any time",
+      "broadcasting UserOp",
+      "Deploys lazily on first outgoing action",
+      "the counterfactual address",
+    ]) {
+      expect(WALLET_KIND_CLAIM.test(claim), claim).toBe(true);
+    }
+    expect(WALLET_KIND_CLAIM.test("passkey, email, Google, or sign-in-with-Ethereum")).toBe(false);
+    expect(isComment("  // the counterfactual smart-wallet address")).toBe(true);
+  });
+
+  it("every allowed file still exists and still uses the words (no stale entries)", () => {
+    for (const r of Object.keys(WALLET_KIND_KNOWN)) {
+      expect(readFileSync(join(SRC, r), "utf8")).toMatch(WALLET_KIND_CLAIM);
     }
   });
 });

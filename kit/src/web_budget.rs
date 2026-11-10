@@ -450,6 +450,9 @@ pub enum FallThrough {
     ExpiredBeforeSigning,
     SignerUnavailable,
     X402Inert,
+    /// K6: the network gate refused the signature (no network set in this build, or the message
+    /// is for another chain). The card that follows cannot be signed either until it is set.
+    Network(String),
 }
 
 impl std::fmt::Display for FallThrough {
@@ -489,6 +492,7 @@ impl std::fmt::Display for FallThrough {
             }
             FallThrough::ExpiredBeforeSigning => "the budget or the message expired before signing".into(),
             FallThrough::SignerUnavailable => "the wallet is locked or unavailable".into(),
+            FallThrough::Network(m) => format!("nothing can be signed: {m}"),
             FallThrough::X402Inert => {
                 "automatic payments are off until an allowlisted payment token exists".into()
             }

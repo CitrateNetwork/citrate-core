@@ -8,7 +8,7 @@
 # proves — WITHOUT fabricating a graph (Rule 1):
 #   1. `mem-ingest`'s chain_ingest loads 40204.json → chain-state nodes,
 #   2. `mcp_serve` serves them: memory.recall(repo="chain-state") returns
-#      ChainContract nodes matching 40204.json (LiquidStakingPool, EntryPoint…),
+#      ChainContract nodes matching 40204.json (ValidatorRegistry, EntryPoint…),
 #   3. the store on disk is CIPHERTEXT at rest (no contract-name plaintext in the
 #      raw RocksDB bytes — the per-tenant XChaCha20 seal).
 #
@@ -88,14 +88,14 @@ sys.stdout.write(buf.decode("utf-8","replace"))
 echo "$RESP"
 
 echo "--- 4. assert 40204 contracts present in the recall ---"
-# LiquidStakingPool + EntryPoint are canonical entries in 40204.json.
-echo "$RESP" | grep -qi "LiquidStakingPool" && echo "  ✓ LiquidStakingPool present"
+# ValidatorRegistry + EntryPoint are canonical entries in 40204.json.
+echo "$RESP" | grep -qi "ValidatorRegistry" && echo "  ✓ ValidatorRegistry present"
 echo "$RESP" | grep -qi "chain-state"        && echo "  ✓ chain-state tenant present"
 
 echo "--- 5. ciphertext at rest (no contract-name plaintext in raw store) ---"
 # The per-tenant XChaCha20 seal means node text is ciphertext on disk. A raw grep
 # of the RocksDB SST/log files must NOT surface a contract name.
-if grep -rqa "LiquidStakingPool" "$STORE" 2>/dev/null; then
+if grep -rqa "ValidatorRegistry" "$STORE" 2>/dev/null; then
   echo "  ✗ FAIL: contract-name plaintext found in the store on disk" >&2
   exit 1
 fi

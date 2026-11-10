@@ -284,7 +284,7 @@ export function McpServersPanel({ io }: { io: () => Promise<McpIo> }) {
               </label>
               <span style={label}>Environment</span>
               <span style={note}>
-                The server gets only these values plus basics like PATH and HOME. Nothing else from your environment is passed on, and values are used exactly as typed.
+                The server gets only these values plus basics like PATH and HOME. Nothing else from your environment is passed on, and values are used exactly as typed. Values are kept in your system keychain, not in a file, and are handed to the server only when the server starts or is checked.
               </span>
               <FieldErr errors={form.errors} field="env" />
               {form.draft.env.map((e, i) => (

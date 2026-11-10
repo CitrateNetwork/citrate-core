@@ -37,7 +37,7 @@ pub const METRIC_PREFIX: &str = "hermes.daily.";
 pub const MAX_CALLS: usize = 32;
 /// Origin shown on every benchmark card.
 pub const SHARE_ORIGIN: &str = "hermes:benchmark-share";
-const CHAIN_ID: u64 = 40_204;
+use crate::rpc::CITRATE_CHAIN_ID as CHAIN_ID;
 
 /// Decisions this build makes with conservative placeholders, pending owner sign-off.
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[

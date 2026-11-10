@@ -24,6 +24,7 @@
 //! files (opened with the passphrase they were exported with, which nothing here stores).
 //! No signing, no wallet material (Rule 3).
 
+use crate::secret::SecretString;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -50,7 +51,7 @@ pub(crate) struct DeviceKeySpec {
     pub len: usize,
 }
 
-/// The keys the kit backs up. Names match `node.rs` and `memory.rs`.
+/// The keys the kit backs up. Names match `node.rs`, `memory.rs` and `deploy_records.rs`.
 pub(crate) const DEVICE_KEYS: &[DeviceKeySpec] = &[
     DeviceKeySpec {
         account: "node-storage-key",
@@ -62,6 +63,12 @@ pub(crate) const DEVICE_KEYS: &[DeviceKeySpec] = &[
         account: "memory-store-key",
         label: "Journal and memory key",
         covers: "the memory store your journal's daily entry draws from",
+        len: 32,
+    },
+    DeviceKeySpec {
+        account: "deploy-records-key",
+        label: "Deploy records key",
+        covers: "the saved records of your contract deploys on this computer",
         len: 32,
     },
 ];
@@ -776,13 +783,13 @@ pub async fn recovery_kit_save_phrase<R: tauri::Runtime>(
 pub async fn recovery_kit_save_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
 ) -> std::result::Result<usize, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
         let dir = data_dir(&app)?;
         let keys = collect_keys(&crate::custody::OsKeyring::legacy()).map_err(|e| e.to_string())?;
-        write_sealed(Path::new(&path), &passphrase, &keys, &today()).map_err(|e| e.to_string())?;
+        write_sealed(Path::new(&path), passphrase.expose(), &keys, &today())
+            .map_err(|e| e.to_string())?;
         record_fingerprints(&dir, &keys).map_err(|e| e.to_string())?;
         Ok(keys.len())
     })
@@ -793,13 +800,12 @@ pub async fn recovery_kit_save_file<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn recovery_kit_restore_phrase<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    sheet: String,
+    sheet: SecretString,
     replace: bool,
 ) -> std::result::Result<RestoreReport, String> {
     crate::blocking::off_main(move || {
-        let sheet = Zeroizing::new(sheet);
         let dir = data_dir(&app)?;
-        let keys = parse_sheet(&sheet).map_err(|e| e.to_string())?;
+        let keys = parse_sheet(sheet.expose()).map_err(|e| e.to_string())?;
         let recorded = read_recorded(&dir);
         restore_keys(
             &crate::custody::OsKeyring::legacy(),
@@ -817,13 +823,12 @@ pub async fn recovery_kit_restore_phrase<R: tauri::Runtime>(
 pub async fn recovery_kit_restore_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
     replace: bool,
 ) -> std::result::Result<RestoreReport, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
         let dir = data_dir(&app)?;
-        let keys = read_sealed(Path::new(&path), &passphrase).map_err(|e| e.to_string())?;
+        let keys = read_sealed(Path::new(&path), passphrase.expose()).map_err(|e| e.to_string())?;
         let recorded = read_recorded(&dir);
         restore_keys(
             &crate::custody::OsKeyring::legacy(),

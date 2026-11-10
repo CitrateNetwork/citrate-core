@@ -279,3 +279,194 @@ fn the_snapshot_serializes_the_contract_the_tab_reads() {
     assert_eq!(with_logs, ["node"], "logs are not available yet for the other eight (N-8)");
     assert_eq!(rows[0]["logsCommand"], "node_logs");
 }
+
+// ---------------------------------------------------------------------------
+// CORE-D4 — `sidecars_health`: one row per sidecar with state, restart counters, last crash, the
+// slow retry (CORE-D3) and the last N log lines, all from that sidecar's supervisor.
+// ---------------------------------------------------------------------------
+
+const HOME: &str = "/Users/member";
+
+#[test]
+fn a_health_row_reports_counters_last_crash_and_the_slow_retry_from_the_supervisor() {
+    let clock = Arc::new(SetClock(AtomicU64::new(4_200_000)));
+    let bin = scratch("health-failed").join("no-such-binary");
+    let mut cfg = config("health-failed", bin, vec![], clock);
+    cfg.slow_retry = Some(Duration::from_secs(600));
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let slot = Mutex::new(Some(sup));
+    let h = health_entry(desc(ServiceId::Memory), SlotRead::Slot(&slot), 20, HOME);
+    assert_eq!(h.service.observation, ObservationKind::Observed);
+    assert_eq!(h.service.phase, Some(Phase::Failed));
+    let counters = h.counters.expect("counters from the lifecycle cell");
+    assert_eq!(counters.attempts, 1);
+    assert_eq!(counters.consecutive_failures, 1);
+    assert!(h.service.last_crash.is_some(), "the last crash is on the row");
+    let slow = h.slow_retry.expect("a Failed sidecar with a slow retry says when it is next tried");
+    assert_eq!(slow.every_ms, 600_000);
+    assert_eq!(slow.next_at_unix_ms, 4_200_000 + 600_000);
+    let v = serde_json::to_value(&h).unwrap_or_default();
+    assert_eq!(v["id"], "memory", "the registry row is flattened into the health row");
+    assert_eq!(v["phase"], "failed");
+    assert_eq!(v["counters"]["attempts"], "1");
+    assert_eq!(v["slowRetry"]["everyMs"], "600000");
+    assert!(v["logTail"].is_array());
+    assert!(v["lastCrash"].get("stderrTail").is_none());
+}
+
+#[test]
+fn an_unobserved_health_row_claims_nothing() {
+    let h = health_entry(desc(ServiceId::Comms), SlotRead::NoOwner, 20, HOME);
+    assert_eq!(h.service.observation, ObservationKind::NotSupervised);
+    assert!(h.counters.is_none() && h.slow_retry.is_none());
+    assert!(h.log_tail.is_empty());
+    let clock = SetClock(AtomicU64::new(9));
+    let all = health_with(&clock, 20, HOME, |_| SlotRead::NoOwner, |_| None);
+    assert_eq!(all.services.len(), 9, "one health row per registry row");
+    assert_eq!(all.taken_at_unix_ms, 9);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_log_tail_is_the_newest_lines_bounded_and_scrubbed() {
+    let clock = Arc::new(SetClock(AtomicU64::new(1)));
+    let script = "i=0; while [ $i -lt 30 ]; do echo line-$i; i=$((i+1)); done; \
+                  echo key sk-abcdefghijklmnopqrstuvwx at /Users/member/Library/x; \
+                  echo from 0x1111111111111111111111111111111111111111; sleep 30";
+    let sup = Supervisor::start(config(
+        "health-logs",
+        std::path::PathBuf::from("/bin/sh"),
+        vec!["-c".into(), script.into()],
+        clock,
+    ))
+    .expect("start");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while sup.logs().len() < 32 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let slot = Mutex::new(Some(sup));
+    let h = health_entry(desc(ServiceId::Ipfs), SlotRead::Slot(&slot), 5, HOME);
+    assert_eq!(h.log_tail.len(), 5, "bounded to the asked number of lines");
+    assert_eq!(h.log_lines_kept, Some(32), "the ring holds every line so far");
+    let text: Vec<&str> = h.log_tail.iter().map(|l| l.line.as_str()).collect();
+    assert_eq!(text[0], "line-27", "the newest lines, oldest first: {text:?}");
+    let joined = text.join("\n");
+    assert!(!joined.contains("sk-abcdefghijklmnopqrstuvwx"), "a key shape never crosses: {joined}");
+    assert!(!joined.contains("/Users/member"), "the home path is folded: {joined}");
+    assert!(!joined.contains("0x1111111111111111111111111111111111111111"), "{joined}");
+    assert!(joined.contains("<redacted>"));
+    let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(sup) = taken {
+        sup.stop();
+    }
+}
+
+#[test]
+fn the_tail_asked_for_is_clamped() {
+    assert_eq!(clamp_tail(None), HEALTH_LOG_LINES);
+    assert_eq!(clamp_tail(Some(0)), 0);
+    assert_eq!(clamp_tail(Some(10)), 10);
+    assert_eq!(clamp_tail(Some(1_000_000)), MAX_HEALTH_LOG_LINES);
+}
+
+#[test]
+fn the_node_row_carries_the_liveness_note() {
+    let clock = SetClock(AtomicU64::new(9));
+    let all = health_with(&clock, 0, HOME, |_| SlotRead::NoOwner, |id| {
+        (id == ServiceId::Node).then(|| "liveness restart #1: head stuck".to_string())
+    });
+    assert_eq!(all.services[0].note.as_deref(), Some("liveness restart #1: head stuck"));
+    assert!(all.services[1..].iter().all(|h| h.note.is_none()));
+}
+
+// ---------------------------------------------------------------------------
+// CORE-D3 — the alert the UI is sent when a sidecar fails, and when it comes back.
+// ---------------------------------------------------------------------------
+
+fn row(id: ServiceId, observation: ObservationKind, phase: Option<Phase>) -> SidecarHealth {
+    let mut h = health_entry(desc(id), SlotRead::NoOwner, 0, HOME);
+    h.service.observation = observation;
+    h.service.phase = phase;
+    h
+}
+
+#[test]
+fn an_alert_is_raised_once_when_a_sidecar_fails_and_once_when_it_recovers() {
+    let mut t = AlertTracker::default();
+    let alive = [row(ServiceId::Hermes, ObservationKind::Observed, Some(Phase::Alive))];
+    assert!(t.update(&alive, 1).is_empty(), "nothing to say about a live sidecar");
+
+    let mut failed = row(ServiceId::Hermes, ObservationKind::Observed, Some(Phase::Failed));
+    failed.slow_retry = Some(crate::supervisor::SlowRetry {
+        every_ms: 600_000,
+        next_at_unix_ms: 700_000,
+        attempts: 0,
+    });
+    failed.service.last_crash = Some(CrashView {
+        at_unix_ms: 5,
+        exit: "exit status: 1".into(),
+        restart_attempt: 8,
+    });
+    let alerts = t.update(std::slice::from_ref(&failed), 2);
+    assert_eq!(alerts.len(), 1);
+    let a = &alerts[0];
+    assert_eq!(a.id, ServiceId::Hermes);
+    assert_eq!(a.kind, AlertKind::Failed);
+    assert_eq!(a.next_retry_at_unix_ms, Some(700_000));
+    assert_eq!(a.reason.as_deref(), Some("exit status: 1"));
+    let v = serde_json::to_value(a).unwrap_or_default();
+    assert_eq!(v["kind"], "failed");
+    assert_eq!(v["label"], "Hermes");
+
+    assert!(t.update(std::slice::from_ref(&failed), 3).is_empty(), "no repeat while still Failed");
+    // A read that didn't get the lock says nothing and forgets nothing.
+    let busy = [row(ServiceId::Hermes, ObservationKind::Busy, None)];
+    assert!(t.update(&busy, 4).is_empty());
+    assert!(t.update(std::slice::from_ref(&failed), 5).is_empty());
+
+    let back = t.update(&alive, 6);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].kind, AlertKind::Recovered);
+    assert!(t.update(&alive, 7).is_empty());
+}
+
+#[test]
+fn a_sidecar_already_failed_at_the_first_read_is_alerted() {
+    let mut t = AlertTracker::default();
+    let failed = [row(ServiceId::Node, ObservationKind::Observed, Some(Phase::Failed))];
+    let alerts = t.update(&failed, 1);
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, AlertKind::Failed);
+}
+
+#[test]
+fn the_slow_retry_period_reads_its_override_and_refuses_churning_values() {
+    let env = |v: Option<&'static str>| move |k: &str| (k == SLOW_RETRY_SECS_ENV).then_some(v).flatten().map(str::to_string);
+    assert_eq!(slow_retry_from(env(None)), Some(DEFAULT_SLOW_RETRY));
+    assert_eq!(slow_retry_from(env(Some("0"))), None, "0 turns the slow retry off");
+    assert_eq!(slow_retry_from(env(Some("off"))), None);
+    assert_eq!(slow_retry_from(env(Some("900"))), Some(Duration::from_secs(900)));
+    assert_eq!(
+        slow_retry_from(env(Some("5"))),
+        Some(DEFAULT_SLOW_RETRY),
+        "under the floor: the default stands"
+    );
+    assert_eq!(slow_retry_from(env(Some("soon"))), Some(DEFAULT_SLOW_RETRY));
+}
+
+/// Tripwire (CORE-D3): every registry owner gives its supervisor the app's slow retry, so no
+/// sidecar is left `Failed` for good while the others recover.
+#[test]
+fn every_registry_owner_configures_the_slow_retry() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for d in &REGISTRY {
+        let file = dir.join(d.owner.trim_start_matches("src-tauri/src/"));
+        let src = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(
+            src.contains("config.slow_retry = crate::services::slow_retry_every();"),
+            "{} must set its supervisor's slow retry",
+            d.owner
+        );
+    }
+}

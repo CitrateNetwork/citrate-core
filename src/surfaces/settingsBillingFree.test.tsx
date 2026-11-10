@@ -1,0 +1,126 @@
+// Settings › Billing for a free (non-member, non-lapsed) user (follow-up to #576):
+//   - the button is "Become a member ↗" and runs the guarded checkout (store.becomeMember);
+//   - a lapsed member keeps "Renew ↗" (store.renewMembership);
+//   - the grant note (since #349: "The membership grant stays locked in your bond…" plus the
+//     disclaimer; it replaced the stake-attribution / vaulted-principal sentence) shows only to
+//     someone with a grant;
+//   - no price figure on the billing card for a free user (the price is on the checkout).
+import { describe, it, expect, vi } from "vitest";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Settings } from "./Settings";
+import { freshState, type AppState } from "../shell/state";
+import type { Store } from "../shell/store";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+function makeStore() {
+  const spies = { becomeMember: vi.fn(async () => {}), renewMembership: vi.fn(async () => {}) };
+  const identity = () => ({ name: "M", initials: "M", email: "m@example.com", sub: "s", wallet: "0xabc", tier: "free", role: "member", org: null, real: true });
+  const store = new Proxy(spies as Record<string, unknown>, {
+    get: (t, k: string) => (k in t ? t[k] : k === "identity" ? identity : () => undefined),
+  }) as unknown as Store;
+  return { store, spies };
+}
+
+function billing(patch: Partial<AppState>): AppState {
+  const s = freshState("p1");
+  s.sSec = "billing";
+  s.signedIn = true;
+  return Object.assign(s, patch);
+}
+
+const FREE: Partial<AppState> = { tier: "free", entitlement: "active", hasGrant: false, hasSbt: false };
+const LAPSED: Partial<AppState> = { tier: "free", entitlement: "lapsed", hasGrant: true };
+const MEMBER_NO_GRANT: Partial<AppState> = { tier: "pilot", entitlement: "active", hasGrant: false, hasSbt: false };
+const MEMBER_GRANTED: Partial<AppState> = { tier: "pilot", entitlement: "active", hasGrant: true };
+
+const text = (html: string) => html.replace(/<[^>]*>/g, " ");
+/** The grant note on the billing card, old (pre-#349) or current wording. */
+const GRANT_NOTE = /Stake attribution|vaulted principal|grant stays locked in your bond/i;
+
+async function clickBilling(s: AppState, re: RegExp) {
+  const { store, spies } = makeStore();
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => root.render(<Settings store={store} s={s} />));
+  const btn = Array.from(host.querySelectorAll("button")).find((b) => re.test(b.textContent ?? ""));
+  expect(btn).toBeTruthy();
+  await act(async () => btn!.click());
+  root.unmount();
+  return spies;
+}
+
+describe("Settings › Billing for a free user", () => {
+  it("says 'Become a member ↗', not 'Renew'", () => {
+    const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(FREE)} />));
+    expect(t).toContain("Become a member ↗");
+    expect(t).not.toMatch(/Renew/);
+  });
+
+  it("the button runs the guarded checkout (becomeMember), not renewal", async () => {
+    const spies = await clickBilling(billing(FREE), /Become a member/);
+    expect(spies.becomeMember).toHaveBeenCalledTimes(1);
+    expect(spies.renewMembership).not.toHaveBeenCalled();
+  });
+
+  it("shows no stake-attribution / vaulted-principal note and no price", () => {
+    const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(FREE)} />));
+    expect(t).not.toMatch(GRANT_NOTE);
+    expect(t).not.toMatch(/\$\s?\d|\bUSD\s?\d|\d\s?USD\b/);
+  });
+
+  it("a member without a grant sees no stake-attribution note either", () => {
+    const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(MEMBER_NO_GRANT)} />));
+    expect(t).not.toMatch(GRANT_NOTE);
+  });
+});
+
+// #579 review (P2): a free user saw a green ACTIVE badge next to "Public tier — no membership".
+// The badge is a neutral "free" for a free user; members keep the entitlement badge.
+function badge(s: AppState): { text: string; style: string } {
+  const host = document.createElement("div");
+  host.innerHTML = renderToStaticMarkup(<Settings store={makeStore().store} s={s} />);
+  const el = host.querySelector('[data-testid="membership-badge"]');
+  expect(el, "the billing card renders its membership badge").toBeTruthy();
+  return { text: (el!.textContent ?? "").trim(), style: el!.getAttribute("style") ?? "" };
+}
+
+describe("Settings › Billing badge", () => {
+  it("a free user sees a neutral 'free' badge, not a green 'active' one", () => {
+    const b = badge(billing(FREE));
+    expect(b.text).toBe("free");
+    expect(b.style).not.toMatch(/var\(--ok/);
+  });
+
+  it("an active member keeps the green 'active' badge", () => {
+    const b = badge(billing(MEMBER_GRANTED));
+    expect(b.text).toBe("active");
+    expect(b.style).toMatch(/var\(--ok/);
+  });
+
+  it("a lapsed member keeps the 'lapsed' badge", () => {
+    const b = badge(billing(LAPSED));
+    expect(b.text).toBe("lapsed");
+    expect(b.style).toMatch(/var\(--danger/);
+  });
+});
+
+describe("Settings › Billing for members", () => {
+  it("a lapsed member keeps 'Renew ↗', which renews", async () => {
+    const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(LAPSED)} />));
+    expect(t).toContain("Renew ↗");
+    expect(t).not.toContain("Become a member");
+    const spies = await clickBilling(billing(LAPSED), /Renew/);
+    expect(spies.renewMembership).toHaveBeenCalledTimes(1);
+    expect(spies.becomeMember).not.toHaveBeenCalled();
+  });
+
+  it("a member with a grant still sees the stake-attribution note", () => {
+    const t = text(renderToStaticMarkup(<Settings store={makeStore().store} s={billing(MEMBER_GRANTED)} />));
+    expect(t).toContain("The membership grant stays locked in your bond until its unlock block.");
+    expect(t).not.toMatch(/Stake attribution|vaulted principal/i);
+  });
+});

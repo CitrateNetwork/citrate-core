@@ -17,6 +17,7 @@ import {
   type BudgetsApi,
   type WebBudgetStatus,
 } from "./budgets";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const muted = { fontSize: 11.5, color: "var(--tx-3)" } as const;
 
@@ -154,7 +155,7 @@ export function BudgetsPanel({
         <p style={{ ...muted, margin: 0 }}>
           Limits on top of every budget: one automatic sign-in per site every{" "}
           {st.rate.minGapSeconds} s, at most {st.rate.windowMax} per site in any{" "}
-          {st.rate.windowHours} h, chain 40204 only, and never while the task
+          {st.rate.windowHours} h, chain {CHAIN_ID_TEXT} only, and never while the task
           has read content from another site.
         </p>
       </div>

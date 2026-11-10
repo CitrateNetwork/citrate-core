@@ -15,6 +15,8 @@ import type {
   PostDeployStatus,
   SitePinView,
   VercelExportView,
+  DeployRecordSavedView,
+  DeployRecordSummaryView,
   VerifyOutcomeView,
 } from "../domains";
 import type {
@@ -25,6 +27,7 @@ import type {
   ForkDryRunRequest,
 } from "../../agent/deployGate";
 import type { VerifiedSourceView } from "../../agent/verifiedSource";
+import type { AbiResolutionView, BookLookupView, CodeInfoView, IdentityView, SignatureMatchesView, TxFetchView } from "../../agent/contractIntel";
 import type {
   TemplateCatalog,
   TemplateRenderInput,
@@ -72,6 +75,25 @@ export const tauriContracts: ContractsDomain = {
   proposeWrite(address: string, calldata: string, valueWei: string) {
     return invoke<CeremonyView>("contract_write_propose", { address, calldata, valueWei });
   },
+  // CORE-A1 / CORE-A2 — contract lookup, identification and decoding inputs (core reads; no writes).
+  addressBookLookup(query: string) {
+    return invoke<BookLookupView>("contract_address_book_lookup", { query });
+  },
+  getCode(address: string) {
+    return invoke<CodeInfoView>("contract_get_code", { address });
+  },
+  identify(address: string) {
+    return invoke<IdentityView>("contract_identify", { address });
+  },
+  abiResolve(address: string) {
+    return invoke<AbiResolutionView>("contract_abi_resolve", { address });
+  },
+  signatureLookup(selectors: string[], topics: string[]) {
+    return invoke<SignatureMatchesView>("abi_signature_lookup", { selectors, topics });
+  },
+  txFetch(hash: string) {
+    return invoke<TxFetchView>("chain_tx_fetch", { hash });
+  },
   // HUP-S6.6 — after the deploy.
   postdeployStatus(projectDir: string) {
     return invoke<PostDeployStatus>("postdeploy_status", { projectDir });
@@ -90,6 +112,13 @@ export const tauriContracts: ContractsDomain = {
   },
   postdeployVercelExport(projectDir: string) {
     return invoke<VercelExportView>("postdeploy_vercel_export", { projectDir });
+  },
+  // CORE-A3 — durable, encrypted deploy records (data: 40204 RPC, forge artifact, gate store).
+  deployRecordSave(projectDir: string, txHash: string) {
+    return invoke<DeployRecordSavedView>("deploy_record_save", { projectDir, txHash });
+  },
+  deployRecords(projectDir: string) {
+    return invoke<DeployRecordSummaryView[]>("deploy_records_list", { projectDir });
   },
   // HUP-S6.2 / US-6.4 — contract templates (core renders; parameters are validated in Rust).
   templateList() {

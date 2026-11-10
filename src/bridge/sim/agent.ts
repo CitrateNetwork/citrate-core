@@ -45,8 +45,14 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async resolve() {
       /* sim: no sidecar effect to release */
     },
+    async resolveOutcomeUnknown() {
+      /* sim: no sidecar effect to release */
+    },
     // HUP-S1.1c — no sidecar in web/dev: refuse honestly (Rule 1), never fake a turn.
     async sessionOpen() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
+    async sessionOpenCloud() {
       throw new Error("the sidecar agent loop needs the desktop app");
     },
     async sessionSend() {

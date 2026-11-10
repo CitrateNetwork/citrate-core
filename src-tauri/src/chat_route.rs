@@ -4,8 +4,9 @@
 //! - **The switch:** `<app data>/escalation/route.json`, next to the escalation endpoints and
 //!   spend ledger (`escalation.rs`), written only by [`chat_route_set`].
 //! - **Where it applies:** [`select_route`] turns the honest inference state
-//!   (`ai::select_inference_state`) into what `model_inference_state` reports, and the remote chat
-//!   commands (`ai::ai_chat`, `ai::ai_chat_tools`) refuse to send while it is `local_only`.
+//!   (`ai::select_inference_state`) into what `model_inference_state` reports, and no remote-send
+//!   permit (`chat_consent::authorize` / `authorize_once`, which every remote chat and image send
+//!   needs) is handed out while it is `local_only`.
 //!
 //! Two values (owner decision 2026-10-19):
 //! - **`ask_first` (default):** today's behaviour (ask before a message goes to the gateway when the
@@ -87,7 +88,7 @@ pub fn status(dir: &Path) -> RouteStatus {
     }
 }
 
-/// Store the member's choice (written to a temp file, then renamed).
+/// Store the member's choice (written to a temp file unique to this write, then renamed).
 pub fn set(dir: &Path, route: ChatRoute, now_ms: u64) -> Result<RouteStatus, String> {
     std::fs::create_dir_all(dir).map_err(|_| "cannot create the settings folder".to_string())?;
     let s = RouteSettings {
@@ -95,10 +96,7 @@ pub fn set(dir: &Path, route: ChatRoute, now_ms: u64) -> Result<RouteStatus, Str
         changed_at_ms: Some(now_ms),
     };
     let text = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{ROUTE_FILE}.tmp"));
-    std::fs::write(&tmp, text)
-        .map_err(|_| "cannot write the Local model only setting".to_string())?;
-    std::fs::rename(&tmp, dir.join(ROUTE_FILE))
+    crate::atomic_file::replace(&dir.join(ROUTE_FILE), text.as_bytes())
         .map_err(|_| "cannot write the Local model only setting".to_string())?;
     Ok(RouteStatus {
         route,
@@ -135,7 +133,7 @@ pub fn select_route(i: ProviderInputs, route: ChatRoute) -> InferenceState {
 }
 
 /// Whether a message may be sent to a remote provider now. Under `local_only` (or an unreadable
-/// setting) the remote chat commands refuse before anything is sent.
+/// setting) no remote-send permit is handed out, so nothing is sent.
 pub fn remote_chat_allowed(dir: &Path) -> Result<(), String> {
     match effective(dir) {
         ChatRoute::AskFirst => Ok(()),

@@ -25,7 +25,7 @@ const NOTES: McpServerView = {
   args: ["--root", "/Users/me/notes"],
   cwd: null,
   url: null,
-  env: [{ key: "NOTES_TOKEN", masked: "•••••••• (11 characters)" }],
+  env: [{ key: "NOTES_TOKEN", masked: "•••••••• (in the system keychain)" }],
   allowWriteTools: false,
   enabled: false,
   needsReview: true,
@@ -176,8 +176,18 @@ describe("McpServersPanel", () => {
     expect(text).toContain("notes");
     expect(text).toContain("/opt/notes/bin/notes-mcp");
     expect(text).toContain("NOTES_TOKEN");
-    expect(text).toContain("11 characters");
+    expect(text).toContain("in the system keychain");
     expect(text).toMatch(/needs review/i);
+    root.unmount();
+  });
+
+  it("says where env values are kept and when they are handed over", async () => {
+    const { io } = makeIo((cmd) => (cmd === "mcp_servers_list" ? [] : null));
+    const { host, root } = await mount(<McpServersPanel io={async () => io} />);
+    await click(q(host, "mcp-add"));
+    const text = host.textContent ?? "";
+    expect(text).toMatch(/kept in your system keychain, not in a file/);
+    expect(text).toMatch(/only when the server starts or is checked/);
     root.unmount();
   });
 

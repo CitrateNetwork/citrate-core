@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { store } from "./store";
 import { bridge } from "../bridge";
 import { freshState } from "./state";
-import { Node } from "../surfaces/Node";
+import { renderStatus } from "../surfaces/node/nodePage.fixture";
 import type { Store } from "./store";
 
 const MESSAGE =
@@ -53,11 +53,11 @@ describe("node blocked by a holder (S0.6)", () => {
   it("the Node surface names the holder and the action", () => {
     const stub = { toast: () => {}, identity: () => ({ wallet: "" }), refreshEarnings: () => {} } as unknown as Store;
     const s = { ...freshState("p1"), node: "error" as const, nodeBlocked: MESSAGE };
-    const html = renderToStaticMarkup(<Node store={stub} s={s} />);
+    const html = renderStatus(stub, s);
     expect(html).toContain("process 4242");
     expect(html).toContain("/Applications/Citrate Core.app/Contents/MacOS/citrate");
     expect(html).toContain("Quit that process");
-    const none = renderToStaticMarkup(<Node store={stub} s={{ ...freshState("p1"), nodeBlocked: null }} />);
+    const none = renderStatus(stub, { ...freshState("p1"), nodeBlocked: null });
     expect(none).not.toContain("Quit that process");
   });
 });

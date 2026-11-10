@@ -1,0 +1,15 @@
+# created: 2026-10-27 | branch: rc52/macos-acceptance | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (RC52 WP-H-MACOS). Where Citrate Core may keep files under HOME on macOS. A file of
+# Citrate's anywhere else fails data.locations (in the run's isolated HOME) or
+# uninstall.outside_files (outside the run dir). One per line: <path relative to HOME> | <why>.
+# The first four are the app's own roots (src-tauri/src/local_data.rs app_roots, which "Delete
+# local data" removes); scripts/ci/macos-acceptance.test.mjs fails if app_roots changes without
+# this list. The last four are written by macOS on the app's behalf.
+Library/Application Support/ai.citrate.core     | Tauri app_data_dir, app_local_data_dir, app_config_dir: wallet vault, node data, IPFS repo, models, settings
+Library/Caches/ai.citrate.core                  | Tauri app_cache_dir (WebKit also caches here)
+Library/Logs/ai.citrate.core                    | Tauri app_log_dir
+Library/WebKit/ai.citrate.core                  | WebKit storage of the app's webview (local_data.rs RootKind::Webview)
+Library/HTTPStorages/ai.citrate.core            | NSURLSession cookies and HSTS of the webview (macOS)
+Library/HTTPStorages/ai.citrate.core.binarycookies | NSURLSession cookie file (macOS)
+Library/Preferences/ai.citrate.core.plist       | NSUserDefaults (window state), written by cfprefsd (macOS)
+Library/Saved Application State/ai.citrate.core.savedState | window restoration (macOS)

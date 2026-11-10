@@ -42,6 +42,28 @@
 //! D-12 [`LifecycleSnapshot`] (phase with `stopping` and `quarantined`, a separate
 //! readiness field, counters as decimal strings).
 //!
+//! ## Readiness and retry credit (SCL-S3, SC2)
+//! Readiness is separate from liveness. A service with a [`HealthCheck`] follows the
+//! [`ReadinessProfile::Probed`] rule: a new incarnation is `Awaiting`, a fresh success of that
+//! incarnation makes it `Ready`, a failed or timed-out sample in the start grace makes it
+//! `Unavailable`, and `Ready` older than two probe intervals is `Stale`. Only attested health
+//! resets its retry budget: successes spanning `healthy_after` with no gap. The grace and
+//! elapsed time never do (bug (b)). A service without a probe is
+//! [`ReadinessProfile::LivenessOnly`]: always `NotAssessed`, never `Ready`, and its budget resets
+//! after `healthy_after` of continuous running. All of it is measured on the monotonic clock;
+//! the injected [`Clock`] stamps crash records only. One probe worker runs at a time per service:
+//! a worker that outlives its timeout or its incarnation keeps the slot until it really ends,
+//! and its result is discarded. Bounding and quarantining such a worker is SC3 (SCL-S4).
+//!
+//! Only a member Start ([`Supervisor::request_start`]) gives a fresh retry budget. An automated
+//! start or restart ([`Supervisor::request_auto_start`], [`Supervisor::request_auto_restart`])
+//! carries the budget over and never revives a `Failed` service. With a slow retry configured
+//! ([`SupervisorConfig::slow_retry`], CORE-D3) the monitor itself tries a `Failed` service once
+//! per period, one attempt under the spent budget, so the failures since the last member Start
+//! stay within `1 + max_retries + slow retries` (INV-17 as amended 2026-11-04, owner decision on
+//! core#600; INV-17a: a slow retry is never a fresh budget; INV-17b: a Stop, a member Start or
+//! shutdown cancels a pending one).
+//!
 //! ## Platform note (honesty)
 //! Graceful stop is SIGTERM → wait → SIGKILL on Unix (macOS + Linux), via a
 //! direct `libc::kill` (libc is already in the tree transitively; no new crate).
@@ -57,6 +79,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -285,6 +308,9 @@ pub struct SidecarSpec {
     pub args: Vec<String>,
     /// Extra environment for the child, as explicit key/value pairs.
     pub env: Vec<(String, String)>,
+    /// Variables of the parent's environment the child must not inherit (removed before `env` is
+    /// applied), such as a model vendor's API key in the launch environment.
+    pub env_remove: Vec<String>,
     /// Working directory for the child, if any.
     pub workdir: Option<PathBuf>,
     /// Optional periodic liveness probe (see [`HealthCheck`]).
@@ -305,11 +331,16 @@ pub struct SidecarSpec {
 /// - `ended()` runs on the monitor thread after the child has ended and been reaped, on every path
 ///   (stop, shutdown, crash, health failure, kill after the grace), before the supervisor reports
 ///   the stop as done or starts a new child.
+/// - `prepare()` (optional) runs on the monitor thread right before each spawn attempt, the first
+///   one and every automatic restart. A spawn attempt that fails is an end too: `ended()` runs
+///   after it, so whatever `prepare()` set up for the child is undone on every path, including
+///   when the supervisor gives up.
 #[derive(Clone)]
 pub struct ChildWatch {
     pub interval: Duration,
     pub observe: Arc<dyn Fn(u32) + Send + Sync>,
     pub ended: Arc<dyn Fn() + Send + Sync>,
+    pub prepare: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ChildWatch {
@@ -330,6 +361,7 @@ impl std::fmt::Debug for SidecarSpec {
                 "env_keys",
                 &self.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
             )
+            .field("env_remove", &self.env_remove)
             .field("workdir", &self.workdir)
             .field("has_health_check", &self.health_check.is_some())
             .field("child_watch", &self.child_watch)
@@ -346,6 +378,7 @@ impl SidecarSpec {
             bin: bin.into(),
             args,
             env: Vec::new(),
+            env_remove: Vec::new(),
             workdir: None,
             health_check: None,
             child_watch: None,
@@ -376,6 +409,9 @@ impl SidecarSpec {
     fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args);
+        for k in &self.env_remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -534,11 +570,17 @@ const CONTROL_LOCK_BUDGET: Duration = Duration::from_millis(5);
 /// end of file before it reports the stop `Incomplete` and quarantines the service.
 const READER_DRAIN: Duration = Duration::from_millis(250);
 
+/// The most publication names one `Complete` scope lists.
+const MAX_SCOPE_PUBLICATIONS: usize = 16;
+
 /// While quarantined, how often the monitor re-checks whether the held work has ended.
 const QUARANTINE_POLL: Duration = Duration::from_millis(50);
 
-/// Distinguishes supervisor instances within one app run; never reused.
-static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+include!("supervisor_deadline.rs");
+
+/// Distinguishes supervisor instances within one app run; never reused. The same id names
+/// the instance in its tokens and in the deadline overlay.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// This application run's identity. Ephemeral: it orders controls and receipts within one run
 /// and is never a credential or a persistent replay id.
@@ -576,16 +618,86 @@ pub enum Phase {
     Quarantined,
 }
 
-/// Readiness, independent of the phase (D-12). SC1 assesses no readiness, so every service
-/// reports `NotAssessed`; the probe-backed values arrive with SC2 (SCL-S3).
+/// Readiness, independent of the phase (D-12, SCL-S3). `Ready` is claimed only from a fresh
+/// success of the current incarnation's probe; a service without a probe is `NotAssessed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Readiness {
+    /// The service has no configured probe: liveness only, readiness is not assessed.
     NotAssessed,
+    /// A live incarnation that has not answered its probe yet (a cold load).
     Awaiting,
+    /// The current incarnation answered its probe, and the answer is fresh.
     Ready,
+    /// The last success is older than the freshness limit (two probe intervals).
     Stale,
+    /// No live incarnation, or its last sample failed or timed out.
     Unavailable,
+}
+
+/// Which readiness and retry-credit rule a service follows (D-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadinessProfile {
+    /// A configured probe attests readiness, and only attested health resets the retry budget
+    /// (llama chat and embed, Hermes, the Comms and Cluster connect probes).
+    Probed,
+    /// No probe (node, node agent, memory, IPFS): readiness is `NotAssessed`, and the retry
+    /// budget resets after `healthy_after` of continuous running.
+    LivenessOnly,
+}
+
+impl ReadinessProfile {
+    /// Readiness while no incarnation is live, or after a sample ended the success window.
+    fn not_ready(self) -> Readiness {
+        match self {
+            ReadinessProfile::Probed => Readiness::Unavailable,
+            ReadinessProfile::LivenessOnly => Readiness::NotAssessed,
+        }
+    }
+
+    /// Readiness of a newly published incarnation.
+    fn on_spawn(self) -> Readiness {
+        match self {
+            ReadinessProfile::Probed => Readiness::Awaiting,
+            ReadinessProfile::LivenessOnly => Readiness::NotAssessed,
+        }
+    }
+}
+
+/// `Ready` is shown only while its last success is at most `limit` old (INV-13); an older or
+/// missing success shows `Stale`. Every other value is shown as stored.
+fn shown_readiness(stored: Readiness, last_ok_age: Option<Duration>, limit: Duration) -> Readiness {
+    match (stored, last_ok_age) {
+        (Readiness::Ready, Some(age)) if age <= limit => Readiness::Ready,
+        (Readiness::Ready, _) => Readiness::Stale,
+        (other, _) => other,
+    }
+}
+
+/// The retry counters (SCL-S3.3). `max_retries` is the number of retries after the first failed
+/// incarnation, so a budget allows `1 + max_retries` failures before `Failed`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryCounters {
+    /// Spawns admitted to the OS call, retries included.
+    #[serde(serialize_with = "decimal_u64")]
+    pub attempts: u64,
+    /// Retries for the same Start intent whose spawn returned a child.
+    #[serde(serialize_with = "decimal_u64")]
+    pub respawns: u64,
+    /// Failures that began a budget: the first failure after a fresh budget or a credit.
+    #[serde(serialize_with = "decimal_u64")]
+    pub initial_failures: u64,
+    /// Failures counted against the current budget.
+    #[serde(serialize_with = "decimal_u32")]
+    pub consecutive_failures: u32,
+    /// Retries allowed after the first failure.
+    #[serde(serialize_with = "decimal_u32")]
+    pub max_retries: u32,
+    /// Times health credit reset the budget (attested for Probed, elapsed for LivenessOnly).
+    #[serde(serialize_with = "decimal_u64")]
+    pub health_credits: u64,
 }
 
 /// Identifies one accepted control: this app run plus the service's intent sequence.
@@ -615,6 +727,49 @@ pub enum ControlResult {
     /// The intent was committed, but the monitor that acts on it is not running, so its outcome
     /// cannot be observed. Never a success.
     ObservationUnknown(ControlToken, String),
+    /// Deadline admission is unavailable: the deadline publisher could not be created or has
+    /// ended. Nothing was committed. Never retried by creating another publisher.
+    Unavailable(String),
+    /// An automated start or restart was refused: the service is `Failed` or not running, and
+    /// only a member Start revives it with a fresh retry budget. Nothing was committed.
+    RequiresMemberStart(String),
+    /// CORE-D6: new starts are held (an update is being installed). Nothing was committed.
+    Held(String),
+}
+
+/// CORE-D6 (0.5.3): the gate every start passes. While it is held (an update is being installed),
+/// no supervisor starts and no Start or automated restart is committed, so no sidecar can come
+/// back between the pre-update drain and the relaunch (and no new binary from the installed
+/// bundle can start against the old app's data). Production supervisors share
+/// [`SpawnGate::global`]; tests give each supervisor its own gate.
+#[derive(Debug, Default)]
+pub struct SpawnGate {
+    hold: Mutex<Option<String>>,
+}
+
+impl SpawnGate {
+    /// The app-wide gate.
+    pub fn global() -> Arc<SpawnGate> {
+        static GLOBAL: std::sync::OnceLock<Arc<SpawnGate>> = std::sync::OnceLock::new();
+        GLOBAL
+            .get_or_init(|| Arc::new(SpawnGate::default()))
+            .clone()
+    }
+
+    /// Hold every new start, with the reason a refused start reports.
+    pub fn hold(&self, reason: impl Into<String>) {
+        *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.into());
+    }
+
+    /// Let starts through again.
+    pub fn release(&self) {
+        *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The reason starts are held, if they are.
+    pub fn held(&self) -> Option<String> {
+        self.hold.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 /// What became of an accepted control.
@@ -641,6 +796,9 @@ pub enum Receipt {
     Superseded,
     /// Not retained (an older token, or one from another app run).
     Expired,
+    /// The control's deadline passed before it settled. Final: a later completion updates the
+    /// lifecycle snapshot but never turns this into `Complete`.
+    DeadlineExpired,
     /// The cell could not be read in bounded time; nothing is claimed.
     Unknown { reason: String },
 }
@@ -678,6 +836,17 @@ pub struct LifecycleSnapshot {
     pub pid: Option<u32>,
     /// Why the service is quarantined, when it is.
     pub quarantine: Option<String>,
+    /// Admitted spawn and publication tickets not yet resolved. A Stop settles only after they
+    /// are (or names them as remaining).
+    pub open_tickets: u32,
+    /// The readiness rule this service follows (D-6).
+    pub readiness_profile: ReadinessProfile,
+    /// Milliseconds since the current incarnation's last fresh probe success, on the monotonic
+    /// clock. `None` when there is none.
+    #[serde(serialize_with = "decimal_opt_u64")]
+    pub readiness_age_ms: Option<u64>,
+    /// Retry counters (SCL-S3.3). `restarts` above stays the legacy recorded-failure counter.
+    pub counters: RetryCounters,
 }
 
 /// The most recent change of a service's [`Phase`] (K1a-2, the services registry). `from` is
@@ -700,6 +869,25 @@ pub struct Observation {
     pub lifecycle: LifecycleSnapshot,
     pub last_transition: PhaseTransition,
     pub last_crash: Option<CrashRecord>,
+    /// While the service is `Failed` and a slow retry is configured (CORE-D3): when it is tried
+    /// next. `None` in every other phase, and when no slow retry is configured.
+    pub slow_retry: Option<SlowRetry>,
+}
+
+/// The slow retry of a `Failed` service (CORE-D3, [`SupervisorConfig::slow_retry`]). Counters
+/// cross to JavaScript as decimal strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlowRetry {
+    /// The period between slow retries.
+    #[serde(serialize_with = "decimal_u64")]
+    pub every_ms: u64,
+    /// When the next one is due, on the supervisor's injected clock.
+    #[serde(serialize_with = "decimal_u64")]
+    pub next_at_unix_ms: u64,
+    /// Slow retries run so far by this supervisor.
+    #[serde(serialize_with = "decimal_u64")]
+    pub attempts: u64,
 }
 
 fn decimal_u64<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -710,11 +898,31 @@ fn decimal_u32<S: serde::Serializer>(v: &u32, s: S) -> std::result::Result<S::Ok
     s.serialize_str(&v.to_string())
 }
 
+fn decimal_opt_u64<S: serde::Serializer>(
+    v: &Option<u64>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match v {
+        Some(n) => s.serialize_str(&n.to_string()),
+        None => s.serialize_none(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntentKind {
     Start,
     Stop,
 }
+
+/// Who asked for a Start: a member (fresh retry budget) or an automated caller (budget carried).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartOrigin {
+    Member,
+    Automated,
+}
+
+const FAILED_NEEDS_MEMBER: &str =
+    "the retry budget is spent; only a member Start revives a Failed service";
 
 /// The lifecycle cell: the one latest intent, the coalescing wake bit, the identity counters,
 /// the legacy status view and at most one pending and one settled receipt. No queue.
@@ -731,15 +939,71 @@ struct Cell {
     quarantine: Option<String>,
     active: Option<(ControlToken, IntentKind)>,
     settled: Option<(ControlToken, Receipt)>,
+    /// This supervisor's id in the deadline overlay, and the publisher it arms.
+    owner: u64,
+    deadlines: Arc<DeadlinePublisher>,
+    /// The intent sequence of the pending control that armed a deadline record, set under this
+    /// lock when it is armed. Only that control can be `DeadlineExpired`; any other control
+    /// settles without reading the overlay, so another owner's record mid-write never turns it
+    /// into an expiry.
+    deadline_seq: Option<u64>,
+    /// A spawn admitted and not yet published or torn down (SCL-S2.3).
+    spawn_ticket: bool,
+    /// Admitted credential publications not yet committed or released:
+    /// (ticket id, intent sequence it was admitted under, name).
+    publications: Vec<(u64, u64, String)>,
+    /// Publications released while a Stop was pending, for that Stop's `Complete` scope
+    /// (bounded at [`MAX_SCOPE_PUBLICATIONS`]).
+    resolved_publications: Vec<String>,
+    next_ticket: u64,
+    /// Set once shutdown has finished: no monitor is left to reconcile a quarantine.
+    closed: bool,
+    /// Log readers still running when the monitor exited. Checked (and joined) by whoever next
+    /// touches the cell after shutdown: a ticket release or a snapshot read.
+    closed_readers: Vec<Reader>,
     /// This supervisor instance, carried in every token it issues.
     instance: u64,
+    /// The readiness rule (fixed by whether the spec has a probe) and the current incarnation's
+    /// readiness as the monitor last wrote it. Shown only while the phase is `Alive`.
+    profile: ReadinessProfile,
+    readiness: Readiness,
+    /// The current incarnation's last fresh probe success (monotonic), and how old it may get
+    /// before `Ready` is shown `Stale` (two probe intervals).
+    last_ok: Option<std::time::Instant>,
+    fresh_limit: Duration,
+    /// Retry counters. `consecutive_failures` is the budget the monitor counts against.
+    counters: RetryCounters,
+    /// Bumped by every member Start ([`Supervisor::request_start`]). The monitor gives a fresh
+    /// retry budget when it changes, and only then (INV-17).
+    member_starts: u64,
+    /// The Start intent the latest member Start committed or joined. A member Start that joins
+    /// a pending automated Start promotes it once (it bumps `member_starts`).
+    member_intent: u64,
     /// The most recent phase change and when it happened (K1a-2). Written only by `set_phase`.
     last_transition: PhaseTransition,
     /// The supervisor's injected clock, read when the phase changes.
     clock: Arc<dyn Clock>,
+    /// CORE-D3: the slow-retry period ([`SupervisorConfig::slow_retry`]), when the next one is due
+    /// (set when the service enters `Failed`) and how many have run.
+    slow_retry_every: Option<Duration>,
+    slow_retry_at: Option<u64>,
+    slow_retries: u64,
 }
 
 impl Cell {
+    /// The slow retry as observed: only while `Failed` with one scheduled.
+    fn slow_retry_view(&self) -> Option<SlowRetry> {
+        if self.phase != Phase::Failed {
+            return None;
+        }
+        let every = self.slow_retry_every?;
+        Some(SlowRetry {
+            every_ms: u64::try_from(every.as_millis()).unwrap_or(u64::MAX),
+            next_at_unix_ms: self.slow_retry_at?,
+            attempts: self.slow_retries,
+        })
+    }
+
     /// The one writer of `phase`. A change records the transition at the clock's current time; a
     /// write of the same phase records nothing.
     fn set_phase(&mut self, next: Phase) {
@@ -753,11 +1017,25 @@ impl Cell {
         }
     }
 
+    /// Readiness as shown: the profile's not-ready value unless an incarnation is `Alive`, and
+    /// `Ready` only while fresh.
+    fn shown_readiness(&self) -> Readiness {
+        if self.phase != Phase::Alive {
+            return self.profile.not_ready();
+        }
+        shown_readiness(
+            self.readiness,
+            self.last_ok.map(|t| t.elapsed()),
+            self.fresh_limit,
+        )
+    }
+
     fn snapshot(&self, epoch: u64) -> LifecycleSnapshot {
+        let alive = self.phase == Phase::Alive;
         LifecycleSnapshot {
             name: self.status.name.clone(),
             phase: self.phase,
-            readiness: Readiness::NotAssessed,
+            readiness: self.shown_readiness(),
             desired: self.desired,
             app_epoch: epoch,
             instance: self.instance,
@@ -768,7 +1046,52 @@ impl Cell {
             restarts: self.status.restarts,
             pid: self.status.pid,
             quarantine: self.quarantine.clone(),
+            open_tickets: u32::try_from(self.publications.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(u32::from(self.spawn_ticket)),
+            readiness_profile: self.profile,
+            readiness_age_ms: self
+                .last_ok
+                .filter(|_| alive)
+                .map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            counters: self.counters,
         }
+    }
+
+    /// After shutdown, reconcile a quarantine without a monitor: join the readers that have
+    /// ended since, and once no reader and no ticket is left, the service is Stopped.
+    fn reconcile_after_close(&mut self) {
+        if !self.closed || self.quarantine.is_none() {
+            return;
+        }
+        if !self.closed_readers.is_empty() {
+            let _still = drain_readers(&mut self.closed_readers, Duration::ZERO);
+        }
+        if self.closed_readers.is_empty() && self.publications.is_empty() && !self.spawn_ticket {
+            self.quarantine = None;
+            self.set_phase(Phase::Stopped);
+            self.touch();
+        }
+    }
+
+    /// Publish a legacy state and its phase. A committed Stop owns the phase until it settles
+    /// (`Stopping`, then `Stopped` or `Quarantined`); a late state write from the monitor does
+    /// not overwrite it.
+    fn apply_state(&mut self, state: SupervisorState) {
+        let stop_pending = self.desired == Desired::Stopped
+            && matches!(self.phase, Phase::Stopping | Phase::Quarantined);
+        self.status.state = state.clone();
+        self.touch();
+        if stop_pending {
+            return;
+        }
+        self.set_phase(match state {
+            SupervisorState::Off => Phase::Stopped,
+            SupervisorState::Starting => Phase::Starting,
+            SupervisorState::Running => Phase::Alive,
+            SupervisorState::Backoff { .. } => Phase::Backoff,
+            SupervisorState::Failed => Phase::Failed,
+        });
     }
 
     fn touch(&mut self) {
@@ -779,10 +1102,24 @@ impl Cell {
     /// wake bit. Returns the new token.
     fn commit(&mut self, epoch: u64, desired: Desired, kind: IntentKind) -> ControlToken {
         if let Some((old, _)) = self.active.take() {
-            self.settled = Some((old, Receipt::Superseded));
+            // DeadlineExpired is final: a control whose deadline already passed stays expired
+            // when a newer intent replaces it.
+            let expired = self.had_deadline(old.intent_sequence)
+                && self
+                    .deadlines
+                    .expired_at_settle(self.owner, old.app_epoch, old.intent_sequence);
+            self.deadlines
+                .release(self.owner, old.app_epoch, old.intent_sequence);
+            let receipt = if expired {
+                Receipt::DeadlineExpired
+            } else {
+                Receipt::Superseded
+            };
+            self.settled = Some((old, receipt));
         }
         self.intent_sequence = self.intent_sequence.saturating_add(1);
         self.desired = desired;
+        self.resolved_publications.clear();
         let token = ControlToken {
             app_epoch: epoch,
             instance: self.instance,
@@ -804,16 +1141,44 @@ impl Cell {
         if let Some(reason) = &self.quarantine {
             return ControlResult::Quarantined(reason.clone());
         }
-        if self.phase == Phase::Stopped {
+        if self.phase == Phase::Stopped && !self.spawn_ticket && self.publications.is_empty() {
             return ControlResult::AlreadySatisfied(self.snapshot(epoch));
         }
         ControlResult::Busy
+    }
+
+    /// A member Start since `budget_member` was read gives a fresh retry budget: reset it and
+    /// record the member count it now belongs to.
+    fn adopt_member_budget(&mut self, budget_member: &mut u64) {
+        if self.member_starts != *budget_member {
+            *budget_member = self.member_starts;
+            self.counters.consecutive_failures = 0;
+            self.touch();
+        }
+    }
+
+    /// Whether the control of intent `seq` armed a deadline record; clears the mark, since the
+    /// caller is about to release that record.
+    fn had_deadline(&mut self, seq: u64) -> bool {
+        self.deadline_seq.take() == Some(seq)
     }
 
     /// Settle the pending receipt if it belongs to intent `seq` and is of `kind`.
     fn settle(&mut self, seq: u64, kind: IntentKind, receipt: Receipt) {
         if let Some((token, k)) = self.active {
             if token.intent_sequence == seq && k == kind {
+                // A settlement after the control's deadline is reported as expired, whatever was
+                // observed: the caller was promised an answer by then and did not get one.
+                let expired = self.had_deadline(seq)
+                    && self
+                        .deadlines
+                        .expired_at_settle(self.owner, token.app_epoch, seq);
+                self.deadlines.release(self.owner, token.app_epoch, seq);
+                let receipt = if expired {
+                    Receipt::DeadlineExpired
+                } else {
+                    receipt
+                };
                 self.active = None;
                 self.settled = Some((token, receipt));
                 self.touch();
@@ -867,6 +1232,41 @@ pub struct SupervisorConfig {
     pub join_timeout: Duration,
     /// The clock (inject a fake in tests).
     pub clock: Arc<dyn Clock>,
+    /// The deadline publisher for deadline-bound controls. `None` uses the app-wide
+    /// [`DeadlinePublisher::global`].
+    pub deadlines: Option<Arc<DeadlinePublisher>>,
+    /// Runs on the monitor after a spawn is admitted and before the OS spawn call. A
+    /// fault-injection seam: the lifecycle fixtures hold a spawn "in flight" with it while they
+    /// commit a Stop or shutdown. `None` in production.
+    pub spawn_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor while it marks the service Failed, right after the Failed phase is
+    /// visible to controls. A fault-injection seam: the lifecycle fixtures hold the monitor
+    /// there while a Start races the transition. `None` in production.
+    pub failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor in a Start's turn after it has read the intent and before it applies
+    /// the retry-budget rule. A fault-injection seam: the lifecycle fixtures hold the monitor
+    /// there while a member Start joins an automated one. `None` in production.
+    pub budget_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor at the top of a supervision turn in which a finished probe worker is
+    /// waiting to be collected, before the turn reads the clock. A fault-injection seam: the
+    /// lifecycle fixtures hold the monitor there to delay collection past the freshness limit.
+    /// `None` in production.
+    pub collect_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Runs on the monitor inside a Stop's settle window each time it keeps waiting with every
+    /// log reader done and a publication ticket still open. A fault-injection seam: the
+    /// lifecycle fixtures release the ticket there, so they prove the window waits for
+    /// publications and not only for readers. `None` in production.
+    pub settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// CORE-D3: after the retry budget is spent, try the service again once per this period.
+    /// `None` (the default) keeps SPEC-001's terminal `Failed`: only a member Start revives it.
+    ///
+    /// A slow retry is one attempt under the spent budget: if it fails, the service is `Failed`
+    /// again at once and the next one is a whole period away, so the bound stays one spawn per
+    /// period. If it stays up, health credit (attested or elapsed, as for any incarnation) resets
+    /// the budget. A Stop, a member Start or shutdown cancels a pending slow retry.
+    pub slow_retry: Option<Duration>,
+    /// CORE-D6: the gate starts pass ([`SpawnGate::global`] by default).
+    pub spawn_gate: Arc<SpawnGate>,
 }
 
 impl SupervisorConfig {
@@ -880,6 +1280,14 @@ impl SupervisorConfig {
             healthy_after: DEFAULT_HEALTHY_AFTER,
             join_timeout: DEFAULT_JOIN_TIMEOUT,
             clock: Arc::new(SystemClock),
+            deadlines: None,
+            spawn_barrier: None,
+            failed_barrier: None,
+            budget_barrier: None,
+            collect_barrier: None,
+            settle_barrier: None,
+            slow_retry: None,
+            spawn_gate: SpawnGate::global(),
         }
     }
 }
@@ -901,6 +1309,10 @@ struct Shared {
     /// the `logs()` accessor snapshots it. Survives restarts.
     logs: LogRing,
     epoch: u64,
+    /// See [`SupervisorConfig::failed_barrier`].
+    failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// See [`SupervisorConfig::settle_barrier`].
+    settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -928,23 +1340,7 @@ impl Shared {
     }
 
     fn set_state(&self, state: SupervisorState) {
-        let mut c = self.lock();
-        // A committed Stop owns the phase until it settles (`Stopping`, then `Stopped` or
-        // `Quarantined`); a late state write from the monitor does not overwrite it.
-        let stop_pending = c.desired == Desired::Stopped
-            && matches!(c.phase, Phase::Stopping | Phase::Quarantined);
-        c.status.state = state.clone();
-        c.touch();
-        if stop_pending {
-            return;
-        }
-        c.set_phase(match state {
-            SupervisorState::Off => Phase::Stopped,
-            SupervisorState::Starting => Phase::Starting,
-            SupervisorState::Running => Phase::Alive,
-            SupervisorState::Backoff { .. } => Phase::Backoff,
-            SupervisorState::Failed => Phase::Failed,
-        });
+        self.lock().apply_state(state);
     }
 
     fn snapshot(&self) -> SupervisorStatus {
@@ -999,8 +1395,13 @@ pub struct Supervisor {
     name: String,
     /// Hard cap on how long teardown blocks joining the monitor thread (F-2).
     join_timeout: Duration,
+    /// This supervisor's id in the deadline overlay.
+    owner: u64,
+    deadlines: Arc<DeadlinePublisher>,
     /// This supervisor instance (see [`ControlToken::instance`]).
     instance: u64,
+    /// CORE-D6: the gate a Start or automated restart passes.
+    spawn_gate: Arc<SpawnGate>,
 }
 
 impl Supervisor {
@@ -1010,6 +1411,12 @@ impl Supervisor {
     /// [`MAX_DESCRIPTOR_BYTES`] (`InvalidInput`, nothing spawned) or if the OS refuses the
     /// monitor thread. No `.expect`, so the caller decides (F-2 LOW).
     pub fn start(config: SupervisorConfig) -> std::io::Result<Self> {
+        if let Some(reason) = config.spawn_gate.held() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("'{}' was not started: {reason}", config.spec.name),
+            ));
+        }
         let bytes = config.spec.descriptor_bytes();
         if bytes > MAX_DESCRIPTOR_BYTES {
             return Err(std::io::Error::new(
@@ -1023,12 +1430,30 @@ impl Supervisor {
         let name = config.spec.name.clone();
         let join_timeout = config.join_timeout;
         let epoch = app_epoch();
-        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let instance = NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        let owner = instance;
+        // The deadline publisher is reserved before any control is admitted. If it could not be
+        // created, deadline-bound controls report Unavailable; nothing replaces it.
+        let deadlines = config
+            .deadlines
+            .clone()
+            .unwrap_or_else(DeadlinePublisher::global);
         let first = ControlToken {
             app_epoch: epoch,
             instance,
             intent_sequence: 1,
         };
+        let profile = if config.spec.health_check.is_some() {
+            ReadinessProfile::Probed
+        } else {
+            ReadinessProfile::LivenessOnly
+        };
+        // SPEC-001: the initial freshness limit is two configured probe intervals.
+        let fresh_limit = config
+            .spec
+            .health_check
+            .as_ref()
+            .map_or(Duration::ZERO, |hc| hc.interval.saturating_mul(2));
         let shared = Arc::new(Shared {
             cell: Mutex::new(Cell {
                 status: SupervisorStatus {
@@ -1049,19 +1474,44 @@ impl Supervisor {
                 quarantine: None,
                 active: Some((first, IntentKind::Start)),
                 settled: None,
+                owner,
+                deadlines: deadlines.clone(),
+                spawn_ticket: false,
+                publications: Vec::new(),
+                resolved_publications: Vec::new(),
+                next_ticket: 1,
+                closed: false,
+                closed_readers: Vec::new(),
+                deadline_seq: None,
                 instance,
+                profile,
+                readiness: profile.not_ready(),
+                last_ok: None,
+                fresh_limit,
+                counters: RetryCounters {
+                    max_retries: config.backoff.max_retries,
+                    ..RetryCounters::default()
+                },
+                member_starts: 1,
+                member_intent: 1,
                 last_transition: PhaseTransition {
                     from: None,
                     to: Phase::Starting,
                     at_unix_ms: config.clock.now_unix_ms(),
                 },
                 clock: config.clock.clone(),
+                slow_retry_every: config.slow_retry,
+                slow_retry_at: None,
+                slow_retries: 0,
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
             logs: LogRing::new(),
             epoch,
+            failed_barrier: config.failed_barrier.clone(),
+            settle_barrier: config.settle_barrier.clone(),
         });
+        let spawn_gate = config.spawn_gate.clone();
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
             .name(format!("supervisor:{name}"))
@@ -1071,7 +1521,124 @@ impl Supervisor {
             monitor: Some(monitor),
             name,
             join_timeout,
+            owner,
+            deadlines,
             instance,
+            spawn_gate,
+        })
+    }
+
+    /// This supervisor's id in the deadline overlay (see [`DeadlinePublisher::record_state`]).
+    pub fn owner_id(&self) -> u64 {
+        self.owner
+    }
+
+    /// Commit a Stop that must settle within `within` (SCL-S2.4). The absolute monotonic
+    /// deadline is armed here, in the admission path, before the monitor is woken and before any
+    /// teardown work. If it passes before the Stop settles, the receipt is `DeadlineExpired`,
+    /// even if the publisher never ran, and stays so after a late completion.
+    ///
+    /// - `Unavailable` if the deadline publisher could not be created or has ended (nothing is
+    ///   committed, and no replacement publisher is created).
+    /// - `Busy` if the cell is contended or every deadline record is in use (nothing committed).
+    /// - A call while a Stop is pending joins it: a plain pending Stop gets this deadline, and a
+    ///   pending deadline is moved earlier if this one is tighter, never later (a later call
+    ///   never restarts the budget). Otherwise as [`Supervisor::request_stop`].
+    pub fn request_stop_within(&self, within: Duration) -> ControlResult {
+        if let Some(reason) = self.deadlines.unavailable() {
+            return ControlResult::Unavailable(reason);
+        }
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return ControlResult::Busy;
+        };
+        if c.closing {
+            return ControlResult::RejectedClosing;
+        }
+        if c.desired == Desired::Stopped {
+            // Joining a pending Stop (plain or with a deadline) applies this deadline to it if
+            // it is the tighter one.
+            if let Some((token, IntentKind::Stop)) = c.active {
+                if !self.monitor_running() {
+                    // Nothing could settle the Stop or free a record: arm none.
+                    drop(c);
+                    return self.observed(token);
+                }
+                if !self.deadlines.arm_or_tighten(
+                    self.owner,
+                    token.app_epoch,
+                    token.intent_sequence,
+                    within,
+                ) {
+                    return ControlResult::Busy;
+                }
+                c.deadline_seq = Some(token.intent_sequence);
+                drop(c);
+                return self.observed(token);
+            }
+            let joined = c.repeated_stop(self.shared.epoch);
+            drop(c);
+            return match joined {
+                ControlResult::Accepted(token) => self.observed(token),
+                other => other,
+            };
+        }
+        let seq = c.intent_sequence.saturating_add(1);
+        // With the monitor gone nothing would ever settle (and so free) a deadline record: the
+        // Stop is committed without one and reported ObservationUnknown.
+        let monitor_alive = self.monitor_running();
+        if monitor_alive
+            && !self
+                .deadlines
+                .arm(self.owner, self.shared.epoch, seq, within)
+        {
+            return ControlResult::Busy;
+        }
+        let token = c.commit(self.shared.epoch, Desired::Stopped, IntentKind::Stop);
+        if monitor_alive {
+            c.deadline_seq = Some(token.intent_sequence);
+        }
+        if c.phase != Phase::Quarantined {
+            c.set_phase(Phase::Stopping);
+        }
+        drop(c);
+        self.shared.notify();
+        self.observed(token)
+    }
+
+    /// Admit a credential publication (for example a generation's bearer or seed file) under the
+    /// current intent (SCL-S2.3). Admission is refused unless the service is meant to be running
+    /// and not shutting down or quarantined. Write the file only after admission, then
+    /// [`PublicationTicket::commit`] it with the step that makes it active: the supervisor runs
+    /// that step only while the ticket's intent is still current, under the same lock as the
+    /// check. A Stop settles only after every admitted ticket is resolved, or
+    /// names it as remaining.
+    pub fn admit_publication(
+        &self,
+        what: &str,
+    ) -> std::result::Result<PublicationTicket, PublicationRefused> {
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return Err(PublicationRefused::Busy);
+        };
+        if c.closing {
+            return Err(PublicationRefused::Closing);
+        }
+        if let Some(reason) = &c.quarantine {
+            return Err(PublicationRefused::Quarantined(reason.clone()));
+        }
+        if c.desired != Desired::Running {
+            return Err(PublicationRefused::NotCurrent);
+        }
+        let id = c.next_ticket;
+        c.next_ticket = c.next_ticket.saturating_add(1);
+        let name: String = what.chars().take(64).collect();
+        let seq = c.intent_sequence;
+        c.publications.push((id, seq, name.clone()));
+        c.touch();
+        Ok(PublicationTicket {
+            shared: self.shared.clone(),
+            id,
+            seq: c.intent_sequence,
+            name,
         })
     }
 
@@ -1083,10 +1650,17 @@ impl Supervisor {
 
     /// The lifecycle cell (D-12): phase, readiness, intent and identity counters. A bounded
     /// read: `None` means the cell was contended and nothing is claimed.
+    ///
+    /// Not purely an observation after shutdown: with no monitor left, this read reconciles a
+    /// quarantine. It joins the log readers that have ended since shutdown, and once no reader
+    /// and no ticket is left it moves the phase from `Quarantined` to `Stopped` (bumping the
+    /// revision) before returning the snapshot. Before shutdown it changes nothing.
     pub fn lifecycle(&self) -> Option<LifecycleSnapshot> {
-        self.shared
-            .lock_bounded()
-            .map(|c| c.snapshot(self.shared.epoch))
+        self.shared.lock_bounded().map(|mut c| {
+            // After shutdown, a read is the only thing left that can observe late completion.
+            c.reconcile_after_close();
+            c.snapshot(self.shared.epoch)
+        })
     }
 
     /// The services registry read (K1a-2): the lifecycle cell, its last phase transition and its
@@ -1097,6 +1671,7 @@ impl Supervisor {
             lifecycle: c.snapshot(self.shared.epoch),
             last_transition: c.last_transition,
             last_crash: c.status.last_crash.clone(),
+            slow_retry: c.slow_retry_view(),
         })
     }
 
@@ -1151,15 +1726,84 @@ impl Supervisor {
         self.observed(token)
     }
 
-    /// Commit a Start intent (SC1). Non-blocking and bounded.
+    /// Commit a member Start intent (SC1, SC2): a person asked for the service (a Start button,
+    /// a setting the member turned on). Non-blocking and bounded.
     ///
     /// - Refused as `RejectedClosing` after shutdown began, and as `Quarantined` while owned
     ///   work from an earlier stop is still running.
     /// - A Start on a live service is `AlreadySatisfied` while its monitor runs; one while a
     ///   Start is pending joins it. With the monitor gone it is `ObservationUnknown`.
     /// - After a Stop (or after `Failed`) it commits a new intent: the monitor finishes any
-    ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget.
+    ///   teardown first, then spawns exactly one new incarnation with a fresh retry budget. This
+    ///   is the only control that gives a fresh budget; automated callers use
+    ///   [`Supervisor::request_auto_start`] and [`Supervisor::request_auto_restart`].
     pub fn request_start(&self) -> ControlResult {
+        self.start_intent(StartOrigin::Member)
+    }
+
+    /// Commit an automated Start (SC2): no member asked (auto-start at launch, a lazy start from
+    /// another service or a tool). Like a member Start, except that it carries the retry budget
+    /// over (failures before an earlier Stop still count) and never revives a `Failed` service:
+    /// that is `RequiresMemberStart` (a configured slow retry is the monitor's own single attempt
+    /// under the spent budget, not a caller's start; INV-17 as amended 2026-11-04). If the
+    /// carried budget is already spent, the Start settles `Failed` without spawning.
+    pub fn request_auto_start(&self) -> ControlResult {
+        self.start_intent(StartOrigin::Automated)
+    }
+
+    /// Commit an automated restart (SC2): an internal stop then start of a running service, as
+    /// one new Start intent (for example the node's mining arm and disarm, or a watchdog). The
+    /// current incarnation is torn down (not counted as a failure) and a new one is spawned
+    /// under the same retry budget. Only for a service that is meant to be running and is
+    /// `Starting`, `Alive` or in `Backoff`; otherwise `RequiresMemberStart`. A restart while a
+    /// Start is still pending joins it.
+    pub fn request_auto_restart(&self) -> ControlResult {
+        if let Some(reason) = self.spawn_gate.held() {
+            return ControlResult::Held(reason);
+        }
+        let Some(mut c) = self.shared.lock_bounded() else {
+            return ControlResult::Busy;
+        };
+        if c.closing {
+            return ControlResult::RejectedClosing;
+        }
+        if let Some(reason) = &c.quarantine {
+            return ControlResult::Quarantined(reason.clone());
+        }
+        if c.desired != Desired::Running {
+            return ControlResult::RequiresMemberStart(
+                "the service is not meant to be running; an automated restart does not start it"
+                    .to_string(),
+            );
+        }
+        if c.phase == Phase::Failed {
+            return ControlResult::RequiresMemberStart(FAILED_NEEDS_MEMBER.to_string());
+        }
+        if let Some((token, IntentKind::Start)) = c.active {
+            drop(c);
+            return self.observed(token);
+        }
+        let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
+        if c.phase == Phase::Alive {
+            c.set_phase(Phase::Stopping);
+        }
+        drop(c);
+        self.shared.notify();
+        self.observed(token)
+    }
+
+    /// Whether the current incarnation is `Ready`: it answered its probe, and the answer is
+    /// fresh. Always false for a service without a probe (it is `NotAssessed`) and false when
+    /// the cell could not be read in bounded time. Process existence is [`Supervisor::status`].
+    pub fn is_ready(&self) -> bool {
+        self.lifecycle()
+            .is_some_and(|l| l.readiness == Readiness::Ready)
+    }
+
+    fn start_intent(&self, origin: StartOrigin) -> ControlResult {
+        if let Some(reason) = self.spawn_gate.held() {
+            return ControlResult::Held(reason);
+        }
         let Some(mut c) = self.shared.lock_bounded() else {
             return ControlResult::Busy;
         };
@@ -1173,7 +1817,18 @@ impl Supervisor {
         // monitor picks the new intent up), so identical concurrent Starts never supersede each
         // other.
         if let Some((token, IntentKind::Start)) = c.active {
-            drop(c);
+            // A member joining a pending automated Start makes it a member Start: the fresh
+            // budget the member asked for. Joining a member Start again changes nothing.
+            if origin == StartOrigin::Member && c.member_intent != token.intent_sequence {
+                c.member_starts = c.member_starts.saturating_add(1);
+                c.member_intent = token.intent_sequence;
+                c.wake = true;
+                c.touch();
+                drop(c);
+                self.shared.notify();
+            } else {
+                drop(c);
+            }
             // Joining a pending Start is only Accepted while a monitor can settle it.
             return self.observed(token);
         }
@@ -1183,7 +1838,14 @@ impl Supervisor {
         if c.desired == Desired::Running && c.phase != Phase::Failed && self.monitor_running() {
             return ControlResult::AlreadySatisfied(c.snapshot(self.shared.epoch));
         }
+        if origin == StartOrigin::Automated && c.phase == Phase::Failed {
+            return ControlResult::RequiresMemberStart(FAILED_NEEDS_MEMBER.to_string());
+        }
         let token = c.commit(self.shared.epoch, Desired::Running, IntentKind::Start);
+        if origin == StartOrigin::Member {
+            c.member_starts = c.member_starts.saturating_add(1);
+            c.member_intent = token.intent_sequence;
+        }
         drop(c);
         self.shared.notify();
         self.observed(token)
@@ -1212,11 +1874,29 @@ impl Supervisor {
         if token.app_epoch != self.shared.epoch || token.instance != self.instance {
             return Receipt::Expired;
         }
+        // Compare the monotonic deadline directly, without any lock, so expiry is reported even
+        // when the publisher has not run and the cell is busy.
+        let torn = match self
+            .deadlines
+            .expired(self.owner, token.app_epoch, token.intent_sequence)
+        {
+            Some(true) => return Receipt::DeadlineExpired,
+            Some(false) => false,
+            None => true,
+        };
         let Some(c) = self.shared.lock_bounded() else {
             return Receipt::Unknown {
                 reason: "the lifecycle cell is busy".to_string(),
             };
         };
+        // A torn read leaves expiry undecided only for the pending control that armed its own
+        // record. Any other control has no record, so another owner's rewrite says nothing
+        // about it, and the cell answers.
+        if torn && c.deadline_seq == Some(token.intent_sequence) {
+            return Receipt::Unknown {
+                reason: "the deadline record was being rewritten".to_string(),
+            };
+        }
         match (&c.active, &c.settled) {
             (Some((t, _)), _) if *t == token => Receipt::Pending,
             (_, Some((t, r))) if *t == token => r.clone(),
@@ -1306,11 +1986,189 @@ impl Supervisor {
     }
 }
 
+/// Why a publication was not admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationRefused {
+    /// The service is not meant to be running (a Stop is committed), or a newer intent replaced
+    /// the ticket's own: the file must not become the active reference.
+    NotCurrent,
+    /// Shutdown has begun.
+    Closing,
+    /// Owned work from an earlier stop is still running.
+    Quarantined(String),
+    /// The lifecycle cell was contended; nothing was admitted.
+    Busy,
+}
+
+/// An admitted credential publication (SCL-S2.3). While it is open the service's Stop cannot
+/// settle `Complete`. It is resolved only by [`PublicationTicket::commit`] or
+/// [`PublicationTicket::withdraw`]. Dropping it (an ignored ticket, or a caller that unwinds
+/// after writing the file) releases nothing: what it wrote may still be on disk, so the Stop
+/// stays `Incomplete` naming the publication and the service stays Quarantined.
+#[must_use = "commit() or withdraw() the ticket; dropping it keeps the service's Stop open"]
+pub struct PublicationTicket {
+    shared: Arc<Shared>,
+    id: u64,
+    seq: u64,
+    name: String,
+}
+
+impl std::fmt::Debug for PublicationTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationTicket")
+            .field("id", &self.id)
+            .field("intent_sequence", &self.seq)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl PublicationTicket {
+    /// Make the published file the active reference by running `activate` (for example the
+    /// rename that puts the file in place), if the ticket's intent is still current.
+    ///
+    /// The currency check, `activate` and the release are one critical section: no Stop or Start
+    /// can commit between the check and the file becoming active, and a Stop can never list this
+    /// publication as resolved before `activate` has finished. `activate` must therefore be a
+    /// short local step that does not call back into the supervisor (controls made from inside it
+    /// are refused as busy).
+    ///
+    /// * Intent superseded: `activate` does not run and the ticket stays open as
+    ///   [`CommitRefused::Stale`].
+    /// * `activate` fails: the ticket stays open as [`CommitRefused::Failed`] with the error.
+    /// * `activate` unwinds: the ticket is dropped unresolved, so the Stop stays open.
+    ///
+    /// In both refusals, remove what the ticket wrote, then call [`StaleTicket::cleaned`].
+    /// Dropping the [`StaleTicket`] instead keeps the publication open.
+    pub fn commit<T, E>(
+        self,
+        activate: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, CommitRefused<E>> {
+        let mut c = self.shared.lock();
+        let current = !c.closing && c.desired == Desired::Running && c.intent_sequence == self.seq;
+        if !current {
+            drop(c);
+            return Err(CommitRefused::Stale(self.into_stale()));
+        }
+        match activate() {
+            Ok(value) => {
+                resolve_publication(&mut c, self.id);
+                drop(c);
+                self.shared.notify();
+                Ok(value)
+            }
+            Err(error) => {
+                drop(c);
+                Err(CommitRefused::Failed {
+                    ticket: self.into_stale(),
+                    error,
+                })
+            }
+        }
+    }
+
+    /// Nothing the ticket wrote remains (nothing was written, or the caller removed it): release
+    /// the ticket without making anything the active reference.
+    pub fn withdraw(self) {
+        release_publication(&self.shared, self.id);
+    }
+
+    fn into_stale(self) -> StaleTicket {
+        StaleTicket {
+            shared: self.shared,
+            id: self.id,
+            name: self.name,
+        }
+    }
+}
+
+/// Why [`PublicationTicket::commit`] did not make the file the active reference. Either way the
+/// ticket is still open: remove what it wrote, then call [`StaleTicket::cleaned`].
+#[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]
+#[derive(Debug)]
+pub enum CommitRefused<E> {
+    /// The ticket's intent was superseded; the activation step did not run.
+    Stale(StaleTicket),
+    /// The activation step ran and failed; nothing became active.
+    Failed {
+        /// The still-open publication.
+        ticket: StaleTicket,
+        /// The activation step's error.
+        error: E,
+    },
+}
+
+impl<E> CommitRefused<E> {
+    /// The still-open publication, whichever way the commit was refused.
+    pub fn into_ticket(self) -> StaleTicket {
+        match self {
+            CommitRefused::Stale(ticket) | CommitRefused::Failed { ticket, .. } => ticket,
+        }
+    }
+}
+
+/// A publication that did not commit (its intent was superseded, or its activation step failed).
+/// It still holds the service's Stop open until the caller has removed what it wrote and said so
+/// with [`StaleTicket::cleaned`]. Dropping it without that (an ignored error, or an unwind) releases nothing: the file may
+/// still be on disk, so the Stop stays `Incomplete` naming the publication and the service stays
+/// Quarantined.
+#[must_use = "remove what the ticket wrote, then call cleaned(); dropping it keeps the Stop open"]
+pub struct StaleTicket {
+    shared: Arc<Shared>,
+    id: u64,
+    name: String,
+}
+
+impl std::fmt::Debug for StaleTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaleTicket")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl StaleTicket {
+    /// What the ticket was admitted for.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The stale file is gone: release the ticket.
+    pub fn cleaned(self) {
+        release_publication(&self.shared, self.id);
+    }
+}
+
+fn release_publication(shared: &Shared, id: u64) {
+    resolve_publication(&mut shared.lock(), id);
+    shared.notify();
+}
+
+/// Resolve publication `id` under the cell lock the caller holds. The caller notifies after it
+/// drops the lock.
+fn resolve_publication(c: &mut Cell, id: u64) {
+    let stop_pending = matches!(c.active, Some((_, IntentKind::Stop)));
+    if let Some(pos) = c.publications.iter().position(|(t, _, _)| *t == id) {
+        let (_, _, name) = c.publications.remove(pos);
+        if stop_pending && c.resolved_publications.len() < MAX_SCOPE_PUBLICATIONS {
+            c.resolved_publications.push(format!("publication:{name}"));
+        }
+    }
+    // After shutdown no monitor reconciles a quarantine: the release does, re-checking the
+    // readers itself.
+    c.reconcile_after_close();
+    c.wake = true;
+    c.touch();
+}
+
 impl Drop for Supervisor {
     /// No-orphan guarantee: dropping the supervisor tells the monitor to stop the child and
     /// joins it, so the child is dead before the process exits.
     fn drop(&mut self) {
         self.shutdown();
+        // Nothing can settle this supervisor's controls any more: free its deadline records.
+        self.deadlines.release_owner(self.owner);
     }
 }
 
@@ -1501,6 +2359,7 @@ fn append_crash_record(path: &std::path::Path, record: &CrashRecord) {
 /// in the dependency tree (via tauri/tokio), so this adds no new crate. A failure
 /// (e.g. the process already reaped) is ignored — the caller re-checks liveness.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn signal_pid(pid: u32, signal: i32) -> bool {
     let Some(target) = checked_pid(pid) else {
         return false;
@@ -1522,6 +2381,7 @@ fn checked_pid(pid: u32) -> Option<libc::pid_t> {
 /// Whether `pid` is still alive on Unix (signal 0 = existence probe, sends no
 /// signal). Used to confirm SIGTERM took effect before the grace timeout.
 #[cfg(unix)]
+#[allow(unsafe_code)] // Reviewed (K6): FFI call only, see SAFETY below.
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: `kill(p, 0)` on a positive pid performs the existence check without delivering a
     // signal.
@@ -1680,13 +2540,22 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         healthy_after,
         join_timeout: _join_timeout,
         clock,
+        deadlines: _deadlines,
+        spawn_barrier,
+        failed_barrier: _failed_barrier,
+        budget_barrier,
+        collect_barrier,
+        settle_barrier: _settle_barrier,
+        slow_retry,
+        spawn_gate: _spawn_gate,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
 
-    // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap. Reset to 0 once a
-    // respawned child stays Running for `healthy_after` (F-1), and for every new Start intent.
-    let mut consecutive_failures: u32 = 0;
+    // The CONSECUTIVE-failure counter lives in the cell (`counters.consecutive_failures`) and
+    // drives the backoff delay and the Failed cap. It resets on health credit (attested for a
+    // probed service, elapsed for a liveness-only one: F-1, SC2) and on a member Start, never
+    // on an automated one.
     let watch = spec.child_watch.clone();
     // After every end of a child (reaped): the caller's cleanup of what the child started.
     let ended = |w: &Option<ChildWatch>| {
@@ -1696,14 +2565,21 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
     };
     // Log readers of every incarnation that have not been joined yet.
     let mut readers: Vec<Reader> = Vec::new();
-    // The Start intent whose retry budget `consecutive_failures` counts.
-    let mut budget_seq: u64 = 0;
+    // The member-Start count the current retry budget belongs to.
+    let mut budget_member: u64 = 1;
+    // The service's one probe slot: a worker that outlives its timeout or its incarnation keeps
+    // it until it really ends (one probe at a time per service; bounding it is SC3).
+    let mut probe_slot: Option<ProbeRunner> = None;
     // The Start intent whose budget ran out; the monitor idles in Failed until a newer intent.
     let mut failed_seq: Option<u64> = None;
     // The Stop intent already settled; the monitor idles, re-checking a quarantine.
     let mut settled_stop: Option<u64> = None;
-    // Whether a child was torn down since the last settled Stop (names "child" in the scope).
+    // What was torn down since the last settled Stop: a published child ("child") and a spawn
+    // admitted before the Stop that returned after it ("spawnTicket").
     let mut tore_down_child = false;
+    let mut late_spawn = false;
+    // The intent the last admitted spawn served: a spawn for the same intent is a respawn.
+    let mut spawned_for: u64 = 0;
 
     loop {
         let (seq, desired, closing) = shared.intent();
@@ -1714,14 +2590,26 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         if desired == Desired::Stopped {
             if settled_stop != Some(seq) {
-                if settle_stop(&shared, seq, &mut readers, tore_down_child, watch.is_some()) {
+                let torn = TornDown {
+                    child: tore_down_child,
+                    spawn_ticket: late_spawn,
+                    watch: watch.is_some(),
+                };
+                if settle_stop(&shared, seq, &mut readers, torn) {
                     settled_stop = Some(seq);
                     tore_down_child = false;
+                    late_spawn = false;
                 }
                 continue;
             }
-            let quarantined = shared.lock().quarantine.is_some();
-            if quarantined && drain_readers(&mut readers, Duration::ZERO).is_empty() {
+            let (quarantined, publications_open) = {
+                let c = shared.lock();
+                (c.quarantine.is_some(), !c.publications.is_empty())
+            };
+            if quarantined
+                && drain_readers(&mut readers, Duration::ZERO).is_empty()
+                && !publications_open
+            {
                 // The held work really ended: ownership is reconciled. The receipt keeps what
                 // was observed when the Stop settled; a fresh explicit Start is now admitted.
                 let mut c = shared.lock();
@@ -1736,8 +2624,20 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
 
         // desired == Running
         if failed_seq == Some(seq) {
-            shared.wait_wake(None);
-            continue;
+            // CORE-D3: without a slow retry, Failed waits for a newer intent (a member Start, a
+            // Stop) or shutdown. With one, the period is waited out and then exactly one attempt
+            // is made under the spent budget; a failure lands back here.
+            let Some(every) = slow_retry else {
+                shared.wait_wake(None);
+                continue;
+            };
+            if !slow_retry_wait(&shared, seq, every) {
+                continue;
+            }
+            failed_seq = None;
+            if !arm_slow_retry(&shared, seq, backoff.max_retries) {
+                continue;
+            }
         }
         // Before every spawn: the first one for a new Start intent and every automatic retry
         // under the same intent (core#397). However the previous incarnation ended (a Stop's
@@ -1745,7 +2645,16 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         // gone but its readers (and any process holding its output pipe) may not be. Reconcile
         // them before admitting the spawn; until then the service is Quarantined and nothing is
         // spawned. A pending Start stays pending; a retry keeps its budget position.
-        let remaining = drain_readers(&mut readers, READER_DRAIN);
+        let mut remaining = drain_readers(&mut readers, READER_DRAIN);
+        // Publications admitted under an earlier intent are the old incarnation's too.
+        remaining.extend(
+            shared
+                .lock()
+                .publications
+                .iter()
+                .filter(|(_, admitted, _)| *admitted < seq)
+                .map(|(_, _, n)| format!("publication:{n}")),
+        );
         if !remaining.is_empty() {
             hold_start_for_cleanup(&shared, seq, &remaining);
             shared.wait_wake(Some(QUARANTINE_POLL));
@@ -1753,18 +2662,46 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         }
         release_start_hold(&shared, seq);
         tore_down_child = false;
-        if budget_seq != seq {
-            budget_seq = seq;
-            consecutive_failures = 0;
+        late_spawn = false;
+        if let Some(barrier) = &budget_barrier {
+            barrier();
+        }
+        // A member Start gives a fresh retry budget; an automated one carries it over. The
+        // member count is read now, under the lock, not at the top of the turn: a member who
+        // joined meanwhile gets the budget for the spawn this turn admits.
+        adopt_member_budget(&shared, &mut budget_member);
+        // An automated intent cannot buy more retries: with the budget spent, it settles Failed
+        // without a spawn (INV-17).
+        if consecutive_failures(&shared) > backoff.max_retries {
+            if enter_failed(
+                &shared,
+                seq,
+                "the retry budget is spent; only a member Start gives a fresh one",
+                budget_member,
+            ) {
+                failed_seq = Some(seq);
+            }
+            continue;
         }
 
         // --- spawn admission: only for the intent that is still current ---
         if !admit_spawn(&shared, seq) {
             continue;
         }
+        let retry = spawned_for == seq;
+        spawned_for = seq;
+        if let Some(barrier) = &spawn_barrier {
+            barrier();
+        }
+        count_attempt(&shared);
+        if let Some(prepare) = watch.as_ref().and_then(|w| w.prepare.as_ref()) {
+            prepare();
+        }
         let mut child = match spawn_child(&spec) {
             Ok(c) => OwnedChild(c),
             Err(e) => {
+                ended(&watch);
+                end_spawn_ticket(&shared);
                 // Spawn itself failed (bad path / EACCES). Treat as a crash so the same bounded
                 // backoff applies — a bad binary path cannot fork-bomb either.
                 let record = CrashRecord {
@@ -1772,25 +2709,31 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     at_unix_ms: clock.now_unix_ms(),
                     exit: format!("spawn failed: {e}"),
                     stderr_tail: String::new(),
-                    restart_attempt: consecutive_failures,
+                    restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
                 record_crash_status(&shared, &record);
-                consecutive_failures += 1;
-                if consecutive_failures > backoff.max_retries {
-                    enter_failed(&shared, seq, "the binary could not be started");
-                    failed_seq = Some(seq);
+                // A member who joined while the OS call ran: this attempt was theirs.
+                adopt_member_budget(&shared, &mut budget_member);
+                let failures = count_failure(&shared);
+                if failures > backoff.max_retries {
+                    if enter_failed(
+                        &shared,
+                        seq,
+                        "the binary could not be started",
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
-                backoff_wait(
-                    &shared,
-                    seq,
-                    backoff.delay_for(consecutive_failures),
-                    clock.as_ref(),
-                );
+                backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
                 continue;
             }
         };
+        if retry {
+            count_respawn(&shared);
+        }
 
         // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
         // early line is missed. The crash tail is later derived from the ring's `err` lines.
@@ -1798,30 +2741,35 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
-        if !publish_alive(&shared, seq, child.id()) {
+        let Some(incarnation) = publish_alive(&shared, seq, child.id(), &mut budget_member) else {
+            // The spawn ticket was admitted before the newer intent: its child is still owned
+            // and goes straight to teardown. The ticket closes only once the child is reaped.
             terminate_child(&mut child, stop_grace, watch.as_ref());
             ended(&watch);
             after_teardown(&shared);
+            end_spawn_ticket(&shared);
             tore_down_child = true;
+            late_spawn = true;
             continue;
-        }
+        };
 
-        // --- supervise: wait for exit OR a newer intent OR a health failure ---
-        let report = supervise_running(
+        // --- supervise: wait for exit OR a newer intent OR a health failure. Health credit is
+        // applied inside, as soon as it is earned (SC2). ---
+        let outcome = supervise_running(
             &mut child,
             &shared,
-            seq,
-            spec.health_check.as_ref(),
-            watch.as_ref(),
-            healthy_after,
-            clock.as_ref(),
+            Running {
+                seq,
+                incarnation,
+                health: spec.health_check.as_ref(),
+                watch: watch.as_ref(),
+                healthy_after,
+                collect_barrier: collect_barrier.as_ref(),
+            },
+            &mut probe_slot,
         );
-        // F-1: a run that stayed healthy long enough resets the consecutive counter.
-        if report.sustained_healthy {
-            consecutive_failures = 0;
-        }
 
-        match report.outcome {
+        match outcome {
             RunOutcome::IntentChanged => {
                 // A Stop (or shutdown): not a crash. No record, no restart.
                 terminate_child(&mut child, stop_grace, watch.as_ref());
@@ -1842,29 +2790,26 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     at_unix_ms: clock.now_unix_ms(),
                     exit: render_exit(&status),
                     stderr_tail,
-                    restart_attempt: consecutive_failures,
+                    restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
                 record_crash_status(&shared, &record);
                 clear_pid(&shared);
 
-                consecutive_failures += 1;
-                if consecutive_failures > backoff.max_retries {
+                let failures = count_failure(&shared);
+                if failures > backoff.max_retries {
                     // The fork-bomb bound: give up. Failed, no respawn for this intent.
-                    enter_failed(
+                    if enter_failed(
                         &shared,
                         seq,
                         "the child kept exiting; the retry budget is spent",
-                    );
-                    failed_seq = Some(seq);
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
-                backoff_wait(
-                    &shared,
-                    seq,
-                    backoff.delay_for(consecutive_failures),
-                    clock.as_ref(),
-                );
+                backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
             }
             RunOutcome::Unhealthy => {
                 // Health check failed: stop the (still-alive) child and treat it as a crash so
@@ -1876,31 +2821,71 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     at_unix_ms: clock.now_unix_ms(),
                     exit: "health check failed".to_string(),
                     stderr_tail: String::new(),
-                    restart_attempt: consecutive_failures,
+                    restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
                 record_crash_status(&shared, &record);
                 clear_pid(&shared);
 
-                consecutive_failures += 1;
-                if consecutive_failures > backoff.max_retries {
-                    enter_failed(
+                let failures = count_failure(&shared);
+                if failures > backoff.max_retries {
+                    if enter_failed(
                         &shared,
                         seq,
                         "the health check kept failing; the retry budget is spent",
-                    );
-                    failed_seq = Some(seq);
+                        budget_member,
+                    ) {
+                        failed_seq = Some(seq);
+                    }
                     continue;
                 }
-                backoff_wait(
-                    &shared,
-                    seq,
-                    backoff.delay_for(consecutive_failures),
-                    clock.as_ref(),
-                );
+                backoff_wait(&shared, seq, backoff.delay_for(failures), clock.as_ref());
             }
         }
     }
+}
+
+/// The failures counted against the current retry budget.
+fn consecutive_failures(shared: &Shared) -> u32 {
+    shared.lock().counters.consecutive_failures
+}
+
+/// Count one failure against the budget and return the new count. The first failure of a
+/// budget is also an initial failure (SCL-S3.3).
+fn count_failure(shared: &Shared) -> u32 {
+    let mut c = shared.lock();
+    if c.counters.consecutive_failures == 0 {
+        c.counters.initial_failures = c.counters.initial_failures.saturating_add(1);
+    }
+    c.counters.consecutive_failures = c.counters.consecutive_failures.saturating_add(1);
+    c.touch();
+    c.counters.consecutive_failures
+}
+
+/// Apply any member Start since the budget was last read: a fresh retry budget. Under the lock,
+/// so the reset and the member count it answers to are one observation.
+fn adopt_member_budget(shared: &Shared, budget_member: &mut u64) {
+    shared.lock().adopt_member_budget(budget_member);
+}
+
+/// Health credit (once per window): the budget resets.
+fn grant_credit(shared: &Shared) {
+    let mut c = shared.lock();
+    c.counters.consecutive_failures = 0;
+    c.counters.health_credits = c.counters.health_credits.saturating_add(1);
+    c.touch();
+}
+
+fn count_attempt(shared: &Shared) {
+    let mut c = shared.lock();
+    c.counters.attempts = c.counters.attempts.saturating_add(1);
+    c.touch();
+}
+
+fn count_respawn(shared: &Shared) {
+    let mut c = shared.lock();
+    c.counters.respawns = c.counters.respawns.saturating_add(1);
+    c.touch();
 }
 
 /// The previous incarnation still holds `remaining`: quarantine the service while the next spawn
@@ -1941,26 +2926,63 @@ fn admit_spawn(shared: &Shared, seq: u64) -> bool {
     }
     c.status.state = SupervisorState::Starting;
     c.set_phase(Phase::Starting);
+    c.spawn_ticket = true;
     c.touch();
     true
 }
 
-/// Count the new incarnation, then publish it `Alive` only if intent `seq` is still current.
-/// Settles a pending Start receipt as `Started`. Returns false when a newer intent (or shutdown)
-/// arrived while the OS call ran: the caller tears the child down without publishing it.
-fn publish_alive(shared: &Shared, seq: u64, pid: u32) -> bool {
+/// The admitted spawn is resolved: published, failed, or its late child reaped.
+fn end_spawn_ticket(shared: &Shared) {
+    let mut c = shared.lock();
+    c.spawn_ticket = false;
+    c.touch();
+}
+
+/// Count the new incarnation, then publish it `Alive` only if intent `seq` is still current,
+/// with the profile's spawn readiness (`Awaiting` for a probed service). Settles a pending Start
+/// receipt as `Started` and returns the incarnation. A member who joined the pending Start while
+/// the OS call ran gives this incarnation the fresh budget, in the same critical section that
+/// settles the Start (after it, nothing can join). Returns `None` when a newer intent (or
+/// shutdown) arrived while the OS call ran: the caller tears the child down without publishing
+/// it.
+fn publish_alive(shared: &Shared, seq: u64, pid: u32, budget_member: &mut u64) -> Option<u64> {
     let mut c = shared.lock();
     c.incarnation = c.incarnation.saturating_add(1);
     c.touch();
     if c.closing || c.intent_sequence != seq {
-        return false;
+        return None;
     }
+    c.adopt_member_budget(budget_member);
     c.status.state = SupervisorState::Running;
     c.status.pid = Some(pid);
     c.set_phase(Phase::Alive);
+    c.readiness = c.profile.on_spawn();
+    c.last_ok = None;
+    c.spawn_ticket = false;
     let incarnation = c.incarnation;
     c.settle(seq, IntentKind::Start, Receipt::Started { incarnation });
-    true
+    Some(incarnation)
+}
+
+/// Write the readiness of incarnation `incarnation` (serving intent `seq`), with the time of its
+/// last fresh success. A write for an incarnation or intent that is no longer current changes
+/// nothing (INV-12).
+fn set_readiness(
+    shared: &Shared,
+    seq: u64,
+    incarnation: u64,
+    readiness: Readiness,
+    last_ok: Option<std::time::Instant>,
+) {
+    let mut c = shared.lock();
+    if c.intent_sequence != seq || c.incarnation != incarnation || c.phase != Phase::Alive {
+        return;
+    }
+    if c.readiness != readiness || c.last_ok != last_ok {
+        c.readiness = readiness;
+        c.last_ok = last_ok;
+        c.touch();
+    }
 }
 
 /// After a teardown (the child is reaped): the legacy view shows Off with no pid at once. The
@@ -1973,53 +2995,105 @@ fn after_teardown(shared: &Shared) {
 }
 
 /// The retry budget for intent `seq` is spent: Failed, and a pending Start receipt says why.
-fn enter_failed(shared: &Shared, seq: u64, reason: &str) {
-    shared.set_state(SupervisorState::Failed);
-    shared.lock().settle(
-        seq,
-        IntentKind::Start,
-        Receipt::Failed {
-            reason: reason.to_string(),
-        },
-    );
+fn enter_failed(shared: &Shared, seq: u64, reason: &str, budget_member: u64) -> bool {
+    // One critical section: a Start that lands after the Failed phase is visible must find the
+    // failing intent already settled, so it commits a fresh intent instead of joining this one.
+    {
+        let mut c = shared.lock();
+        // A member Start joined this intent after the monitor read it: that is a fresh budget,
+        // not a spent one. The caller goes round again and applies it.
+        if c.member_starts != budget_member {
+            return false;
+        }
+        c.apply_state(SupervisorState::Failed);
+        // CORE-D3: the next slow retry is published with the Failed phase, so no read sees a
+        // Failed service with a slow retry configured but none scheduled.
+        let now_ms = c.clock.now_unix_ms();
+        c.slow_retry_at = c.slow_retry_every.map(|every| {
+            now_ms.saturating_add(u64::try_from(every.as_millis()).unwrap_or(u64::MAX))
+        });
+        c.settle(
+            seq,
+            IntentKind::Start,
+            Receipt::Failed {
+                reason: reason.to_string(),
+            },
+        );
+    }
+    if let Some(barrier) = &shared.failed_barrier {
+        barrier();
+    }
+    true
 }
 
-/// Settle Stop intent `seq` after its teardown: `Complete` once every log reader has ended,
-/// otherwise `Incomplete` naming the readers, and the service is Quarantined. Returns false if a
-/// newer intent arrived meanwhile (the caller handles that one instead).
-fn settle_stop(
-    shared: &Shared,
-    seq: u64,
-    readers: &mut Vec<Reader>,
-    tore_down_child: bool,
-    has_watch: bool,
-) -> bool {
-    let remaining = drain_readers(readers, READER_DRAIN);
+/// What a Stop's teardown resolved, for its `Complete` scope.
+#[derive(Clone, Copy)]
+struct TornDown {
+    child: bool,
+    spawn_ticket: bool,
+    watch: bool,
+}
+
+/// Settle Stop intent `seq` after its teardown: `Complete` once every log reader has ended and
+/// every admitted publication ticket is resolved, otherwise `Incomplete` naming what remains,
+/// and the service is Quarantined. Returns false if a newer intent arrived meanwhile (the caller
+/// handles that one instead).
+fn settle_stop(shared: &Shared, seq: u64, readers: &mut Vec<Reader>, torn: TornDown) -> bool {
+    let deadline = std::time::Instant::now() + READER_DRAIN;
+    let (mut remaining, publications) = loop {
+        let remaining = drain_readers(readers, Duration::ZERO);
+        let publications: Vec<String> = shared
+            .lock()
+            .publications
+            .iter()
+            .map(|(_, _, n)| format!("publication:{n}"))
+            .collect();
+        if (remaining.is_empty() && publications.is_empty())
+            || std::time::Instant::now() >= deadline
+        {
+            break (remaining, publications);
+        }
+        if remaining.is_empty() {
+            if let Some(barrier) = &shared.settle_barrier {
+                barrier();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     let mut c = shared.lock();
     if c.closing || c.intent_sequence != seq {
         return false;
     }
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
-    if remaining.is_empty() {
+    if remaining.is_empty() && publications.is_empty() {
         let mut scope = Vec::new();
-        if tore_down_child {
+        if torn.child {
             scope.push("child".to_string());
-            if has_watch {
+            if torn.watch {
                 scope.push("childWatch".to_string());
             }
         }
+        if torn.spawn_ticket {
+            scope.push("spawnTicket".to_string());
+        }
         scope.push("readers".to_string());
+        scope.append(&mut c.resolved_publications);
         c.set_phase(Phase::Stopped);
         c.quarantine = None;
         c.settle(seq, IntentKind::Stop, Receipt::Complete { scope });
     } else {
-        let reason = "the child ended but its output is still open: a log reader has not reached \
-                      end of file, so another process (for example one the child started) may \
-                      still hold the pipe"
-            .to_string();
+        let reason = if remaining.is_empty() {
+            "a credential publication admitted before the Stop has not been resolved".to_string()
+        } else {
+            "the child ended but its output is still open: a log reader has not reached end of \
+             file, so another process (for example one the child started) may still hold the pipe"
+                .to_string()
+        };
+        remaining.extend(publications);
         c.set_phase(Phase::Quarantined);
         c.quarantine = Some(reason.clone());
+        c.resolved_publications.clear();
         c.settle(
             seq,
             IntentKind::Stop,
@@ -2030,13 +3104,25 @@ fn settle_stop(
     true
 }
 
-/// Shutdown: the child is already torn down. Settle what is pending without waiting (teardown
-/// is bounded by the join timeout), leave the legacy view Off, and let the monitor exit.
+/// Shutdown: the child is already torn down. Give its readers the same bounded window a Stop
+/// does, settle what is pending, leave the legacy view Off, and let the monitor exit. Readers
+/// still running are handed to the cell, so a later ticket release or snapshot read can
+/// reconcile the quarantine without a monitor.
 fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: bool) {
-    let remaining = drain_readers(readers, Duration::ZERO);
+    // The same bounded window a Stop gives its readers to reach end of file.
+    let held_readers = drain_readers(readers, READER_DRAIN);
     let mut c = shared.lock();
     c.status.state = SupervisorState::Off;
     c.status.pid = None;
+    // Open publication tickets are owned work too: shutdown never reports them done.
+    let mut remaining = held_readers.clone();
+    remaining.extend(
+        c.publications
+            .iter()
+            .map(|(_, _, n)| format!("publication:{n}")),
+    );
+    c.closed = true;
+    c.closed_readers.append(readers);
     if let Some((token, kind)) = c.active {
         let receipt = match kind {
             IntentKind::Start => Receipt::Superseded,
@@ -2046,20 +3132,30 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
                     scope.push("child".to_string());
                 }
                 scope.push("readers".to_string());
+                scope.append(&mut c.resolved_publications);
                 Receipt::Complete { scope }
             }
             IntentKind::Stop => Receipt::Incomplete {
                 remaining: remaining.clone(),
-                reason: "shutdown: a log reader had not reached end of file".to_string(),
+                reason: "shutdown: owned work had not ended (a log reader still open, or a \
+                         credential publication not yet resolved)"
+                    .to_string(),
             },
         };
         c.settle(token.intent_sequence, kind, receipt);
     }
-    c.set_phase(if remaining.is_empty() {
-        Phase::Stopped
+    if remaining.is_empty() {
+        c.set_phase(Phase::Stopped);
+        c.quarantine = None;
     } else {
-        Phase::Quarantined
-    });
+        c.set_phase(Phase::Quarantined);
+        if c.quarantine.is_none() {
+            c.quarantine = Some(format!(
+                "shutdown left owned work running: {}",
+                remaining.join(", ")
+            ));
+        }
+    }
     c.touch();
 }
 
@@ -2067,206 +3163,317 @@ fn finish_closing(shared: &Shared, readers: &mut Vec<Reader>, tore_down_child: b
 enum RunOutcome {
     /// The child exited on its own (unexpected) → crash path.
     Crashed { status: std::process::ExitStatus },
-    /// A newer intent (a Stop) was committed, or shutdown began.
+    /// A newer intent (a Stop or a restart) was committed, or shutdown began.
     IntentChanged,
-    /// A health-check probe failed (returned `false`) or hung past its timeout.
+    /// Outside the start grace, a probe failed, timed out, or could not run for a whole interval.
     Unhealthy,
 }
 
-/// What `supervise_running` observed during one Running episode: how the episode
-/// ended (`outcome`) AND whether the child stayed continuously Running long
-/// enough (`>= healthy_after`, measured on the injected clock) to count as a
-/// SUSTAINED-healthy run. `sustained_healthy` is the F-1 reset trigger — the
-/// monitor resets `consecutive_failures` to 0 when it is set.
-struct RunReport {
-    outcome: RunOutcome,
-    sustained_healthy: bool,
-}
-
-/// A non-blocking, single-shot health-probe runner. The probe closure runs on
-/// its OWN thread so a probe that BLOCKS (or hangs forever) cannot stall the
-/// monitor's crash-detection / control-message handling (the F-2 liveness fix).
-/// The monitor polls `poll()` each loop; a probe that does not answer within the
-/// health interval is treated as unhealthy (a wedged probe is not "healthy").
+/// One probe worker. The probe closure runs on its OWN thread so a probe that blocks (or hangs
+/// forever) cannot stall the monitor's crash detection or control handling (F-2). A worker is
+/// tagged with the incarnation it samples; a result for any other incarnation, or one that
+/// arrives after the worker's timeout, is discarded.
 struct ProbeRunner {
-    handle: Option<JoinHandle<bool>>,
+    /// The probe's answer and the monotonic time it finished, taken on the worker thread.
+    handle: JoinHandle<(bool, std::time::Instant)>,
+    incarnation: u64,
+    started: std::time::Instant,
+    timed_out: bool,
 }
 
 impl ProbeRunner {
-    /// Spawn the probe on its own thread. The closure is `Arc`-shared so the
-    /// monitor keeps supervising while it runs. Returns `None` if the OS refuses
-    /// the thread (treated by the caller as "no probe in flight").
-    fn spawn(probe: &Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+    /// Spawn the probe for `incarnation` on its own thread. `None` if the OS refuses the thread.
+    fn spawn(probe: &Arc<dyn Fn() -> bool + Send + Sync>, incarnation: u64) -> Option<Self> {
         let p = probe.clone();
-        let handle = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("supervisor:probe".into())
-            .spawn(move || p())
-            .ok();
-        ProbeRunner { handle }
+            .spawn(move || {
+                let healthy = p();
+                (healthy, std::time::Instant::now())
+            })
+            .ok()
+            .map(|handle| ProbeRunner {
+                handle,
+                incarnation,
+                started: std::time::Instant::now(),
+                timed_out: false,
+            })
     }
 
-    /// Whether a probe is currently in flight.
-    fn in_flight(&self) -> bool {
-        self.handle.as_ref().is_some_and(|h| !h.is_finished())
-    }
-
-    /// If the probe thread has finished, join it and return its result; else
-    /// `None` (still running). Non-blocking.
-    fn poll(&mut self) -> Option<bool> {
-        match &self.handle {
-            Some(h) if h.is_finished() => {
-                // The thread is done; join is immediate. A panicked probe is
-                // treated as unhealthy (a probe that panicked did not attest
-                // health).
-                let h = self.handle.take().expect("checked Some");
-                Some(h.join().unwrap_or(false))
-            }
-            _ => None,
-        }
+    /// Whether this worker's result still counts for `incarnation`.
+    fn counts_for(&self, incarnation: u64) -> bool {
+        self.incarnation == incarnation && !self.timed_out
     }
 }
 
-/// Wait while the child is Running: poll for exit, for a control message, and
-/// (if configured) run the health probe OFF-THREAD on its interval. Returns as
-/// soon as one of them fires. Uses short polling so a control message is handled
-/// promptly without a blocking `wait()` that would ignore the channel, and the
-/// health probe never blocks this loop (F-2). Also measures how long the child
-/// has stayed continuously Running (on the injected `clock`) to decide whether
-/// the run was SUSTAINED-healthy (F-1 reset trigger).
+/// A finished probe worker, taken out of the slot.
+struct Finished {
+    /// The incarnation the worker sampled.
+    incarnation: u64,
+    /// The monitor had already timed it out (and handled that sample).
+    timed_out: bool,
+    /// Its answer came after its interval. A late answer never counts, however soon after its
+    /// deadline it is collected.
+    late: bool,
+    /// Its answer. A panicked probe did not attest health (false).
+    healthy: bool,
+    /// When the worker finished, on the monotonic clock (taken on the worker thread). The
+    /// sample's time, however late the monitor collects it.
+    finished_at: std::time::Instant,
+}
+
+/// Take a finished worker out of the slot. `None` while it is still running.
+fn take_finished(slot: &mut Option<ProbeRunner>, interval: Duration) -> Option<Finished> {
+    if !slot.as_ref().is_some_and(|r| r.handle.is_finished()) {
+        return None;
+    }
+    let runner = slot.take()?;
+    let (healthy, late, finished_at) = match runner.handle.join() {
+        Ok((healthy, done)) => (
+            healthy,
+            done.saturating_duration_since(runner.started) >= interval,
+            done,
+        ),
+        Err(_) => (false, false, std::time::Instant::now()),
+    };
+    Some(Finished {
+        incarnation: runner.incarnation,
+        timed_out: runner.timed_out,
+        late,
+        healthy,
+        finished_at,
+    })
+}
+
+/// What `supervise_running` watches over: the intent and incarnation it serves, the probe and
+/// child-watch hooks, and the credit window.
+struct Running<'a> {
+    seq: u64,
+    incarnation: u64,
+    health: Option<&'a HealthCheck>,
+    watch: Option<&'a ChildWatch>,
+    healthy_after: Duration,
+    collect_barrier: Option<&'a Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// The success window of a probed incarnation (SPEC-001 "Process state, readiness and
+/// retries"): when its first success was, when the last one was, and whether this window has
+/// already earned its one credit.
+#[derive(Default)]
+struct Window {
+    first_ok: Option<std::time::Instant>,
+    last_ok: Option<std::time::Instant>,
+    credited: bool,
+}
+
+/// What one successful sample did to the success window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Success {
+    /// Fresh evidence: the incarnation is Ready; `credit` if this sample completed the window's
+    /// one credit.
+    Fresh { credit: bool },
+    /// Evidence already older than the freshness limit when it was collected: not Ready.
+    Stale,
+}
+
+impl Window {
+    /// Apply a successful sample taken at `at` and collected at `now`.
+    fn record_success(
+        &mut self,
+        at: std::time::Instant,
+        now: std::time::Instant,
+        fresh_limit: Duration,
+        healthy_after: Duration,
+    ) -> Success {
+        // Evidence already too old when collected (the monitor was delayed): not fresh, and the
+        // window it would extend has a gap in fresh evidence, so it ends.
+        if now.saturating_duration_since(at) > fresh_limit {
+            *self = Window::default();
+            return Success::Stale;
+        }
+        // A gap over the freshness limit since the last success ends the window first: credit
+        // needs successes that span `healthy_after` without such a gap.
+        if self
+            .last_ok
+            .is_some_and(|last| at.saturating_duration_since(last) > fresh_limit)
+        {
+            *self = Window::default();
+        }
+        let first = *self.first_ok.get_or_insert(at);
+        if self.last_ok.is_none_or(|last| at > last) {
+            self.last_ok = Some(at);
+        }
+        if !self.credited && at.saturating_duration_since(first) >= healthy_after {
+            self.credited = true;
+            return Success::Fresh { credit: true };
+        }
+        Success::Fresh { credit: false }
+    }
+}
+
+/// Wait while the child is Running: poll for exit and for a newer intent, and (if configured)
+/// run the health probe off-thread on its interval. Returns as soon as one of them ends the run.
+///
+/// Readiness and credit (SC2), all on the monotonic clock:
+/// - Probed: a fresh success of this incarnation makes it `Ready`; successes that span
+///   `healthy_after` with no gap over the freshness limit earn one credit, which resets the
+///   retry budget at once. A failed or timed-out sample inside the start grace ends the window
+///   (`Unavailable`, or still `Awaiting` if it never was ready); outside it the run is
+///   `Unhealthy`. `Ready` older than the freshness limit becomes `Stale` and ends the window.
+/// - Liveness-only: `NotAssessed`; running `healthy_after` without a break earns the credit.
+///
+/// `slot` is the service's one probe slot. A worker that times out keeps it until it really
+/// ends; a new worker starts only once it is free. If the slot stays taken for a whole interval
+/// past a sample's due time, this incarnation could not be sampled: inside the grace that ends
+/// the window, outside it the run is `Unhealthy`.
 fn supervise_running(
     child: &mut Child,
     shared: &Shared,
-    seq: u64,
-    health: Option<&HealthCheck>,
-    watch: Option<&ChildWatch>,
-    healthy_after: Duration,
-    clock: &dyn Clock,
-) -> RunReport {
+    run: Running<'_>,
+    slot: &mut Option<ProbeRunner>,
+) -> RunOutcome {
+    use std::time::Instant;
     let poll = Duration::from_millis(20);
-    let mut since_probe = Duration::ZERO;
-    let mut since_watch = Duration::ZERO;
-    let started_ms = clock.now_unix_ms();
-    let healthy_after_ms = healthy_after.as_millis() as u64;
-    let mut sustained_healthy = false;
-    // In-flight off-thread probe + how long it has been running (for the timeout).
-    let mut probe: Option<ProbeRunner> = None;
-    let mut probe_elapsed = Duration::ZERO;
-    // A probe must answer within its own interval; a probe that has not answered
-    // by this bound is treated as unhealthy (wedged probe != healthy).
-    let probe_timeout = health.map(|hc| hc.interval).unwrap_or(Duration::ZERO);
-    // The startup GRACE window (Docker's `--start-period`): a probe that fails or
-    // wedges while `elapsed < grace` is TOLERATED (the child is presumed still
-    // loading) rather than restarting it. `ZERO` for a child with no grace, which
-    // preserves the pre-existing "every probe counts from the start" behaviour.
-    let grace_ms = health.map(|hc| hc.grace.as_millis() as u64).unwrap_or(0);
-
-    // Whether the child is still inside its startup grace (measured on the same
-    // injected clock as `sustained_healthy`, so tests stay deterministic).
-    macro_rules! in_start_grace {
-        () => {
-            clock.now_unix_ms().saturating_sub(started_ms) < grace_ms
-        };
-    }
-
-    // Helper: mark sustained-healthy once the child has been Running long enough.
-    macro_rules! refresh_health {
-        () => {
-            if !sustained_healthy {
-                let elapsed = clock.now_unix_ms().saturating_sub(started_ms);
-                if elapsed >= healthy_after_ms {
-                    sustained_healthy = true;
-                }
-            }
-        };
-    }
+    let started = Instant::now();
+    let mut next_watch = started;
+    let mut window = Window::default();
+    let mut shown = run
+        .health
+        .map_or(Readiness::NotAssessed, |_| Readiness::Awaiting);
+    let mut next_probe = run.health.map(|hc| started + hc.interval);
+    let (seq, inc) = (run.seq, run.incarnation);
+    let publish = |readiness: Readiness, last_ok: Option<Instant>| {
+        set_readiness(shared, seq, inc, readiness, last_ok);
+    };
 
     loop {
-        refresh_health!();
-        // 1) a newer intent (Stop) or shutdown, read from the cell at this bounded point.
+        if let Some(barrier) = run.collect_barrier {
+            if slot.as_ref().is_some_and(|r| r.handle.is_finished()) {
+                barrier();
+            }
+        }
+        let now = Instant::now();
+        // 1) a newer intent (Stop, restart) or shutdown, read from the cell at this bounded point.
         if shared.intent_changed(seq) {
-            return RunReport {
-                outcome: RunOutcome::IntentChanged,
-                sustained_healthy,
-            };
+            return RunOutcome::IntentChanged;
         }
         // 2) child exit (non-blocking reap).
         match child.try_wait() {
-            Ok(Some(status)) => {
-                return RunReport {
-                    outcome: RunOutcome::Crashed { status },
-                    sustained_healthy,
-                }
-            }
+            Ok(Some(status)) => return RunOutcome::Crashed { status },
             Ok(None) => {
                 // Still running and not reaped: `child.id()` names this child.
-                if let Some(w) = watch {
-                    since_watch += poll;
-                    if since_watch >= w.interval {
-                        since_watch = Duration::ZERO;
+                if let Some(w) = run.watch {
+                    if now >= next_watch {
+                        next_watch = now + w.interval;
                         (w.observe)(child.id());
                     }
                 }
             }
+            // Cannot query the child; treat as crashed so we recover.
             Err(_) => {
-                // Cannot query the child; treat as crashed so we recover.
-                return RunReport {
-                    outcome: RunOutcome::Crashed {
-                        status: default_failed_status(),
-                    },
-                    sustained_healthy,
-                };
+                return RunOutcome::Crashed {
+                    status: default_failed_status(),
+                }
             }
         }
-        // 3) health probe, run OFF-THREAD and bounded by a timeout so it can
-        //    never stall this loop (F-2).
-        if let Some(hc) = health {
-            match &mut probe {
-                // A probe is in flight: check for its result or a timeout.
-                Some(runner) => {
-                    if let Some(healthy) = runner.poll() {
-                        probe = None;
-                        probe_elapsed = Duration::ZERO;
-                        // A probe that FAILS inside the startup grace is tolerated
-                        // (the child is presumed still loading) — reset and wait
-                        // for the next interval rather than restarting mid-load.
-                        if !healthy && !in_start_grace!() {
-                            return RunReport {
-                                outcome: RunOutcome::Unhealthy,
-                                sustained_healthy,
-                            };
+        let Some(hc) = run.health else {
+            // 3a) liveness-only: continuous running earns the credit, once per incarnation.
+            if !window.credited && now.duration_since(started) >= run.healthy_after {
+                window.credited = true;
+                grant_credit(shared);
+            }
+            std::thread::sleep(poll);
+            continue;
+        };
+        // 3b) probed.
+        let in_grace = now.duration_since(started) < hc.grace;
+        let fresh_limit = hc.interval.saturating_mul(2);
+        // A sample that ends the success window: tolerated inside the grace, a failure outside.
+        macro_rules! sample_failed {
+            () => {{
+                if !in_grace {
+                    // The supervisor has decided: the incarnation is unhealthy. It stops being
+                    // Ready now, before its teardown starts, not when its last success ages out.
+                    publish(Readiness::Unavailable, None);
+                    return RunOutcome::Unhealthy;
+                }
+                window = Window::default();
+                if shown != Readiness::Awaiting {
+                    shown = Readiness::Unavailable;
+                }
+                publish(shown, None);
+            }};
+        }
+        if let Some(done) = take_finished(slot, hc.interval) {
+            // A result for another incarnation, or of a worker already timed out, is inert. A
+            // late answer collected before its timeout was noticed is that timeout: it never
+            // counts as a success.
+            let counts = done.incarnation == inc && !done.timed_out;
+            if counts && done.late {
+                sample_failed!();
+            } else if counts {
+                if done.healthy {
+                    match window.record_success(
+                        done.finished_at,
+                        now,
+                        fresh_limit,
+                        run.healthy_after,
+                    ) {
+                        Success::Fresh { credit } => {
+                            shown = Readiness::Ready;
+                            publish(shown, window.last_ok);
+                            if credit {
+                                grant_credit(shared);
+                            }
                         }
-                    } else {
-                        probe_elapsed += poll;
-                        if probe_elapsed >= probe_timeout {
-                            // The probe is wedged past its interval. Outside the
-                            // grace this is unhealthy → restart; INSIDE the grace
-                            // a wedged probe is tolerated (a slow-loading child may
-                            // not answer yet), so we drop this runner and let the
-                            // next interval start a fresh probe. Either way we DROP
-                            // the runner (its detached thread may still be blocked,
-                            // but holds no supervisor lock and cannot block
-                            // teardown).
-                            if in_start_grace!() {
-                                probe = None;
-                                probe_elapsed = Duration::ZERO;
-                                since_probe = Duration::ZERO;
-                            } else {
-                                return RunReport {
-                                    outcome: RunOutcome::Unhealthy,
-                                    sustained_healthy,
-                                };
+                        Success::Stale => {
+                            if shown == Readiness::Ready {
+                                shown = Readiness::Stale;
+                                publish(shown, None);
                             }
                         }
                     }
+                } else {
+                    sample_failed!();
                 }
-                // No probe in flight: start one when the interval elapses.
-                None => {
-                    since_probe += poll;
-                    if since_probe >= hc.interval {
-                        since_probe = Duration::ZERO;
-                        probe = Some(ProbeRunner::spawn(&hc.probe));
-                        probe_elapsed = Duration::ZERO;
+            }
+        }
+        if let Some(runner) = slot.as_mut() {
+            if runner.counts_for(inc) && now.duration_since(runner.started) >= hc.interval {
+                // The observer deadline passed: the result will not count, but the worker keeps
+                // the slot until it really ends.
+                runner.timed_out = true;
+                sample_failed!();
+            }
+        }
+        // Freshness: Ready whose last success is too old is Stale and ends the window.
+        if shown == Readiness::Ready
+            && window
+                .last_ok
+                .is_none_or(|t| now.duration_since(t) > fresh_limit)
+        {
+            window = Window::default();
+            shown = Readiness::Stale;
+            publish(shown, None);
+        }
+        if let Some(due) = next_probe {
+            if now >= due {
+                match slot.as_ref() {
+                    None => {
+                        next_probe = Some(now + hc.interval);
+                        *slot = ProbeRunner::spawn(&hc.probe, inc);
+                        if slot.is_none() {
+                            // The OS refused the worker thread: no sample this interval.
+                            sample_failed!();
+                        }
                     }
+                    // The slot is still taken (a timed-out worker, or one from an earlier
+                    // incarnation) a whole interval after this sample was due.
+                    Some(r) if !r.counts_for(inc) && now >= due + hc.interval => {
+                        next_probe = Some(now);
+                        sample_failed!();
+                    }
+                    Some(_) => {}
                 }
             }
         }
@@ -2317,6 +3524,47 @@ fn backoff_wait(shared: &Shared, seq: u64, delay: Duration, clock: &dyn Clock) {
     }
 }
 
+/// CORE-D3: wait out one slow-retry period of a `Failed` service. True when the period passed with
+/// intent `seq` still current; false when a newer intent or shutdown came first (the caller's loop
+/// handles it). Measured on the monotonic clock; a wakeup never restarts the wait. A period too
+/// large to add to the monotonic clock is waited like no slow retry at all.
+fn slow_retry_wait(shared: &Shared, seq: u64, every: Duration) -> bool {
+    let Some(deadline) = std::time::Instant::now().checked_add(every) else {
+        shared.wait_wake(None);
+        return false;
+    };
+    loop {
+        if shared.intent_changed(seq) {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        shared.wait_wake(Some(deadline - now));
+    }
+}
+
+/// CORE-D3: a slow retry is due for intent `seq`. Count it, leave the budget spent but for this
+/// one attempt (`max_retries` failures counted, so one more failure is over the cap and the service
+/// is `Failed` again at once), and publish the attempt as `Starting`, all in one critical section:
+/// no read sees the service `Failed` with no slow retry scheduled (the model's `SlowRetryStep`).
+/// False, with nothing changed, when a newer intent or shutdown came first (INV-17b); the caller's
+/// loop then handles that intent. Spawn admission still checks the intent again.
+fn arm_slow_retry(shared: &Shared, seq: u64, max_retries: u32) -> bool {
+    let mut c = shared.lock();
+    if c.closing || c.intent_sequence != seq {
+        return false;
+    }
+    c.slow_retry_at = None;
+    c.slow_retries = c.slow_retries.saturating_add(1);
+    c.counters.consecutive_failures = max_retries;
+    c.status.state = SupervisorState::Starting;
+    c.set_phase(Phase::Starting);
+    c.touch();
+    true
+}
+
 /// Record a crash into the shared status (bumps `restarts`, sets `last_crash`).
 fn record_crash_status(shared: &Shared, record: &CrashRecord) {
     let mut c = shared.lock();
@@ -2345,4 +3593,10 @@ mod tests {
 
     // The services registry read (K1a-2): platform-neutral.
     include!("supervisor_registry_tests.rs");
+
+    // CORE-D3: the slow retry after Failed.
+    include!("supervisor_slow_retry_tests.rs");
+
+    // CORE-D6: the spawn gate held during an update install. Platform-neutral.
+    include!("supervisor_spawn_gate_tests.rs");
 }

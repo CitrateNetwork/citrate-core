@@ -24,6 +24,13 @@
 // Rule 8 (zero `.unwrap()` in shipped code): CI's clippy step (`-D warnings`) fails on any
 // `.unwrap()` outside test code. Tests are compiled with `cfg(test)`, where this does not apply.
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+// K6: no `unsafe` in this crate except the reviewed blocks that carry their own
+// `#[allow(unsafe_code)]` and a SAFETY note (today: the two libc calls in `supervisor`, plus one
+// in its tests). Privacy-based capabilities such as `wallet::WalletKeyAccess` rely on it: only
+// `unsafe` can forge a value with a private field. `wallet_tests` pins every `unsafe` and every
+// lint override per file (`k6_kit_unsafe_is_only_the_reviewed_blocks`). Not `forbid`: the
+// reviewed libc calls need their `allow`.
+#![deny(unsafe_code)]
 
 pub mod abi_book;
 pub mod blocking;
@@ -32,7 +39,6 @@ pub mod config;
 pub mod custody;
 pub mod eip712;
 pub mod fsutil;
-pub mod join;
 pub mod oidc;
 pub mod rpc;
 pub mod secret;

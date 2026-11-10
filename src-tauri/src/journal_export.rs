@@ -28,6 +28,7 @@
 //! written. The passphrase and plaintext are held in zeroizing buffers here. No
 //! key, signature or wallet material is involved (Rule 3).
 
+use crate::secret::SecretString;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -312,13 +313,13 @@ pub(crate) fn import_from_path(path: &Path, passphrase: &str) -> Result<Zeroizin
 #[tauri::command]
 pub async fn journal_export_encrypted(
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
     bundle: String,
 ) -> std::result::Result<u64, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
         let bundle = Zeroizing::new(bundle);
-        export_to_path(Path::new(&path), &passphrase, bundle.as_bytes()).map_err(|e| e.to_string())
+        export_to_path(Path::new(&path), passphrase.expose(), bundle.as_bytes())
+            .map_err(|e| e.to_string())
     })
     .await
 }
@@ -328,11 +329,10 @@ pub async fn journal_export_encrypted(
 #[tauri::command]
 pub async fn journal_import_encrypted(
     path: String,
-    passphrase: String,
+    passphrase: SecretString,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
-        let passphrase = Zeroizing::new(passphrase);
-        import_from_path(Path::new(&path), &passphrase)
+        import_from_path(Path::new(&path), passphrase.expose())
             .map(|t| t.to_string())
             .map_err(|e| e.to_string())
     })

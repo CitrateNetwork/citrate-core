@@ -44,8 +44,6 @@ struct Addresses {
     validator_registry: String,
     #[serde(rename = "CitrateWalletFactory")]
     citrate_wallet_factory: String,
-    #[serde(rename = "LiquidStakingPool")]
-    liquid_staking_pool: String,
     /// Reroll fan-out (2026-10-05): the contribution claim target, previously a literal in
     /// `earnings.rs` that drifted from the book.
     #[serde(rename = "ContributionAccounting")]
@@ -72,37 +70,40 @@ struct Addresses {
 }
 
 fn book() -> &'static Book {
+    if let Some(b) = thread_test_book() {
+        return b;
+    }
     static BOOK: OnceLock<Book> = OnceLock::new();
     BOOK.get_or_init(|| {
-        // Addresses are LOWERCASED on load. The canonical book stores the EIP-55
-        // checksummed form (right for humans and for eyeballing a diff), but every
-        // consumer here compares and emits lowercase — `eth_call` `to` fields, test
-        // assertions, the node env. Normalising once here means the two
-        // representations can never drift into a false mismatch.
         // A malformed embedded book is a BUILD defect, not a runtime condition —
         // the file is generated and compiled in. Panicking here fails the app
         // loudly at first use rather than serving a wrong address, which is the
         // failure this module exists to prevent.
-        let mut b: Book =
-            serde_json::from_str(BOOK_JSON).expect("embedded 40204 address book is malformed");
-        b.addresses.citrate_member_sbt = b.addresses.citrate_member_sbt.to_ascii_lowercase();
-        b.addresses.membership_stake_vault =
-            b.addresses.membership_stake_vault.to_ascii_lowercase();
-        b.addresses.validator_registry = b.addresses.validator_registry.to_ascii_lowercase();
-        b.addresses.citrate_wallet_factory =
-            b.addresses.citrate_wallet_factory.to_ascii_lowercase();
-        b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
-        b.addresses.contribution_accounting =
-            b.addresses.contribution_accounting.to_ascii_lowercase();
-        b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
-        b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
-        b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
-        b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
-        b.addresses.agent_sbt = b.addresses.agent_sbt.to_ascii_lowercase();
-        b.addresses.organization_sbt = b.addresses.organization_sbt.to_ascii_lowercase();
-        b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
-        b
+        normalized(
+            serde_json::from_str(BOOK_JSON).expect("embedded 40204 address book is malformed"),
+        )
     })
+}
+
+/// Addresses are LOWERCASED on load. The canonical book stores the EIP-55
+/// checksummed form (right for humans and for eyeballing a diff), but every
+/// consumer here compares and emits lowercase — `eth_call` `to` fields, test
+/// assertions, the node env. Normalising once here means the two
+/// representations can never drift into a false mismatch.
+fn normalized(mut b: Book) -> Book {
+    b.addresses.citrate_member_sbt = b.addresses.citrate_member_sbt.to_ascii_lowercase();
+    b.addresses.membership_stake_vault = b.addresses.membership_stake_vault.to_ascii_lowercase();
+    b.addresses.validator_registry = b.addresses.validator_registry.to_ascii_lowercase();
+    b.addresses.citrate_wallet_factory = b.addresses.citrate_wallet_factory.to_ascii_lowercase();
+    b.addresses.contribution_accounting = b.addresses.contribution_accounting.to_ascii_lowercase();
+    b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
+    b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
+    b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
+    b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
+    b.addresses.agent_sbt = b.addresses.agent_sbt.to_ascii_lowercase();
+    b.addresses.organization_sbt = b.addresses.organization_sbt.to_ascii_lowercase();
+    b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
+    b
 }
 
 /// The chain id the book was generated for.
@@ -137,12 +138,6 @@ pub fn validator_registry() -> &'static str {
 #[allow(dead_code)]
 pub fn citrate_wallet_factory() -> &'static str {
     &book().addresses.citrate_wallet_factory
-}
-
-/// `LiquidStakingPool` — self-stake / withdrawal queue.
-#[allow(dead_code)]
-pub fn liquid_staking_pool() -> &'static str {
-    &book().addresses.liquid_staking_pool
 }
 
 /// `ContributionAccounting`: the `claimable` read and the contribution `claimRewards` target.
@@ -209,6 +204,41 @@ pub fn model_cooperative() -> &'static str {
     &book().addresses.model_cooperative
 }
 
+/// The embedded book is the only book a build ever reads.
+#[cfg(not(test))]
+fn thread_test_book() -> Option<&'static Book> {
+    None
+}
+
+// G7 (scripts/e2e/moneypath-anvil.sh): a test thread may read another book, so the money-path
+// e2e can drive the production readers and intent builders against contracts deployed on a
+// throwaway anvil. Thread-local, so no other test sees it. Kept below every production item: the
+// `no_module_hard_codes_a_contract_address` tripwire scans this file up to its first test block.
+#[cfg(test)]
+thread_local! {
+    static THREAD_TEST_BOOK: std::cell::Cell<Option<&'static Book>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn thread_test_book() -> Option<&'static Book> {
+    THREAD_TEST_BOOK.with(|b| b.get())
+}
+
+/// Use the book `json` (the generated book's shape) on this thread until [`clear_thread_test_book`].
+#[cfg(test)]
+pub(crate) fn set_thread_test_book(json: &str) -> Result<(), String> {
+    let b: Book = serde_json::from_str(json).map_err(|e| format!("test book: {e}"))?;
+    let leaked: &'static Book = Box::leak(Box::new(normalized(b)));
+    THREAD_TEST_BOOK.with(|c| c.set(Some(leaked)));
+    Ok(())
+}
+
+/// Back to the embedded book on this thread.
+#[cfg(test)]
+pub(crate) fn clear_thread_test_book() {
+    THREAD_TEST_BOOK.with(|c| c.set(None));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +254,6 @@ mod tests {
             ("MembershipStakeVault", membership_stake_vault()),
             ("ValidatorRegistry", validator_registry()),
             ("CitrateWalletFactory", citrate_wallet_factory()),
-            ("LiquidStakingPool", liquid_staking_pool()),
         ] {
             assert!(
                 is_address(addr),
@@ -248,7 +277,6 @@ mod tests {
             membership_stake_vault(),
             validator_registry(),
             citrate_wallet_factory(),
-            liquid_staking_pool(),
         ] {
             assert_eq!(
                 addr,
@@ -270,7 +298,6 @@ mod tests {
                 membership_stake_vault(),
                 validator_registry(),
                 citrate_wallet_factory(),
-                liquid_staking_pool(),
             ] {
                 assert_ne!(
                     a, req,
@@ -361,6 +388,42 @@ mod tests {
         );
     }
 
+    /// G7: a test thread's book replaces the embedded one on that thread only, lowercased like
+    /// the embedded one, and clearing it restores the embedded book.
+    #[test]
+    fn a_thread_test_book_is_scoped_to_its_thread() {
+        let embedded = membership_stake_vault().to_string();
+        let a = |n: u8| format!("0x{}", format!("{n:02X}").repeat(20));
+        let json = serde_json::json!({
+            "chainId": 40204,
+            "genesisHash": format!("0x{}", "ab".repeat(32)),
+            "addresses": {
+                "CitrateMemberSBT": a(0x11), "MembershipStakeVault": a(0xAA),
+                "ValidatorRegistry": a(0x22), "CitrateWalletFactory": a(0x33),
+                "ContributionAccounting": a(0x55),
+                "IPFSIncentivesV3": a(0x66),
+            }
+        })
+        .to_string();
+        set_thread_test_book(&json).expect("test book parses");
+        assert_eq!(membership_stake_vault(), a(0xAA).to_ascii_lowercase());
+        assert_eq!(validator_registry(), a(0x22).to_ascii_lowercase());
+        let other = std::thread::spawn(|| membership_stake_vault().to_string())
+            .join()
+            .expect("thread");
+        assert_eq!(
+            other, embedded,
+            "another thread must keep the embedded book"
+        );
+        clear_thread_test_book();
+        assert_eq!(membership_stake_vault(), embedded);
+        assert!(
+            set_thread_test_book("{}").is_err(),
+            "a book without pins is refused"
+        );
+        assert_eq!(membership_stake_vault(), embedded);
+    }
+
     /// The book is GENERATED. If someone hand-edits it, the marker goes away and
     /// the next `sync-addresses.py` run silently overwrites their change — so fail
     /// here instead, while the edit is still in front of them.
@@ -382,7 +445,6 @@ mod tests {
             membership_stake_vault(),
             validator_registry(),
             citrate_wallet_factory(),
-            liquid_staking_pool(),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {

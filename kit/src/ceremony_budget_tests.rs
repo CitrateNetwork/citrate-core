@@ -413,3 +413,176 @@ fn b_strip_terminal_tests(src: &str) -> String {
         None => src.to_string(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// K6 — the network gate on every ceremony signing path (approve, approve_and_broadcast, budgeted
+// SIWE). The gate is added for the test thread with `with_added_network_gate`, which can only add
+// a check; the gate itself is in `wallet::signing_key`.
+// ---------------------------------------------------------------------------
+
+fn k6_unset_gate() -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "genesis-2026-12".into(),
+        chain_id: None,
+        genesis_hash: None,
+    }
+}
+
+fn k6_set_gate(chain_id: u64) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "alpha-r1005".into(),
+        chain_id: Some(chain_id),
+        genesis_hash: Some(K6_GENESIS.into()),
+    }
+}
+
+#[test]
+fn k6_ceremony_approve_refuses_every_message_when_no_network_is_set() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let plain = c.request(personal_sign_intent("hello"));
+    let siwe = c.request(personal_sign_intent(&b_msg("abcdef0123456789K1")));
+    crate::rpc::with_added_network_gate(k6_unset_gate(), || {
+        for id in [&plain.id, &siwe.id] {
+            match c.approve(&v, id, false) {
+                Err(CeremonyError::WrongNetwork(m)) => assert!(m.contains("no network set"), "{m}"),
+                other => panic!("expected a network refusal, got {other:?}"),
+            }
+        }
+    });
+}
+
+#[test]
+fn k6_ceremony_approve_with_a_set_network_checks_the_siwe_chain_id() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let plain = c.request(personal_sign_intent("hello"));
+    let siwe = c.request(personal_sign_intent(&b_msg("abcdef0123456789K2")));
+    let siwe_other = c.request(personal_sign_intent(&b_msg("abcdef0123456789K3")));
+    crate::rpc::with_added_network_gate(k6_set_gate(40204), || {
+        let s = c.approve(&v, &plain.id, false).expect("plain text is not network-bound");
+        assert_eq!(
+            b_recover("hello", &s.sig_hex).to_lowercase(),
+            CANONICAL_ADDRESS.to_lowercase()
+        );
+        c.approve(&v, &siwe.id, false).expect("SIWE for the target chain");
+    });
+    // The same sign-in against a profile for another chain is refused.
+    crate::rpc::with_added_network_gate(k6_set_gate(7), || {
+        match c.approve(&v, &siwe_other.id, false) {
+            Err(CeremonyError::WrongNetwork(m)) => assert!(m.contains("chain 40204"), "{m}"),
+            other => panic!("expected a chain refusal, got {other:?}"),
+        }
+    });
+}
+
+fn k6_sent(client: &RpcClient<MockRpc>) -> bool {
+    client
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .any(|r| r["method"] == "eth_sendRawTransaction")
+}
+
+#[test]
+fn k6_transaction_signing_refuses_when_no_network_is_set_even_without_an_rpc_gate() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let view = c.request(tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+    let client = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xhash".into())),
+    ]));
+    let r = crate::rpc::with_added_network_gate(k6_unset_gate(), || {
+        c.approve_and_broadcast_gated(&v, &client, &view.id, false, bcfg(1), None)
+    });
+    assert!(matches!(r, Err(CeremonyError::WrongNetwork(_))), "{r:?}");
+    assert!(!k6_sent(&client), "nothing is sent");
+}
+
+#[test]
+fn k6_transaction_for_another_chain_id_is_refused_on_a_set_network() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    // The card and the signer both name chain 1, so the card/signer chain check passes and the
+    // refusal under test is the network gate's (this build targets 40204).
+    let mut intent = tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    );
+    intent.chain_id = 1;
+    let view = c.request(intent);
+    let client = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x7".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String("0xhash".into())),
+    ]));
+    let mut cfg = bcfg(1);
+    cfg.chain_id = 1;
+    let r = crate::rpc::with_added_network_gate(k6_set_gate(40204), || {
+        c.approve_and_broadcast_gated(&v, &client, &view.id, false, cfg, None)
+    });
+    match r {
+        Err(CeremonyError::WrongNetwork(m)) => assert!(m.contains("chain 1"), "{m}"),
+        other => panic!("expected a chain refusal, got {other:?}"),
+    }
+    assert!(!k6_sent(&client), "nothing is sent");
+}
+
+/// The budgeted path signs with no click, so it matters most: with no network set it signs
+/// nothing, reserves nothing and uses no budget, and the card it leaves cannot be signed either.
+#[test]
+fn k6_budgeted_sign_in_signs_nothing_when_no_network_is_set() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let g = b_gate();
+    b_grant(&g, 3, 7 * 86_400_000);
+    let m = b_msg("abcdef0123456789K4");
+    crate::rpc::with_added_network_gate(k6_unset_gate(), || {
+        let out = c.request_siwe_budgeted(&v, &g, b_req(m.clone()), &|| B_NOW);
+        let reason = b_assert_card(&c, &out, &m);
+        assert!(reason.contains("no network set"), "{reason}");
+        let snap = g.snapshot(B_NOW, Some(&CANONICAL_ADDRESS.to_lowercase()));
+        assert_eq!(snap.budgets[0].used_count, 0, "no budget was used");
+        assert!(
+            snap.records.iter().all(|r| r.status != RecordStatus::Signed),
+            "no record says signed"
+        );
+        let BudgetedOutcome::Pending { ceremony, .. } = out else {
+            unreachable!()
+        };
+        assert!(matches!(
+            c.approve(&v, &ceremony.id, false),
+            Err(CeremonyError::WrongNetwork(_))
+        ));
+    });
+}
+
+#[test]
+fn k6_budgeted_sign_in_is_checked_against_a_set_network() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let g = b_gate();
+    b_grant(&g, 3, 7 * 86_400_000);
+    let m = b_msg("abcdef0123456789K5");
+    crate::rpc::with_added_network_gate(k6_set_gate(40204), || {
+        let out = c.request_siwe_budgeted(&v, &g, b_req(m.clone()), &|| B_NOW);
+        assert!(
+            matches!(out, BudgetedOutcome::AutoSigned { .. }),
+            "the target chain signs within the budget: {out:?}"
+        );
+    });
+    let m2 = b_msg("abcdef0123456789K6");
+    crate::rpc::with_added_network_gate(k6_set_gate(7), || {
+        let out = c.request_siwe_budgeted(&v, &g, b_req(m2.clone()), &|| B_NOW);
+        let reason = b_assert_card(&c, &out, &m2);
+        assert!(reason.contains("chain 40204"), "{reason}");
+    });
+}

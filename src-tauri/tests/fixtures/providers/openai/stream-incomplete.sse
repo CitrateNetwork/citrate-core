@@ -1,0 +1,8 @@
+: source: built from the Responses schema (status incomplete, incomplete_details.reason max_output_tokens)
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_3","output_index":0,"content_index":0,"delta":"A long","sequence_number":1}
+
+event: response.incomplete
+data: {"type":"response.incomplete","response":{"id":"resp_3","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":9,"output_tokens":512}},"sequence_number":2}
+

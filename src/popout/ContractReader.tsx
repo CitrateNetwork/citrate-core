@@ -11,6 +11,7 @@ import { parseEther } from "viem";
 import { decodeResult, encodeCall, parseAbi, parseArg, type ReaderFunction } from "../contractReader/abi";
 import { describeFunction } from "../contractReader/explain";
 import type { ContractClient, ReaderSource } from "./contractChannel";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 const DEFAULT_FORK = "http://127.0.0.1:8545";
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -257,7 +258,7 @@ export function ContractReader({ client }: { client: ContractClient }) {
       <span style={{ fontSize: 14, fontWeight: 500 }}>Contract reader</span>
       <div style={{ display: "flex", gap: 6 }}>
         <button className={"btn btn-sm " + (mode === "citrate" ? "btn-secondary" : "btn-ghost")} data-testid="cr-target-citrate" onClick={() => setMode("citrate")}>
-          Chain 40204
+          Chain {CHAIN_ID_TEXT}
         </button>
         <button className={"btn btn-sm " + (mode === "fork" ? "btn-secondary" : "btn-ghost")} data-testid="cr-target-fork" onClick={() => setMode("fork")}>
           Local fork
@@ -296,7 +297,7 @@ export function ContractReader({ client }: { client: ContractClient }) {
         </span>
       )}
       {loaded && loaded.target !== "citrate" && functions.some((f) => f.kind === "write") && (
-        <span style={note}>Writes on the local fork are not proposed here. On chain 40204 a write opens the Signature Ceremony.</span>
+        <span style={note}>Writes on the local fork are not proposed here. On chain {CHAIN_ID_TEXT} a write opens the Signature Ceremony.</span>
       )}
       {loaded && functions.map((fn) => <FunctionRow key={fn.signature} fn={fn} canWrite={loaded.target === "citrate"} run={run} />)}
       {loaded?.source?.source && origin !== "pasted" && (

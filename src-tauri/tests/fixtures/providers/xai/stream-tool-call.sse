@@ -1,0 +1,10 @@
+: source: https://docs.x.ai/developers/model-capabilities/text/streaming (running usage on every chunk, reasoning_content deltas) and .../tools/function-calling (a whole call in one chunk)
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"grok-4.7","choices":[{"index":0,"delta":{"reasoning_content":"The","role":"assistant"}}],"usage":{"prompt_tokens":41,"completion_tokens":1,"total_tokens":42}}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"grok-4.7","choices":[{"index":0,"delta":{"content":"Checking."}}],"usage":{"prompt_tokens":41,"completion_tokens":3,"total_tokens":44,"completion_tokens_details":{"reasoning_tokens":20}}}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"grok-4.7","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_xai_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Boston, MA\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":41,"completion_tokens":20,"total_tokens":81,"completion_tokens_details":{"reasoning_tokens":20}}}
+
+data: [DONE]
+

@@ -1285,3 +1285,98 @@ fn a_validator_claim_never_silently_targets_contribution_accounting() {
     let req = crate::earnings::user_claim_request_to(1, bond);
     assert_ne!(req.to, crate::earnings::contribution_accounting());
 }
+
+// ---------------------------------------------------------------------------------------------
+// #416 — user_claim's validator side reads rewardsOf for MemberBond.pubkey(), the key the bond's
+// claimRewards() claims for, never this node's own proposer key; and a failed grant read fails
+// closed instead of building a ContributionAccounting claim (DGX N-2).
+mod user_claim_bond_key {
+    use super::super::validator_claim;
+    use crate::grant_status::GrantStatus;
+    use crate::rpc::{RpcClient, RpcError, RpcTransport};
+
+    const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
+    const BOND: &str = "0x00000000000000000000000000000000000000bb";
+    const BOND_KEY: &str = "0x5555555555555555555555555555555555555555555555555555555555555555";
+
+    /// rewardsOf(key) → claimableNow = (first key byte) SALT: 0x55 for the bond key, 0 for the node key.
+    struct Registry;
+    impl RpcTransport for Registry {
+        fn call(&self, body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+            let data = body["params"][0]["data"].as_str().unwrap_or_default().to_string();
+            let key_byte = u8::from_str_radix(data.get(10..12).unwrap_or("00"), 16).unwrap_or(0) as u128;
+            let mut buf = [0u8; 64];
+            buf[16..32].copy_from_slice(&(key_byte * 2 * 10u128.pow(18)).to_be_bytes());
+            buf[48..64].copy_from_slice(&(key_byte * 10u128.pow(18)).to_be_bytes());
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}))
+        }
+    }
+
+    fn grant(bond_pubkey: Option<&str>) -> std::result::Result<GrantStatus, String> {
+        serde_json::from_value(serde_json::json!({
+            "attributedStakeWei": "32000000000000000000000",
+            "attributedPrincipalWei": "32000000000000000000000",
+            "bondAddress": BOND,
+            "bondDeployed": true,
+            "unlockBlock": 16000000u64,
+            "isUnlocked": false,
+            "isKycVerified": true,
+            "hasSbt": true,
+            "bondedStakeWei": "0",
+            "hasValidator": false,
+            "bondActivated": true,
+            "bondPubkey": bond_pubkey,
+            "bondUnlocked": false,
+        }))
+        .map_err(|e| e.to_string())
+    }
+
+    fn claim(g: std::result::Result<GrantStatus, String>) -> std::result::Result<Option<(String, u128)>, String> {
+        validator_claim(&RpcClient::with_transport(Registry), REGISTRY, g)
+    }
+
+    #[test]
+    fn the_claim_reads_rewards_of_the_bond_key_not_the_node_key() -> std::result::Result<(), String> {
+        // The bond key has 0x55 SALT claimable; this node's key reads 0, which made user_claim
+        // refuse as "nothing pending" for a member whose bond key isn't this node's.
+        let out = claim(Ok(grant(Some(BOND_KEY))?))?;
+        assert_eq!(out, Some((BOND.to_string(), 0x55u128 * 10u128.pow(18))));
+        Ok(())
+    }
+
+    #[test]
+    fn a_bond_whose_key_is_unread_fails_closed() -> std::result::Result<(), String> {
+        let out = claim(Ok(grant(None)?));
+        assert!(out.is_err(), "no claim is built without the bond's validator key: {out:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_grant_read_fails_closed_instead_of_a_contribution_claim() {
+        let out = claim(Err("rpc 503".to_string()));
+        assert!(out.is_err(), "a failed read is not 'not a validator': {out:?}");
+    }
+
+    #[test]
+    fn no_bond_is_the_contribution_claim() -> std::result::Result<(), String> {
+        let mut g = grant(None)?;
+        g.bond_deployed = false;
+        g.bond_activated = None;
+        assert_eq!(claim(Ok(g))?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn tripwire_user_claim_never_reads_the_node_proposer_key() {
+        let src = include_str!("agent.rs");
+        let start = src.find("pub async fn user_claim(").unwrap_or(0);
+        let end = src[start..].find("\n}\n").map(|e| start + e).unwrap_or(src.len());
+        let body = &src[start..end];
+        assert!(start > 0, "user_claim not found");
+        assert!(!body.contains("proposer_pubkey()"), "user_claim must not read this node's proposer key");
+        let helper = src.find("pub(crate) fn validator_claim").unwrap_or(0);
+        assert!(helper > 0, "validator_claim not found");
+        let helper_end = src[helper..].find("\n}\n").map(|e| helper + e).unwrap_or(src.len());
+        assert!(!src[helper..helper_end].contains("node_key"), "validator_claim must not take the node's key");
+    }
+}

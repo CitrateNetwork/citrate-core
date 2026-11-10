@@ -24,10 +24,15 @@
 // not the UI.
 // =====================================================================
 import { useEffect, useState } from "react";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import { Store } from "../shell/store";
+import { HermesModelPicker } from "./HermesModelPicker";
 import { AppState, fmtSaltFromWei } from "../shell/state";
-import { citrate } from "../chain";
+import { GRANT_DISCLAIMER } from "../data/grantCopy";
+import { PricingLink } from "../components/PricingLink";
+import { citrate, readTransport } from "../chain";
+import { ACTIVE_PROFILE, rpcHost as profileRpcHost } from "../network/profile";
+import { NetworkProfilePanel, useNetworkState } from "../network/NetworkPanel";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
@@ -54,6 +59,7 @@ import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
 import { ControlsPanel } from "./hermes/ControlsPanel";
+import { ModelsSettings } from "./providers/ModelsSettings";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -156,6 +162,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["hermes", "Hermes controls"],
+  ["models", "Models"],
   ["ai", "Providers & keys"],
   ["escalation", "Escalation & spend caps"],
   ["mcp", "MCP servers"],
@@ -184,6 +191,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
+  // C1-P: the plan line's price is read from core-membership (cached in the store).
+  useEffect(() => (s.sSec === "billing" ? store.watchMembershipPrice() : undefined), [s.sSec, store]);
 
   // ---------- CORE-AI1 (@rule8) — live provider status (keyring-sealed) ----------
   // The provider KEY is never in AppState — it lives sealed in the OS keyring. This
@@ -386,6 +395,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
     },
   }));
 
+  // ---------- Network (K6-3) ----------
+  // Block 0 is read only while Node configuration is open.
+  const networkState = useNetworkState(ACTIVE_PROFILE, s.sSec === "node");
+
   // ---------- API endpoints & keys ----------
   // Q-A.1 (Rule 1) — the RPC health pill traces to a REAL probe, never an
   // unconditional "healthy". We call eth_blockNumber against the SELECTED RPC
@@ -393,15 +406,23 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   // frontend already ships (src/chain.ts). Until the probe resolves the honest
   // baseline is "checking…" (never a fabricated health assertion). The result is
   // reachable (block N) / unreachable — a truthful color + text from real data.
-  type RpcProbe = { phase: "checking" | "up" | "down"; block: number | null; host: string };
-  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : "rpc.citrate.ai";
+  // K6-3: the public RPC is the network profile's (src/network/profile.ts); with no profile RPC
+  // set there is nothing to probe, and the row says so.
+  type RpcProbe = { phase: "checking" | "up" | "down" | "notset"; block: number | null; host: string };
+  const publicRpcHost = profileRpcHost(ACTIVE_PROFILE);
+  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : (publicRpcHost ?? "public RPC");
   const [rpcProbe, setRpcProbe] = useState<RpcProbe>({ phase: "checking", block: null, host: rpcHost });
   useEffect(() => {
     if (s.sSec !== "api") return;
     let live = true;
+    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : ACTIVE_PROFILE?.rpcUrl;
+    if (!url) {
+      setRpcProbe({ phase: "notset", block: null, host: rpcHost });
+      return;
+    }
     setRpcProbe({ phase: "checking", block: null, host: rpcHost });
-    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : "https://rpc.citrate.ai";
-    const client = createPublicClient({ chain: citrate, transport: http(url) });
+    // K6 (P3): readTransport refuses without sending while the network profile is not ready.
+    const client = createPublicClient({ chain: citrate, transport: readTransport(url) });
     client
       .getBlockNumber()
       .then((bn) => {
@@ -416,7 +437,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   }, [s.sSec, s.rpc, rpcHost]);
   const rpcHealthColor = rpcProbe.phase === "up" ? "var(--ok)" : rpcProbe.phase === "down" ? "var(--danger)" : "var(--tx-3)";
   const rpcHealthText =
-    rpcProbe.phase === "checking"
+    s.rpc !== "local" && publicRpcHost === null
+      ? "public RPC not set · this build has no network set"
+      : rpcProbe.phase === "checking"
       ? rpcHost + " · checking…"
       : rpcProbe.phase === "up"
         ? rpcHost + " · reachable · block " + rpcProbe.block
@@ -454,7 +477,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
       ? "Public tier — no membership"
       : effTier === "enterprise"
         ? "Enterprise seat · " + (s.org || "")
-        : "Pilot membership · $48/year";
+        : "Pilot membership";
   // BC-6.3 (Rule 1): the renewal/expiry line uses the REAL folded expiry
   // (state.authExpiresAt) — honest "expiry not set" when absent — never a hardcoded
   // date. The Stripe customer portal isn't wired yet (core-membership CORE-S5.4), so
@@ -478,9 +501,14 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
         : memExpiry
           ? "expires " + memExpiry
           : "expiry not set";
-  const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
-  const mb =
-    s.entitlement === "active"
+  // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
+  // price is shown only on the checkout itself.
+  const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
+  // A free user has no membership to be "active": a neutral "free" badge, never the green one.
+  const memBadge = freeUser ? "free" : s.entitlement === "active" ? "active" : s.entitlement;
+  const mb = freeUser
+    ? ["var(--srf-2)", "var(--line-1)", "var(--tx-2)"]
+    : s.entitlement === "active"
       ? ["var(--ok-bg)", "var(--ok)", "var(--ok)"]
       : s.entitlement === "lapsed"
         ? ["var(--danger-bg)", "var(--danger)", "var(--danger)"]
@@ -643,6 +671,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
           </div>
         )}
 
+        {/* ---------- Models (D-11): governed vendor connections, caps, halts and usage ---------- */}
+        {s.sSec === "models" && <ModelsSettings onOpen={(url) => void store.openExternal(url)} />}
+
         {/* ---------- AI providers (CORE-AI1, @rule8) ---------- */}
         {s.sSec === "ai" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -655,6 +686,13 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </>
               )}
             </div>
+            <span data-testid="legacy-providers-note" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)" }}>
+              Keys added here are used by chat directly. They are separate from the vendor connections in{" "}
+              <button className="btn btn-ghost btn-sm" onClick={() => setSec("models")}>
+                Models
+              </button>{" "}
+              and are not counted against the caps in Models or recorded in its usage log.
+            </span>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Default model route</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -786,7 +824,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     store.save();
                   }}
                 >
-                  testnet · 40204
+                  {ACTIVE_PROFILE?.nodeNetwork ?? "not set"} · {ACTIVE_PROFILE?.chainId ?? "not set"}
                 </button>
                 <button
                   className={btnCls(s.net === "local")}
@@ -812,15 +850,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 <DisabledControl label="Move…" note="not available in this build" />
               </span>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="lbl">Bootnodes · default set</span>
-              <span
-                className="mono"
-                style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", lineHeight: 1.6 }}
-              >
-                boot1.citrate.ai:30303 · boot2.citrate.ai:30303 · boot-eu1.citrate.ai:30303
-              </span>
-            </div>
+            {/* K6-3: the network this build targets, every value from the network profile. */}
+            <NetworkProfilePanel profile={ACTIVE_PROFILE} status={networkState.status} live={networkState.live} />
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="lbl">Resource cap · CPU</span>
               <span style={{ display: "flex", gap: 8 }}>
@@ -859,7 +890,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     store.save();
                   }}
                 >
-                  rpc.citrate.ai
+                  {publicRpcHost ?? "public RPC · not set"}
                 </button>
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -1049,13 +1080,22 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ flex: 1 }}>
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>{memPlanLabel}</span>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>
+                    {memPlanLabel}
+                    {effTier !== "free" && effTier !== "enterprise" && (
+                      <>
+                        {" · "}
+                        <PricingLink open={(u) => void store.openExternal(u)} price={s.membershipPrice} style={{ fontSize: 12, fontWeight: 400 }} />
+                      </>
+                    )}
+                  </span>
                   <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>
                     {memRenewLine}
                   </span>
                 </span>
                 <span
                   className="mono"
+                  data-testid="membership-badge"
                   style={{
                     fontSize: 9.5,
                     letterSpacing: ".1em",
@@ -1071,17 +1111,29 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 </span>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
-                  Renew ↗
-                </button>
+                {freeUser ? (
+                  // The guarded checkout (link first, never for an account already granted), as in onboarding S3.
+                  // Disabled while the held-grant check runs: one attempt at a time (core#584).
+                  <button className="btn btn-secondary btn-sm" disabled={s.billingChecking} onClick={() => void store.becomeMember()}>
+                    Become a member ↗
+                  </button>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
+                    Renew ↗
+                  </button>
+                )}
                 {/* Q-A.1 (Rule 1) — the Stripe customer-portal link has no backend
                     in this build; honest DISABLED state, not a toast excuse. Renew
-                    (left) is the REAL wired checkout path. */}
-                <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
+                    (left) is the REAL wired checkout path. A free user has nothing to cancel. */}
+                {!freeUser && <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />}
               </div>
-              <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-                On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. Stake attribution ends until renewal; vaulted principal stays vaulted.
-              </p>
+              {!freeUser && (
+                <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
+                  On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours.
+                  {/* The grant sentence only for someone who holds a grant. */}
+                  {s.hasGrant && <> The membership grant stays locked in your bond until its unlock block. {GRANT_DISCLAIMER}</>}
+                </p>
+              )}
             </div>
             {s.hasSbt && (
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1092,7 +1144,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     the member wallet, NOT a fabricated tx hash — this app does not
                     broadcast the grant tx. */}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Grant · staked at issuance</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Grant · locked in your bond</span>
                   <span className="mono tabular" style={{ fontSize: 12.5 }}>
                     {fmtSaltFromWei(s.s5StakeWei)} SALT
                   </span>
@@ -1104,7 +1156,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Vault release</span>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Bond</span>
                   {/* M-2.2/M-2.3 (Rule 1): the REAL lock + KYC state read from the
                       member's MemberBond escrow, not a policy slogan. "—" when the
                       read has not landed — never an invented status. */}
@@ -1112,13 +1164,15 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     {s.s5BondStatus ?? "—"}
                   </span>
                 </div>
+                {/* C1-V V5 (UI truth contract §5.7): the disclaimer wherever the grant is mentioned. */}
+                <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>{GRANT_DISCLAIMER}</p>
               </div>
             )}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Receipts</span>
               {/* Q-A.1 (Rule 1) — there is no real receipt read in this build, so we
                   show an honest "No receipts yet" rather than a fabricated
-                  2026-07-11 · $48.00 line, and the PDF download is a disabled state. */}
+                  2026-07-11 receipt line, and the PDF download is a disabled state. */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span className="mono" style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
                   No receipts yet
@@ -1208,8 +1262,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 Run Hermes's loop in the agent sidecar
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
+                On by default. Uses the model chosen below (your local model unless you pick a cloud one), and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop on the local model instead.
               </span>
+              {/* D-11 (ADR P-5): the model the loop runs on, local or a connected cloud model. */}
+              <HermesModelPicker value={s.hermesCloudModel} route={s.chatRoute} onChoose={(c) => store.setHermesCloudModel(c)} />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>

@@ -258,7 +258,11 @@ fn node_target() -> NodeTarget {
     NodeTarget {
         exe: PathBuf::from("/Applications/Citrate.app/Contents/MacOS/citrate-core"),
         port: 47204,
-        token: format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32)),
+        token: crate::secret::SecretString::new(format!(
+            "{}{}",
+            crate::node_mcp_token::TOKEN_PREFIX,
+            "ab".repeat(32)
+        )),
     }
 }
 
@@ -292,7 +296,7 @@ fn the_node_entry_runs_the_stdio_shim_with_a_minted_token() {
     );
     assert_eq!(n["args"], serde_json::json!([crate::node_mcp_http::STDIO_FLAG]));
     assert_eq!(n["args"][0], "--mcp-stdio");
-    assert_eq!(n["env"][NODE_TOKEN_ENV], node_target().token);
+    assert_eq!(n["env"][NODE_TOKEN_ENV], node_target().token.expose());
     assert_eq!(n["env"][NODE_PORT_ENV], "47204");
     // One switch (pending owner sign-off) drives the entry and the token scope; today read only.
     assert_eq!(n["allow_write_tools"], HERMES_NODE_WRITE_TOOLS);
@@ -306,7 +310,7 @@ fn the_node_entry_is_left_out_without_a_target_a_relative_exe_or_a_token() {
     rel.exe = PathBuf::from("citrate-core");
     assert!(render_config(&node_on(), None, Some(&rel)).is_none());
     let mut empty = node_target();
-    empty.token.clear();
+    empty.token = crate::secret::SecretString::default();
     assert!(render_config(&node_on(), None, Some(&empty)).is_none());
 }
 
@@ -334,19 +338,22 @@ fn the_node_entry_keeps_its_name_reserved_from_member_servers() {
 #[test]
 fn the_current_node_token_is_read_back_from_the_written_file() {
     let dir = tmp_dir("node-token");
-    assert_eq!(current_node_token(&dir), None);
+    assert!(current_node_token(&dir).is_none());
     sync_config_file(&dir, &node_on(), None, Some(&node_target()))
         .expect("io")
         .expect("written");
-    assert_eq!(current_node_token(&dir), Some(node_target().token));
+    assert_eq!(
+        current_node_token(&dir).as_ref().map(SecretString::expose),
+        Some(node_target().token.expose())
+    );
     sync_config_file(&dir, &McpSettings::default(), None, Some(&node_target())).expect("io");
-    assert_eq!(current_node_token(&dir), None);
+    assert!(current_node_token(&dir).is_none());
 }
 
 #[test]
 fn a_node_target_never_prints_its_token() {
     let d = format!("{:?}", node_target());
-    assert!(!d.contains(&node_target().token), "{d}");
+    assert!(!d.contains(node_target().token.expose()), "{d}");
 }
 
 #[test]
@@ -460,10 +467,10 @@ fn node_renders_the_stdio_shim_with_its_own_token_read_only() {
         .expect("node entry");
     assert_eq!(n["transport"], "stdio");
     assert_eq!(n["args"], serde_json::json!(["--mcp-stdio"]));
-    assert_eq!(n["env"]["CITRATE_NODE_MCP_TOKEN"], serde_json::json!(t.token));
+    assert_eq!(n["env"]["CITRATE_NODE_MCP_TOKEN"], serde_json::json!(t.token.expose()));
     assert_eq!(n["env"]["CITRATE_NODE_MCP_PORT"], "47204");
     assert_eq!(n["allow_write_tools"], serde_json::json!(false));
-    assert!(!format!("{t:?}").contains(&t.token));
+    assert!(!format!("{t:?}").contains(t.token.expose()));
 }
 
 #[test]

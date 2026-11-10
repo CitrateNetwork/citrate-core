@@ -1,7 +1,8 @@
-//! CONNECT-S1 — sealing a group-invite claim to the invite's ephemeral key, so it can ride the relay's
-//! **server-blind** claims-inbox: the invitee seals `{group, token, address}` to the ephemeral public
-//! key carried in the invite link, submits the ciphertext, and only the owner (who holds the matching
-//! private key in their `PendingInvite`) can open it. The relay stores opaque bytes.
+//! Sealing an invite request to the invite's key, and the inviter's answer to the requester's reply
+//! key, so both can ride the relay's **server-blind** claims inbox (`invites`, D-12). The sender
+//! seals to a public key it was given (the link's key, or the reply key inside the request); only
+//! the holder of the matching private key (the inviter's `Invite`, or the requester's `MyRequest`)
+//! can open it. The relay stores opaque bytes.
 //!
 //! Construction: ECIES over secp256k1 — a fresh ephemeral keypair per seal, ECDH against the recipient
 //! key, a domain-separated SHA-256 of the shared secret as the AES-256-GCM key, and a random 96-bit
@@ -34,7 +35,7 @@ fn derive_key(shared: &[u8]) -> Zeroizing<[u8; 32]> {
     k
 }
 
-/// An invite's ephemeral private key (hex), as persisted with the owner's `PendingInvite`. The
+/// An invite's (or a request's reply) private key, hex, as persisted in `invites/pending.json`. The
 /// buffer is wiped when dropped and `Debug` never prints it; it serializes as the bare hex string
 /// so stored invites keep their format.
 #[derive(Clone, Default)]
@@ -75,15 +76,10 @@ impl InvitePrivKey {
     pub fn expose_hex(&self) -> &str {
         &self.0
     }
-
-    /// Whether no key is held (pre-S1 invites).
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 /// Generate a fresh invite ephemeral keypair. Returns `(private key, public_key_hex)` — the private
-/// key is persisted with the owner's `PendingInvite`; the public key is embedded in the invite link.
+/// key is persisted in `invites/pending.json`; the public key goes in the link (or the request).
 pub fn new_invite_keypair() -> (InvitePrivKey, String) {
     let sk = SecretKey::random(&mut OsRng);
     let pk = sk.public_key();
@@ -205,7 +201,7 @@ mod tests {
         let sealed = seal_to(&pub_hex, b"claim").unwrap();
         assert_eq!(open_with(&back, &sealed).unwrap(), b"claim");
         let empty: InvitePrivKey = serde_json::from_str("\"\"").unwrap();
-        assert!(empty.is_empty());
+        assert_eq!(empty.expose_hex(), "");
         assert!(
             open_with(&empty, &sealed).is_err(),
             "an empty key fails closed"

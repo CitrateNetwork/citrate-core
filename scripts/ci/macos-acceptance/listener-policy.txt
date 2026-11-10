@@ -1,0 +1,18 @@
+# created: 2026-10-27 | branch: rc52/macos-acceptance | author: Larry Klosowski + Claude Opus 5.5 (MAC lane)
+# status: active (RC52 WP-H-MACOS). The non-loopback sockets the app's sidecars may hold. Loopback
+# is always allowed and a connected UDP socket (lsof "->") is outbound, not a listener. Anything
+# else fails launch.listeners_loopback, including a port below held by a different sidecar.
+# One per line: <sidecar> <tcp|udp> <port|ephemeral> <wildcard|interface> <why>
+#   wildcard  = bound to every interface (*, 0.0.0.0, ::)
+#   interface = bound to one LAN-side address: private or link-local IPv4, link-local or
+#               unique-local IPv6, or one of this machine's own interface addresses
+#   ephemeral = a port in the macOS ephemeral range (>= 49152), UDP only
+# Owner decision 2026-10-27: IPFS LAN discovery (mDNS) stays on in 0.5.2. Kubo's defaults apply:
+# src-tauri/src/ipfs.rs moves only the gateway (127.0.0.1:48080) and keeps the API on 127.0.0.1:5001,
+# so the swarm (Addresses.Swarm) and Discovery.MDNS are kubo's defaults.
+citrate  tcp  30303      wildcard   node P2P listener, peers must reach it (src-tauri/config/member-node.toml [network] listen_addr)
+ipfs     tcp  4001       wildcard   IPFS swarm TCP (kubo default Addresses.Swarm /ip4/0.0.0.0/tcp/4001, /ip6/::/tcp/4001)
+ipfs     udp  4001       wildcard   IPFS swarm QUIC, WebTransport and WebRTC-direct (kubo default Addresses.Swarm, udp/4001)
+ipfs     udp  5353       wildcard   IPFS mDNS LAN discovery (kubo Discovery.MDNS, on by default; owner-approved 2026-10-27)
+ipfs     udp  ephemeral  interface  IPFS mDNS per-interface sockets (one per LAN-side v4/v6 address, random port; seen on the 0.5.1 app, core#558 review)
+ipfs     udp  ephemeral  wildcard   IPFS unconnected UDP on a random port, all interfaces (two seen on the 0.5.1 app with mDNS on, core#558 review)

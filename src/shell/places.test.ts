@@ -136,7 +136,8 @@ describe("every Settings section deep link opens its new home", () => {
   }
 
   it("AI providers, Escalation and spend, MCP servers, Web search, Terminal, Budgets and Personas land on Hermes › Controls › Details", () => {
-    for (const sec of ["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls/details");
+    for (const sec of ["models", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]) expect(resolveRoute("settings/" + sec)?.route).toBe("hermes/controls/details");
+    expect(resolveRoute("settings/models")).toEqual({ route: "hermes/controls/details", patch: { sSec: "models" } });
   });
 
   it("the Controls panel section (settings/hermes) lands on Hermes › Controls", () => {
@@ -173,14 +174,14 @@ describe("Hermes › Controls has three depths (design slice 1)", () => {
   });
 
   it("the design's depth-two ids open Details on their section", () => {
-    const want: Record<string, string> = { providers: "ai", escalation: "escalation", mcp: "mcp", web: "web", terminal: "terminal", budgets: "budgets", personas: "personas" };
+    const want: Record<string, string> = { models: "models", providers: "ai", escalation: "escalation", mcp: "mcp", web: "web", terminal: "terminal", budgets: "budgets", personas: "personas" };
     for (const [id, sSec] of Object.entries(want)) {
       expect(resolveRoute("hermes/controls/" + id), id).toEqual({ route: "hermes/controls/details", patch: { sSec } });
     }
   });
 
   it("the Details sections are the moved Settings sections plus Terminal and Personas, none account-level", () => {
-    expect([...CONTROLS_DETAIL_SETTINGS]).toEqual(["ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]);
+    expect([...CONTROLS_DETAIL_SETTINGS]).toEqual(["models", "ai", "escalation", "mcp", "web", "terminal", "budgets", "personas"]);
     for (const sec of CONTROLS_DETAIL_SETTINGS) expect(ACCOUNT_SETTINGS as readonly string[]).not.toContain(sec);
   });
 });

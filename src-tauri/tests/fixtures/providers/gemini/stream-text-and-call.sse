@@ -1,0 +1,10 @@
+: source: built from the GenerateContentResponse schema (alt=sse: one whole response per data line; thought part, functionCall with id and thoughtSignature, usageMetadata with thoughtsTokenCount)
+
+data: {"candidates":[{"content":{"parts":[{"text":"Weighing the cities.","thought":true}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":40,"totalTokenCount":40}}
+
+data: {"candidates":[{"content":{"parts":[{"text":"Let me "}],"role":"model"},"index":0}]}
+
+data: {"candidates":[{"content":{"parts":[{"text":"check."}],"role":"model"},"index":0}]}
+
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_8f2a","name":"get_weather","args":{"location":"Boston, MA"}},"thoughtSignature":"<Signature A>"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":12,"thoughtsTokenCount":30,"totalTokenCount":82}}
+

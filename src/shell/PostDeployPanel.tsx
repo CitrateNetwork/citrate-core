@@ -6,13 +6,19 @@
 // to IPFS, and write a Vercel-ready export. Every step is a core command (src-tauri postdeploy.rs)
 // and shows exactly what core answered, failures included. Nothing here signs or deploys to
 // Vercel; the member runs the printed commands with their own Vercel login.
+//
+// CORE-A3 (0.5.3): once the contract is found, core keeps a durable deploy record (address,
+// init-code hash, compiler settings, standard-JSON input, ABI, gate record), encrypted on this
+// computer per project (src-tauri deploy_records.rs). The panel says whether it was saved and
+// lists the project's saved deploys.
 // =====================================================================
 import { useState, type CSSProperties } from "react";
-import type { ContractsDomain, VerifyOutcomeView } from "../bridge/domains";
+import type { ContractsDomain, DeployRecordSavedView, DeployRecordSummaryView, VerifyOutcomeView } from "../bridge/domains";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 export type PostDeployOps = Pick<
   ContractsDomain,
-  "postdeployStatus" | "postdeployReceipt" | "postdeployVerify" | "postdeploySwitchSite" | "postdeployPinSite" | "postdeployVercelExport"
+  "postdeployStatus" | "postdeployReceipt" | "postdeployVerify" | "postdeploySwitchSite" | "postdeployPinSite" | "postdeployVercelExport" | "deployRecordSave" | "deployRecords"
 >;
 
 type Out = { ok: boolean; text: string } | null;
@@ -34,6 +40,26 @@ function verifyText(v: VerifyOutcomeView): Out {
     default:
       return { ok: false, text: `Not verified: CitrateScan was not available${tail}` };
   }
+}
+
+/** What the panel says about a deploy-record save (CORE-A3). */
+export function recordText(r: DeployRecordSavedView): Out {
+  const n = `${r.count} saved for this project`;
+  const sj = r.record.standardJsonBytes != null ? "" : ` The compiler input was not kept: ${r.record.standardJsonNote ?? "forge did not produce it"}.`;
+  if (r.alreadySaved) return { ok: true, text: `This deploy's record was already saved (${n}).` };
+  return { ok: true, text: `Deploy record saved, encrypted on this computer (${n}).${sj}` };
+}
+
+/** One line per saved deploy, newest first. */
+export function recordsText(rs: DeployRecordSummaryView[]): Out {
+  if (rs.length === 0) return { ok: true, text: "No deploy records are saved for this project yet." };
+  return {
+    ok: true,
+    text: [...rs]
+      .reverse()
+      .map((r) => `${r.contractName} at ${r.address}, block ${r.blockNumber}, solc ${r.solcVersion}, gate ${r.gateVerdict === "READY" ? "ready" : "not ready"}${r.standardJsonBytes != null ? "" : ", no compiler input"}`)
+      .join("\n"),
+  };
 }
 
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
@@ -65,6 +91,8 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
   const [sw, setSw] = useState<Out>(null);
   const [pin, setPin] = useState<Out>(null);
   const [exp, setExp] = useState<Out>(null);
+  const [saved, setSaved] = useState<Out>(null);
+  const [records, setRecords] = useState<Out>(null);
   const [busy, setBusy] = useState(false);
 
   const dir = project.trim();
@@ -98,6 +126,12 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
       if (r.status === 0) return { ok: false, text: `The deploy reverted in block ${r.blockNumber}; nothing was deployed.` };
       if (!r.contractAddress) return { ok: false, text: "That transaction did not create a contract." };
       setAddress(r.contractAddress);
+      // CORE-A3: keep the deploy record. A failure is shown as core gave it; finding still worked.
+      try {
+        setSaved(recordText(await ops.deployRecordSave(dir, tx.trim())));
+      } catch (e) {
+        setSaved({ ok: false, text: `The deploy record was not saved: ${msg(e)}` });
+      }
       return { ok: true, text: `${st.contractName} is at ${r.contractAddress} (block ${r.blockNumber}).` };
     }, setFound);
 
@@ -106,7 +140,7 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
   return (
     <div className="surface" data-testid="post-deploy" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
       <span style={{ fontSize: 13.5, fontWeight: 500 }}>After deploy</span>
-      <span style={note}>For a hello-mint project: verify the contract, point the page at chain 40204, pin it to IPFS, and export it for Vercel.</span>
+      <span style={note}>For a hello-mint project: verify the contract, point the page at chain {CHAIN_ID_TEXT}, pin it to IPFS, and export it for Vercel.</span>
       <div style={{ display: "flex", gap: 6 }}>
         <input className="input" data-testid="pd-project" style={{ ...mono, flex: 1 }} placeholder="hello-mint project folder" value={project} onChange={(e) => setProject(e.target.value)} />
         <button className="btn btn-sm btn-ghost" onClick={() => void pickFolder()}>
@@ -127,6 +161,7 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
           )}
         </div>
         <Output id="pd-address" out={found} />
+        <Output id="pd-record-out" out={saved} />
       </Step>
 
       <Step n={2} title="Verify on CitrateScan">
@@ -185,6 +220,14 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
           Export
         </button>
         <Output id="pd-export-out" out={exp} />
+      </Step>
+
+      <Step n={6} title="Saved deploys">
+        <span style={note}>Records of this project's deploys, kept encrypted on this computer. The key is in your keychain and in your recovery kit.</span>
+        <button className="btn btn-sm btn-secondary" data-testid="pd-records" disabled={!dir || busy} onClick={() => void run(async () => recordsText(await ops.deployRecords(dir)), setRecords)}>
+          Show
+        </button>
+        <Output id="pd-records-out" out={records} />
       </Step>
     </div>
   );

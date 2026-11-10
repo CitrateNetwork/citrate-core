@@ -1,10 +1,11 @@
 // @vitest-environment node
 //
 // HUP-S11.0 / gate g5-size: the installer size gate is wired into .github/workflows/release.yml
-// as a MANUAL-ONLY step. A tag push builds and publishes exactly as before; only a manual
-// dispatch with `size_gate: true` runs scripts/size-budget.mjs, and then the release is created
-// as a draft and published only after the gate passes (an over-budget build stays a draft). A dry
-// run (`dry_run: true`) also runs the gate on its unsigned bundle, and never publishes.
+// as a MANUAL-ONLY step. A tag push builds exactly as before; only a manual dispatch with
+// `size_gate: true` runs scripts/size-budget.mjs, after the build and before the workflow artifact
+// upload, so an over-budget build uploads nothing. release.yml publishes nothing either way
+// (053-UPDATER decision 2: no draft, no GitHub release). A dry run (`dry_run: true`) also runs the
+// gate on its unsigned bundle.
 //
 // Structural checks in plain JS (no YAML dependency), plus a full parse through python3 + PyYAML
 // when present (skipped, and says so, when it is not).
@@ -37,7 +38,6 @@ function pyYaml() {
 
 const wf = pyYaml();
 const GATE = "${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}";
-const PUBLISH = "${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}";
 
 function steps() {
   if (!wf) return null;
@@ -65,8 +65,8 @@ describe("release.yml size gate (manual only)", () => {
     expect(calls[0]).toMatch(/--arch aarch64/);
     const s = steps();
     if (!s) return console.warn("PyYAML not available: step order not checked");
-    const build = s.findIndex((x) => (x.uses ?? "").startsWith("tauri-apps/tauri-action@"));
-    const dryBuild = s.findIndex((x) => (x.run ?? "").includes("npx tauri build"));
+    const build = s.findIndex((x) => x.name === "Build · sign · notarize (macOS arm64)");
+    const dryBuild = s.findIndex((x) => x.name === "Build the bundle unsigned (dry run)");
     const gate = s.findIndex((x) => (x.run ?? "").includes("scripts/size-budget.mjs"));
     expect(build).toBeGreaterThanOrEqual(0);
     expect(dryBuild).toBeGreaterThanOrEqual(0);
@@ -75,19 +75,15 @@ describe("release.yml size gate (manual only)", () => {
     expect(s[gate].if).toBe(GATE);
   });
 
-  it("drafts the release when the gate runs and publishes the draft only after it passes", () => {
+  it("runs before the artifact upload, so an over-budget build uploads nothing, and drafts no release", () => {
     const s = steps();
-    if (!s) return console.warn("PyYAML not available: draft wiring not checked");
-    const build = s.find((x) => (x.uses ?? "").startsWith("tauri-apps/tauri-action@"));
-    expect(build.with.releaseDraft).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.size_gate == true }}");
+    if (!s) return console.warn("PyYAML not available: upload order not checked");
     const gate = s.findIndex((x) => (x.run ?? "").includes("scripts/size-budget.mjs"));
-    const publish = s.findIndex((x) => /gh release edit "\$TAG" --draft=false/.test(x.run ?? ""));
-    expect(publish).toBe(gate + 1);
-    // A dry run reaches the gate but never the publish step.
-    expect(s[publish].if).toBe(PUBLISH);
-    // The tag comes in through env, never spliced into the shell line.
-    expect(s[publish].env.TAG).toBe("${{ github.event.inputs.tag }}");
-    expect(s[publish].run).not.toMatch(/\$\{\{/);
+    const upload = s.findIndex((x) => (x.uses ?? "").startsWith("actions/upload-artifact@"));
+    expect(upload).toBeGreaterThan(gate);
+    expect(s[upload].if).toBe("${{ env.DRY_RUN != 'true' }}");
+    expect(s.some((x) => (x.uses ?? "").startsWith("tauri-apps/tauri-action@"))).toBe(false);
+    expect(s.some((x) => /gh release (create|edit|upload)/.test(x.run ?? ""))).toBe(false);
     expect(s[gate].run).not.toMatch(/\$\{\{/);
   });
 

@@ -860,6 +860,8 @@ impl MemoryManager {
         }
         let spec = self.spawn_spec()?;
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         let sup = match Supervisor::start(config) {
             Ok(sup) => sup,
@@ -1133,12 +1135,12 @@ impl MemoryManager {
                     ));
                 }
                 facts.push(format!(
-                    "Your membership grant staked {} SALT into a time-locked, recoverable validator bond (about a one-year lock).",
+                    "Your membership grant of {} SALT is locked in your MemberBond, a time-locked, recoverable validator bond (about a one-year lock). It is staked in the ValidatorRegistry only once you activate the bond.",
                     f.grant_staked_salt
                 ));
                 if !f.bond_status.trim().is_empty() {
                     facts.push(format!(
-                        "Stake status: {}. The staked SALT is locked and not spendable; it begins validating once you approve the activation ceremony.",
+                        "Bond status when this was recorded: {}. Locked SALT is not spendable.",
                         f.bond_status
                     ));
                 }

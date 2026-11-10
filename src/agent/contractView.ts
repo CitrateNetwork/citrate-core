@@ -17,11 +17,16 @@ import { parseAbiItem, type AbiFunction } from "viem";
 import { decodeResult, encodeCall, parseAbi, parseArg, type ReaderFunction } from "../contractReader/abi";
 import { fenceUntrusted } from "./untrusted";
 import { isAddress, type VerifiedSourceView } from "./verifiedSource";
+import type { AbiResolutionView } from "./contractIntel";
+import { ACTIVE_PROFILE } from "../network/profile";
 
 /** What the tool needs from core (the bridge's contracts domain). */
 export interface ContractViewDeps {
   verifiedSource(address: string): Promise<VerifiedSourceView>;
   viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** CORE-A1: the bundled system ABI of an address-book contract (or a proxy's book
+   *  implementation), used when CitrateScan has no verified ABI. Optional. */
+  abiResolve?(address: string): Promise<AbiResolutionView>;
 }
 
 /** The most arguments a call may carry. */
@@ -38,7 +43,7 @@ function str(v: unknown): string {
 /** The read target: "citrate" (chain 40204) unless the model names a loopback fork URL. */
 export function viewTarget(raw: unknown): { ok: true; target: string } | { ok: false; error: string } {
   const t = str(raw);
-  if (t === "" || t === "citrate" || t === "40204") return { ok: true, target: "citrate" };
+  if (t === "" || t === "citrate" || (ACTIVE_PROFILE?.chainId != null && t === String(ACTIVE_PROFILE.chainId))) return { ok: true, target: "citrate" };
   if (LOOPBACK.test(t)) return { ok: true, target: t };
   return { ok: false, error: "target must be citrate (chain 40204) or a local fork at an http:// loopback address" };
 }
@@ -119,15 +124,33 @@ export async function runContractView(deps: ContractViewDeps, args: Record<strin
     } catch (e) {
       return refuse(`the verified ABI lookup failed (${e instanceof Error ? e.message : String(e)}); pass abi_fragment to call it anyway`);
     }
-    if (!src.abi || (src.status !== "verified" && src.status !== "partial-match")) {
-      return refuse(
-        `CitrateScan has no verified ABI for ${address} (status: ${src.status}); pass abi_fragment, for example "function totalSupply() view returns (uint256)"`,
-      );
+    let abi: unknown[] | null = null;
+    if (src.abi && (src.status === "verified" || src.status === "partial-match")) {
+      abi = src.abi;
+      abiSource = "CitrateScan's verified ABI";
+    } else {
+      abiSource = "";
+      // CORE-A1: a system contract of the address book has a bundled ABI even unverified.
+      if (deps.abiResolve && t.target === "citrate") {
+        try {
+          const r = await deps.abiResolve(address);
+          if (r.source === "book" && r.abi) {
+            abi = r.abi;
+            abiSource = `the bundled system ABI of ${r.contractName ?? "this address-book contract"} (CitrateScan has no verified source)`;
+          }
+        } catch {
+          // fall through to the refusal below
+        }
+      }
+      if (!abi) {
+        return refuse(
+          `CitrateScan has no verified ABI for ${address} (status: ${src.status}) and it is not an address-book contract with a bundled ABI; pass abi_fragment, for example "function totalSupply() view returns (uint256)"`,
+        );
+      }
     }
-    const parsed = parseAbi(src.abi);
-    if (!parsed.ok) return refuse(`the verified ABI could not be read (${parsed.error})`);
+    const parsed = parseAbi(abi);
+    if (!parsed.ok) return refuse(`the ABI could not be read (${parsed.error})`);
     fn = pickFunction(parsed.functions, want);
-    abiSource = "CitrateScan's verified ABI";
   }
   if (typeof fn === "string") return refuse(fn);
   if (fn.kind !== "read") {

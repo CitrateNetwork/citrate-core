@@ -8,7 +8,7 @@
 //   V2  heartbeat "last ack 4s ago" stuck at its seed value, sold as slashing protection
 //   V3  pin projections (bonded x 0.0075 "per month") and "challenges passed" (pins x 9 + 4)
 //   V10 seeded height 131,204 and persisted node state shown before the first poll
-//   V11 Train reads PatronageLedger, which is not in the 40204 address book
+//   V11 Train reads PatronageLedger; FederatedRoundLedger is not in the 40204 (r1006) address book
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
@@ -32,7 +32,7 @@ vi.mock("../widgets/WidgetsPanel", () => ({ WidgetsPanel: () => null }));
 vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
-import { Node } from "./Node";
+import { renderRewards, renderStatus } from "./node/nodePage.fixture";
 import { Train, groupRoundsLive } from "./Train";
 import { COACH_STEPS, NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
@@ -96,12 +96,13 @@ describe("V1 — finality is not drawn as running", () => {
 
 describe("V2 — heartbeat has no source, so it shows unavailable", () => {
   it("never renders a seeded ack age or a slashing-protection claim", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "earn" })} />);
-    expect(html).not.toMatch(/last ack \d+s ago/);
-    expect(html).not.toContain("slashing protection");
-    expect(html).not.toContain("NematocystSlashing");
-    expect(html).toContain("Heartbeat");
-    expect(html).toContain("no heartbeat reading");
+    // K3: Node › Rewards and Status draw no Heartbeat row at all: there is no source for one.
+    for (const html of [renderRewards(stub, running()), renderStatus(stub, running())]) {
+      expect(html).not.toMatch(/last ack \d+s ago/);
+      expect(html).not.toContain("slashing protection");
+      expect(html).not.toContain("NematocystSlashing");
+      expect(html).not.toContain("Heartbeat");
+    }
   });
 
   it("is not part of app state (nothing to go stale)", () => {
@@ -115,7 +116,8 @@ describe("V3 — pin bonds are dormant", () => {
   ] as unknown as AppState["pins"];
 
   it("shows 'Pin bonds not live yet' and no projection or challenge tallies", () => {
-    const html = renderToStaticMarkup(<Node store={stub} s={running({ nTab: "pin", pins })} />);
+    // K3: pin rewards are on Node › Rewards (local pins are Storage › Pins).
+    const html = renderRewards(stub, running({ pins }));
     expect(html).toContain("Pin bonds not live yet");
     expect(html).not.toContain("Projected");
     expect(html).not.toContain("at current demand");
@@ -158,8 +160,9 @@ describe("V10 — no seeded height or persisted node state before the first poll
 });
 
 describe("V11 — group rounds are not live on 40204", () => {
-  it("the shipped address book has no PatronageLedger, so rounds read as not live", () => {
-    expect((book.addresses as Record<string, string>).PatronageLedger).toBeUndefined();
+  it("the shipped address book has no FederatedRoundLedger, so rounds read as not live", () => {
+    // r1006 pins PatronageLedger (block 0) but not FederatedRoundLedger: still not live.
+    expect((book.addresses as Record<string, string>).FederatedRoundLedger).toBeUndefined();
     expect(groupRoundsLive(book.addresses)).toBe(false);
     expect(groupRoundsLive({ PatronageLedger: "0x" + "0".repeat(40) })).toBe(false);
     expect(groupRoundsLive({ PatronageLedger: "0x00000000000000000000000000000000000000AB", FederatedRoundLedger: "0x00000000000000000000000000000000000000CD" })).toBe(true);

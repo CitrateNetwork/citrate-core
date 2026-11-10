@@ -374,7 +374,6 @@ fn invoke_put_refuses_backend_slots_and_keeps_the_existing_secret() {
         "connection-huggingface",
         "connection-",
         "oidc-refresh",
-        "wallet-entropy-0",
     ] {
         v.put(slot, &mut b"backend".to_vec()).unwrap();
         let r = invoke_put(&v, slot, b"planted".to_vec());
@@ -385,6 +384,23 @@ fn invoke_put_refuses_backend_slots_and_keeps_the_existing_secret() {
             "{slot}: the backend secret must be untouched"
         );
     }
+    // The wallet keystore: plain `custody_get` never reads a `wallet-` slot (K6), so the stored
+    // key is observed through the wallet's key module: the address it derives is unchanged.
+    let wallet_slot = crate::wallet::WALLET_ENTROPY_SLOT;
+    let before = crate::wallet::import(
+        &v,
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    )
+    .expect("import")
+    .address;
+    let r = invoke_put(&v, wallet_slot, b"planted".to_vec());
+    assert_eq!(r, Err("reserved slot name".to_string()), "{wallet_slot} must be refused");
+    assert_eq!(
+        crate::wallet::address(&v).expect("the wallet still reads").address,
+        before,
+        "{wallet_slot}: the wallet key must be untouched"
+    );
+    assert!(before.eq_ignore_ascii_case("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"));
     invoke_put(&v, "user-note", b"hello".to_vec()).expect("an ordinary slot is writable");
     assert_eq!(v.custody_get("user-note").unwrap().to_vec(), b"hello".to_vec());
     assert!(is_backend_reserved_slot("connection-notion"));

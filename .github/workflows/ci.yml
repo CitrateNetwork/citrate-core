@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly on main, so the dated audit ignores (RUSTSEC-2026-0387 expires 2027-01-31) fail CI on
+  # the day they lapse even when nothing is pushed.
+  schedule:
+    - cron: "17 6 * * 1"
 
 jobs:
   rust:
@@ -60,24 +64,31 @@ jobs:
           # when ark-relations bumps tracing. All other advisories are cleared
           # (rustls bumped to 0.23.45) or non-failing unmaintained warnings.
           # RUSTSEC-2026-0367/0368/0369 (zip < 9: set-id bits kept, symlink targets outside the
-          # destination, permissions applied through symlinks; all in ZipArchive::extract). Our
-          # own zip user, citrate-components, is on zip 9. The only zip < 9 left is
-          # tauri-plugin-updater's, which has no release on zip 9 yet (2.14.0 and 3.0.0-alpha.3
-          # still require ^4). That dependency is Windows-only, and the plugin unzips only an
-          # update payload whose minisign signature it has already checked against the pinned
-          # updater key (download() verifies before any install path sees the bytes). The guard
-          # below fails if anything else ever pulls a zip older than 9. Remove these ignores
-          # when the updater moves to zip >= 9.
+          # destination, permissions applied through symlinks; all in ZipArchive::extract) and
+          # RUSTSEC-2026-0429 (zip < 9: ZipArchive::extract aborts the process on a symlink entry
+          # with a large declared size; published 2026-10-22). Our own zip user,
+          # citrate-components, is on zip 9. The only zip < 9 left is tauri-plugin-updater
+          # 2.10.1's. tauri-plugin-updater 2.14.1 moves to zip ^9 but needs tauri ^2.12 and
+          # reqwest 0.13 (we are on tauri 2.11.5), so taking it is a Tauri upgrade of its own.
+          # That dependency is Windows-only, and the plugin unzips only an update payload whose
+          # minisign signature it has already checked against the pinned updater key
+          # (download() verifies before any install path sees the bytes), so a crafted archive
+          # cannot reach extract. The guard below fails if anything else ever pulls a zip older
+          # than 9. Remove these ignores with the move to tauri-plugin-updater >= 2.14.1.
           python3 scripts/check-zip-users.py
           # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6): multiple timing variability issues in
-          # operations intended to be constant-time. EXPIRES 2026-11-09. elliptic-curve 0.13
-          # requires crypto-bigint ^0.5; the fix is in the 0.14 curve line, held back upstream
-          # (revm-precompile, openmls_rust_crypto and bip32 still require the 0.13 line).
-          # Guard: scripts/check-crypto-bigint-users.py.
+          # operations intended to be constant-time. EXPIRES 2027-01-31 (renewed 2026-11-08 from
+          # 2026-11-09, aligned with citrate-chain's identical ignore). elliptic-curve 0.13
+          # requires crypto-bigint ^0.5; the fix is in the 0.14 curve line (elliptic-curve 0.14.3,
+          # k256 0.14.0), a semver-major move that citrate-wallet-core at the pinned chain rev has
+          # not made (it still pulls k256 0.13 and bip32 0.5.3). Re-verification evidence and
+          # reachability: the docstring of scripts/check-crypto-bigint-users.py, the guard.
+          # Tracking: #607 (the 0.14 curve-line upgrade that removes this ignore).
           python3 scripts/check-crypto-bigint-users.py --self-test
           python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
             --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0429 \
             --ignore RUSTSEC-2026-0387
 
   node:
@@ -99,6 +110,15 @@ jobs:
       # pin must agree; a component script that builds outside the pinned engine fails here.
       - name: release component pins
         run: node scripts/component-pins.mjs check
+      # K6: every network profile is well formed, an unset value always has a reason, and the
+      # active one is release-ready (the same check release.yml runs as the G0 gate).
+      - name: network profile
+        run: scripts/check-network-profile.sh --release
+      # CORE-N1: the network cut file (release/network-cut.json) is well formed and every value
+      # still pending names what sets it. Its --release form runs inside the check above once
+      # its profile is the active one.
+      - name: network cut
+        run: python3 -I scripts/network-cut.py check
       - name: typecheck
         run: npm run typecheck
       - name: test

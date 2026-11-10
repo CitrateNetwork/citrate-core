@@ -1,0 +1,14 @@
+: source: built from https://dev.meta.ai/docs/api-reference/chat-completions/schemas (tool_calls deltas by index; usage only on the final chunk, whose choices are empty, with include_usage)
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"muse-spark-1.3","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need the weather."}}]}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"muse-spark-1.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_m1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"muse-spark-1.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]}}]}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1752854522,"model":"muse-spark-1.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Seattle, WA\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1714502400,"model":"muse-spark-1.3","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":19,"total_tokens":44,"completion_tokens_details":{"reasoning_tokens":7}}}
+
+data: [DONE]
+

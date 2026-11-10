@@ -114,12 +114,14 @@ impl ReadTarget {
     }
 }
 
-/// `None`, `"citrate"` or `"40204"` is chain 40204; anything else must be an `http://` loopback
+/// `None`, `"citrate"` or the decimal chain id this build targets (`rpc::CITRATE_CHAIN_ID`) is that
+/// chain; anything else must be an `http://` loopback
 /// URL with no credentials (the local fork). Every other URL is refused, so the webview can never
 /// point a read at an arbitrary host.
 pub fn parse_target(s: Option<&str>) -> Result<ReadTarget, String> {
     let raw = match s.map(str::trim) {
-        None | Some("") | Some("citrate") | Some("40204") => return Ok(ReadTarget::Citrate),
+        None | Some("") | Some("citrate") => return Ok(ReadTarget::Citrate),
+        Some(r) if r == crate::rpc::CITRATE_CHAIN_ID.to_string() => return Ok(ReadTarget::Citrate),
         Some(r) => r,
     };
     let url = url::Url::parse(raw).map_err(|_| "the read target is not a URL".to_string())?;

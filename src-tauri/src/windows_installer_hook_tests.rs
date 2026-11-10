@@ -241,7 +241,5 @@ fn a_timeout_is_reported_and_the_install_continues() {
     let test_only = body
         .find("!ifdef CITRATE_HOOK_TEST_RESULT_FILE")
         .expect("test-only result file");
-    assert!(body[..test_only]
-        .find("CITRATE_HOOK_TEST_RESULT_FILE")
-        .is_none());
+    assert!(!body[..test_only].contains("CITRATE_HOOK_TEST_RESULT_FILE"));
 }

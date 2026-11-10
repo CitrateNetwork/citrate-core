@@ -15,6 +15,16 @@ files are and how to run them.
   INV-1 to INV-17 (INV-16: Stopped owns nothing; INV-17: the crash bound holds between member
   Starts, with automated starts and restarts carrying the budget). Each action names the Rust arm
   it models today and the WP that changes it.
+  *Amended 2026-11-04 (owner decision, core#600, CORE-D3):* the constant `SlowRetry` models
+  `SupervisorConfig::slow_retry`. While Failed, `SlowRetryStep` makes one spawn attempt under the
+  spent budget. INV-17 becomes `sinceMember <= 1 + MaxRetries + slowSince` (`slowSince`: slow
+  retries since the last member Start). INV-17a `INV_SlowRetryOneAttempt`: a slow retry adds at
+  most one counted failure before the cell is Failed again, never a fresh budget. INV-17b
+  `INV_SlowRetryOnlyFromFailed` (action): a slow retry is taken only from Failed under the Run
+  intent that failed, never while a Stop or member intent is pending. `SpawnFlaky` lets a
+  recovering child fail its OS spawn for a while, so the slow-retry recovery path is reachable.
+  Every config before the amendment sets `SlowRetry = FALSE` and keeps its meaning (same green
+  state counts).
 - `AppExitCoordinator.tla`: the app exit coordinator (SCL-S12, not yet in code): several owners,
   the app gate, one absolute deadline, every exit trigger, the final action, and the Hermes
   runtime as a nested owner with its own admission gate. X-1 to X-12, L-1.
@@ -24,7 +34,7 @@ model. Each config's first line states what TLC must report:
 
 | Kind | Files | `EXPECT` |
 |---|---|---|
-| Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`, `_ForkBombAutoRestart`, `_ProbedForkBombAutoRestart`; `AppExitCoordinator.cfg` | `pass` |
+| Green | `SidecarSupervisor.cfg`, `_Probed`, `_ForkBomb`, `_ProbedForkBomb`, `_ForkBombAutoRestart`, `_ProbedForkBombAutoRestart`; slow retry on (2026-11-04): `_SlowRetry`, `_SlowRetryProbed`, `_SlowRetryCrashLoop`, `_SlowRetryForkBomb`, `_SlowRetryProbedForkBomb`; `AppExitCoordinator.cfg` | `pass` |
 | Mutant | `*_Mut*.cfg`, one per reintroduced defect | `violated <the named invariant>` |
 | Reachability witness (RT-17) | `*_Reach*.cfg`: at least one per mutant (on that mutant's green constants, or on the mutant itself where stated), plus action-reachability witnesses that no mutant owns | `violated <W_ invariant>` |
 
@@ -61,6 +71,18 @@ witnesses fail); use `tlc_expect.py` for them.
 | INV-2 `INV_CounterBounded` + `EventuallyFailedIfNeverHealthy` | `crash_loop_without_healthy_interval_still_hits_cap_after_reset_fix`, `fork_bomb_is_bounded_and_backoff_increases`, `fork_bomb_bound_is_load_bearing`, `spawn_failure_reaches_failed_within_bound` |
 | INV-3 `INV_StopIsNotACrash` + `StopNeverCounts` | `graceful_stop_kills_child_and_does_not_restart`, `stop_during_backoff_cancels_pending_restart` |
 | INV-4 `INV_NoOrphan` | `drop_kills_child_no_orphan`, `drop_with_bounded_join_returns_promptly` |
+
+### INV-17 as amended 2026-11-04 (core#600) and the Rust tests they mirror
+
+| Invariant | Rust test(s) |
+|---|---|
+| INV-17 `INV_CrashBoundBetweenMemberStarts` (`sinceMember <= 1 + MaxRetries + slowSince`) | `kit/tests/lifecycle_faults.rs`: `automated_restarts_never_reset_the_budget`, `an_automated_start_carries_the_budget_over` (slow retry off), `slow_retries_add_one_child_each_and_never_a_fresh_budget` (slow retry on, real crashing child); `kit/src/supervisor_slow_retry_tests.rs`: `slow_retries_never_give_a_fresh_budget` (every observation, `max_retries` 0, 1, 2) |
+| INV-17a `INV_SlowRetryOneAttempt` | `slow_retries_never_give_a_fresh_budget`, `slow_retries_add_one_child_each_and_never_a_fresh_budget`, `a_failed_service_is_retried_once_per_slow_retry_period` (core#600) |
+| INV-17b `INV_SlowRetryOnlyFromFailed` | `a_stop_cancels_a_pending_slow_retry` (core#600); slow retry off: `without_a_slow_retry_a_failed_service_stays_failed` (core#600) |
+| `W_SlowRetryThenHealthy` (positive control) | `a_slow_retry_recovers_a_service_whose_cause_went_away` (core#600) |
+
+Not mirrored by a Rust test: a member Start cancelling a pending slow retry (the model covers it:
+`MemberStart` leaves Failed, and INV-17b holds in `_SlowRetry*`).
 
 INV-5 to INV-17 pin behaviour that does not exist in code yet (SCL-S2 to S4); their regression
 tests land with those WPs. Negative control kept from C1.0b: removing the counter reset in

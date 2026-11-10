@@ -1,6 +1,6 @@
 // v0.5.0-rc.5 FIX 5 — the contract-toolchain refusal becomes an actionable message.
 //
-// The Hermes sidecar (runtime 626486b8, unchanged) refuses a workflow with "this workflow needs
+// The Hermes sidecar (runtime 626486b8, and 05243c72 the same) refuses a workflow with "this workflow needs
 // the contract toolchain (aderyn_scan, forge_test, medusa_fuzz, slither_scan), which is off in
 // this app". The app now reads core's own toolchain status and says what to do: turn the switch
 // on, install each missing tool (with its command for this OS), or restart Hermes.

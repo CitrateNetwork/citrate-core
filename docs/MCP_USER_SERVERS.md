@@ -4,6 +4,7 @@ branch: hup/n4-user-mcp
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented (core + runtime); end-to-end run in the packaged app not yet recorded
 wp: HUP-S4.4
+updated: 2026-10-26 (rc52/prov-mcp, WP-S1-PROV-MCP, ADR-2026-10-26 P-9a: env values in the OS keychain)
 ---
 
 # User-added MCP servers (Settings > MCP servers)
@@ -25,14 +26,14 @@ over what it offers.
    (`POST /mcp/probe`): it starts or reaches the server, runs `initialize` and
    `tools/list`, and stops it. Nothing is registered. The review screen shows:
    - the exact command line (or URL) and working folder;
-   - the env keys, with values masked (length only);
+   - the env keys, with values masked (the mask says nothing about the value);
    - the server's name, version and protocol version;
    - every tool with its annotations as badges (`read-only` or `writes`,
      `destructive`, `idempotent`, `open world`) and `untrusted`, and whether Hermes
      would be offered it (with the reason when not).
 3. **Turn on.** Allowed only with the review token from a successful check of the
-   entry exactly as it stands (checked in Rust, not just in the UI). Core then writes
-   the allowlist file the sidecar reads. It takes effect the next time Hermes starts.
+   entry exactly as it stands (checked in Rust, not just in the UI). It takes effect
+   the next time Hermes starts, when core writes the allowlist the sidecar reads.
 
 The sidecar must be running for a check ("Start Hermes to check a server" otherwise).
 
@@ -46,9 +47,11 @@ The sidecar must be running for a check ("Start Hermes to check a server" otherw
 | Env values are explicit | `$X`, `${X}` and `%X%` values are refused (nothing is expanded) |
 | The review screen shows the code that runs | env names that change what a process loads (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, `BASH_ENV`, ...) are refused |
 | Built-in names are reserved | `mem`, `citrate-node`, `scan`, `browser`, `toolchain`, ... cannot be used |
-| Review binds to the exact entry | the enable token is a salted hash of the entry's fingerprint (command, args, folder, URL, env keys and values, write switch); an edit or a rename needs a new check |
+| Review binds to the exact entry | the enable token is a salted hash of the entry's fingerprint (command, args, folder, URL, env names and keychain references, write switch); a new value is a new keychain item with a new reference, so an edit, a new value or a rename needs a new check |
+| Env values live in the OS keychain | service `ai.citrate.core`, one item per value, account `mcp-server-env:<server>:<ENV_NAME>:<reference>`; the server list holds names and references only |
 | Env values never return to the webview | views carry masks only; an edit that does not retype a value keeps the stored one |
-| Nothing changes for members who never use this | with no enabled server the allowlist file does not exist and `CITRATE_HERMES_MCP` is not set |
+| Env values leave the keychain only to run a server | at Hermes start (the spawn-time allowlist) and during a check (the probe request and the probe file); see Files |
+| Nothing changes for members who never use this | with no enabled server no allowlist is written and `CITRATE_HERMES_MCP` is not set |
 | Keyless (Rule 3) | no key or signature anywhere in this path |
 
 Validation runs twice: in core (so the form can show errors without the sidecar) and
@@ -61,13 +64,40 @@ by the probe, not again at load.
 
 ## Files
 
-Under `<app local data>/hermes/`, both written `0600`:
+Under `<app local data>/hermes/`, all written `0600` (atomically: a synced temp file
+renamed over the old one):
 
-- `mcp-servers.json`: every entry, including those that are off. Holds env values
-  (often tokens) in plain text, protected by file permissions, because the sidecar
-  needs them to start the server and holds no keyring access.
-- `mcp-allowlist.json`: enabled, reviewed entries only, in the runtime's
-  `[[servers]]` shape. Removed when nothing is enabled.
+- `mcp-servers.json`: every entry, including those that are off. **No env values**: each
+  env name maps to a reference to its keychain item.
+- `mcp-effective.json`: the one allowlist the sidecar loads (built-in servers first, then
+  the member's enabled, reviewed servers with their env values from the keychain). Written
+  right before Hermes is spawned; removed as soon as the sidecar answers `/health` (it
+  loads the allowlist before it serves). It is written again right before each
+  supervisor restart and removed whenever a child ends, including a failed spawn and the
+  last crash before the supervisor gives up, when Hermes stops, and at app start (with the
+  `.tmp` file an interrupted atomic write can leave). With only built-in servers on, the
+  built-in file is passed as is.
+- `mcp-probe.json`: exactly the entry being checked, with its values, for the length of
+  one check (`CITRATE_HERMES_MCP_REGISTRY` names it; the sidecar starts only an entry that
+  matches it).
+
+### Migration from plain text (RC52)
+
+Versions before RC52 kept env values in plain text in `mcp-servers.json` and
+`mcp-allowlist.json`. The first time the list is read (at app start, in the background,
+or when Settings or Hermes reads it), core writes each value to the keychain, then
+rewrites `mcp-servers.json` without them, then removes `mcp-allowlist.json`. If a
+keychain write or the rewrite fails, the items that attempt wrote are removed and the
+file is left as it was, so the next read tries again; a rerun after success changes
+nothing. A server that was on and reviewed stays on. "Delete my local data" lists and
+deletes these keychain items.
+
+**Uninstalling by dragging the app to the Trash does not remove keychain items.** Use
+Settings > "Delete my local data" first, or remove the `ai.citrate.core` items whose
+account starts with `mcp-server-env:` in Keychain Access. An item written just before the
+app was killed, and never referenced by the saved list, is not listed by "Delete my local
+data" (the keychain library cannot enumerate items by prefix); it is never read, and can
+be removed the same way.
 
 ## Commands
 
@@ -87,10 +117,14 @@ nothing for members who never add a server.
 - **Loader env denylist** (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, ...). It
   refuses some legitimate uses, such as `NODE_OPTIONS` for memory flags; pass those
   as program arguments instead.
-- **Env values stored as plain text** in the two `0600` files above, rather than a
-  hand-off through the keyring at spawn time.
+- **Env values in the OS keychain** (decided 2026-10-26, ADR-2026-10-26 P-9a): handed to
+  the sidecar only at spawn and during a check, as above. The sidecar still reads them from
+  a `0600` file for that moment, because it reads its MCP allowlist from a file; a hand-off
+  over the bearer-authenticated loopback would remove even that window and needs a runtime
+  change.
 - **Checking needs Hermes running**, and changes apply at the next Hermes start.
-- **Masks show length only**, never any characters of the value.
+- **Masks show nothing** about the value, not even its length (the list holds no value
+  to measure).
 
 ## Not done
 

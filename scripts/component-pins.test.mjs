@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import {
   check,
+  pendingPins,
+  pinnedDigest,
+  parsePins,
   requirementByteErrors,
   requirementRevErrors,
   revContains,
@@ -23,7 +26,11 @@ const FILES = [
   "release/components.json",
   "release/licences.json",
   "src-tauri/runtime-deps.sha256",
+  "Cargo.toml",
   "src-tauri/Cargo.toml",
+  "kit/Cargo.toml",
+  "templates/renderer/Cargo.toml",
+  "components/Cargo.toml",
   "src-tauri/src/model.rs",
   ".github/workflows/release.yml",
   "docs/RELEASE.md",
@@ -70,6 +77,29 @@ describe("component-pins check", () => {
     expect(check(fixture())).toEqual([]);
   });
 
+  // The Linux packages bundle every cargo sidecar, and build-component.sh installs one only if
+  // its bytes match a pin for that exact triple; a component with no Linux pin stops the Linux
+  // release at the build step. An x86_64 pin is an inline sha256 recorded by the Linux builder;
+  // an aarch64 pin is the line of its runtime-deps asset (release.yml's Linux aarch64 job stages
+  // those bytes, as the macOS job does).
+  it("pins every cargo sidecar for both Linux triples", () => {
+    const m = JSON.parse(read(repo, "release/components.json"));
+    const pins = parsePins(read(repo, "src-tauri/runtime-deps.sha256"));
+    const missing = [];
+    for (const c of m.components.filter((x) => x.build && x.build.kind === "cargo")) {
+      for (const t of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {
+        let d = "";
+        try {
+          d = pinnedDigest(m, pins, c.id, t);
+        } catch {
+          d = "";
+        }
+        if (!/^[0-9a-f]{64}$/.test(d)) missing.push(`${c.id} ${t}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("refuses a bundle externalBin with no component", () => {
     const r = fixture();
     const m = manifest(r);
@@ -89,9 +119,9 @@ describe("component-pins check", () => {
   it("refuses federation drift that is not explained", () => {
     const r = fixture();
     const m = manifest(r);
-    delete comp(m, "hermes-sidecar").federation.note;
+    delete comp(m, "cluster-daemon").federation.note;
     setManifest(r, m);
-    expect(errorsOf(r)).toMatch(/'hermes-sidecar': federation drift needs a note/);
+    expect(errorsOf(r)).toMatch(/'cluster-daemon': federation drift needs a note/);
   });
 
   it("refuses a 'match' that does not match", () => {
@@ -104,8 +134,8 @@ describe("component-pins check", () => {
 
   it("refuses an artifact whose runtime-deps asset has no pin", () => {
     const r = fixture();
-    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-626486b8a7db", "  hermes-aarch64-apple-darwin-renamed");
-    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-626486b8a7db is pinned 0 times/);
+    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-05243c72bd52", "  hermes-aarch64-apple-darwin-renamed");
+    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-05243c72bd52 is pinned 0 times/);
   });
 
   it("refuses an asset pinned twice (ambiguous)", () => {
@@ -152,7 +182,7 @@ describe("component-pins check", () => {
 
   it("refuses release.yml that does not stage a pinned sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-626486b8a7db\n", "");
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-05243c72bd52\n", "");
     expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar'/);
   });
 
@@ -165,13 +195,88 @@ describe("component-pins check", () => {
   it("refuses release.yml that fetches Kubo without the pinned engine", () => {
     const r = fixture();
     edit(r, ".github/workflows/release.yml", "scripts/build-component.sh kubo --target aarch64-apple-darwin", "cp /tmp/ipfs src-tauri/binaries/ipfs-aarch64-apple-darwin");
-    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' from a pinned source/);
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' for aarch64-apple-darwin from a pinned source/);
+  });
+
+  // The Linux aarch64 job (ubuntu-24.04-arm) stages like the macOS one: every sidecar from its
+  // pinned runtime-deps asset, Kubo through the pinned engine, requirements verified.
+  it("refuses release.yml that does not stage a pinned Linux aarch64 sidecar", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-unknown-linux-gnu-05243c72bd52\n", "");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar' for aarch64-unknown-linux-gnu \(hermes-aarch64-unknown-linux-gnu-05243c72bd52\)/);
+  });
+
+  it("refuses release.yml that stages the Linux aarch64 llama-server outside its pin", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "              llama-server-aarch64-unknown-linux-gnu-b9438\n", "");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'llama.cpp' for aarch64-unknown-linux-gnu/);
+  });
+
+  it("refuses release.yml that fetches Kubo for Linux aarch64 without the pinned engine", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "scripts/build-component.sh kubo --target aarch64-unknown-linux-gnu", "cp /tmp/ipfs src-tauri/binaries/ipfs-aarch64-unknown-linux-gnu");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'kubo' for aarch64-unknown-linux-gnu from a pinned source/);
+  });
+
+  it("refuses release.yml that does not verify the Linux aarch64 sidecars' requirements", () => {
+    const r = fixture();
+    const wf = read(r, ".github/workflows/release.yml");
+    expect(wf).toContain("verify-staged src-tauri/binaries aarch64-unknown-linux-gnu");
+    write(r, ".github/workflows/release.yml", wf.split("\n").filter((l) => !l.includes("verify-staged src-tauri/binaries aarch64-unknown-linux-gnu")).join("\n"));
+    expect(errorsOf(r)).toMatch(/release.yml does not run `component-pins.mjs verify-staged src-tauri\/binaries aarch64-unknown-linux-gnu`/);
+  });
+
+  it("does not demand a pending Linux aarch64 target of release.yml", () => {
+    const r = fixture();
+    const m = manifest(r);
+    delete comp(m, "node-agent").artifacts["aarch64-unknown-linux-gnu"];
+    comp(m, "node-agent").pending = { "aarch64-unknown-linux-gnu": "release.yml dry run on ubuntu-24.04-arm: build-component.sh --print-digest, then upload and pin" };
+    setManifest(r, m);
+    edit(r, ".github/workflows/release.yml", "              node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a\n", "");
+    edit(r, "src-tauri/runtime-deps.sha256", "  node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a\n", "  node-agent-aarch64-unknown-linux-gnu-unused\n");
+    expect(check(r)).toEqual([]);
+  });
+
+  // GitHub stopped starting macos-14 jobs ("The configuration 'macos-14-arm64-us-default' is not
+  // supported"): a release job on a retired image never runs, and a tag push publishes nothing.
+  it("refuses a release job on a runner image GitHub no longer starts", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "    runs-on: macos-15\n", "    runs-on: macos-14\n");
+    expect(errorsOf(r)).toMatch(/release.yml runs a job on macos-14, a runner image GitHub no longer starts/);
+  });
+
+  // 053-UPDATER decision 2: from 0.5.3 the GitHub release carries only latest.json, the checksums
+  // and the signatures; installers and update files never go to a (public, permanent) release.
+  // release.yml builds into workflow artifacts and the release ceremony publishes.
+  const UPLOADS = /release.yml step .* writes to a GitHub release.*053-UPDATER decision 2/;
+  it("refuses a release job that uploads an installer to a GitHub release with gh", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      - name: Knowledge corpus staged (pre-bundle check)\n", "      - name: Upload the DMG\n        if: ${{ env.DRY_RUN != 'true' }}\n        run: gh release upload \"$TAG\" out/Citrate-Core_0.5.3_aarch64.dmg\n\n      - name: Knowledge corpus staged (pre-bundle check)\n");
+    expect(errorsOf(r)).toMatch(UPLOADS);
+  });
+
+  it("refuses tauri-action, which creates a release and uploads the bundle to it", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      - name: Knowledge corpus staged (pre-bundle check)\n", "      - name: Build and publish\n        if: ${{ env.DRY_RUN != 'true' }}\n        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0\n        with:\n          tagName: v0.5.3\n\n      - name: Knowledge corpus staged (pre-bundle check)\n");
+    expect(errorsOf(r)).toMatch(UPLOADS);
+  });
+
+  it("refuses a release job that can write the repository's releases", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "      contents: read\n", "      contents: write\n");
+    expect(errorsOf(r)).toMatch(/release.yml grants contents: write/);
+  });
+
+  it("runs the release jobs on macos-15 and ubuntu-24.04-arm", () => {
+    const wf = read(repo, ".github/workflows/release.yml");
+    const labels = [...wf.matchAll(/^ {4}runs-on: (\S+)$/gm)].map((x) => x[1]);
+    expect(labels.sort()).toEqual(["macos-15", "ubuntu-24.04-arm"]);
   });
 
   it("refuses a signing or publishing step that runs in a dry run", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "        if: ${{ env.DRY_RUN != 'true' }}\n        uses: tauri-apps/tauri-action", "        uses: tauri-apps/tauri-action");
-    expect(errorsOf(r)).toMatch(/step 'Build · sign · notarize · publish updater artifacts' signs or publishes but is not guarded/);
+    edit(r, ".github/workflows/release.yml", "      - name: Build · sign · notarize (macOS arm64)\n        if: ${{ env.DRY_RUN != 'true' }}\n", "      - name: Build · sign · notarize (macOS arm64)\n");
+    expect(errorsOf(r)).toMatch(/step 'Build · sign · notarize \(macOS arm64\)' signs or publishes but is not guarded/);
   });
 
   it("refuses a dry-run step that reads a signing secret", () => {
@@ -192,8 +297,11 @@ describe("component-pins check", () => {
     comp(m, "citrate-node").source.rev = "f9f6257b2dcde21149fe9c09236231ccfc32da68";
     setManifest(r, m);
     const e = errorsOf(r);
-    expect(e).toMatch(/citrate-node rev f9f6257b\S+ != build-sidecar.sh MIN_CHAIN_REV c384fc98/);
-    expect(e).toMatch(/src-tauri\/Cargo.toml pins citrate-chain c384fc98\S+, the bundled node is f9f6257b/);
+    // The current floor is read from build-sidecar.sh, so a node rev change is the pin lines only.
+    const floor = /^MIN_CHAIN_REV="([0-9a-f]{40})"/m.exec(fs.readFileSync(path.join(r, "scripts", "build-sidecar.sh"), "utf8"))[1];
+    const short = floor.slice(0, 8);
+    expect(e).toMatch(new RegExp(`citrate-node rev f9f6257b\\S+ != build-sidecar.sh MIN_CHAIN_REV ${short}`));
+    expect(e).toMatch(new RegExp(`src-tauri/Cargo.toml pins citrate-chain ${short}\\S+, the bundled node is f9f6257b`));
   });
 
   it("refuses a Gemma pin that differs from the app's own model pin", () => {
@@ -222,6 +330,25 @@ describe("component-pins check", () => {
     lic.components = lic.components.filter((c) => c.id !== "kubo");
     write(r, "release/licences.json", JSON.stringify(lic));
     expect(errorsOf(r)).toMatch(/'kubo' has no entry in release\/licences.json/);
+  });
+
+  it("refuses a workspace crate that pins the chain at a rev other than the bundled node's", () => {
+    // kit/Cargo.toml carries citrate-wallet-core too; a re-pin that moves only src-tauri leaves
+    // two chain revs in the lock and a kit built against the old chain.
+    const r = fixture();
+    const node = comp(manifest(r), "citrate-node").source.rev;
+    const kit = read(r, "kit/Cargo.toml");
+    write(r, "kit/Cargo.toml", kit.replace(`citrate-chain.git", rev = "${node}"`, `citrate-chain.git", rev = "${"3".repeat(40)}"`));
+    expect(read(r, "kit/Cargo.toml")).toContain("3".repeat(40));
+    expect(errorsOf(r)).toMatch(new RegExp(`kit/Cargo.toml pins citrate-chain ${"3".repeat(40)}, the bundled node is ${node}`));
+  });
+
+  it("checks every workspace member named in the root Cargo.toml", () => {
+    const r = fixture();
+    const node = comp(manifest(r), "citrate-node").source.rev;
+    const extra = `\ncitrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "${"4".repeat(40)}" }\n`;
+    write(r, "components/Cargo.toml", read(r, "components/Cargo.toml") + extra);
+    expect(errorsOf(r)).toMatch(new RegExp(`components/Cargo.toml pins citrate-chain ${"4".repeat(40)}, the bundled node is ${node}`));
   });
 
   it("refuses a toolchain that is not an exact version", () => {
@@ -363,5 +490,55 @@ describe("component requires (mem-mcp store key file)", () => {
     const wf = read(r, ".github/workflows/release.yml");
     write(r, ".github/workflows/release.yml", wf.split("\n").filter((l) => !l.includes("verify-staged")).join("\n"));
     expect(errorsOf(r)).toMatch(/release.yml does not run `component-pins.mjs verify-staged src-tauri\/binaries aarch64-apple-darwin`/);
+  });
+});
+
+// A target whose bytes another machine builds (the DGX records the Linux pins) is `pending` until
+// that builder posts its digest: it names what is owed, and nothing can build or stage it.
+describe("pending pins (a target waiting on its builder)", () => {
+  const LINUX = "x86_64-unknown-linux-gnu";
+  const REASON = "DGX (citrate-core-linux-build): build-component.sh --print-digest at the pinned rev";
+  const pend = (r, id, target, reason = REASON) => {
+    const m = manifest(r);
+    const c = comp(m, id);
+    delete c.artifacts[target];
+    c.pending = { ...(c.pending || {}), [target]: reason };
+    setManifest(r, m);
+    return m;
+  };
+
+  it("a pending target has no digest, and the refusal names what is owed", () => {
+    const r = fixture();
+    const m = pend(r, "citrate-node", LINUX);
+    const pins = parsePins(read(r, "src-tauri/runtime-deps.sha256"));
+    expect(() => pinnedDigest(m, pins, "citrate-node", LINUX)).toThrow(/'citrate-node' x86_64-unknown-linux-gnu: pin pending: DGX \(citrate-core-linux-build\)/);
+  });
+
+  it("the check passes with a pending Linux target and lists it", () => {
+    const r = fixture();
+    const m = pend(r, "citrate-node", LINUX);
+    expect(check(r)).toEqual([]);
+    expect(pendingPins(m)).toContainEqual({ id: "citrate-node", target: LINUX, reason: REASON });
+  });
+
+  it("refuses a target that is both pinned and pending", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "cluster-daemon").pending = { [LINUX]: REASON };
+    setManifest(r, m);
+    expect(comp(m, "cluster-daemon").artifacts[LINUX]).toBeDefined();
+    expect(errorsOf(r)).toMatch(/'cluster-daemon' x86_64-unknown-linux-gnu: pinned and pending at once/);
+  });
+
+  it("refuses a pending target with no reason", () => {
+    const r = fixture();
+    pend(r, "hermes-sidecar", LINUX, "  ");
+    expect(errorsOf(r)).toMatch(/'hermes-sidecar' x86_64-unknown-linux-gnu: pending needs a reason/);
+  });
+
+  it("refuses the macOS target as pending (the release Mac records it)", () => {
+    const r = fixture();
+    pend(r, "hermes-sidecar", "aarch64-apple-darwin");
+    expect(errorsOf(r)).toMatch(/'hermes-sidecar' aarch64-apple-darwin: may not be pending/);
   });
 });

@@ -1,7 +1,7 @@
 // @rule8 — the native-transfer intent builder. The load-bearing property is that
 // the `raw` JSON a Send produces DECODES (via the same txdecode B1.4 uses) to the
 // exact native transfer the human intended — right recipient, exact value (no
-// truncation), no calldata, standard gas. If this drifts, the ceremony would sign
+// truncation), no calldata, the estimated gas. If this drifts, the ceremony would sign
 // a different tx than the user approved.
 use super::*;
 
@@ -27,13 +27,14 @@ fn transfer_json_decodes_to_the_expected_native_transfer() {
         "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         "0x1111111111111111111111111111111111111111",
         value,
+        26_250,
     );
     let (parsed, display) =
         crate::txdecode::decode_transaction(&json).expect("native-transfer json must decode");
     assert_eq!(parsed.value, value, "value round-trips exactly (no truncation)");
     assert_eq!(parsed.to, Some([0x11u8; 20]), "to = recipient");
     assert!(parsed.data.is_empty(), "native transfer carries no calldata");
-    assert_eq!(parsed.gas_limit, Some(21_000), "standard 21k transfer gas");
+    assert_eq!(parsed.gas_limit, Some(26_250), "the gas it was built with (money_gas)");
     assert_eq!(
         parsed.from.as_deref(),
         Some("0x9858effd232b4033e47d90003d41ec34ecaeda94"),
@@ -55,6 +56,7 @@ fn transfer_json_handles_a_large_value_beyond_u64() {
         "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         "0x2222222222222222222222222222222222222222",
         value,
+        26_250,
     );
     let (parsed, _display) =
         crate::txdecode::decode_transaction(&json).expect("large-value json must decode");

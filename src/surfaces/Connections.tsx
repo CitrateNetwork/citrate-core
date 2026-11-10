@@ -273,10 +273,10 @@ export function Connections({ store }: SurfaceProps) {
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
             <span style={{ flex: 1, minWidth: 0 }}>
               <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Cloud providers</span>
-              <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>OpenAI, Anthropic, or your gateway key — sealed in the keyring</span>
+              <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>your own vendor key, kept in this computer's keychain. Models shows which vendors this build can use</span>
             </span>
-            {/* AI providers moved to Hermes › Controls › Details › Providers & keys (0.5.2). */}
-            <a href="#/settings/ai" data-testid="cloud-providers-link" onClick={(e) => { e.preventDefault(); store.go("settings/ai"); }} className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", textDecoration: "none" }}>Manage in Hermes › Controls › Details →</a>
+            {/* Cloud vendor connections live in Hermes › Controls › Details › Models (D-11). */}
+            <a href="#/settings/models" data-testid="cloud-providers-link" onClick={(e) => { e.preventDefault(); store.go("settings/models"); }} className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", textDecoration: "none" }}>Manage in Hermes › Controls › Details › Models →</a>
           </div>
         </div>
       </Section>

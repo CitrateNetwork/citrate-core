@@ -109,6 +109,9 @@ export interface SidecarProviderOptions {
   mcpWaitMs?: number;
   /** HUP-S1.1: save the session so a reloaded view can pick it back up (absent = not saved). */
   store?: SidecarSessionStore;
+  /** D-11: the session runs on a cloud model through the core proxy (absent = the local model).
+   *  Sets the provider's kind to `sidecar-cloud` and names the model in its label. */
+  cloud?: { name: string; model: string };
 }
 
 /** HUP-S1.1 — said when the saved session is gone because Hermes restarted. */
@@ -773,8 +776,10 @@ export function createSidecarProvider(
   }
 
   return {
-    kind: "sidecar",
-    label: "local model · Hermes sidecar · agentic",
+    kind: options.cloud ? "sidecar-cloud" : "sidecar",
+    label: options.cloud
+      ? `${options.cloud.name} · ${options.cloud.model} · Hermes sidecar · agentic (cloud, through core)`
+      : "local model · Hermes sidecar · agentic",
     send(opts: SendOpts) {
       const work = previous.catch(() => undefined).then(() => runTurn(opts));
       previous = work;

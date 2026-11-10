@@ -7,9 +7,11 @@ status: active
 
 # Releasing Citrate Core (in-app auto-update pipeline — W2)
 
-Every tagged release is built, Developer-ID signed, notarized, stapled, and its
-**signed updater artifacts** (`*.app.tar.gz` + `*.sig`) plus a `latest.json` feed
-are published to a GitHub Release. The shipped app runs `tauri-plugin-updater`,
+Every tagged release is built, Developer-ID signed, notarized and stapled, with its
+**signed updater artifacts** (`*.app.tar.gz` + `*.sig`) and its `latest.json` entry. The release
+ceremony publishes them ([053-UPDATER.md](release/053-UPDATER.md) section 3); from 0.5.3 the GitHub
+release carries only `latest.json`, the checksums and the signatures (decision 2), and
+`release.yml` publishes nothing itself. The shipped app runs `tauri-plugin-updater`,
 which polls that feed, verifies the Ed25519 signature against the **public** key
 pinned in `src-tauri/tauri.conf.json`, downloads, and installs on restart. Testers
 never reinstall a DMG for a patch.
@@ -89,9 +91,9 @@ the `runtime_deps_asset` of each component), which release.yml downloads and ver
 
 ```bash
 mkdir -p /tmp/rd
-for f in citrate-aarch64-apple-darwin-c384fc982882 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
+for f in citrate-aarch64-apple-darwin-56cc2bc80439 node-agent-aarch64-apple-darwin-1d8cb8e4e24a \
   mem-mcp-aarch64-apple-darwin-5aeda3172369 comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c \
-  cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-626486b8a7db; do
+  cluster-daemon-aarch64-apple-darwin-755cf2172260 hermes-aarch64-apple-darwin-05243c72bd52; do
   cp "src-tauri/binaries/${f%-*}" "/tmp/rd/$f"
 done
 grep -E 'aarch64-apple-darwin-[0-9a-f]{12}$' src-tauri/runtime-deps.sha256 | (cd /tmp/rd && shasum -a 256 -c --strict)
@@ -103,6 +105,12 @@ asset name per rev) or the artifact's `sha256`, and open a PR; `node scripts/com
 check` fails CI if the manifest, the scripts, the overlays, these pins and release.yml disagree.
 macOS digests reproduce only on the machine and build root that recorded them (the linker derives
 the Mach-O UUID from the output path), so the release Mac records the macOS pins.
+
+When a pin moves, the Linux digests of the old rev no longer apply, and the DGX records new ones
+on its own hosts. Until it does, the component lists the target under `pending`, with who builds
+it and how, instead of an artifact: `build-component.sh` refuses that target and names the reason,
+and `node scripts/component-pins.mjs pending` lists everything still owed. The macOS target is
+never pending.
 
 The Gemma model is **not bundled**: macOS ships `bundle-lite`, and the app downloads Gemma on first
 run and refuses it unless it matches `MODEL_SHA256` and `MODEL_SIZE_BYTES` in
@@ -250,7 +258,7 @@ release path fails closed instead:
   It refuses a README-only directory, a corpus the stager did not record or that changed after
   staging (digest, node count, file hashes), a dev-staged corpus (`--allow-dirty`,
   `--allow-unembedded`; pass `--allow-dev` for a dev build), and one not staged from the pinned
-  `knowledge-corpus.tar.gz`. release.yml runs it before `tauri-action`, and
+  `knowledge-corpus.tar.gz`. release.yml runs it before its first `npx tauri build`, and
   `scripts/ci/check-release-pins.sh` fails CI if that step is removed or moved after the build.
   Linux and Windows: [`RELEASE_LINUX.md`](RELEASE_LINUX.md) and
   [`RELEASE_WINDOWS.md`](RELEASE_WINDOWS.md) step 2b.
@@ -273,15 +281,20 @@ node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
    git tag v0.2.0 && git push origin v0.2.0
    ```
    (or run the `release` workflow manually with the tag input).
-3. The workflow builds, signs, notarizes, and publishes the release + `latest.json`.
+3. The workflow builds, signs and notarizes, and uploads the files plus each platform's
+   `latest.json` fragment as short-lived workflow artifacts (`citrate-core-macos-arm64-<tag>`,
+   `citrate-core-linux-aarch64-<tag>`, kept 2 days). Publish them with the release ceremony in
+   [053-UPDATER.md](release/053-UPDATER.md) section 3: installers to the private CDN, update files to
+   the public update path, `updater-feed.mjs merge` of the fragments into `latest.json` on both
+   feeds, and only `latest.json`, the checksums and the signatures on the GitHub release.
 4. Verify: an older installed build shows the **Update available** card within its
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
 5. Size gate (HUP-S11.0): on the machine that built the bundle, run
    `node scripts/size-budget.mjs` (reads `target/release/bundle`, compares with
    `release/budgets.json`, exits 1 when anything is over budget). In CI it is manual only:
-   dispatch `release` with `size_gate: true` and the release stays a draft unless the gate
-   passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
+   dispatch `release` with `size_gate: true` and the job fails before its artifact upload unless
+   the gate passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
 6. Licence check (gate g3-licence): `node scripts/licence-inventory.mjs --corpus
    src-tauri/knowledge-corpus` must pass (every sidecar, resource, tool, library, skills and
    corpus source has a licence entry and its texts ship in `licenses/`). Before the first
@@ -300,6 +313,10 @@ node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
    ```
    `render` refuses a third-party package under a licence outside its permissive list, so a new
    copyleft dependency is a reviewed change. What is scanned is `release/notices.json`.
+   `check` also refuses notices whose `app` or `app-webview` section no longer matches
+   `Cargo.lock` or `package-lock.json` (a listed package that left the lockfile, or a lockfile
+   changed since `render`, which records each lockfile's digest in `release/licences.json`), so
+   re-run collect and render after the last dependency change before the cut.
 
 ### Distribution — the DO Space is the public origin
 
@@ -335,11 +352,68 @@ Dispatch `release` with `dry_run: true` from any branch (the `tag` input is only
 builds the six cargo sidecars from their pinned revs on a clean runner with the scripts above,
 stages the pinned llama runtime, BGE models, corpus and Kubo, bundles the app **unsigned** with no
 updater artifacts, and writes the sidecar digests (against their pins), the bundle checksums and
-the size report to the run summary. It reads no secret, signs, notarizes, uploads and publishes
-nothing, and creates no tag or release; `component-pins.mjs check` fails CI if a signing or
+the size report to the run summary. It reads no signing secret (only the optional federation read
+token, in its clone steps), signs, notarizes and publishes nothing, and creates no tag or release.
+The Linux aarch64 job uploads its unsigned packages and rebuilt sidecars as a 2-day workflow
+artifact (downloadable by any logged-in GitHub user, as the repository is public); `component-pins.mjs check` fails CI if a signing or
 publishing step loses its `env.DRY_RUN != 'true'` guard. The runner's sidecar digests differ from
 the pins (another build root), so a dry run proves the sources build and bundle, not the pinned
 bytes.
+
+## Runners (2026-11-08)
+
+- **macOS:** `release-macos-arm` runs on `macos-15`. GitHub no longer starts `macos-14` jobs ("The
+  configuration 'macos-14-arm64-us-default' is not supported"), so a tag or manual run on it never
+  began. The step "Select Xcode 16.4" pins the Xcode that the SDK, `codesign`, `notarytool` and
+  `stapler` come from (16.4 is the default on macos-15-arm64 20261104, which also carries 16.0 to
+  16.3 and 26.x). If an image drops 16.4 the step fails; choose the new Xcode there in a reviewed
+  PR. No deployment target is set in `tauri.conf.json`, so Tauri's default minimum macOS applies
+  as before. The bundler imports the Developer ID certificate from `APPLE_CERTIFICATE` into a
+  temporary keychain and notarizes with `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`; neither
+  depends on the runner image beyond the selected Xcode.
+- **Linux aarch64:** `release-linux-aarch64` runs on `ubuntu-24.04-arm`
+  ([RELEASE_LINUX.md](RELEASE_LINUX.md#linux-aarch64-in-ci-release-linux-aarch64)).
+- `node scripts/component-pins.mjs check` (CI) fails if a release job runs on a retired image.
+
+**Nothing in CI publishes** ([053-UPDATER.md](release/053-UPDATER.md) decision 2). The macOS job no
+longer uses `tauri-action`, which created the GitHub release and uploaded the DMG, the update
+tarball and a macOS-only `latest.json` to it. It runs `npx tauri build` with the signing
+environment, notarizes and staples the DMG, and uploads `Citrate-Core_<v>_aarch64.dmg`,
+`Citrate-Core.app.tar.gz` (+ `.sig`), `SHA256SUMS-macos` and `latest.darwin-aarch64.json` as a
+workflow artifact kept 2 days. Any logged-in GitHub user can download a public repository's
+artifacts, so the DMG is reachable there until it expires: run the ceremony promptly after the tag.
+`component-pins.mjs check` fails CI if any release.yml step creates, edits or uploads to a GitHub
+release, or a job is granted `contents: write`.
+
+## Local fallback (the release Mac)
+
+If GitHub cannot run the macOS job, the release Mac builds, signs and notarizes the release itself.
+0.5.0 to 0.5.2 shipped this way. The release Mac is an Apple M2 on macOS 15.6.1 with the Command
+Line Tools only (`xcode-select -p` = `/Library/Developer/CommandLineTools`, `notarytool` 1.0.0). No
+full Xcode is needed for `codesign`, `notarytool`, `stapler` or the Tauri bundler. Never launch the
+built app on the release Mac, not even `--version`: it starts the full app against the owner's own
+data. Never run the install tests there either.
+
+1. Stage the inputs exactly as release.yml does (section 3 above): the pinned sidecars, the llama
+   runtime, the BGE models, the corpus, the skills bundle and Kubo. Then run
+   `node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin` and
+   `node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256`.
+2. Export the updater key for this build only (One-time setup, section 1), then build signed:
+   `APPLE_SIGNING_IDENTITY="Developer ID Application: Larry Klosowski (DDHUG44QC7)" npx tauri build
+   --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json`. Output goes to
+   `target/aarch64-apple-darwin/release/bundle/`: `dmg/`, plus `macos/*.app.tar.gz` and its `.sig`.
+3. Notarize and staple with the owner's notarytool keychain profile:
+   `xcrun notarytool submit <dmg> --keychain-profile citrate --wait`, then `xcrun stapler staple` the
+   DMG and the `.app`. Check the app inside the mounted DMG with `spctl -a -t exec -vvv` (expect
+   `source=Notarized Developer ID`); for the DMG itself use `xcrun stapler validate`.
+4. Name the files as the CI job does (`Citrate-Core_<v>_aarch64.dmg`, `Citrate-Core.app.tar.gz` and
+   its `.sig`), then write the feed entry: `node scripts/updater-feed.mjs fragment --version <v>
+   --base-url https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v<v> --dir <dir>
+   darwin-aarch64`. Merge it with the Linux fragments (`updater-feed.mjs merge`).
+5. Publish only as [053-UPDATER.md](release/053-UPDATER.md) section 3 says: the DMG to the private CDN
+   under `downloads/v<v>/`, the update tarball and its `.sig` to the public `downloads/updater/v<v>/`,
+   `latest.json` to both feeds, and on the GitHub release only `latest.json`, the checksums and the
+   signatures. Never attach the DMG or the update tarball to a GitHub release.
 
 ## First-run caveat (honest)
 Every tag run of this workflow so far (v0.4.2 to v0.5.1, and the Windows tags) failed at staging,

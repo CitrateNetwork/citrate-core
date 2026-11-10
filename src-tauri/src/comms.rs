@@ -386,6 +386,8 @@ impl CommsMemberManager {
         persist_secret_0600(&self.seed_path(), &self.seed_hex)?;
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+        config.slow_retry = crate::services::slow_retry_every();
         config.backoff = BackoffPolicy::new();
         config.healthy_after = COMMS_HEALTHY_AFTER;
         let sup = Supervisor::start(config).map_err(|e| CommsError::Spawn(e.to_string()))?;
@@ -557,35 +559,15 @@ enum Request {
     Poll {
         group: String,
     },
-    /// CONNECT-S1 — submit a sealed claim to the relay's server-blind claims-inbox (invitee side).
+    /// Leave a sealed message in the relay's server-blind claims inbox: an invite request, or the
+    /// inviter's answer to one (`invites`).
     SubmitClaim {
         token_hash: String,
         ciphertext: String,
     },
-    /// CONNECT-S1 — poll the claims-inbox by invite token hash (owner side).
+    /// Read the claims inbox under one key (`invites`).
     PollClaims {
         token_hash: String,
-    },
-    /// INVITE-S2 — owner publishes a single-use, group-bound invite. `token_hash` is
-    /// `BLAKE3(token)` hex (32 bytes); the RAW token stays in the share link and never reaches
-    /// the relay. `expires_at` is Unix **ms**. After this the owner may go offline — a
-    /// token-holder self-admits with no further owner action.
-    PublishInvite {
-        group: String,
-        token_hash: String,
-        expires_at: u64,
-    },
-    /// INVITE-S2 — owner revokes a published invite by its token hash (`BLAKE3(token)` hex).
-    RevokeInvite {
-        token_hash: String,
-    },
-    /// INVITE-S2 — invitee SELF-ADMITS by external commit using the RAW invite `token` (hex).
-    /// `name` is the local display name to record the joined group under. No owner action needed;
-    /// the relay records the referral attribution (inviter→joiner) automatically on success.
-    RedeemInvite {
-        group: String,
-        token: String,
-        name: String,
     },
     /// Flag-A — ask the daemon whether its networked relay link is currently up. Cheap in-memory
     /// read on the daemon side; used by [`CommsMemberManager::relay_status`] so the app can report a
@@ -1199,7 +1181,17 @@ pub async fn comms_relay_status() -> String {
 /// **groups_join** — join a group this member was added to on a shared relay.
 #[tauri::command]
 pub async fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
-    parse_ok(route(&app, Request::JoinGroup { group })?)
+    join_group(&app, group)
+}
+
+/// Join a group from the Welcome its owner or an admin sent when they added this member. The
+/// daemon answers "no pending welcome for group …" until one has arrived. Also used by an invite
+/// request once it is approved (`invites`).
+pub(crate) fn join_group<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+) -> std::result::Result<(), String> {
+    parse_ok(route(app, Request::JoinGroup { group })?)
 }
 
 /// **groups_add_member** — owner-invite a member (who has published a key package to the relay).
@@ -1210,15 +1202,25 @@ pub async fn groups_add_member(
     group: String,
     member: String,
 ) -> std::result::Result<(), String> {
-    match route(&app, Request::AddMember { group, member })? {
+    add_member(&app, group, member)
+}
+
+/// Add a member (the owner's daemon produces and publishes the MLS welcome). Also used to approve
+/// an invite request (`invites`).
+pub(crate) fn add_member<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    member: String,
+) -> std::result::Result<(), String> {
+    match route(app, Request::AddMember { group, member })? {
         Response::Added { .. } => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
 }
 
-/// CONNECT-S1 — submit a sealed claim (hex ciphertext) to the relay's server-blind claims-inbox, keyed
-/// by the invite `token_hash` (hex). Invitee side. `pub(crate)` — driven by the invites module.
+/// Leave a sealed message (hex ciphertext) in the relay's server-blind claims inbox under `token_hash`
+/// (hex, 32 bytes): an invite request, or the inviter's answer to one. Driven by `invites`.
 pub(crate) fn submit_claim<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     token_hash: String,
@@ -1237,8 +1239,8 @@ pub(crate) fn submit_claim<R: tauri::Runtime>(
     }
 }
 
-/// CONNECT-S1 — poll the relay's claims-inbox by invite `token_hash` (hex). Returns the opaque hex
-/// ciphertexts; the owner opens them with the invite's private key. `pub(crate)`.
+/// Read the relay's claims inbox under `token_hash` (hex). Returns the opaque hex ciphertexts; only
+/// the holder of the matching private key opens them. Driven by `invites`.
 pub(crate) fn poll_claims<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     token_hash: String,
@@ -1250,65 +1252,39 @@ pub(crate) fn poll_claims<R: tauri::Runtime>(
     }
 }
 
-/// INVITE-S2 — OWNER: publish a single-use, group-bound invite to the relay. `token_hash` is
-/// `BLAKE3(raw_token)` hex; the raw token stays in the share link (never crosses to the relay).
-/// `expires_at` is Unix ms. After this the owner can go offline — the invitee self-admits. `pub(crate)`.
-pub(crate) fn publish_invite<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    group: String,
-    token_hash: String,
-    expires_at: u64,
-) -> std::result::Result<(), String> {
-    parse_ok(route(
-        app,
-        Request::PublishInvite {
-            group,
-            token_hash,
-            expires_at,
-        },
-    )?)
-}
-
-/// INVITE-S2 — OWNER: revoke a published invite by its token hash (`BLAKE3(token)` hex). `pub(crate)`.
-pub(crate) fn revoke_invite<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    token_hash: String,
-) -> std::result::Result<(), String> {
-    parse_ok(route(app, Request::RevokeInvite { token_hash })?)
-}
-
-/// INVITE-S2 — INVITEE: self-admit into `group` with the invite token in its daemon wire form
-/// (`invites::redeem_token_wire`: hex of the token's bytes, the bytes the relay hashes), recording it
-/// locally under `name`. No owner action; the relay records the referral attribution. `pub(crate)`.
-pub(crate) fn redeem_invite<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    group: String,
-    token: crate::invites::WireToken,
-    name: String,
-) -> std::result::Result<(), String> {
-    parse_ok(route(
-        app,
-        Request::RedeemInvite {
-            group,
-            token: token.into_hex(),
-            name,
-        },
-    )?)
-}
-
 /// **groups_roster** — the (address, role) roster.
 #[tauri::command]
 pub async fn groups_roster(
     app: tauri::AppHandle,
     group: String,
 ) -> std::result::Result<Vec<(String, String)>, String> {
-    match route(&app, Request::Roster { group })? {
+    roster(&app, group)
+}
+
+fn roster<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    match route(app, Request::Roster { group })? {
         Response::Roster { members } => {
             Ok(members.into_iter().map(|m| (m.address, m.role)).collect())
         }
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
+}
+
+/// Whether `member` is on `group`'s roster (an error when the roster can't be read). Approving an
+/// invite request asks this when the add's own answer was an error, so an add that landed is not
+/// taken for one that didn't.
+pub(crate) fn is_member<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: &str,
+    member: &str,
+) -> std::result::Result<bool, String> {
+    Ok(roster(app, group.to_string())?
+        .iter()
+        .any(|(a, _)| a.eq_ignore_ascii_case(member)))
 }
 
 /// The member-facing reason a role change can't be made (#495). The UI shows the same words

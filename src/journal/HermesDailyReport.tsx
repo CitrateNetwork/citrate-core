@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { meteringRows, utcDay, type AnchorApprove, type ChainStatus, type DailyResponse } from "./meteringView";
 import { DecisionProofs } from "./DecisionProofs";
 import { BenchmarkShare } from "./BenchmarkShare";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 export type ReportInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -152,7 +153,7 @@ export function HermesDailyReport({ mode, invoke, now }: HermesDailyReportProps)
                 disabled={anchor.gate === "not_deployed" || busy}
                 onChange={(e) => void setSettings(e.currentTarget.checked, bench?.sharing ?? false)}
               />
-              Anchor each day's decision records on 40204 (each day waits for your approval)
+              Anchor each day's decision records on {CHAIN_ID_TEXT} (each day waits for your approval)
             </label>
             {anchor.pending.map((c) => (
               <div key={c.id} style={{ border: "1px solid var(--line-2)", borderRadius: "var(--r-2)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4 }}>

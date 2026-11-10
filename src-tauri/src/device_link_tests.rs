@@ -642,3 +642,39 @@ fn the_revoke_command_takes_a_confirmation_id_not_a_device() {
     assert!(lib.contains("device_link::device_link_revoke_prepare"));
     assert!(acl.contains("\"device_link_revoke_prepare\""));
 }
+
+// ---- K6: the network gate on the device-link wallet signature ----
+
+fn k6_gate(chain_id: Option<u64>) -> crate::rpc::ExpectedNetwork {
+    crate::rpc::ExpectedNetwork {
+        name: "k6-test".into(),
+        chain_id,
+        genesis_hash: chain_id.map(|_| {
+            "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".to_string()
+        }),
+    }
+}
+
+/// The link text names no chain (not network-bound), but with no network set the wallet signs
+/// nothing; with one set, the link completes and verifies.
+#[test]
+fn k6_a_device_link_needs_a_set_network() {
+    let (vault, path) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let flow = DeviceLinkFlow::default();
+    let (member, device) = (seed(0x51), seed(0x52));
+    let view = flow.open(&ceremony, 40204, body_for(&vault, &member, &device));
+    let err = crate::rpc::with_added_network_gate(k6_gate(None), || {
+        flow.approve(&vault, &ceremony, &view.id, false, &member, &device)
+    })
+    .expect_err("no wallet signature without a network");
+    assert!(err.contains("no network set"), "{err}");
+
+    let view = flow.open(&ceremony, 40204, body_for(&vault, &member, &device));
+    let link = crate::rpc::with_added_network_gate(k6_gate(Some(40204)), || {
+        flow.approve(&vault, &ceremony, &view.id, false, &member, &device)
+    })
+    .expect("links on a set network");
+    assert_eq!(verify_link(&link), Ok(()));
+    let _ = std::fs::remove_file(path);
+}

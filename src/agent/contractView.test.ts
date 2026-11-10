@@ -91,6 +91,32 @@ describe("contract_view (US-6.3 AC2)", () => {
     expect(viewTarget("http://localhost:8545")).toEqual({ ok: true, target: "http://localhost:8545" });
   });
 
+  it("CORE-A1: an unverified address-book contract is read with its bundled system ABI", async () => {
+    const abiResolve = vi.fn(async (a: string) => ({
+      address: a, source: "book" as const, abiAddress: a, contractName: "WrappedSALT", abi: ERC20_ABI,
+      proxy: null, bookNames: ["WrappedSALT"], note: "bundled",
+    }));
+    const d = deps({ verifiedSource: vi.fn(async () => verified({ status: "unverified", verified: false, abi: null, source: null })), abiResolve });
+    const out = await runContractView(d, { address: TOKEN, function: "balanceOf", args: [HOLDER] });
+    expect(abiResolve).toHaveBeenCalledWith(TOKEN);
+    expect(out).toMatch(/bundled system ABI of WrappedSALT/);
+    expect(d.viewCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("CORE-A1: a contract that is neither verified nor in the book still needs an abi_fragment", async () => {
+    const abiResolve = vi.fn(async (a: string) => ({
+      address: a, source: "none" as const, abiAddress: null, contractName: null, abi: null, proxy: null, bookNames: [], note: "none",
+    }));
+    const d = deps({ verifiedSource: vi.fn(async () => verified({ status: "unverified", verified: false, abi: null, source: null })), abiResolve });
+    const out = await runContractView(d, { address: TOKEN, function: "totalSupply" });
+    expect(out).toMatch(/not an address-book contract/);
+    expect(d.viewCall).not.toHaveBeenCalled();
+    // A fork read never uses the 40204 book.
+    const fork = await runContractView(d, { address: TOKEN, function: "totalSupply", target: "http://127.0.0.1:8545" });
+    expect(fork).toMatch(/abi_fragment/);
+    expect(abiResolve).toHaveBeenCalledTimes(1);
+  });
+
   it("an unverified contract needs an abi_fragment; it never guesses the ABI", async () => {
     const d = deps({ verifiedSource: vi.fn(async () => verified({ status: "unverified", verified: false, abi: null, source: null })) });
     const out = await runContractView(d, { address: TOKEN, function: "totalSupply" });

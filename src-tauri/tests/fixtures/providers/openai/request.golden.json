@@ -1,0 +1,65 @@
+{
+  "model": "gpt-6.1-sol",
+  "input": [
+    {
+      "role": "developer",
+      "content": "You are Hermes. Be brief."
+    },
+    {
+      "role": "user",
+      "content": "What is the weather in Boston and Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": "Checking both."
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_1",
+      "name": "get_weather",
+      "arguments": "{\"location\":\"Boston, MA\"}"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_2",
+      "name": "get_weather",
+      "arguments": "{\"location\":\"Paris\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_1",
+      "output": "{\"temp_c\":12}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_2",
+      "output": "sunny"
+    },
+    {
+      "role": "user",
+      "content": "Thanks. Which is warmer?"
+    }
+  ],
+  "max_output_tokens": 512,
+  "store": false,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the current weather for a location",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "strict": false
+    }
+  ],
+  "service_tier": "default"
+}

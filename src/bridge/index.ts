@@ -34,7 +34,6 @@ let simHost: SimHost = {
     ({
       ...DEFAULT_APP_CONFIG,
       liquid: 0,
-      selfStake: 0,
       hasGrant: false,
       claimable: 0,
       walletAddr: "0x",

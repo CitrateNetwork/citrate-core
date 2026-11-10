@@ -5,7 +5,10 @@
 // and the daily spend budget those escalations are charged to. Every value here comes from core
 // (Rust `escalation.rs`): the endpoint list (never a key), today's budget and recent escalations,
 // and the registry route's status (disabled, with what is missing). The key typed here goes to
-// core once and is sealed in the OS keyring; it is never shown again.
+// core once and is never shown again. D-11: an https endpoint's key is kept by the core model proxy
+// with the provider its URL belongs to (Settings › Models), and every escalation to it goes through
+// the proxy, so the agent gets a one-request route instead of the key. An endpoint on this
+// computer keeps its key in the OS keyring as before.
 //
 // The view is a pure function of its props (render-tested); the container loads and refreshes.
 // =====================================================================
@@ -70,7 +73,7 @@ export function EscalationSettingsView(p: EscalationViewProps) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="escalation-settings">
       <div style={{ border: "1px solid var(--info)", background: "var(--info-bg, var(--warn-bg))", borderRadius: "var(--r-2)", padding: "12px 14px", fontSize: 12, lineHeight: 1.55, color: "var(--tx-2)" }}>
-        Hermes can hand a hard planning step to a larger model on <strong>your own endpoint</strong>. Before anything is sent you see where it goes and the most it can cost. Escalations within your <strong>daily budget</strong> run with a notice; anything over it, or any task that has read untrusted content, waits for your approval. Keys are sealed in the <strong>OS keyring</strong> and handed to the agent for one request at a time.
+        Hermes can hand a hard planning step to a larger model on <strong>your own endpoint</strong>. Before anything is sent you see where it goes and the most it can cost. Escalations within your <strong>daily budget</strong> run with a notice; anything over it, or any task that has read untrusted content, waits for your approval. Keys stay on this computer: an https endpoint's key is kept by the <strong>core model proxy</strong> with its provider in Settings › Models (a URL that is not a listed provider must be confirmed there first), and the agent never receives it. An endpoint on this computer keeps its key in the <strong>OS keyring</strong>.
         {!p.desktop && (
           <>
             {" "}
@@ -116,7 +119,10 @@ export function EscalationSettingsView(p: EscalationViewProps) {
       {/* ---------- endpoints ---------- */}
       <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
-          <span className="eyebrow">Your escalation endpoints · OpenAI-compatible, key sealed in the OS keyring</span>
+          <span className="eyebrow">Your escalation endpoints · OpenAI-compatible, keys stay on this computer</span>
+          <span style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
+            Removing an https endpoint leaves its key with its provider in Settings › Models (chat and Hermes may use it too); remove the key there.
+          </span>
         </div>
         {p.endpoints === null ? (
           <span className="mono" style={{ padding: "12px 18px", fontSize: 11, color: "var(--tx-3)" }}>loading</span>
@@ -130,7 +136,7 @@ export function EscalationSettingsView(p: EscalationViewProps) {
               <span style={{ flex: 1, minWidth: 160 }}>
                 <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{e.destination}</span>
                 <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 1 }}>
-                  {e.model} · {formatMicros(e.inputMicrosPerMtok)} in / {formatMicros(e.outputMicrosPerMtok)} out per 1M tokens · key sealed
+                  {e.model} · {formatMicros(e.inputMicrosPerMtok)} in / {formatMicros(e.outputMicrosPerMtok)} out per 1M tokens · key kept on this computer
                 </span>
               </span>
               <button className="btn btn-danger btn-sm" onClick={() => p.onRemove(e.id)} disabled={p.busy}>

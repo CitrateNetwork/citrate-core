@@ -7,7 +7,7 @@
 import type { ReactNode } from "react";
 import type { Store } from "./store";
 import type { AppState } from "./state";
-import { ACCOUNT_SETTINGS, NODE_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
+import { ACCOUNT_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
 import { HermesWork } from "../surfaces/hermes/HermesWork";
 import { HermesLearn } from "../surfaces/hermes/HermesLearn";
@@ -19,6 +19,8 @@ import { FlRoundsPanel } from "../fl/FlRoundsPanel";
 import { bridge } from "../bridge";
 import { Models, StorageFiles, Groups, Cluster, Train, Connections, Community, People } from "../surfaces";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
+import { NodeRewards } from "../surfaces/node/NodeRewards";
+import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
 
 function TabStrip({ id, items, active, store, sub, badges }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean; badges?: Record<string, number> }) {
   return (
@@ -81,12 +83,6 @@ export function NotAvailableYet({ route, title, body, action }: { route: string;
   );
 }
 
-/** Open a sub-view of the Node surface (its own Operations / Earning / Pinning switch). */
-const openNodeTab = (store: Store, nTab: string) => () => {
-  store.setState({ nTab });
-  store.go("node/status");
-};
-
 function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
   switch (route) {
     case "hermes/chat":
@@ -129,6 +125,7 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "wallet":
       return <Wallet store={store} s={s} />;
     case "node/status":
+      // K3: Node › Status (surfaces/Node.tsx), one sentence in contract §1 words.
       return <Node store={store} s={s} />;
     case "node/services":
       // K1a-2: the services registry snapshot (Rust `services_snapshot`).
@@ -142,16 +139,11 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "node/storage/backup":
       return <StorageBackup store={store} s={s} />;
     case "node/rewards":
-      return (
-        <NotAvailableYet
-          route={route}
-          title="Rewards"
-          body="One view of validator, pin and round rewards read from chain is not available in this build. What this build reads today is in the Earning view on Node › Status."
-          action={{ label: "Open the Earning view", go: openNodeTab(store, "earn") }}
-        />
-      );
+      // K3: validator rewards from ValidatorRegistry.rewardsOf(member key); pin and round rewards not live.
+      return <NodeRewards store={store} s={s} />;
     case "node/advanced":
-      return <Settings store={store} s={{ ...s, sSec: sectionFor(NODE_SETTINGS, s.sSec) }} sections={NODE_SETTINGS} heading="Advanced" />;
+      // K3: network identity, withdrawn-branch notice, last crash, full node log, then Node configuration.
+      return <NodeAdvanced store={store} s={s} />;
     case "store/apps":
       return <Commissary store={store} s={s} />;
     case "store/models":

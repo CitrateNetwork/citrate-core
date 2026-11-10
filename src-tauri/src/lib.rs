@@ -38,6 +38,9 @@ mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
+// First-run access check for invited installs (download gate); off unless CITRATE_ACCESS_GATE_URL is set at build time.
+mod access_pass;
+mod atomic_file;
 mod benchmark_share;
 mod blocking;
 mod capsule_pins;
@@ -51,8 +54,11 @@ mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
+mod contract_intel;
 mod contract_reader;
 mod deploy_gate;
+// CORE-A3 (0.5.3): durable deploy records, encrypted per project.
+mod deploy_records;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -92,6 +98,7 @@ mod mcp_servers;
 mod media;
 pub mod mem_mcp_bridge;
 mod membership;
+mod membership_price;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
 mod knowledge_import;
@@ -99,10 +106,43 @@ mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
+mod money_gas;
+// K6 — the network this build targets (one profile: chain id, genesis, bootnodes, RPC, book).
+mod network_profile;
+// D-11 (RC52) — bring-your-own-key cloud providers (ADR-2026-10-26): the provider trait and
+// internal format, and the pinned egress table.
+// D-11 (RC52) — the Cognition (Devin) remote-agent delegate (ADR P-8).
+pub(crate) mod cognition;
+pub(crate) mod model_provider;
+pub(crate) mod model_proxy;
+pub(crate) mod model_proxy_http;
 mod node;
 mod node_genesis;
 mod node_holder;
+// CORE-D2: a wedged-but-running node is restarted after a sustained stall (never in initial sync).
+mod node_liveness;
 mod node_withdrawn;
+// CORE-N3 follow-up: list and remove the previous network's set-aside chain data.
+mod chain_backup;
+// CORE-N4: the node's own syncState and its peers' tips (local RPC, feature-detected).
+mod sync_truth;
+// C1-V3 — "submitted, outcome unknown, tx <hash>, check before retrying" for agents and MCP clients.
+mod broadcast_outcome;
+pub(crate) mod provider_anthropic;
+pub(crate) mod provider_chat_vendors;
+pub(crate) mod provider_egress;
+#[cfg(test)]
+mod provider_fixtures_tests;
+pub(crate) mod provider_gemini;
+pub(crate) mod provider_guard;
+// D-11 (P-5) — the member's preferred cloud model for Hermes (agent loop and chat).
+pub(crate) mod provider_openai;
+pub(crate) mod provider_openai_compat;
+pub(crate) mod provider_preferred;
+#[cfg(test)]
+mod provider_tripwire_tests;
+pub(crate) mod provider_usage_log;
+mod providers_ipc;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -130,11 +170,12 @@ mod seam;
 mod serve;
 mod serve_plan;
 mod services;
+// CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod shell;
 mod skill_registry;
 mod skills_local;
-mod staking;
 mod telemetry;
+mod update_drain;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -158,15 +199,12 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
-// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
+// D-12: group invites, one flow (request and approve).
 mod invites;
-// GROW-S1 task 10: v2 invite links (server-blind envelope) — mint/attach/resolve/redeem/revoke/list.
-mod join;
 mod model_catalog;
+// Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod model_delete;
-// GROW-S1 task 12: the pending v2 invite, held in the keyring until the member acts on it.
-mod pending_join;
 mod social;
 mod storage;
 // K4: verified export, backup and restore of Files and Memory.
@@ -188,6 +226,9 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// G7: core's money paths on citrate-chain's genesis contract set (scripts/e2e/moneypath-anvil.sh).
+#[cfg(test)]
+mod moneypath_e2e_tests;
 // SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
 #[cfg(test)]
 mod shutdown_coverage_tests;
@@ -197,15 +238,37 @@ mod windows_installer_hook_tests;
 // 0.5.1 -> 0.5.2: the app data a 0.5.1 install holds, and the updater feed it trusts.
 #[cfg(test)]
 mod upgrade_updater_feed_tests;
+// RC52 G8: the K1-L update-e2e driver (feature `updater-e2e`, test builds only; guard tests always).
+#[cfg(any(test, feature = "updater-e2e"))]
+mod updater_e2e;
 #[cfg(test)]
 mod upgrade_v051_tests;
+// RC52 G2: a 0.5.1 install on r1005 started by this build on a new genesis (K6).
+#[cfg(test)]
+mod upgrade_xgenesis_tests;
+// CORE-N4: the node's own syncState and its peers' tips, read from its local RPC.
+#[cfg(test)]
+mod sync_truth_tests;
+// CORE-N3 follow-up: Remove old network data (chain.<profile>.bak).
+#[cfg(test)]
+mod chain_backup_tests;
+// CORE-N3: a 0.5.2 install on r1006 started by this build on r1007 (chain data set aside).
+#[cfg(test)]
+mod upgrade_r1007_tests;
+// D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
+#[cfg(test)]
+mod lsp_retired_tests;
 
 use tauri::Manager;
 
 /// The sidecar binaries we own. A leftover of ANY of these from a crashed run holds a data-dir LOCK
-/// (RocksDB node store, ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open
-/// its own. Each name resolves through the same resolver the app launches it with
+/// (RocksDB node store, ipfs datastore, mem-mcp store), a UDS socket or a loopback port, so a fresh
+/// launch can't open its own. Each name resolves through the same resolver the app launches it with
 /// ([`resolve_owned_sidecar`]); `owned_cleanup` tests pin this list against the bundle configs.
+///
+/// CORE-D1: `llama-server` is the one bundled binary both llama sidecars run (local chat in
+/// `serve.rs`, embeddings in `embed_serve.rs`). It resolves to the bundled `llama/llama-server` only,
+/// never a developer override, so a member's own llama-server elsewhere is never a candidate.
 const OWNED_SIDECARS: &[&str] = &[
     "citrate",
     "node-agent",
@@ -214,6 +277,7 @@ const OWNED_SIDECARS: &[&str] = &[
     "comms-member-daemon",
     "cluster-daemon",
     "hermes",
+    "llama-server",
 ];
 
 /// Resolve one owned sidecar's executable path with the resolver its manager launches it with.
@@ -229,6 +293,7 @@ fn resolve_owned_sidecar<R: tauri::Runtime>(
         "comms-member-daemon" => comms::resolve_comms_member_bin(app),
         "cluster-daemon" => cluster::resolve_cluster_daemon_bin(app),
         "hermes" => hermes::resolve_hermes_bin(app),
+        "llama-server" => serve::bundled_llama_bin(app),
         other => Err(format!("not an owned sidecar: {other}")),
     }
 }
@@ -282,9 +347,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
-        // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
-        // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        // Register the `citrate://` scheme so an invite, pairing or claim link opens the app. The
+        // frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → store.handleDeepLink.
         // Links clicked while the app runs on Linux/Windows reach it via single-instance above.
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -301,6 +365,11 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // K6 — install the network gate before anything can sign. Every wallet signature is
+            // checked locally against the active network profile (refused when no network is set,
+            // or when it commits to another chain id). Transaction sends additionally check the
+            // RPC's chain id and block-0 hash against the profile before broadcasting.
+            network_profile::install_network_gate();
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,
@@ -319,9 +388,15 @@ pub fn run() {
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
             hermes::clean_leftover_browser(handle);
+            // RC52 P-9a: spawn-time MCP files an earlier run left are removed, and member MCP env
+            // values an older version kept in plain text move to the keychain (in the background).
+            mcp_servers::startup(handle);
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
+            // RC52 G8: a K1-L update-e2e test build checks, installs and restarts by itself.
+            #[cfg(feature = "updater-e2e")]
+            updater_e2e::start(app.handle());
             // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
             // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
             chain_agent::start_nightly_if_ready(app.handle().clone());
@@ -362,10 +437,8 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
-            // v2 invite links: the join client (pending attaches + opened invites, memory only).
-            app.manage(join::build_join_state());
-            // The pending invite (code + link key) waiting for the member's Join: keyring only.
-            app.manage(pending_join::build_pending_join_state(app.handle().clone()));
+            // D-12: settle invite approvals left held by a crash or a lost answer (roster check).
+            invites::recheck_held_on_start(app.handle().clone());
             // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
             // signing path. Every signature intent (user or, later, agent /
             // micro-app) routes through one approval surface; the gated
@@ -373,11 +446,26 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             // Contract v1.1 §1: the first-submission record persists under the app data dir, so
-            // a re-send after a restart is never mistaken for a first submission.
-            app.manage(match app.path().app_data_dir() {
-                Ok(dir) => ceremony::build_ceremony_state_at(dir.join("submitted-tx.json")),
-                Err(e) => {
+            // a re-send after a restart is never mistaken for a first submission. It has one
+            // section per network, opened on the genesis of the installed network gate (#511):
+            // other networks' sections are archived, read-only, and decide nothing here. With no
+            // gate genesis every send is refused anyway, and the record on disk is left as it is.
+            let gate_genesis = rpc::network_gate()
+                .filter(|g| g.is_set())
+                .and_then(|g| g.genesis_hash.clone());
+            app.manage(match (app.path().app_data_dir(), gate_genesis) {
+                (Ok(dir), Some(genesis)) => {
+                    ceremony::build_ceremony_state_at(
+                        dir.join(citrate_core_kit::submitted_log::RECORD_FILE),
+                        &genesis,
+                    )
+                }
+                (Err(e), _) => {
                     eprintln!("[ceremony] no app data dir ({e}); the submitted-tx record is in memory only");
+                    ceremony::build_ceremony_state_unpersisted()
+                }
+                (Ok(_), None) => {
+                    eprintln!("[ceremony] no network genesis; the submitted-tx record is not opened");
                     ceremony::build_ceremony_state_unpersisted()
                 }
             });
@@ -388,6 +476,11 @@ pub fn run() {
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
+            // D-11 — the core model proxy for cloud providers (opened, and its loopback endpoint
+            // started, on first use off the main thread).
+            app.manage(providers_ipc::ModelProxyState::default());
+            // D-11 (P-8) — Cognition delegations: approvals shown and sessions started (memory).
+            app.manage(cognition::DelegationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             app.manage(faucet::build_faucet_state(app.handle()));
@@ -414,6 +507,11 @@ pub fn run() {
             node::spawn_mining_watchdog(app.handle().clone());
             // Core #326: a node that followed a withdrawn branch moves its chain data aside.
             node::spawn_withdrawn_watch(app.handle().clone());
+            // CORE-D2: a running node whose head stands still while it has peers and the network
+            // moves on is restarted (never in initial sync, with a growing gap between restarts).
+            node::spawn_liveness_watch(app.handle().clone());
+            // CORE-D3: the main window hears when a sidecar fails (and when it comes back).
+            services::spawn_alert_watch(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
             // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
             // the per-session bearer is minted with OsRng, handed to the child via
@@ -539,25 +637,19 @@ pub fn run() {
             social::directory_search,
             // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
             invites::group_invite_create,
-            invites::group_invite_redeem,
-            invites::group_invite_submit_claim,
-            invites::group_invite_poll_claims,
             invites::group_invites,
-            invites::group_invite_verify_consume,
             invites::group_invite_revoke,
-            invites::group_referral_log,
-            invites::group_referral_export,
-            // v2 invite links (GROW-S1 task 10): short code + sealed envelope at citrate.ai.
-            join::join_mint,
-            join::join_attach,
-            join::join_redeem,
-            join::join_revoke,
-            join::join_list,
-            join::join_share_qr,
-            pending_join::pending_join_set,
-            pending_join::pending_join_get,
-            pending_join::pending_join_clear,
-            pending_join::pending_join_resolve,
+            invites::group_invite_requests,
+            invites::group_invite_approve,
+            invites::group_invite_check,
+            invites::group_invite_decline,
+            invites::group_invite_preview,
+            invites::group_invite_request,
+            invites::group_invite_my_requests,
+            invites::group_invite_dismiss,
+            // Download gate: first-run access check for invited installs (off unless built with a gate URL).
+            access_pass::access_pass_status,
+            access_pass::access_pass_verify,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
@@ -569,10 +661,11 @@ pub fn run() {
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,
+            membership_price::membership_price,
             // SBT emblem — BC-5.3 (T1 identity READ). Reads the AUTHORITATIVE
             // wholly-on-chain member emblem: isSubBound(keccak256(sub)) ->
             // tokenIdForSub -> tokenURI on CitrateMemberSBT (40204), decoded to the
@@ -650,13 +743,46 @@ pub fn run() {
             postdeploy::postdeploy_switch_site,
             postdeploy::postdeploy_pin_site,
             postdeploy::postdeploy_vercel_export,
+            // CORE-A3: durable, encrypted deploy records per project.
+            deploy_records::deploy_record_save,
+            deploy_records::deploy_records_list,
+            deploy_records::deploy_record_get,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
             contract_reader::contract_write_propose,
+            // CORE-A1 / CORE-A2 — find, identify and decode contracts (read-only).
+            contract_intel::contract_address_book_lookup,
+            contract_intel::contract_get_code,
+            contract_intel::contract_identify,
+            contract_intel::contract_abi_resolve,
+            contract_intel::abi_signature_lookup,
+            contract_intel::chain_tx_fetch,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
             // spend budget, quote-then-run, and the registry route's (disabled) status.
+            // D-11 — cloud providers: status, usage (signed log), caps, halt/resume, one-way keys,
+            // gated custom endpoints. No command returns a key.
+            providers_ipc::providers_status,
+            providers_ipc::providers_usage_summary,
+            providers_ipc::providers_caps_set,
+            providers_ipc::providers_price_set,
+            providers_ipc::providers_halt,
+            providers_ipc::providers_resume,
+            providers_ipc::providers_key_set,
+            providers_ipc::providers_key_test,
+            providers_ipc::providers_key_remove,
+            providers_ipc::providers_custom_add,
+            providers_ipc::providers_custom_confirm,
+            providers_ipc::providers_custom_remove,
+            providers_ipc::providers_usage_log_reset,
+            providers_ipc::providers_preferred_get,
+            providers_ipc::providers_preferred_set,
+            // D-11 (P-8) — the Cognition delegate: per-task approval of the exact scope.
+            cognition::delegation_prepare,
+            cognition::delegation_decline,
+            cognition::delegation_approve,
+            cognition::delegation_status,
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
@@ -743,6 +869,8 @@ pub fn run() {
             hermes::hermes_pending_approvals,
             hermes::hermes_stop,
             hermes::hermes_session_open,
+            // D-11 (P-5, P-6) — the agent loop on a cloud model through the core proxy.
+            hermes::hermes_session_open_cloud,
             hermes::hermes_session_send,
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,
@@ -769,6 +897,7 @@ pub fn run() {
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes::hermes_resolve_outcome_unknown,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
@@ -788,6 +917,7 @@ pub fn run() {
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
             chat_consent::chat_consent_prepare,
+            chat_consent::chat_consent_drop,
             chat_consent::media_consent_prepare,
             chat_route::chat_route_get,
             chat_route::chat_route_set,
@@ -834,6 +964,9 @@ pub fn run() {
             // dropped in the GUI process). Honest empty when the node is off; no
             // fabricated template ever crosses this boundary (Rule 1).
             node::node_logs,
+            // CORE-N3 follow-up: Remove old network data (chain.<profile>.bak in the node dir).
+            node::node_old_network_data,
+            node::node_remove_old_network_data,
             // node-agent — the node-agent under the SidecarSupervisor (C1.2).
             // agent_status returns the supervisor state + whether a bearer
             // session exists (NEVER the token); agent_start spawns the daemon
@@ -894,20 +1027,6 @@ pub fn run() {
             // wallet send — a native SALT transfer bridged into a PENDING ceremony
             // (@rule8; signs nothing — the human approves via sign_and_broadcast).
             transfer::wallet_send,
-            // wallet stake — a LiquidStakingPool deposit() bridged into a PENDING
-            // ceremony (@rule8; signs nothing — approved via sign_and_broadcast).
-            // The self-stake balance is read within wallet_balances (balanceOf).
-            staking::wallet_stake,
-            // wallet withdraw (WP2, @rule8) — the two-step, ~7-day-queued withdraw
-            // of self-added stake. request_withdrawal burns stSALT shares (the
-            // SALT→shares conversion is done from LIVE shares()+balanceOf() reads,
-            // never fabricated); claim_withdrawal pays out a matured request. Both
-            // sign NOTHING — the human approves via sign_and_broadcast (B1.4).
-            // pending_withdrawals enumerates the wallet's real on-chain queue
-            // (getLogs WithdrawalRequested + withdrawals(id) + block_number).
-            staking::wallet_request_withdrawal,
-            staking::wallet_claim_withdrawal,
-            staking::wallet_pending_withdrawals,
             // ai — real OpenAI-compatible inference (AI1, @rule8). The provider key
             // is sealed in the OS keyring, BOUND to its https baseURL at set-time;
             // ai_provider_status returns only {id,baseURL,model,configured} (never
@@ -981,6 +1100,11 @@ pub fn run() {
             components::components_rollback,
             // K1a-2 — the services registry snapshot Node › Services reads (read-only).
             services::services_snapshot,
+            // CORE-D4 — every sidecar's health: state, counters, last crash, slow retry, log tail.
+            services::sidecars_health,
+            // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
+            update_drain::update_prepare,
+            update_drain::update_prepare_cancel,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
@@ -1145,6 +1269,28 @@ mod tests {
         assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
     }
 
+    /// The release version is declared in four places (tauri.conf.json, src-tauri/Cargo.toml,
+    /// package.json and package-lock.json; the root Cargo.lock is held by `--locked`). The updater
+    /// compares tauri.conf's, so a bump that misses one ships a build whose parts disagree.
+    #[test]
+    fn package_json_and_lock_versions_match_cargo_version() {
+        let pkg: serde_json::Value = serde_json::from_str(include_str!("../../package.json"))
+            .expect("package.json must be valid JSON");
+        assert_eq!(pkg["version"], env!("CARGO_PKG_VERSION"), "package.json");
+        let lock: serde_json::Value = serde_json::from_str(include_str!("../../package-lock.json"))
+            .expect("package-lock.json must be valid JSON");
+        assert_eq!(
+            lock["version"],
+            env!("CARGO_PKG_VERSION"),
+            "package-lock.json"
+        );
+        assert_eq!(
+            lock["packages"][""]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "package-lock.json packages[\"\"]"
+        );
+    }
+
     /// ADV-8 boundary, asserted structurally against the real sources: the invoke_handler
     /// registers exactly the `#[tauri::command]`s defined in kit's custody.rs (whose return types
     /// the kit ADV-8 test pins), and NEVER `custody_get` (the in-process secret-reading pub fn).
@@ -1222,7 +1368,6 @@ mod tests {
             ("grant_status.rs", include_str!("grant_status.rs")),
             ("node.rs", include_str!("node.rs")),
             ("sbt_art.rs", include_str!("sbt_art.rs")),
-            ("staking.rs", include_str!("staking.rs")),
             ("transfer.rs", include_str!("transfer.rs")),
             ("validator.rs", include_str!("validator.rs")),
         ];
@@ -1269,7 +1414,6 @@ mod tests {
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
                     || code.contains("recheck_mining(")
-                    || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {
                     let fn_name = sig

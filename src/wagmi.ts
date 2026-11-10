@@ -1,5 +1,5 @@
-import { http, createConfig } from "wagmi";
-import { citrate } from "./chain";
+import { createConfig } from "wagmi";
+import { citrate, readTransport } from "./chain";
 import { ceremonyConnector } from "./wallet/ceremonyConnector";
 
 /**
@@ -19,6 +19,8 @@ export const wagmiConfig = createConfig({
   chains: [citrate],
   connectors: [ceremonyConnector()],
   transports: {
-    [citrate.id]: http(),
+    // K6: a profile that is not ready gets a transport that refuses every read (no RPC) and
+    // never throws during setup, so the app still renders the Update required notice.
+    [citrate.id]: readTransport(),
   },
 });

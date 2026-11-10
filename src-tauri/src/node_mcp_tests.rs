@@ -759,6 +759,18 @@ fn resources_list_read_and_templates() {
         .contains("ValidatorRegistry"));
 }
 
+/// CORE-A1: the MCP address book carries the full canonical book, not only the app's 15 pins.
+#[test]
+fn the_mcp_address_book_lists_the_full_canonical_book() {
+    let book = crate::node_mcp_protocol::address_book().expect("book");
+    let full = book["book"].as_array().expect("full book");
+    assert!(full.len() > 80, "only {} entries", full.len());
+    for name in ["WrappedSALT", "EntryPoint", "CapsuleRegistry", "GovernanceTimelock"] {
+        assert!(full.iter().any(|e| e["name"] == name), "{name} missing");
+    }
+    assert!(book["addresses"]["ValidatorRegistry"].is_string());
+}
+
 // ---------------------------------------------------------------------------
 // Writes: the ceremony route and the approval inbox
 // ---------------------------------------------------------------------------
@@ -1627,7 +1639,7 @@ fn node_mcp_demo() {
             .expect("token file");
         // With NODE_MCP_DEMO_RO_TOKEN_FILE, also issue the read-only token core gives Hermes.
         if let Ok(ro_file) = std::env::var("NODE_MCP_DEMO_RO_TOKEN_FILE") {
-            let ro = sv.state.hermes_token(None).expect("issue");
+            let ro = sv.state.hermes_token(None).expect("issue").expose().to_string();
             crate::node_mcp_token::write_private(
                 std::path::Path::new(&ro_file),
                 ro.as_bytes(),
@@ -2064,6 +2076,60 @@ fn tasks_get_follows_the_members_decision() {
         .contains("kubo is not running"));
 }
 
+// C1-V3: a payment the member approved that was submitted with an unknown outcome is reported to
+// the MCP client as "submitted, outcome unknown, tx <hash>, check before retrying": not a failure
+// and never a rejection, so a client does not treat it as safe to resend.
+#[test]
+fn a_submitted_payment_with_an_unknown_outcome_is_not_reported_as_failed() {
+    let core = core_with(Arc::new(Fixture::default()));
+    let c = ctx("t");
+    let hash = format!("0x{}", "ab".repeat(32));
+    let r = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabc"}), tasks_meta());
+    let id = r["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&id, true, 2).expect("approve");
+    let done = core
+        .inbox()
+        .finish(
+            &id,
+            Err(format!(
+                "ceremony: submitted, outcome unknown (tx {hash}): rpc transport error: down"
+            )),
+            3,
+        )
+        .expect("finish");
+    let message = format!("submitted, outcome unknown, tx {hash}, check before retrying");
+    assert_eq!(
+        done.state,
+        RequestState::OutcomeUnknown {
+            tx_hash: Some(hash.clone()),
+            message: message.clone(),
+        }
+    );
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("completed"));
+    assert_eq!(g["result"]["statusMessage"], json!(message));
+    let res = &g["result"]["result"];
+    assert_eq!(res["isError"], json!(false));
+    assert_eq!(res["content"][0]["text"], json!(message));
+    assert_eq!(res["structuredContent"]["outcome"], json!("submitted_outcome_unknown"));
+    assert_eq!(res["structuredContent"]["txHash"], json!(hash));
+    let text = g.to_string().to_lowercase();
+    assert!(!text.contains("rejected") && !text.contains("failed"), "{text}");
+    // The request view the client polls says the same.
+    let v = crate::node_mcp_protocol::request_view(&done);
+    assert_eq!(v["state"], json!("outcome_unknown"));
+    assert_eq!(v["tx_hash"], json!(hash));
+    // A failure established before submission is still a failure.
+    let r2 = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabd"}), tasks_meta());
+    let id2 = r2["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&id2, true, 4).expect("approve");
+    let failed = core
+        .inbox()
+        .finish(&id2, Err("not submitted: the vault is locked".into()), 5)
+        .expect("finish");
+    assert!(matches!(failed.state, RequestState::Failed { .. }));
+}
+
 static TASK_CLOCK: AtomicU64 = AtomicU64::new(0);
 fn task_clock() -> u64 {
     TASK_CLOCK.load(Ordering::SeqCst)
@@ -2243,6 +2309,77 @@ fn header_values_round_trip_through_the_base64_sentinel() {
     assert_eq!(dec("=?base64?!!!?=").as_deref(), None);
 }
 
+/// `encode_header_value` against the predicate it had before the clippy rewrite, on a table of
+/// named cases and on every 4-part concatenation of edge fragments (11^4 = 14,641 inputs). The
+/// old predicate is restated as an early-return chain, one rule per clause in its order, so it
+/// is structurally independent of the boolean expression it checks and is lint-clean on every
+/// toolchain (the nested `!(prefix && suffix)` form trips clippy's `nonminimal_bool` from 1.96).
+/// Each result also round-trips through `decode_header_value`.
+#[test]
+fn encode_header_value_matches_the_pre_rewrite_predicate() {
+    use crate::node_mcp_http::{decode_header_value as dec, encode_header_value as enc};
+    let was_plain = |v: &str| {
+        if v.is_empty() {
+            return false;
+        }
+        if !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return false;
+        }
+        if v.starts_with(' ') || v.ends_with(' ') {
+            return false;
+        }
+        if v.starts_with("=?base64?") && v.ends_with("?=") {
+            return false;
+        }
+        true
+    };
+    let sentinel = |v: &str| {
+        use base64::Engine as _;
+        format!("=?base64?{}?=", base64::engine::general_purpose::STANDARD.encode(v))
+    };
+    let check = |v: &str| {
+        let e = enc(v);
+        let want = if was_plain(v) { v.to_string() } else { sentinel(v) };
+        assert_eq!(e, want, "{v:?}");
+        assert_eq!(dec(&e).as_deref(), Some(v), "round trip {v:?}");
+    };
+    let table: &[(&str, &str, bool)] = &[
+        ("plain", "tools/call", true),
+        ("inner space", "a b", true),
+        ("empty", "", false),
+        ("leading space", " a", false),
+        ("trailing space", "a ", false),
+        ("non-ASCII", "h\u{e9}", false),
+        ("tab", "a\tb", false),
+        ("newline", "a\nb", false),
+        ("sentinel-shaped", "=?base64?abc?=", false),
+        ("bare sentinel", "=?base64??=", false),
+        ("prefix only", "=?base64?abc", true),
+        ("suffix only", "abc?=", true),
+        ("overlapping", "=?base64?=", false),
+    ];
+    for (name, v, plain) in table {
+        assert_eq!(was_plain(v), *plain, "table row {name}");
+        assert_eq!(enc(v) == *v, *plain, "table row {name}: {v:?}");
+        check(v);
+    }
+    let parts = [
+        "", " ", "a", "=?base64?", "?=", "=?", "?", "\u{e9}", "\t", "=?base64?=", "x y",
+    ];
+    let mut n = 0;
+    for a in parts {
+        for b in parts {
+            for c in parts {
+                for d in parts {
+                    check(&format!("{a}{b}{c}{d}"));
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 14_641);
+}
+
 fn stateless_headers(token: &str, method: &str, name: Option<&str>) -> Vec<(&'static str, String)> {
     let mut h = vec![
         auth(token),
@@ -2410,9 +2547,9 @@ fn the_stdio_shim_carries_stateless_requests_and_their_errors() {
 fn hermes_gets_at_most_one_live_token_and_losing_the_switch_revokes_it() {
     let sv = serve();
     let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
-    let first = sv.state.hermes_token(None).expect("issue");
+    let first = sv.state.hermes_token(None).expect("issue").expose().to_string();
     // No token in Hermes's file (or one that is not live): a new one replaces the earlier one.
-    let second = sv.state.hermes_token(None).expect("issue");
+    let second = sv.state.hermes_token(None).expect("issue").expose().to_string();
     let hermes: Vec<_> = sv
         .state
         .status()
@@ -2531,7 +2668,7 @@ fn members_cannot_issue_the_reserved_hermes_label_and_hermes_revocation_spares_m
         let e = sv.state.create_token(l).expect_err("reserved");
         assert!(e.contains("reserved"), "{e}");
     }
-    let _ = sv.state.hermes_token(None).expect("issue");
+    let _ = sv.state.hermes_token(None).expect("issue").expose().to_string();
     sv.state.revoke_hermes_tokens();
     // The member's "Claude Code" token survives revoking Hermes's tokens.
     assert!(sv.state.status().tokens.iter().any(|t| t.label == "Claude Code"));
@@ -2542,7 +2679,7 @@ fn members_cannot_issue_the_reserved_hermes_label_and_hermes_revocation_spares_m
 fn hermes_token_over_http_is_read_only_whatever_the_client_asks() {
     let sv = serve();
     let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
-    let h = sv.state.hermes_token(None).expect("issue");
+    let h = sv.state.hermes_token(None).expect("issue").expose().to_string();
     assert!(sv
         .state
         .status()
@@ -3000,9 +3137,9 @@ fn an_ephemeral_token_verifies_is_never_written_and_revokes() {
 #[test]
 fn the_hermes_token_is_kept_while_live_and_rotated_otherwise() {
     let st = NodeMcpState::new(Arc::new(Fixture::default()), TokenStore::in_memory(), None);
-    let t1 = st.hermes_token(None).expect("mint");
-    assert_eq!(st.hermes_token(Some(&t1)).expect("keep"), t1);
-    let t2 = st.hermes_token(Some("not-a-live-token")).expect("rotate");
+    let t1 = st.hermes_token(None).expect("mint").expose().to_string();
+    assert_eq!(st.hermes_token(Some(&t1)).expect("keep").expose().to_string(), t1);
+    let t2 = st.hermes_token(Some("not-a-live-token")).expect("rotate").expose().to_string();
     assert_ne!(t1, t2);
     assert!(
         st.shared().tokens.verify(&t1, 1).is_none(),
@@ -3011,7 +3148,7 @@ fn the_hermes_token_is_kept_while_live_and_rotated_otherwise() {
     assert!(st.shared().tokens.verify(&t2, 1).is_some());
     // A member's persisted token is never adopted as Hermes's.
     let member = st.create_token("Claude Code").expect("issue");
-    let t3 = st.hermes_token(Some(&member.connect_token)).expect("mint");
+    let t3 = st.hermes_token(Some(&member.connect_token)).expect("mint").expose().to_string();
     assert_ne!(t3, member.connect_token);
     assert!(st.shared().tokens.verify(&member.connect_token, 2).is_some());
     let views = st.status().tokens;
@@ -3109,14 +3246,18 @@ fn hermes_node_entry_demo() {
     });
     let state = NodeMcpState::new(backend.clone(), TokenStore::in_memory(), None);
     let port = state.start_on(47298).expect("bind");
-    let token = state.hermes_token(None).expect("mint");
+    let token = state.hermes_token(None).expect("mint").expose().to_string();
     let exe = std::path::PathBuf::from(std::env::var("HERMES_NODE_DEMO_SHIM").expect("shim exe"));
     let settings = crate::hermes_mcp::McpSettings {
         mem: false,
         scan: false,
         node: true,
     };
-    let target = crate::hermes_mcp::NodeTarget { exe, port, token };
+    let target = crate::hermes_mcp::NodeTarget {
+        exe,
+        port,
+        token: crate::secret::SecretString::new(token),
+    };
     let cfg = crate::hermes_mcp::render_config(&settings, None, Some(&target)).expect("node entry");
     let out = std::env::var("HERMES_NODE_DEMO_ALLOWLIST").expect("allowlist path");
     crate::node_mcp_token::write_private(
@@ -3124,7 +3265,7 @@ fn hermes_node_entry_demo() {
         serde_json::to_string_pretty(&cfg).expect("json").as_bytes(),
     )
     .expect("write");
-    let redacted = cfg.to_string().replace(&target.token, "cnmcp_<minted for Hermes, elided>");
+    let redacted = cfg.to_string().replace(target.token.expose(), "cnmcp_<minted for Hermes, elided>");
     println!("allowlist core wrote for Hermes: {redacted}");
     println!("serving {} ; tokens: {:?}", crate::node_mcp_http::endpoint_url(port), state.status().tokens.iter().map(|t| t.label.clone()).collect::<Vec<_>>());
     let secs: u64 = std::env::var("HERMES_NODE_DEMO_HOLD_SECS")

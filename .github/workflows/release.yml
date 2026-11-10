@@ -2,12 +2,27 @@
 # author: Claude (Opus 4.8), directed by @SaulBuilds
 # status: active
 #
-# W2.3 + W2.5 — signed release pipeline. On a version tag (v*), builds the
-# macOS ARM app, signs (Developer ID) + notarizes + staples, produces the
-# SIGNED updater artifacts (.app.tar.gz + .sig via createUpdaterArtifacts), and
-# publishes them + a `latest.json` feed to a GitHub Release. The in-app updater
-# (tauri-plugin-updater, pubkey pinned in tauri.conf.json) reads that feed, so
-# every subsequent patch reaches the beta testers with no manual DMG reinstall.
+# W2.3 + W2.5 — signed release builds. On a version tag (v*), builds the macOS ARM app, signs
+# (Developer ID) + notarizes + staples it, produces the SIGNED update file (.app.tar.gz + .sig via
+# createUpdaterArtifacts) and its latest.json entry (scripts/updater-feed.mjs fragment). The in-app
+# updater (tauri-plugin-updater, pubkey pinned in tauri.conf.json) reads that feed.
+#
+# This workflow PUBLISHES NOTHING (053-UPDATER decision 2, 2026-11-07). Each job writes its files to
+# a short-lived workflow artifact; the release ceremony (docs/release/053-UPDATER.md section 3) puts
+# the installers on the private CDN, the update files at the public update path, latest.json on both
+# feeds, and only latest.json + checksums + signatures on the GitHub release. No step creates, edits
+# or uploads to a GitHub release, and no job can write the repository: `component-pins.mjs check`
+# fails CI otherwise. (Until 2026-11-08 tauri-action created the release and uploaded the DMG, the
+# update tarball and a latest.json to it.)
+#
+# Runners (2026-11-08): macOS on macos-15 (GitHub no longer starts macos-14: "The configuration
+# 'macos-14-arm64-us-default' is not supported"), Xcode pinned in a step; Linux aarch64 on the
+# GitHub-hosted arm64 runner ubuntu-24.04-arm (job release-linux-aarch64), which builds the
+# AppImage + .deb from the pinned aarch64 bytes, signs them as update files and writes their
+# latest.json entries (linux-aarch64, linux-aarch64-deb) as a workflow artifact for the release
+# step (docs/RELEASE_LINUX.md "Linux aarch64 in CI"). Linux x86_64 is still built on its own host.
+# If GitHub cannot run the macOS job, the release Mac builds, signs and notarizes locally
+# (docs/RELEASE.md "Local fallback").
 #
 # ── Owner prerequisites (one-time) ────────────────────────────────────────────
 # Repo secrets required (Settings → Secrets and variables → Actions):
@@ -18,7 +33,9 @@
 #   APPLE_SIGNING_IDENTITY              Developer ID Application: Larry Klosowski (DDHUG44QC7)
 #   KEYCHAIN_PASSWORD                   any throwaway string (temp keychain in CI)
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
-#   CITRATE_CHAIN_READ_TOKEN            fine-grained PAT, Contents:read on citrate-chain
+#   CITRATE_CHAIN_READ_TOKEN            optional; fine-grained PAT, Contents:read, only if a federation
+#                                       repo goes private again. Only the dry run's clone steps get it
+#                                       (never a step that builds code), as a one-command git header.
 # Runtime deps (sidecars, llama runtime, BGE models, corpus) are NOT in git: they are uploaded to
 # the GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them and
 # verifies each against src-tauri/runtime-deps.sha256 before staging (PBA-L7b-005). Which bytes
@@ -30,11 +47,19 @@
 #
 # ── Dry run (workflow_dispatch, dry_run: true) ────────────────────────────────────────────────
 # Builds every release input from the pinned sources on a clean runner and bundles the app,
-# UNSIGNED, with no updater artifacts: no secret is read, nothing is signed, notarized, uploaded or
-# published, and no tag or release is created. The sidecars are built from the pinned revs with
-# the release build scripts (not taken from runtime-deps), and the step summary compares each
-# digest with its pin. Steps that sign or publish carry `if: env.DRY_RUN != 'true'`;
+# UNSIGNED, with no updater artifacts: no signing secret is read, nothing is signed or notarized,
+# nothing is published, and no tag or release is created. The sidecars are built from the pinned
+# revs with the release build scripts (not taken from runtime-deps), and the step summary compares
+# each digest with its pin. The macOS job uploads nothing; the Linux job uploads its unsigned
+# packages and rebuilt sidecars as a 2-day workflow artifact (any logged-in GitHub user can
+# download a public repository's artifacts). Steps that sign carry `if: env.DRY_RUN != 'true'`;
 # `component-pins.mjs check` fails CI if one does not.
+#
+# ── Tag ───────────────────────────────────────────────────────────────────────────────────────
+# A tag push builds that tag. A manual release run checks out refs/tags/<tag input>, not the ref it
+# was dispatched from, and each job's first step refuses a tag that is not v<x.y.z> equal to the
+# app version in src-tauri/tauri.conf.json, before anything is staged or signed. In a dry run the
+# tag input is only a label (letters, digits, . _ -).
 
 name: release
 
@@ -47,10 +72,10 @@ on:
         description: "Version tag to build (e.g. v0.2.0)"
         required: true
       size_gate:
-        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true, the release
-        # is created as a DRAFT, scripts/size-budget.mjs checks the bundle against
-        # release/budgets.json, and the draft is published only if that passes.
-        description: "Run the installer size gate; publish only if within budget"
+        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true,
+        # scripts/size-budget.mjs checks the bundle against release/budgets.json before the
+        # artifact upload; over budget fails the job and uploads nothing.
+        description: "Run the installer size gate; upload the build only if within budget"
         type: boolean
         required: false
         default: false
@@ -66,26 +91,56 @@ concurrency:
 
 jobs:
   release-macos-arm:
-    name: build · sign · notarize · publish (macOS arm64)
-    runs-on: macos-14
+    name: build · sign · notarize (macOS arm64)
+    runs-on: macos-15
+    # Builds only; the release ceremony publishes (053-UPDATER decision 2).
     permissions:
-      contents: write # create/update the GitHub Release + upload assets
+      contents: read
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # true only for a manual run with dry_run; a tag push is never a dry run.
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
-      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # A manual release builds the tag it names, not the branch it was dispatched from.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
 
-      # The federation repos the app and its sidecars build from are public; a token is only
-      # needed if one goes private again. An empty token in the rewrite would break every fetch.
-      - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ env.CHAIN_TOKEN != '' }}
+      # Before anything is staged or signed: a release builds v<x.y.z>, the app's own version.
+      - name: Check the tag
         run: |
-          git config --global \
-            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
-            "https://github.com/"
+          set -euo pipefail
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          if [ "$DRY_RUN" = true ]; then
+            [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::dry-run label '$TAG' must be letters, digits, . _ -"; exit 1; }
+            echo "dry run: '$TAG' is a label; app version $V"
+          else
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$TAG' is not v<x.y.z>"; exit 1; }
+            [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not name the app version $V (src-tauri/tauri.conf.json)"; exit 1; }
+            echo "release $TAG = app version $V"
+          fi
+
+      # macos-15 images carry several Xcodes (16.0 to 16.4 and 26.x on macos-15-arm64 20261104) and
+      # move the default between image versions. The SDK the app links against and the codesign,
+      # notarytool and stapler the bundler calls all come from the selected Xcode, so pin it: an
+      # image update must not change them under a release. 16.4 is that image's default (macOS 15.5
+      # SDK); no deployment target is set, so Tauri's default minimum applies as before. Fails if
+      # the image no longer has it: pick the new one here in a reviewed PR.
+      - name: Select Xcode 16.4
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          xcodebuild -version
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
+          xcrun notarytool --version
+          xcrun --find stapler
+          xcrun --find codesign
+
+      # No credential is configured for the build: the federation repos the app (cargo git deps) and
+      # its sidecars build from are public. CITRATE_CHAIN_READ_TOKEN, if set, reaches only the dry
+      # run's clone step, never a step that runs a build.
 
       # The toolchain release/components.json pins (toolchain.rust) for the sidecars, also used for
       # the app so a release does not move with whatever `stable` is that day.
@@ -102,6 +157,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+
+      # ── K6 (RC52 G0): a release targets a network whose every value is set. The active profile
+      #    in src-tauri/network/profiles.json must have no unset value, the embedded address book
+      #    must carry its chain id and genesis, and build-sidecar.sh must pin its minChainRev;
+      #    otherwise the build would ship an app that refuses to sign. Fails closed.
+      - name: Network profile release gate (K6)
+        run: scripts/check-network-profile.sh --release
 
       # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
       #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
@@ -130,15 +192,28 @@ jobs:
       #    pins (the pins are the release Mac's builds; a different build root changes the Mach-O
       #    UUID), so they are staged only for this unsigned, unpublished bundle; the summary says
       #    for each one whether it matches its pin.
+      - name: Clone the pinned sidecar sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token (only if a federation repo is private again) is a header for each clone
+          # command, never written to a git config the build steps would read.
+          auth=()
+          if [ -n "$CHAIN_TOKEN" ]; then
+            auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHAIN_TOKEN" | base64 | tr -d '\n')")
+          fi
+          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
+            # Full clones: the build scripts take the pinned commit from this object store.
+            git ${auth[@]+"${auth[@]}"} clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
+          done
+
       - name: Build sidecars from the pinned sources (dry run)
         if: ${{ env.DRY_RUN == 'true' }}
         run: |
           set -euo pipefail
           export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
-          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
-            # Full clones: build-component.sh takes the pinned commit from this object store.
-            git clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
-          done
           {
             echo "### Sidecars built from the pinned sources (dry run)"
             echo
@@ -193,12 +268,12 @@ jobs:
           SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
           if [ "$DRY_RUN" != true ]; then
             ASSETS+=(
-              citrate-aarch64-apple-darwin-c384fc982882
+              citrate-aarch64-apple-darwin-56cc2bc80439
               node-agent-aarch64-apple-darwin-1d8cb8e4e24a
               mem-mcp-aarch64-apple-darwin-5aeda3172369
               comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
               cluster-daemon-aarch64-apple-darwin-755cf2172260
-              hermes-aarch64-apple-darwin-626486b8a7db
+              hermes-aarch64-apple-darwin-05243c72bd52
             )
           fi
           for a in "${ASSETS[@]}"; do
@@ -279,14 +354,16 @@ jobs:
           node scripts/third-party-notices.mjs check
           node scripts/licence-inventory.mjs --require-notices
 
-      - name: Build · sign · notarize · publish updater artifacts
+      # Release run: the bundler signs every binary with the Developer ID (certificate imported from
+      # APPLE_CERTIFICATE into a temporary keychain), notarizes and staples the .app, and signs the
+      # update tarball with the updater key. The DMG is then notarized and stapled here, as the
+      # release ceremony does. Outputs keep the 0.5.2 names; the feed entry points at the public
+      # update path (053-UPDATER section 3, step 3). Nothing is uploaded to a GitHub release.
+      - name: Build · sign · notarize (macOS arm64)
         if: ${{ env.DRY_RUN != 'true' }}
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
-          # Updater artifact signing (Ed25519; pubkey pinned in tauri.conf.json).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Apple Developer ID signing + notarization.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -294,21 +371,40 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        with:
-          # The overlay merges the externalBin sidecars onto the base config
-          # (which carries the updater plugin + createUpdaterArtifacts).
+        run: |
+          set -euo pipefail
+          for v in TAURI_SIGNING_PRIVATE_KEY APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is not set"; exit 1; }
+          done
           # bundle-lite: what the macOS releases ship (no Gemma in the bundle; first-run download).
-          args: --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
-          # A manual run with size_gate drafts the release; the size gate below publishes it.
-          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate == true }}
-          prerelease: true
-          # Generate + upload latest.json (the feed the app polls). Default true;
-          # explicit here because it is the whole point of W2.
-          includeUpdaterJson: true
+          npx tauri build --target aarch64-apple-darwin --config src-tauri/tauri.bundle-lite.conf.json
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          B=target/aarch64-apple-darwin/release/bundle
+          dmg=( "$B"/dmg/*_"$V"_aarch64.dmg ); tgz=( "$B"/macos/*.app.tar.gz )
+          [ "${#dmg[@]}" = 1 ] && [ -f "${dmg[0]}" ] && [ "${#tgz[@]}" = 1 ] && [ -f "${tgz[0]}" ] && [ -s "${tgz[0]}.sig" ] \
+            || { echo "::error::expected one $V DMG and one signed .app.tar.gz under $B"; ls -R "$B" | head -40; exit 1; }
+          res="$(xcrun notarytool submit "${dmg[0]}" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --output-format json)"
+          echo "$res"
+          [ "$(node -p 'JSON.parse(process.argv[1]).status' "$res")" = Accepted ] \
+            || { echo "::error::notarization of the DMG was not accepted"; exit 1; }
+          xcrun stapler staple "${dmg[0]}"
+          xcrun stapler validate "${dmg[0]}"
+          mkdir -p out
+          cp "${dmg[0]}" "out/Citrate-Core_${V}_aarch64.dmg"
+          cp "${tgz[0]}" out/Citrate-Core.app.tar.gz
+          cp "${tgz[0]}.sig" out/Citrate-Core.app.tar.gz.sig
+          (cd out && shasum -a 256 "Citrate-Core_${V}_aarch64.dmg" Citrate-Core.app.tar.gz > SHA256SUMS-macos)
+          node scripts/updater-feed.mjs fragment --version "$V" \
+            --base-url "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v$V" \
+            --dir out darwin-aarch64 > out/latest.darwin-aarch64.json
+          {
+            echo "### macOS arm64 release files (version $V, signed, notarized, stapled)"
+            echo
+            echo '```'
+            cat out/SHA256SUMS-macos
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Dry run: the same bundle, unsigned and without updater artifacts (so no updater key is
       # needed). Nothing leaves the runner; the summary records what was built.
@@ -331,15 +427,299 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md), and every
-      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job and leaves the
-      # release a draft for review.
+      # dry run (it only reads the bundle dir). Exit 1 (over budget) fails the job before the
+      # upload, so an over-budget build leaves no artifact.
       - name: Size gate (manual, size_gate input or dry run)
         if: ${{ env.DRY_RUN == 'true' || (github.event_name == 'workflow_dispatch' && inputs.size_gate) }}
         run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish the draft release (size gate passed)
-        if: ${{ env.DRY_RUN != 'true' && github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+      # Release run: the files the ceremony publishes (053-UPDATER section 3), never a GitHub
+      # release. Kept 2 days; any logged-in GitHub user can download a public repository's
+      # artifacts, and the DMG is the member installer, so the ceremony collects it promptly.
+      - name: Upload the macOS release files
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: citrate-core-macos-arm64-${{ env.TAG }}
+          path: out
+          if-no-files-found: error
+          retention-days: 2
+
+  # ── Linux aarch64 (2026-11-08; GitHub-hosted arm64, owner OK). Replaces the hand build on the DGX
+  #    (sold). ubuntu-24.04-arm, not 22.04-arm: the aarch64 bytes a release ships are the pinned
+  #    ones, built on Ubuntu 24.04 (glibc 2.39, GCC 13.3; DGX spark-2e01), so they need glibc 2.39
+  #    whatever the runner; building the app on 22.04 would not lower that floor, and the dry run's
+  #    rebuilds reproduce a 24.04 build only on 24.04. x86_64 (citrate-core-linux-build, Ubuntu
+  #    22.04, glibc 2.35) is unchanged and not built here. docs/RELEASE_LINUX.md "Linux aarch64 in CI".
+  #    Output is a workflow artifact, never a GitHub Release asset (053-UPDATER.md decision 2): the
+  #    AppImage and .deb under their contract names, their .sig files (release run), SHA256SUMS and
+  #    latest.linux-aarch64.json, the feed entries the release step merges into latest.json.
+  release-linux-aarch64:
+    name: build · sign update files (Linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # true only for a manual run with dry_run; a tag push is never a dry run.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      TRIPLE: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # A manual release builds the tag it names, not the branch it was dispatched from.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      # Before anything is staged or signed: a release builds v<x.y.z>, the app's own version.
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          if [ "$DRY_RUN" = true ]; then
+            [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::dry-run label '$TAG' must be letters, digits, . _ -"; exit 1; }
+            echo "dry run: '$TAG' is a label; app version $V"
+          else
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$TAG' is not v<x.y.z>"; exit 1; }
+            [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not name the app version $V (src-tauri/tauri.conf.json)"; exit 1; }
+            echo "release $TAG = app version $V"
+          fi
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.96.0"
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Tauri's Linux deps (as linux-native-acceptance's update-e2e job on this runner), plus what
+      # the dry run's sidecar and llama.cpp builds need (bindgen/rocksdb: clang; cmake).
+      - name: Install the Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libgtk-3-dev file xdg-utils libssl-dev pkg-config clang libclang-dev cmake \
+            protobuf-compiler libfontconfig1-dev
+      - run: npm ci
+
+      - name: Network profile release gate (K6)
+        run: scripts/check-network-profile.sh --release
+
+      - name: Stage reviewed third-party skills (skills.lock)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.tag }}
-        run: gh release edit "$TAG" --draft=false
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/skills-bundle-dl"
+          rm -rf "$DL" && mkdir -p "$DL"
+          ASSETS=(skills-bundle.tar.gz)
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+
+      # ── Dry run only: build the six cargo sidecars at their pinned revs and llama-server at b9438
+      #    on this runner, as the macOS dry run does. The summary says whether each matches its pin,
+      #    and the bytes are uploaded with the run, so a rebuild that reproduces a pin (or a new
+      #    rev's first aarch64 build) can be reviewed, uploaded to runtime-deps and pinned.
+      - name: Clone the pinned sidecar sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token (only if a federation repo is private again) is a header for each clone
+          # command, never written to a git config the build steps would read.
+          auth=()
+          if [ -n "$CHAIN_TOKEN" ]; then
+            auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHAIN_TOKEN" | base64 | tr -d '\n')")
+          fi
+          for r in citrate-chain citrate-node-agent citrate-memories citrate-comms citrate-cluster citrate-agent-runtime; do
+            # Full clones: the build scripts take the pinned commit from this object store.
+            git ${auth[@]+"${auth[@]}"} clone --quiet "https://github.com/CitrateNetwork/$r.git" "../$r"
+          done
+
+      - name: Build sidecars and llama-server from the pinned sources (dry run)
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: |
+          set -euo pipefail
+          export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
+          mkdir -p src-tauri/binaries src-tauri/llama out/dry-run-sidecars
+          {
+            echo "### Linux aarch64 sidecars built from the pinned sources (dry run)"
+            echo
+            echo "| component | rev | built sha256 | pinned sha256 ($TRIPLE) | |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for c in citrate-node node-agent mem-mcp comms-member-daemon cluster-daemon hermes-sidecar; do
+            script="$(node scripts/component-pins.mjs field "$c" build.script)"
+            if [ "$script" = scripts/build-component.sh ]; then
+              out="$(scripts/build-component.sh "$c" --target "$TRIPLE" --print-digest | tail -1)"
+            else
+              out="$("$script" --target "$TRIPLE" --print-digest | tail -1)"
+            fi
+            read -r id triple digest built <<<"$out"
+            [ "$id" = "$c" ] && [ "$triple" = "$TRIPLE" ] && [ -f "$built" ] || { echo "::error::$c: unexpected build output: $out"; exit 1; }
+            pin="$(node scripts/component-pins.mjs digest "$c" "$TRIPLE" 2>/dev/null || echo none)"
+            name="$(basename "$(node scripts/component-pins.mjs field "$c" external_bin)")"
+            install -m 755 "$built" "src-tauri/binaries/$name-$TRIPLE"
+            rev="$(node scripts/component-pins.mjs field "$c" source.rev)"
+            install -m 755 "$built" "out/dry-run-sidecars/$name-$TRIPLE-${rev:0:12}"
+            verdict="differs"; [ "$digest" = "$pin" ] && verdict="matches"
+            echo "| $c | \`${rev:0:12}\` | \`$digest\` | \`$pin\` | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            rm -rf "$CITRATE_COMPONENT_BUILD_ROOT/$c-"*/target
+          done
+          # llama.cpp b9438 (release/components.json), CPU only, static, no web UI.
+          git clone --quiet --filter=blob:none https://github.com/ggml-org/llama.cpp.git ../llama.cpp
+          git -C ../llama.cpp checkout --quiet d749821db3bd587932d1ed57d43626cd552c9909
+          cmake -S ../llama.cpp -B "$RUNNER_TEMP/llama-build" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+          cmake --build "$RUNNER_TEMP/llama-build" --config Release --target llama-server -j "$(nproc)"
+          LS="$RUNNER_TEMP/llama-build/bin/llama-server"
+          install -m 755 "$LS" "src-tauri/binaries/llama-server-$TRIPLE"
+          install -m 755 "$LS" src-tauri/llama/llama-server
+          install -m 755 "$LS" "out/dry-run-sidecars/llama-server-$TRIPLE-b9438"
+          pin="$(node scripts/component-pins.mjs digest llama.cpp "$TRIPLE" 2>/dev/null || echo none)"
+          digest="$(sha256sum "$LS" | cut -d' ' -f1)"
+          verdict="differs"; [ "$digest" = "$pin" ] && verdict="matches"
+          echo "| llama.cpp | \`b9438\` | \`$digest\` | \`$pin\` | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+          df -h . | tail -1
+
+      # ── Stage what git does not carry, from runtime-deps, verified against the committed pins
+      #    before anything is staged (PBA-L7b-005): a release run's six sidecars and llama-server
+      #    (the pinned aarch64 bytes, runtime_deps_asset in release/components.json), the BGE models
+      #    and the knowledge corpus; then Kubo from upstream through the pinned engine.
+      - name: Stage runtime deps (sidecars · llama-server · BGE embedder · knowledge corpus · Kubo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/runtime-deps"
+          rm -rf "$DL" && mkdir -p "$DL"
+          ASSETS=(
+            bge-base-en-v1.5.tar.gz
+            bge-base-en-v1.5-f16.gguf
+            knowledge-corpus.tar.gz
+          )
+          SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
+          if [ "$DRY_RUN" != true ]; then
+            ASSETS+=(
+              citrate-aarch64-unknown-linux-gnu-56cc2bc80439
+              node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
+              mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
+              comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c
+              cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260
+              hermes-aarch64-unknown-linux-gnu-05243c72bd52
+              llama-server-aarch64-unknown-linux-gnu-b9438
+            )
+          fi
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
+
+          mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
+          if [ "$DRY_RUN" != true ]; then
+            for b in "${SIDECARS[@]}"; do
+              f="$(cd "$DL" && ls "$b-$TRIPLE"-????????????)"
+              install -m 755 "$DL/$f" "src-tauri/binaries/$b-$TRIPLE"
+            done
+            # The app runs llama-server from resources llama/ (serve.rs bundled_llama_path); the
+            # externalBin copy keeps the overlay's sidecar list whole. 0.5.2's deb has both.
+            install -m 755 "$DL/llama-server-$TRIPLE-b9438" "src-tauri/binaries/llama-server-$TRIPLE"
+            install -m 755 "$DL/llama-server-$TRIPLE-b9438" src-tauri/llama/llama-server
+          fi
+          # llama/LICENSE as 0.5.2 shipped it (the llama.cpp LICENSE at the tag, 95c78144...).
+          install -m 644 src-tauri/licenses/llama.cpp-vendored.LICENSE src-tauri/llama/LICENSE
+          scripts/build-component.sh kubo --target aarch64-unknown-linux-gnu
+          rm -rf "$RUNNER_TEMP/bge-extract" && mkdir -p "$RUNNER_TEMP/bge-extract" src-tauri/models/bge-base-en-v1.5
+          tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RUNNER_TEMP/bge-extract"
+          BGE_CFG="$(find "$RUNNER_TEMP/bge-extract" -name config.json | head -1)"
+          [ -n "$BGE_CFG" ] || { echo "::error::BGE bundle has no config.json — cannot stage the embedder"; exit 1; }
+          cp -R "$(dirname "$BGE_CFG")"/. src-tauri/models/bge-base-en-v1.5/
+          for f in config.json tokenizer.json model.safetensors; do
+            test -s "src-tauri/models/bge-base-en-v1.5/$f" || { echo "::error::BGE embedder missing $f"; exit 1; }
+          done
+          mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+          cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+          node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-unknown-linux-gnu
+          node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+            --bge-dir src-tauri/models/bge-base-en-v1.5 \
+            --mem-mcp "src-tauri/binaries/mem-mcp-$TRIPLE"
+          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models/bge-base-en-v1.5-gguf
+
+      - name: Knowledge corpus staged (pre-bundle check)
+        run: node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+
+      - name: Third-party notices present
+        run: |
+          node scripts/third-party-notices.mjs check
+          node scripts/licence-inventory.mjs --require-notices
+
+      # The Linux overlay builds the AppImage and .deb with createUpdaterArtifacts off, so this step
+      # holds no key; the update files are signed after the rename, below, as 0.5.2's were.
+      # APPIMAGE_EXTRACT_AND_RUN: no FUSE on the runner. NO_STRIP: linuxdeploy's strip does not
+      # read Ubuntu 24.04 binaries, and the sidecars ship as pinned (the update-e2e job builds the
+      # same way on this runner).
+      - name: Build the AppImage and .deb; name them as the updater feed does
+        run: |
+          set -euo pipefail
+          APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 npx tauri build --target "$TRIPLE" \
+            --config src-tauri/tauri.bundle-linux.conf.json
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          B="target/$TRIPLE/release/bundle"
+          ai=( "$B"/appimage/*_"$V"_*.AppImage ); deb=( "$B"/deb/*_"$V"_*.deb )
+          [ "${#ai[@]}" = 1 ] && [ -f "${ai[0]}" ] && [ "${#deb[@]}" = 1 ] && [ -f "${deb[0]}" ] \
+            || { echo "::error::expected one $V AppImage and one .deb under $B"; ls -R "$B" | head -40; exit 1; }
+          mkdir -p out
+          cp "${ai[0]}" out/Citrate-Core-linux-aarch64.AppImage
+          cp "${deb[0]}" out/Citrate-Core-linux-aarch64.deb
+          chmod +x out/Citrate-Core-linux-aarch64.AppImage
+          (cd out && sha256sum Citrate-Core-linux-aarch64.AppImage Citrate-Core-linux-aarch64.deb > SHA256SUMS-linux-aarch64)
+          echo "$V" > out/VERSION
+          {
+            echo "### Linux aarch64 packages (version $V$( [ "$DRY_RUN" = true ] && echo ', dry run: unsigned' ))"
+            echo
+            echo '```'
+            cat out/SHA256SUMS-linux-aarch64
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Release run only: sign both update files with the updater key (the pubkey pinned in
+      # tauri.conf.json) and write their feed entries. The url is the public update path of the
+      # release (053-UPDATER.md step 3: downloads/updater/v<version>/ on the nyc3 CDN).
+      - name: Sign the update files and write the linux-aarch64 feed entries
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set"; exit 1; }
+          V="$(cat out/VERSION)"
+          for f in out/Citrate-Core-linux-aarch64.AppImage out/Citrate-Core-linux-aarch64.deb; do
+            npx tauri signer sign "$f"
+          done
+          node scripts/updater-feed.mjs fragment --version "$V" \
+            --base-url "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v$V" \
+            --dir out linux-aarch64 linux-aarch64-deb > out/latest.linux-aarch64.json
+          cat out/latest.linux-aarch64.json
+
+      # Kept 2 days. Any logged-in GitHub user can download a public repository's artifacts; the
+      # AppImage and .deb are the same bytes that become public update files at the release
+      # (053-UPDATER.md step 3), but before it they are early, so the ceremony collects them promptly.
+      - name: Upload the Linux aarch64 packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: citrate-core-linux-aarch64-${{ env.TAG }}
+          path: out
+          if-no-files-found: error
+          retention-days: 2

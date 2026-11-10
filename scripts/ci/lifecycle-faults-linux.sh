@@ -80,34 +80,16 @@ if [ "$INNER" -eq 0 ]; then
 fi
 
 # ---- inside the namespace ----------------------------------------------------------------
-# Stray-process detection. The namespace is dedicated to this run, so once the suites have
-# returned the only process that may exist is PID 1 (this shell). Every other live process is a
-# leftover, whatever its name: a marked `citrate-lcf-*` leaf from the fault suite, or an unmarked
-# `/bin/sh`, `/bin/sleep` or `tail` from a supervisor lib-test fixture or one of their
-# descendants. The scan reads /proc with shell builtins only (no subshell, pipe or command), so
-# the inspection itself never shows up as a process. Zombies are not counted: they have already
-# exited and only wait to be reaped by PID 1.
-# Sets STRAYS to one "pid state argv" line per live process other than PID 1.
-scan_strays() {
-  STRAYS=()
-  local d pid stat state argv
-  for d in /proc/[0-9]*; do
-    pid="${d#/proc/}"
-    [ "$pid" = 1 ] && continue
-    stat=""
-    { IFS= read -r stat <"$d/stat"; } 2>/dev/null || continue # gone since the glob
-    [ -n "$stat" ] || continue
-    stat="${stat##*) }" # comm may hold spaces or ')'; the state follows the last ") "
-    state="${stat%% *}"
-    [ "$state" = Z ] && continue
-    argv=()
-    { mapfile -d '' -t argv <"$d/cmdline"; } 2>/dev/null
-    STRAYS+=("$pid $state ${argv[*]:-[${stat}]}")
-  done
-}
+# Stray-process detection: scan_strays (scripts/ci/lib/pidns.sh). The namespace is dedicated to
+# this run, so once the suites have returned the only process that may exist is PID 1 (this
+# shell). Every other live process is a leftover, whatever its name: a marked `citrate-lcf-*`
+# leaf from the fault suite, or an unmarked `/bin/sh`, `/bin/sleep` or `tail` from a supervisor
+# lib-test fixture or one of their descendants.
+# shellcheck source=scripts/ci/lib/pidns.sh
+. "$ROOT/scripts/ci/lib/pidns.sh"
 
 cd "$ROOT" || exit 2
-if [ "$$" -ne 1 ] || [ "$(ps -o pgid= -p $$ | tr -d ' ')" != 1 ]; then
+if ! pidns_assert_init; then
   echo "::error::--inner must run as PID 1 and group leader of a fresh PID namespace (got pid $$)"
   exit 2
 fi

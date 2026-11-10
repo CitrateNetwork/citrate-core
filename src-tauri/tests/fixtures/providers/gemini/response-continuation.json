@@ -1,0 +1,22 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Part one of a long answer"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "CONTINUATION",
+      "index": 0
+    }
+  ],
+  "continuationToken": "ct_1",
+  "usageMetadata": {
+    "promptTokenCount": 10,
+    "candidatesTokenCount": 20,
+    "totalTokenCount": 30
+  }
+}

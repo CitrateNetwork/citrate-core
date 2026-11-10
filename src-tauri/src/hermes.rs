@@ -31,8 +31,9 @@ use crate::supervisor::{
 /// The origin stamped on every intent bridged from Hermes; the ceremony DISPLAYS it verbatim so a
 /// human approving a chain effect sees it came from the agent, not the local user.
 const HERMES_ORIGIN: &str = "agent:hermes";
-/// The Citrate chain id (40204). A Hermes chain effect carries no chain id; the bridge stamps this.
-const CITRATE_CHAIN_ID: u64 = 40204;
+// A Hermes chain effect carries no chain id; the bridge stamps the one this build targets (the
+// kit constant pinned to the active network profile).
+use crate::rpc::CITRATE_CHAIN_ID;
 
 // CX-S6.4 — the code-task HIC routing surface. Declared as a submodule of this (s6-owned) file so the
 // new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.
@@ -116,6 +117,8 @@ pub enum HermesError {
     /// K5a: Hermes restarted since a Store daemon's tools were checked; the session was not
     /// opened (the new sidecar may offer other host tool sets).
     Restarted,
+    /// D-11: core refused to hand the sidecar something (a body carrying a key shape).
+    Refused(String),
 }
 
 impl std::fmt::Display for HermesError {
@@ -145,6 +148,7 @@ impl std::fmt::Display for HermesError {
                 f,
                 "Not started: Hermes restarted after this run's tools were checked; nothing was opened"
             ),
+            HermesError::Refused(m) => f.write_str(m),
         }
     }
 }
@@ -398,15 +402,17 @@ pub struct HermesManager {
     /// HUP-S3.2: the other skill sources for the sidecar's one SKILL.md loader (the member's saved
     /// skills, Citrate's bundled skills, the reviewed third-party skills). `None` = learned only.
     skill_sources: Option<crate::hermes_learn::SkillSources>,
-    /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
-    /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
-    mcp_allowlist: Option<PathBuf>,
+    /// HUP-S4.4 + RC52 P-9a: the member's MCP servers (Settings > MCP servers; env values in the
+    /// keychain). Their allowlist is written for the child only at spawn (see [`Self::build_spec`]).
+    mcp_servers: Option<crate::mcp_servers::McpStore>,
     /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
     /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
     chain_data_dir: Option<PathBuf>,
     /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
     /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
     env_source: Option<crate::hermes_web::EnvSource>,
+    /// D-11: this sidecar's cloud sessions and their proxy route labels.
+    pub(crate) cloud: cloud::CloudSessions,
     /// HUP-S1.2 / US-1.4: the loopback BGE embedding server the sidecar ranks tools and skills
     /// with. Started before the sidecar; its URL and key FILE are passed only while it runs.
     /// `None` (tests, or no bundled model) = sessions rank lexically and report it.
@@ -476,9 +482,10 @@ impl HermesManager {
             checkpoints_dir: None,
             learn_dirs: None,
             skill_sources: None,
-            mcp_allowlist: None,
+            mcp_servers: None,
             chain_data_dir: None,
             env_source: None,
+            cloud: cloud::CloudSessions::default(),
             embed: None,
             health_interval: HEALTH_INTERVAL,
             browser_record: None,
@@ -552,10 +559,10 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
-    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// HUP-S4.4: the member's MCP servers (joined with the built-in ones at spawn, see
     /// [`crate::hermes_mcp::effective_allowlist`]).
-    pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
-        self.mcp_allowlist = Some(path);
+    pub fn with_mcp_servers(mut self, store: crate::mcp_servers::McpStore) -> Self {
+        self.mcp_servers = Some(store);
         self
     }
 
@@ -647,25 +654,25 @@ impl HermesManager {
             ));
         }
         // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
-        // reviewed servers, joined when both are on), and only when one is written (default: none).
-        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+        // reviewed servers, joined when both are on), and only when there is one (default: none).
+        // RC52 P-9a: with member servers it is a spawn-time file holding their env values from the
+        // keychain; the child watch below removes it once the child has loaded it.
+        let effective = crate::hermes_mcp::effective_allowlist(
             self.mcp_config_path.as_deref(),
-            self.mcp_allowlist.as_deref(),
-        ) {
+            self.mcp_servers.as_ref(),
+        );
+        if let Some(path) = &effective {
             spec.env.push((
                 crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
                 path.to_string_lossy().to_string(),
             ));
         }
-        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
-        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
-        if let Some(allow) = &self.mcp_allowlist {
+        // HUP-S4.4: the probe file, so the sidecar's dry-run probe starts only the entry this app
+        // is checking. It exists only during a check; otherwise the probe refuses.
+        if let Some(store) = &self.mcp_servers {
             spec.env.push((
                 crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
-                allow
-                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
-                    .to_string_lossy()
-                    .to_string(),
+                store.probe_path().to_string_lossy().to_string(),
             ));
         }
         if let Some(dir) = &self.checkpoints_dir {
@@ -704,6 +711,21 @@ impl HermesManager {
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
+        // D-11 tripwire: nothing shaped like a vendor key crosses into the sidecar's environment
+        // or arguments (keys travel as file paths or not at all).
+        spec.env.retain(|(k, v)| {
+            let keyless = cloud::ensure_keyless("environment", v).is_ok();
+            if !keyless {
+                eprintln!("citrate-core: {k} was not passed to Hermes: its value is shaped like an API key");
+            }
+            keyless
+        });
+        spec.args
+            .retain(|a| cloud::ensure_keyless("arguments", a).is_ok());
+        spec.env_remove = cloud::inherited_key_vars(
+            std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+        );
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -712,7 +734,22 @@ impl HermesManager {
         });
         // SCL-S0.3: record the sidecar's managed browsers while it runs, clean them up after it
         // ends (including core's hard kill after the stop grace).
-        spec.child_watch = crate::owned_browser::watch(self.browser_record_path());
+        let browser = crate::owned_browser::watch(self.browser_record_path());
+        // RC52 P-9a: a spawn-time allowlist with member env values lives only until the child has
+        // loaded it, and is written again for a supervisor restart.
+        spec.child_watch = match (effective, &self.mcp_servers) {
+            (Some(path), Some(store)) if crate::hermes_mcp::is_spawn_file(&path, store) => {
+                let health_url = format!("http://{}/health", self.control_addr);
+                Some(crate::hermes_mcp::spawn_file_watch(
+                    browser,
+                    path,
+                    self.mcp_config_path.clone(),
+                    store.clone(),
+                    std::sync::Arc::new(move || http_health_ok(&health_url)),
+                ))
+            }
+            _ => browser,
+        };
         spec
     }
 
@@ -736,6 +773,19 @@ impl HermesManager {
     #[cfg(test)]
     pub fn spec_env_for_test(&self) -> Vec<(String, String)> {
         self.build_spec().env
+    }
+
+    /// Test hook: the whole spec (for the child-watch hooks).
+    #[cfg(test)]
+    pub fn spec_for_test(&self) -> SidecarSpec {
+        self.build_spec()
+    }
+
+    /// RC52 P-9a: remove the files that hold member MCP env values only around a spawn or a probe.
+    fn sweep_mcp_runtime_files(&self) {
+        if let Some(store) = &self.mcp_servers {
+            crate::mcp_servers::sweep_runtime_files(store.dir());
+        }
     }
 
     /// Start the sidecar: mint a fresh session bearer, persist it `0600` (the child adopts it), and
@@ -782,6 +832,8 @@ impl HermesManager {
                 .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
             env_used = Some(effective_child_env(inherited, &spec.env));
             let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+            // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
+            config.slow_retry = crate::services::slow_retry_every();
             config.backoff = BackoffPolicy::new();
             config.healthy_after = HERMES_HEALTHY_AFTER;
             Supervisor::start(config).map_err(|e| HermesError::Spawn(e.to_string()))
@@ -789,6 +841,7 @@ impl HermesManager {
         let sup = match started {
             Ok(sup) => sup,
             Err(e) => {
+                self.sweep_mcp_runtime_files();
                 // SCL-S0.5: the embedding server lives and dies with Hermes. A Hermes that did not
                 // start must not leave it running until the app quits.
                 if let Some(embed) = &self.embed {
@@ -820,6 +873,11 @@ impl HermesManager {
             sup.stop();
             drop(sup);
         }
+        // D-11: the sidecar's sessions are gone; their cloud routes are revoked by the caller
+        // that holds the proxy (`hermes_stop_sync`).
+        self.cloud.forget_all();
+        // After the stop (its last child-watch call may have rewritten the spawn-time allowlist).
+        self.sweep_mcp_runtime_files();
         if let Some(embed) = &self.embed {
             embed.stop();
         }
@@ -996,13 +1054,12 @@ impl HermesManager {
     /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
     /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
     /// itself say the server could not be reached). Registers nothing.
-    pub fn mcp_probe(&self, entry: &serde_json::Value) -> Result<crate::mcp_servers::ProbeOutcome> {
+    /// `entry` is the entry's JSON with its env values ([`crate::mcp_servers::runtime_entry_json`]).
+    pub fn mcp_probe(&self, entry: &str) -> Result<crate::mcp_servers::ProbeOutcome> {
         let bearer = self.bearer()?;
-        let resp = self.control.post(
-            &format!("{}/mcp/probe", self.control_url()),
-            &bearer,
-            &entry.to_string(),
-        )?;
+        let resp =
+            self.control
+                .post(&format!("{}/mcp/probe", self.control_url()), &bearer, entry)?;
         if resp.status == 422 {
             #[derive(Deserialize)]
             struct Invalid {
@@ -1068,6 +1125,7 @@ impl HermesManager {
 
     /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
     pub fn session_open(&self, body: &str) -> Result<String> {
+        cloud::ensure_keyless("session", body).map_err(HermesError::Refused)?;
         let bearer = self.bearer()?;
         let resp = Self::check(self.control.post(
             &format!("{}/sessions", self.control_url()),
@@ -1099,6 +1157,7 @@ impl HermesManager {
     /// `promptSnapshot: false`. A sidecar that ignored either (an older one, or a dropped field)
     /// fails open, so its session is closed and the run refused.
     pub fn session_open_store(&self, body: &str, sent_sets: &[String]) -> Result<String> {
+        cloud::ensure_keyless("session", body).map_err(HermesError::Refused)?;
         let bearer = self.bearer()?;
         let resp = Self::check(self.control.post(
             &format!("{}/sessions", self.control_url()),
@@ -1460,18 +1519,46 @@ impl HermesManager {
     /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
     /// re-bridgeable until its head is resolved here).
     pub fn resolve_head(&self, approve: bool, id: &str) -> Result<()> {
+        let path = if approve {
+            "/approvals/approve"
+        } else {
+            "/approvals/reject"
+        };
+        self.post_resolve(path, id, serde_json::json!({ "id": id }))
+    }
+
+    /// C1-V3: release the reviewed chain effect `id` after the member approved it and the
+    /// transaction was submitted with an unknown outcome. The member approved and the transaction
+    /// went out, so this is the approve route, never `/approvals/reject` (which the capsule reads as
+    /// "rejected by operator" and an agent may answer by proposing the payment again). The body
+    /// also carries the outcome, the hash and the words the agent must be given:
+    /// "submitted, outcome unknown, tx <hash>, check before retrying".
+    pub fn resolve_head_outcome_unknown(&self, id: &str, tx_hash: Option<&str>) -> Result<()> {
+        if let Some(h) = tx_hash {
+            if !crate::broadcast_outcome::is_tx_hash(h) {
+                return Err(HermesError::Decode(format!(
+                    "not a transaction hash: {h:?}"
+                )));
+            }
+        }
+        let body = serde_json::json!({
+            "id": id,
+            "outcome": "submitted_outcome_unknown",
+            "txHash": tx_hash,
+            "message": crate::broadcast_outcome::agent_message(tx_hash),
+        });
+        self.post_resolve("/approvals/approve", id, body)
+    }
+
+    /// Post one approve/reject resolution for call `id` and handle the sidecar's answer.
+    fn post_resolve(&self, path: &str, id: &str, body: serde_json::Value) -> Result<()> {
         // PBA-L7b-003: an empty id would select the sidecar's legacy "resolve whatever is at the
         // head" path (AR-B-023) — refuse it; every resolve is bound to the reviewed call id.
         if id.is_empty() {
             return Err(HermesError::Stale);
         }
         let bearer = self.bearer()?;
-        let path = if approve {
-            "/approvals/approve"
-        } else {
-            "/approvals/reject"
-        };
-        let body = serde_json::json!({ "id": id }).to_string();
+        let body = body.to_string();
         let resp = self
             .control
             .post(&format!("{}{}", self.control_url(), path), &bearer, &body)?;
@@ -1781,7 +1868,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_checkpoints_dir(base.join("checkpoints"))
         .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_skill_sources(skill_sources)
-        .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
+        .with_mcp_servers(crate::mcp_servers::os_store(base.clone()))
         .with_chain_data_dir(base.clone())
         .with_env_source({
             // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.
@@ -1952,6 +2039,7 @@ pub async fn hermes_stop(app_h: tauri::AppHandle) -> std::result::Result<(), Str
 /// Blocking body of [`hermes_stop`]; reached only through [`crate::blocking::off_main`].
 pub fn hermes_stop_sync(app: tauri::AppHandle) -> std::result::Result<(), String> {
     manager(&app)?.stop();
+    cloud::on_stop(crate::providers_ipc::open_proxy(&app).as_deref());
     Ok(())
 }
 
@@ -2010,6 +2098,24 @@ pub fn hermes_resolve_sync(
     manager(&app)?
         .resolve_head(approve, &id)
         .map_err(|e| e.to_string())
+}
+
+/// C1-V3 — release the reviewed chain effect `id` as submitted with an unknown outcome (the member
+/// approved it; the ceremony could not confirm it). The sidecar is told "submitted, outcome
+/// unknown, tx <hash>, check before retrying", never "rejected". `tx_hash` is `None` when the
+/// failure carried no hash.
+#[tauri::command]
+pub async fn hermes_resolve_outcome_unknown(
+    app_h: tauri::AppHandle,
+    id: String,
+    tx_hash: Option<String>,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || {
+        manager(&app_h)?
+            .resolve_head_outcome_unknown(&id, tx_hash.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -2548,8 +2654,59 @@ pub async fn hermes_session_close(
     app: tauri::AppHandle,
     id: String,
 ) -> std::result::Result<(), String> {
-    crate::blocking::off_main(move || manager(&app)?.session_close(&id).map_err(|e| e.to_string()))
-        .await
+    crate::blocking::off_main(move || {
+        let m = manager(&app)?;
+        let r = m.session_close(&id).map_err(|e| e.to_string());
+        // D-11: a cloud session's route is revoked whether or not the sidecar still had it.
+        cloud::on_close(m, crate::providers_ipc::open_proxy(&app).as_deref(), &id);
+        r
+    })
+    .await
+}
+
+/// **hermes_session_open_cloud** — open a sidecar agent session on the member's preferred cloud
+/// model (D-11, ADR P-5/P-6; source: `<app data>/providers/preferred.json`). The sidecar gets a
+/// loopback route to the core model proxy, never a key. Refused under Local model only, with no
+/// preferred model, and when the provider is not connected in Settings › Models.
+#[tauri::command]
+pub async fn hermes_session_open_cloud(
+    app: tauri::AppHandle,
+    system_prompt: String,
+    tools_json: String,
+    persona: Option<String>,
+    custom_persona: Option<personas::CustomPersonaInput>,
+) -> std::result::Result<String, String> {
+    let route_dir = crate::chat_route::route_dir(&app)?;
+    crate::blocking::off_main(move || {
+        let proxy = crate::ai::proxy_for_app(&app)?;
+        // The provider and model are the member's stored choice (`provider_preferred`), never an
+        // argument from the webview.
+        let pref = crate::provider_preferred::route(proxy.dir(), cloud::CLOUD_ROUTE_PREFIX)?;
+        let (provider_id, model) = (pref.provider.to_string(), pref.model);
+        let store = crate::agent_grants::GrantStore::for_app(&app)?;
+        let m = manager(&app)?;
+        cloud::open_cloud_session(
+            &proxy,
+            m,
+            &provider_id,
+            &model,
+            route_dir,
+            &system_prompt,
+            &tools_json,
+            |body| {
+                let body = personas::with_session_persona(
+                    body,
+                    persona.as_deref(),
+                    custom_persona.as_ref(),
+                )?;
+                // The same folder grants a local session gets (HUP-S2.1).
+                crate::agent_grants::open_with_grants(&store, &body, |b| {
+                    m.session_open(b).map_err(|e| e.to_string())
+                })
+            },
+        )
+    })
+    .await
 }
 
 /// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
@@ -2602,10 +2759,12 @@ pub async fn hermes_session_send(
     id: String,
     text: String,
 ) -> std::result::Result<(), String> {
+    let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
-        manager(&app)?
-            .session_send(&id, &text)
-            .map_err(|e| e.to_string())
+        // D-11: a cloud session's turn starts only while remote sends are allowed.
+        let m = manager(&app)?;
+        cloud::check_send(m, &id, &route_dir)?;
+        m.session_send(&id, &text).map_err(|e| e.to_string())
     })
     .await
 }
@@ -2659,6 +2818,10 @@ pub async fn hermes_session_stop(
     crate::blocking::off_main(move || manager(&app)?.session_stop(&id).map_err(|e| e.to_string()))
         .await
 }
+
+// D-11 (RC52): the agent loop on a cloud model through the core proxy (child module).
+#[path = "hermes_cloud.rs"]
+pub mod cloud;
 
 // HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
 #[path = "hermes_personas.rs"]

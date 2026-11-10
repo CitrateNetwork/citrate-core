@@ -18,6 +18,7 @@
 import { useEffect, useRef } from "react";
 import { SurfaceProps } from "./shared";
 import type { MemGraph } from "../shell/state";
+import { CHAIN_ID_TEXT } from "../network/profile";
 
 // tenant → node colour (matches --z-green / --z-cyan; verbatim from design).
 // The REAL chain tenant is "chain-state" (the daemon's name); "chain-facts" is
@@ -392,7 +393,7 @@ export function Storage({ store, s }: SurfaceProps) {
               </span>
             </div>
             <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 8 }}>
-              chain-state carries network params, the 40204 contract catalog, and your own wallet and validator events. Full chain-state ingest is upcoming — this is the honest v1 subset.
+              chain-state carries network params, the {CHAIN_ID_TEXT} contract catalog, and your own wallet and validator events. Full chain-state ingest is upcoming — this is the honest v1 subset.
             </p>
           </div>
 

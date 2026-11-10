@@ -83,7 +83,10 @@ unshare --user --map-root-user --pid --fork --mount-proc setsid \
 Rules on the DGX:
 
 - Never run the supervisor, `lifecycle_faults` or any kill-path test outside `unshare`.
-- Never launch the Core app itself to test the supervisor.
+- Never launch the Core app itself to test the supervisor. The one exception is the packaged
+  acceptance harness, `scripts/ci/linux-native-acceptance.sh` (K1-L, SCL-S14.6), which seals the
+  namespace first and refuses to launch unless its isolation probes pass; see
+  [`LINUX_NATIVE_ACCEPTANCE.md`](LINUX_NATIVE_ACCEPTANCE.md).
 - Use a `CARGO_TARGET_DIR` inside your own worktree, not a shared `target/`.
 
 ## Ubuntu 24.04 and AppArmor

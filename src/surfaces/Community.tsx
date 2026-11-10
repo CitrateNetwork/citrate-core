@@ -5,22 +5,14 @@
 // and the growth leaderboard need an indexer + a rewards planset before they carry real numbers, so
 // this surface shows the STRUCTURE with honest-pending live data (never fabricated counts, Rule 1):
 //   • Network stats + leaderboard → "—" / "lands with the indexer" (no invented figures).
-//   • The 2,000-run milestone program → real program FACTS (100 / 500 / 2,000 thresholds + reward
-//     tiers, settled through the ceremony) — design, not live data, so honest to show.
-//   • Public link → REAL: a referral code minted in Rust at the citrate.ai join service (GROW-S1
-//     task 11). It carries no group id and no wallet address.
+//   • Referrals → credit is deferred (owner, 10-27) and #549 removed the referral log, so the card
+//     says credit isn't tracked yet and claims nothing about a join being kept or credited.
+//     C1-V V13 (UI truth contract §5.5, §1): the milestone reward promises ("founding-roster SALT
+//     grant", "growth reward", "settled to every member") had no on-chain source and are removed.
+//   • Inviting someone is done in Groups (one invite flow, D-12): a link they open to ask to join.
 // The whole surface carries a "pending backend · illustrative" flag.
 // =====================================================================
-import { useState } from "react";
 import { SurfaceProps } from "./shared";
-import { bridge } from "../bridge";
-import type { JoinQr } from "../bridge/domains";
-import { QrCode } from "../fleet/FleetWizard";
-import { copyLink, YourInviteLinks } from "./InviteLinks";
-import { createPublicLink, expiryLabel, type PublicOutcome } from "./inviteFlow";
-
-/** The display name on a network-wide public link (there is no group behind it). */
-export const NETWORK_LINK_NAME = "Open network";
 
 const STATS: { label: string; sub: string }[] = [
   { label: "Nodes online", sub: "counted by the network indexer" },
@@ -29,35 +21,7 @@ const STATS: { label: string; sub: string }[] = [
   { label: "Files co-pinned", sub: "held across group clusters" },
 ];
 
-const MILESTONES: { at: string; reward: string }[] = [
-  { at: "100", reward: "founding-roster SALT grant to the whole group" },
-  { at: "500", reward: "growth reward + a featured slot in the directory" },
-  { at: "2,000", reward: "the full 2,000-run reward, settled to every member" },
-];
-
 export function Community({ store }: SurfaceProps) {
-  // GROW-S1 task 11 — a public link is a referral code from the join service (via Rust). It replaces
-  // the older self-built link format.
-  const [pub, setPub] = useState<PublicOutcome | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [qr, setQr] = useState<JoinQr | null>(null);
-  // Bumped after a mint so "Your invite links" (recovered from the service) reloads.
-  const [linksVersion, setLinksVersion] = useState(0);
-  const mint = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const out = await createPublicLink({ invites: bridge.invites, join: bridge.join }, NETWORK_LINK_NAME, "general");
-      setPub(out);
-      setLinksVersion((n) => n + 1);
-      if (out.kind === "link" && out.minted.shareUrl) {
-        bridge.join.shareQr(out.minted.shareUrl).then(setQr).catch(() => setQr(null));
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 960 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -91,50 +55,23 @@ export function Community({ store }: SurfaceProps) {
           </p>
         </div>
 
-        {/* program + referral */}
+        {/* referral credit (not tracked yet), and where inviting happens */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
-            <span className="eyebrow">The 2,000 run</span>
+          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <span className="eyebrow">Referrals</span>
             <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-              Grow a group and the network rewards the whole roster at each milestone. Milestones settle
-              each epoch through your ceremony — nothing is paid without your signature.
+              Invite people from Groups. Referral credit isn&apos;t tracked yet.
             </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {MILESTONES.map((cm) => (
-                <div key={cm.at} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <span className="mono tabular" style={{ width: 44, flexShrink: 0, fontSize: 12, fontWeight: 600, color: "var(--accent-text)", paddingTop: 1 }}>{cm.at}</span>
-                  <span style={{ flex: 1, fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-2)" }}>{cm.reward}</span>
-                </div>
-              ))}
-            </div>
-            <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-              your group's standing appears here once the indexer lands — no progress bar is drawn from numbers we don't have yet
-            </span>
           </div>
 
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-            <span className="eyebrow">Your public link</span>
-            {pub?.kind === "link" && pub.minted.shareUrl ? (
-              <>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pub.minted.shareUrl}</span>
-                  <button className="btn btn-secondary btn-sm" onClick={() => pub.minted.shareUrl && copyLink(store, pub.minted.shareUrl)}>Copy</button>
-                </div>
-                {qr && <QrCode qr={qr} px={3} testId="community-public-qr" label="Public link QR code" />}
-                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>{expiryLabel(pub.minted.exp)}</span>
-              </>
-            ) : (
-              <>
-                <button className="btn btn-secondary btn-sm" onClick={() => void mint()} disabled={busy} style={{ alignSelf: "flex-start" }}>
-                  {busy ? "Creating…" : "Create a public link"}
-                </button>
-                {pub?.kind === "error" && <span role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{pub.message}</span>}
-              </>
-            )}
-            <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-              a short link that shows your name and points people to Citrate · no group id or wallet address in it · to add someone to a group, send a one-time link from Groups
+            <span className="eyebrow">Invite people</span>
+            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
+              To bring someone into a group, open the group in Groups and press Invite someone. They get a one-time link, ask to join, and you approve them.
             </p>
-            <YourInviteLinks store={store} version={linksVersion} />
+            <button className="btn btn-secondary btn-sm" onClick={() => store.go("groups")} style={{ alignSelf: "flex-start" }}>
+              Open Groups
+            </button>
           </div>
         </div>
       </div>

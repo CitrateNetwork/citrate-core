@@ -1,0 +1,20 @@
+: source: built from the Responses streaming event schema (output_item.added / function_call_arguments.delta / output_item.done / completed)
+
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_2","object":"response","status":"in_progress","output":[],"usage":null},"sequence_number":0}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc123","name":"get_weather","arguments":"","status":"in_progress"},"sequence_number":1}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"location\":","sequence_number":2}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"Boston, MA\"}","sequence_number":3}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc123","name":"get_weather","arguments":"{\"location\":\"Boston, MA\"}","status":"completed"},"sequence_number":4}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_2","object":"response","status":"completed","incomplete_details":null,"output":[{"type":"function_call","id":"fc_1","call_id":"call_abc123","name":"get_weather","arguments":"{\"location\":\"Boston, MA\"}","status":"completed"}],"usage":{"input_tokens":60,"output_tokens":18,"total_tokens":78}},"sequence_number":5}
+

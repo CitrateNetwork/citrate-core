@@ -220,9 +220,12 @@ impl NodeMcpState {
     /// allowlist file Hermes was last given) is kept while it is still a live in-memory token;
     /// otherwise every earlier Hermes token is revoked (its sessions and pending requests close)
     /// and a new one is minted. Only its hash is held, in memory.
-    pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> {
+    pub fn hermes_token(
+        &self,
+        current: Option<&str>,
+    ) -> Result<crate::secret::SecretString, String> {
         if let Some(t) = current.filter(|t| self.shared.tokens.is_live_ephemeral(t)) {
-            return Ok(t.to_string());
+            return Ok(crate::secret::SecretString::new(t.to_string()));
         }
         self.revoke_hermes_tokens();
         self.shared
@@ -232,7 +235,7 @@ impl NodeMcpState {
                 !crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS,
                 now_ms(),
             )
-            .map(|t| t.connect_token)
+            .map(|t| crate::secret::SecretString::new(t.connect_token))
     }
 
     /// HUP-S4.1: revoke every in-memory (Hermes) token.
@@ -316,29 +319,19 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             Ok(json!({"shared": cid, "group": group}))
         }
         McpAction::InviteCreate { group, for_handle } => {
-            let minted =
-                crate::invites::group_invite_create(app.clone(), group.clone(), for_handle).await?;
+            // The same invite the member makes in Groups: whoever opens the link asks to join,
+            // and the member approves or declines the request there.
+            let made = crate::invites::create(app, &group, &for_handle, "").await?;
             Ok(json!({
                 "group": group,
-                "inviteId": crate::node_mcp_live::invite_id_for(&minted.token),
-                "link": minted.link,
+                "inviteId": made.id,
+                "link": made.link,
             }))
         }
         McpAction::InviteRevoke { group, invite_id } => {
             let app2 = app.clone();
-            let group2 = group.clone();
-            let id2 = invite_id.clone();
-            let token = crate::blocking::off_main(move || {
-                crate::invites::load(&app2)
-                    .into_iter()
-                    .find(|i| {
-                        i.group == group2 && crate::node_mcp_live::invite_id_for(&i.token) == id2
-                    })
-                    .map(|i| i.token)
-                    .ok_or_else(|| format!("no outstanding invite {id2} for that group"))
-            })
-            .await?;
-            crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
+            let (group2, id2) = (group.clone(), invite_id.clone());
+            crate::blocking::off_main(move || crate::invites::revoke(&app2, &group2, &id2)).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
         }
         McpAction::PinAdd { cid } => {

@@ -28,6 +28,9 @@
 //! - **Boundary:** `custody_get` is a plain in-process `pub fn` for A3/B1, NOT a
 //!   `#[tauri::command]`. No invoke command ever returns secret bytes (ADV-8).
 
+// K6: the vault (home of `wallet_slot_get`) never needs `unsafe`; forbid it outright.
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -1535,8 +1538,37 @@ impl CustodyVault {
     /// buffer. Requires an unlocked session. Its only current callers are A3/B1
     /// (not yet landed) and the custody tests; allow dead_code so the non-test
     /// lib build does not flag this deliberately-in-process API as unused.
+    ///
+    /// K6: it refuses every `wallet-` slot (`Denied`, the same opaque answer as a
+    /// locked vault or an absent slot). The wallet key is read only through
+    /// [`CustodyVault::wallet_slot_get`], which takes a capability that only the
+    /// wallet's key module can construct, so no other code in this crate or in
+    /// the app can reach the sealed wallet entropy.
     #[allow(dead_code)]
     pub fn custody_get(&self, slot: &str) -> Result<Zeroizing<Vec<u8>>> {
+        if slot.starts_with(crate::wallet::WALLET_SLOT_PREFIX) {
+            return Err(CustodyError::Denied);
+        }
+        self.read_slot(slot)
+    }
+
+    /// **The only read of a `wallet-` slot (K6).** The `WalletKeyAccess` argument
+    /// can only be constructed inside `wallet::key` (its field is private there),
+    /// so this is callable only from that module. Its exported functions are the
+    /// network-gated `signing_key` and the non-signing address / HKDF / presence
+    /// helpers; none of them returns the entropy.
+    pub(crate) fn wallet_slot_get(
+        &self,
+        _access: crate::wallet::WalletKeyAccess,
+        slot: &str,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        if !slot.starts_with(crate::wallet::WALLET_SLOT_PREFIX) {
+            return Err(CustodyError::Denied);
+        }
+        self.read_slot(slot)
+    }
+
+    fn read_slot(&self, slot: &str) -> Result<Zeroizing<Vec<u8>>> {
         if slot.starts_with('\0') {
             return Err(CustodyError::Denied);
         }
@@ -1720,7 +1752,7 @@ pub fn custody_status_sync(
 #[tauri::command]
 pub async fn custody_init(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1734,10 +1766,11 @@ pub async fn custody_init(
 /// Blocking body of [`custody_init`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_init_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    // Operate on the owned String's bytes so we can zeroize the inbound copy.
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    // The passphrase arrives in a wiping buffer; the byte copy the vault consumes is wiped too.
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.init(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r
@@ -1746,7 +1779,7 @@ pub fn custody_init_sync(
 #[tauri::command]
 pub async fn custody_unlock(
     app_h: tauri::AppHandle,
-    passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
@@ -1760,9 +1793,10 @@ pub async fn custody_unlock(
 /// Blocking body of [`custody_unlock`]; reached only through [`crate::blocking::off_main`].
 pub fn custody_unlock_sync(
     state: State<'_, CustodyState>,
-    mut passphrase: String,
+    passphrase: crate::secret::SecretString,
 ) -> std::result::Result<(), String> {
-    let mut bytes = std::mem::take(&mut passphrase).into_bytes();
+    let mut bytes = passphrase.expose().as_bytes().to_vec();
+    drop(passphrase);
     let r = state.0.unlock(&mut bytes).map_err(err_str);
     bytes.zeroize();
     r

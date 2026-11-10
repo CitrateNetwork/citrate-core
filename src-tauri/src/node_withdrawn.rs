@@ -15,7 +15,8 @@
 //! data dir, so the node keeps its identity and the wallet is never touched (it does not live in
 //! the node data dir). A healthy database is never moved: the only trigger is this node's own
 //! RPC returning a block at the check height whose hash differs from the compiled-in one. A
-//! failed read, a node still below the height, or another genesis does nothing.
+//! failed read, a null or error response, a block that is not the check block, a node still
+//! below the height, or another genesis does nothing (UI truth contract v1.1 §6).
 //!
 //! Data source (Rule 7): this node's own RPC (`eth_blockNumber`, `eth_getBlockByNumber`).
 
@@ -112,13 +113,35 @@ pub fn assess<T: RpcTransport>(local: &T, check: &ForkCheck) -> Verdict {
     if head.is_none_or(|h| h < check.height) {
         return verdict(check, head, None);
     }
-    let hash = rpc_result(
+    let block = rpc_result(
         local,
         "eth_getBlockByNumber",
         json!([format!("0x{:x}", check.height), false]),
+    );
+    verdict(
+        check,
+        head,
+        checkpoint_hash(check, block.as_ref()).as_deref(),
     )
-    .and_then(|b| b.get("hash").and_then(Value::as_str).map(str::to_string));
-    verdict(check, head, hash.as_deref())
+}
+
+/// The hash of the returned block, only when it is the block at the check height (UI truth
+/// contract v1.1 §6). A null result, a block with no `number`, a block that names another height,
+/// or a missing or malformed hash is "not yet" (`None`), never a mismatch: only a returned block
+/// that states the check height and carries a different hash may move chain data aside (C1-V2).
+fn checkpoint_hash(check: &ForkCheck, block: Option<&Value>) -> Option<String> {
+    let block = block?.as_object()?;
+    let n = block.get("number")?.as_str()?.strip_prefix("0x")?;
+    // Strictly hex digits: from_str_radix alone would accept a leading '+' (#358 DGX review).
+    if n.is_empty()
+        || !n.bytes().all(|b| b.is_ascii_hexdigit())
+        || u64::from_str_radix(n, 16).ok()? != check.height
+    {
+        return None;
+    }
+    let hash = block.get("hash")?.as_str()?;
+    let hex = hash.strip_prefix("0x")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hash.to_string())
 }
 
 /// The folder a withdrawn chain database is moved to: `<data_dir>.withdrawn-<date>` next to the

@@ -113,9 +113,11 @@ surface unchanged:
 | Hermes › Controls › 3 · Records | `ControlsRecords`: approval records (web sign-in decisions; Hermes approval records have no read command yet), spend ledger (`escalation_budget`), daemon run history (`daemon_runs_between`). |
 | Groups › Chat, Alerts, Rounds, Members, Cluster, ALF | Groups, Comms, Train, People, Cluster, ALF surfaces |
 | Wallet | Wallet surface |
-| Node › Status | Node surface (its Operations, Rewards and Pinning views) |
-| Node › Storage › Files, Memory | StorageFiles and Storage surfaces |
-| Node › Advanced | The Node configuration Settings section |
+| Node › Status (K3) | `Node` (`src/surfaces/Node.tsx`): one sentence in UI truth contract §1 words, Start and Stop, this node's reads, the network rows, and the validator card (grant story, recorded activation, Activate validator through the one gate). |
+| Node › Services (K1a-2) | `NodeServices`: the services registry snapshot (`services_snapshot`). |
+| Node › Storage › Files, Memory, Pins, Backup | StorageFiles, Storage, StoragePins and StorageBackup surfaces (K4) |
+| Node › Rewards (K3) | `NodeRewards` (`src/surfaces/node/NodeRewards.tsx`): `ValidatorRegistry.rewardsOf` for the member's validator key, Claim through the ceremony, pin and round rewards not live yet. |
+| Node › Advanced (K3) | `NodeAdvanced` (`src/surfaces/node/NodeAdvanced.tsx`): network identity, withdrawn-branch notice, the last crash record, the full node log, then the Node configuration Settings section. |
 | Store › Apps, Models | Commissary and Models surfaces |
 | Settings, Settings › Connections | Settings (account-level sections) and Connections surfaces |
 
@@ -123,9 +125,7 @@ Tabs with no content in this build render a "Not available yet" state that
 says what is missing and, where one exists, links to what this build has
 today. They show no data:
 
-- **Node › Services**: points to Node › Status.
-- **Node › Storage › Pins**: opens the Pinning view on Node › Status.
-- **Node › Rewards**: opens the Rewards view on Node › Status.
+- None in the Node place since K3 (Rewards, Advanced) and K4 (Pins, Backup).
 
 ## Follow-ups
 

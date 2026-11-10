@@ -167,7 +167,7 @@ fn fixture_recall_text() -> String {
 fn fixture_chain_recall_text() -> String {
     "freshness: HEAD 40204catalog0 (1 commits) ingested @ 1720000000000ms\n\
      tenant 'chain-state' — 45 nodes, showing 2:\n\
-    \x20 aabbccddee [ChainContract] contracts.LiquidStakingPool\n\
+    \x20 aabbccddee [ChainContract] contracts.ValidatorRegistry\n\
     \x20 ffee11dd22 [ChainNetwork] chain 40204 params\n"
         .to_string()
 }
@@ -522,7 +522,7 @@ fn unix_socket_transport_round_trips_a_real_socket() {
     let r = parse_result("chain-state", &text);
     assert_eq!(r.tenant, "chain-state");
     assert_eq!(r.total_in_tenant, 45, "the real socket carried the chain-state total");
-    assert!(r.hits.iter().any(|h| h.title.contains("LiquidStakingPool")));
+    assert!(r.hits.iter().any(|h| h.title.contains("ValidatorRegistry")));
     handle.join().unwrap();
 }
 
@@ -604,11 +604,11 @@ fn live_real_daemon_recall_and_chain_ingest() {
     //   1. chain_ingest <store> citrate-chain/contracts/addresses/40204.json
     //        → "chain-state ingest ok: chainId 40204 — 59 contracts … 60 nodes"
     //   2. reencrypt <store> <enc>  → "60 nodes sealed across 1 tenants, 59 edges"
-    //   3. grep -ra LiquidStakingPool <enc>  → NOTHING (ciphertext at rest ✔)
+    //   3. grep -ra <a contract name> <enc>  → NOTHING (ciphertext at rest ✔)
     //   4. mcp_serve <enc> <sock>; recall(repo="chain-state", budget=60) over the
     //        REAL Unix socket → "tenant 'chain-state' — 60 nodes" with real
     //        contract nodes + addresses (ModelAccessControl @ 0x8e59…, EntryPoint,
-    //        LiquidStakingPool, …) matching 40204.json.
+    //        …) matching 40204.json.
     // Kept `#[ignore]` because the rocksdb build is heavy for the per-PR CI gate;
     // the transformer/bge semantic path is an S7 model-bundle item. Not fabricated
     // (Rule 1) — this is a captured real run, re-runnable via the proof script.
@@ -752,6 +752,47 @@ fn seed_context_skips_personal_when_no_grant() {
     let r = mgr.seed_context(&f).expect("seed ok");
     assert_eq!(r.authored, 5, "only the network/node facts");
     assert_eq!(recorded.lock().unwrap().iter().filter(|(t, _)| t == "personal").count(), 0);
+    mgr.stop();
+}
+
+#[test]
+fn seed_context_personal_facts_say_the_grant_is_locked_not_staked() {
+    // C1-V V5 (lead audit of S5 on r1006): the grant lands in a locked MemberBond and is staked in
+    // the ValidatorRegistry only after the member activates the bond. The seeded memory is what
+    // Hermes recalls later, so it must not say the grant "staked" anything.
+    let dir = tmp_dir("seed-grant-words");
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded.clone() }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    mgr.start().expect("start");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running(), "stub daemon must reach Running");
+    let mut f = seed_facts();
+    f.bond_status = "Bond locked · not staked · until block 500,000".into();
+    mgr.seed_context(&f).expect("seed ok");
+    let rec = recorded.lock().unwrap();
+    let personal: Vec<&String> = rec.iter().filter(|(t, _)| t == "personal").map(|(_, c)| c).collect();
+    for c in &personal {
+        assert!(!c.contains("grant staked"), "a seeded fact says the grant staked: {c}");
+        assert!(!c.contains("staked SALT"), "a seeded fact calls the locked grant staked SALT: {c}");
+    }
+    let grant = personal.iter().find(|c| c.contains("32000")).expect("the grant fact is seeded");
+    assert!(grant.contains("locked in your MemberBond"), "{grant}");
+    assert!(grant.contains("staked in the ValidatorRegistry only once you activate the bond"), "{grant}");
+    assert!(personal.iter().any(|c| c.contains("Bond locked · not staked · until block 500,000")));
+    drop(rec);
     mgr.stop();
 }
 

@@ -36,10 +36,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   beforeEach(() => {
     store.setState({ chatMsgs: [] });
   });
+  const made = (link: string) => ({ id: "0123456789abcdef", group: "g1", link, label: "@x", createdAt: 1, expiresAt: 2, approving: "" });
 
   it("group_invite is gated: a declined approval mints nothing", async () => {
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
-    const create = vi.spyOn(bridge.invites, "create").mockResolvedValue({ token: "t", link: "citrate://invite?g=g1&t=t&k=pub" });
+    const create = vi.spyOn(bridge.invites, "create").mockResolvedValue(made("citrate://invite?g=g1&t=t&k=pub&e=1"));
     const out = await store.handleTool(call("group_invite", { group: "g1", forHandle: "@x" }), "m1", noop);
     expect(sig).toHaveBeenCalledTimes(1);
     expect(create).not.toHaveBeenCalled();
@@ -48,11 +49,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
 
   it("group_invite approved: the link goes to the member (clipboard), NEVER back into the model context", async () => {
     vi.spyOn(store, "requestSig").mockResolvedValue("approved");
-    const link = "citrate://invite?g=g1&t=secret-token&k=pub";
-    const create = vi.spyOn(bridge.invites, "create").mockResolvedValue({ token: "secret-token", link });
+    const link = "citrate://invite?g=g1&t=secret-token&k=pub&e=1";
+    const create = vi.spyOn(bridge.invites, "create").mockResolvedValue(made(link));
     const copy = vi.spyOn(store, "copy").mockImplementation(() => {});
     const out = await store.handleTool(call("group_invite", { group: "g1", forHandle: "@x" }), "m1", noop);
-    expect(create).toHaveBeenCalledWith("g1", "@x");
+    expect(create).toHaveBeenCalledWith("g1", "@x", expect.any(String));
     expect(copy).toHaveBeenCalledWith(link, expect.any(String));
     expect(out).not.toContain(link);
     expect(out).not.toContain("secret-token");

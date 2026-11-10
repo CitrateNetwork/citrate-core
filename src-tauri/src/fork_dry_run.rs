@@ -48,7 +48,7 @@ const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 /// Stderr kept for an error message, in chars.
 const MAX_STDERR_CHARS: usize = 300;
 /// The chain the gate deploys to.
-pub const DEPLOY_CHAIN_ID: u64 = 40204;
+pub const DEPLOY_CHAIN_ID: u64 = crate::rpc::CITRATE_CHAIN_ID;
 /// The default dry-run sender: an address nobody holds a key for. The fork funds it in memory.
 pub const DRY_RUN_SENDER: &str = "0x00000000000000000000000000000000000d7a11";
 /// `mint(uint256)` (the erc721 / hello-mint template).

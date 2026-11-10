@@ -5,11 +5,21 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { PostDeployPanel, type PostDeployOps } from "./PostDeployPanel";
+import type { DeployRecordSummaryView } from "../bridge/domains";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const ADDR = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
 const TX = "0x" + "ab".repeat(32);
+
+function summary(over: Partial<DeployRecordSummaryView> = {}): DeployRecordSummaryView {
+  return {
+    chainId: 40204, address: ADDR, txHash: TX, blockNumber: 12, deployer: "0x" + "11".repeat(20),
+    initcodeHash: "0x" + "cd".repeat(32), contractName: "LemonDrops", solcVersion: "0.8.36", abiEntries: 9,
+    standardJsonBytes: 4096, standardJsonNote: null, gateVerdict: "READY", gateEvaluatedAtMs: 1, recordedAtMs: 2,
+    ...over,
+  };
+}
 
 function ops(over: Partial<PostDeployOps> = {}): PostDeployOps {
   return {
@@ -19,6 +29,8 @@ function ops(over: Partial<PostDeployOps> = {}): PostDeployOps {
     postdeploySwitchSite: vi.fn(async () => ({ envPath: "/p/app/.env.local", address: "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed" })),
     postdeployPinSite: vi.fn(async () => ({ cid: "bafyroot", files: 2, bytes: 10, localGatewayUrl: "http://127.0.0.1:48080/ipfs/bafyroot/", publicGatewayUrl: "https://ipfs.io/ipfs/bafyroot/", note: "Pinned on this node." })),
     postdeployVercelExport: vi.fn(async () => ({ dir: "/p/vercel-export", files: 9, commands: ["cd \"/p/vercel-export\"", "npx vercel deploy --prod"] })),
+    deployRecordSave: vi.fn(async () => ({ record: summary(), alreadySaved: false, count: 1 })),
+    deployRecords: vi.fn(async () => [summary()]),
     ...over,
   };
 }
@@ -125,9 +137,76 @@ describe("Feature: after the deploy (HUP-S6.6)", () => {
     expect($(el, "pd-pin-out")?.textContent).toMatch(/Nothing was pinned/);
   });
 
+  it("CORE-A3: finding the contract saves its encrypted deploy record and says so", async () => {
+    const o = ops();
+    const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-find"));
+    expect(o.deployRecordSave).toHaveBeenCalledWith("/p", TX);
+    expect($(el, "pd-record-out")?.textContent).toMatch(/Deploy record saved, encrypted on this computer \(1 saved for this project\)/);
+  });
+
+  it("CORE-A3: an already-saved deploy, a record without compiler input, and a refused save are said plainly", async () => {
+    const again = ops({ deployRecordSave: vi.fn(async () => ({ record: summary(), alreadySaved: true, count: 3 })) });
+    let el = await render(<PostDeployPanel ops={again} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-find"));
+    expect($(el, "pd-record-out")?.textContent).toMatch(/already saved \(3 saved/);
+    act(() => root?.unmount());
+    host?.remove();
+
+    const noInput = ops({
+      deployRecordSave: vi.fn(async () => ({ record: summary({ standardJsonBytes: null, standardJsonNote: "forge could not be run: not found" }), alreadySaved: false, count: 1 })),
+    });
+    el = await render(<PostDeployPanel ops={noInput} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-find"));
+    expect($(el, "pd-record-out")?.textContent).toMatch(/compiler input was not kept: forge could not be run/);
+    act(() => root?.unmount());
+    host?.remove();
+
+    const refused = ops({ deployRecordSave: vi.fn(async () => { throw new Error("this build has no deploy-gate record in this session"); }) });
+    el = await render(<PostDeployPanel ops={refused} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-find"));
+    expect($(el, "pd-address")?.textContent).toContain(ADDR);
+    expect($(el, "pd-record-out")?.textContent).toMatch(/not saved: this build has no deploy-gate record/);
+    expect(($(el, "pd-verify") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("CORE-A3: a pending deploy saves no record", async () => {
+    const o = ops({ postdeployReceipt: vi.fn(async () => null) });
+    const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-find"));
+    expect(o.deployRecordSave).not.toHaveBeenCalled();
+    expect($(el, "pd-record-out")).toBeNull();
+  });
+
+  it("CORE-A3: Saved deploys lists the project's records newest first", async () => {
+    const o = ops({
+      deployRecords: vi.fn(async () => [summary({ blockNumber: 5 }), summary({ blockNumber: 9, standardJsonBytes: null, gateVerdict: "NOT_READY" })]),
+    });
+    const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-records"));
+    expect(o.deployRecords).toHaveBeenCalledWith("/p");
+    const lines = ($(el, "pd-records-out")?.textContent ?? "").split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/block 9, solc 0.8.36, gate not ready, no compiler input/);
+    expect(lines[1]).toMatch(/LemonDrops at 0x5aae.*block 5, solc 0.8.36, gate ready$/);
+
+    const none = ops({ deployRecords: vi.fn(async () => []) });
+    const el2 = await render(<PostDeployPanel ops={none} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el2, "pd-project"), "/p"); });
+    await click($(el2, "pd-records"));
+    expect($(el2, "pd-records-out")?.textContent).toMatch(/No deploy records are saved/);
+  });
+
   it("without a project folder nothing runs", async () => {
     const o = ops();
     const el = await render(<PostDeployPanel ops={o} lastDeployTx={null} openReader={vi.fn()} />);
     expect(($(el, "pd-find") as HTMLButtonElement).disabled).toBe(true);
+    expect(($(el, "pd-records") as HTMLButtonElement).disabled).toBe(true);
   });
 });

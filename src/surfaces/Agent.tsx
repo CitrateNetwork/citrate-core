@@ -36,6 +36,7 @@ import { PostDeployPanel } from "../shell/PostDeployPanel";
 import { ContractForgePanel } from "../shell/ContractForgePanel";
 import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
+import { CHAIN_ID_TEXT } from "../network/profile";
 import { openRecords } from "./hermes/ControlsRecords";
 
 type Tab = "overview" | "contracts";
@@ -326,7 +327,7 @@ export function Agent({ store, s, children }: SurfaceProps & { /** Hermes › Wo
                 </div>
                 {st.registrySkills.length === 0 ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
-                    Nothing published on-chain yet, or the registry couldn't be read. Skills registered to 40204 (SkillRegistry) appear here — every node sees the same list.
+                    Nothing published on-chain yet, or the registry couldn't be read. Skills registered to {CHAIN_ID_TEXT} (SkillRegistry) appear here — every node sees the same list.
                   </p>
                 ) : (
                   st.registrySkills.map((rs) => (
@@ -421,7 +422,7 @@ export function Agent({ store, s, children }: SurfaceProps & { /** Hermes › Wo
           {tab === "contracts" && (
             <>
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 500 }}>Deploy to 40204</span>
+                <span style={{ fontSize: 13.5, fontWeight: 500 }}>Deploy to {CHAIN_ID_TEXT}</span>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {CONTRACT_KINDS.map((ck) => (
                     <button key={ck.id} className={"btn btn-sm " + (ctKind === ck.id ? "btn-secondary" : "btn-ghost")} onClick={() => setCtKind(ck.id)}>

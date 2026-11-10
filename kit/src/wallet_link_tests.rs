@@ -345,3 +345,55 @@ fn other_submit_error_stays_a_hard_failure() {
     assert!(!canonical_called, "canonical not attempted on a hard submit failure");
     assert!(err.contains("authority"), "surfaces the authority failure, got: {err}");
 }
+
+// K6: the wallet-link message names a chain id, so it is checked against the network gate, and
+// with no network set nothing is signed and the link stays retriable.
+#[test]
+fn k6_wallet_link_is_refused_without_a_network_and_checked_with_one() {
+    let (vault, _p) = vault_with_wallet();
+    let info = crate::wallet::address(&vault).expect("address");
+    let ceremony = SignatureCeremony::new();
+    let state = WalletLinkState::new();
+    let open = |nonce: &str| {
+        state
+            .open(
+                &ceremony,
+                40204,
+                "https://auth.citrate.ai",
+                &info.address,
+                nonce,
+                &template("u-1", nonce, 40204),
+            )
+            .expect("opened")
+    };
+    let unset = crate::rpc::ExpectedNetwork {
+        name: "genesis-2026-12".into(),
+        chain_id: None,
+        genesis_hash: None,
+    };
+    let set = |chain_id: u64| crate::rpc::ExpectedNetwork {
+        name: "alpha-r1005".into(),
+        chain_id: Some(chain_id),
+        genesis_hash: Some(
+            "0x1dcfc4909dd9fdcb0f03c823d627e4b2032cc86bef5fc4561030d6c64b9775f1".into(),
+        ),
+    };
+    let a = open("n-k6a");
+    crate::rpc::with_added_network_gate(unset, || {
+        match state.approve(&vault, &ceremony, &a.id, false) {
+            Err(LinkError::Ceremony(m)) => assert!(m.contains("no network set"), "{m}"),
+            other => panic!("expected a network refusal, got {other:?}"),
+        }
+    });
+    let b = open("n-k6b");
+    crate::rpc::with_added_network_gate(set(7), || {
+        assert!(state.approve(&vault, &ceremony, &b.id, false).is_err());
+    });
+    let c = open("n-k6c");
+    crate::rpc::with_added_network_gate(set(40204), || {
+        let proof = state
+            .approve(&vault, &ceremony, &c.id, false)
+            .expect("the target chain signs");
+        assert_eq!(proof.nonce, "n-k6c");
+    });
+}

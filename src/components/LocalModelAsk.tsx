@@ -63,7 +63,7 @@ export function LocalModelAsk({
             )}
             {options.gateway && (
               <button className="btn btn-sm btn-secondary" data-testid="local-model-ask-gateway" onClick={() => onChoose("gateway")}>
-                {LOCAL_ASK_COPY.gateway}
+                {options.remoteLabel ? `Send this message to ${options.remoteLabel} this time` : LOCAL_ASK_COPY.gateway}
               </button>
             )}
             <button className="btn btn-sm btn-ghost" data-testid="local-model-ask-cancel" onClick={() => onChoose("cancel")}>

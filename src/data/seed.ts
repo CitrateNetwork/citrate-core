@@ -87,7 +87,7 @@ export const CATALOG = {
 export const TUTORIALS = [
   { id: 't1', title: 'Run your first validator', minutes: 8, minTier: 'free', path: 'atlas/tutorials/first-validator' },
   { id: 't2', title: 'Point Claude at your memory graph', minutes: 5, minTier: 'pilot', path: 'atlas/tutorials/mcp-claude' },
-  { id: 't3', title: 'How claims batch — earnings mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
+  { id: 't3', title: 'How claims batch — rewards mechanics', minutes: 4, minTier: 'pilot', path: 'atlas/tutorials/claims' },
   { id: 't4', title: 'x402 marketplace primer', minutes: 12, minTier: 'pilot', path: 'atlas/tutorials/x402' },
 ];
 
@@ -120,13 +120,13 @@ export const GRAPH = {
     { id: 'n5', label: 'node data dir — ~/.citrate/core', tenant: 'personal', kind: 'fact', x: 420, y: 360, z: 1.0, detail: 'Encrypted at rest. Master key in OS keyring.' },
     { id: 'n6', label: 'agent: research-runner', tenant: 'personal', kind: 'agent', x: 560, y: 400, z: 1.15, detail: 'External agent connected over the MCP socket. Write scope: your grant only.' },
     { id: 'c1', label: 'chain 40204 params', tenant: 'chain-facts', kind: 'fact', x: 760, y: 180, z: 1.2, detail: 'GhostDAG BlockDAG. Checkpoint finality is specified but not running on betanet yet.' },
-    { id: 'c2', label: 'LiquidStakingPool', tenant: 'chain-facts', kind: 'contract', x: 880, y: 260, z: 1.0, detail: '0xfd27…685e · min validator stake 32,000 SALT · 7-day unstake lockup.' },
+    { id: 'c2', label: 'ValidatorRegistry', tenant: 'chain-facts', kind: 'contract', x: 880, y: 260, z: 1.0, detail: 'The only stake that makes a validator. Minimum stake read from minStake().' },
     { id: 'c3', label: 'CitratePaymaster', tenant: 'chain-facts', kind: 'contract', x: 800, y: 360, z: 0.85, detail: '0x884c…d28 · category budgets: first-op, standard daily, recovery.' },
     { id: 'c4', label: 'EntryPoint v0.7', tenant: 'chain-facts', kind: 'contract', x: 930, y: 150, z: 0.9, detail: '0x077F…54Ef · ERC-4337 UserOp entry.' },
-    { id: 'c5', label: 'your grant + stake · S5', tenant: 'chain-facts', kind: 'event', x: 700, y: 300, z: 1.3, detail: '32,000 SALT → MembershipStakeVault → staked. Vaulted until mainnet release.' },
-    { id: 'c6', label: 'MembershipStakeVault', tenant: 'chain-facts', kind: 'contract', x: 980, y: 330, z: 1.05, detail: '0x5b21…e90a · principal locked for membership term; rewards flow to you.' },
-    { id: 'c7', label: 'enhanced rewards pools', tenant: 'chain-facts', kind: 'fact', x: 860, y: 430, z: 0.8, detail: 'performance 30% · AI 25% · network-health 20% · staking 25%.' },
-    { id: 'n7', label: 'first claim — 12.41 SALT', tenant: 'personal', kind: 'event', x: 500, y: 280, z: 0.95, detail: 'claimRewards() signed 2026-07-09. Tx witnessed on 40204.' },
+    { id: 'c5', label: 'your grant · S5', tenant: 'chain-facts', kind: 'event', x: 700, y: 300, z: 1.3, detail: 'The membership grant: 32,000 SALT locked in your MemberBond for about a year. Staked only once you activate the bond. The grant is not purchased, and it is not an investment.' },
+    { id: 'c6', label: 'MembershipStakeVault', tenant: 'chain-facts', kind: 'contract', x: 980, y: 330, z: 1.05, detail: 'Pays each grant into the member\u2019s MemberBond (bondOf). Address from the bundled address book.' },
+    { id: 'c7', label: 'enhanced rewards pools', tenant: 'chain-facts', kind: 'fact', x: 860, y: 430, z: 0.8, detail: 'Fixture. No reward-pool split is read from chain; validator rewards come from ValidatorRegistry.rewardsOf.' },
+    { id: 'n7', label: 'fixture · first claim', tenant: 'personal', kind: 'event', x: 500, y: 280, z: 0.95, detail: 'claimRewards() signed 2026-07-09. Tx witnessed on 40204.' },
   ],
   links: [
     ['n1', 'n2'], ['n2', 'c5'], ['c5', 'c2'], ['c5', 'c6'], ['c2', 'c1'], ['c3', 'c4'],
