@@ -741,6 +741,10 @@ pub fn run() {
             postdeploy::postdeploy_switch_site,
             postdeploy::postdeploy_pin_site,
             postdeploy::postdeploy_vercel_export,
+            // CORE-A3: durable, encrypted deploy records per project.
+            deploy_records::deploy_record_save,
+            deploy_records::deploy_records_list,
+            deploy_records::deploy_record_get,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,

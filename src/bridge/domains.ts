@@ -2191,6 +2191,11 @@ export interface ContractsDomain {
   postdeployPinSite(projectDir: string): Promise<SitePinView>;
   /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */
   postdeployVercelExport(projectDir: string): Promise<VercelExportView>;
+  /** CORE-A3 — keep a durable, encrypted record of a confirmed deploy of this project (core reads
+   *  the receipt and transaction from 40204, the forge artifact and the gate record). */
+  deployRecordSave(projectDir: string, txHash: string): Promise<DeployRecordSavedView>;
+  /** CORE-A3 — this project's saved deploy records, oldest first (from its sealed file). */
+  deployRecords(projectDir: string): Promise<DeployRecordSummaryView[]>;
   /** HUP-S6.2 / US-6.4 — the bundled contract templates with their parameter forms, the tier in
    *  effect and its Medusa budget. Read-only. */
   templateList(): Promise<TemplateCatalog>;
@@ -2250,6 +2255,31 @@ export interface SitePinView {
   localGatewayUrl: string;
   publicGatewayUrl: string;
   note: string;
+}
+
+/** CORE-A3 — mirrors Rust `deploy_records::DeployRecordSummary`. */
+export interface DeployRecordSummaryView {
+  chainId: number;
+  address: string;
+  txHash: string;
+  blockNumber: number;
+  deployer: string;
+  initcodeHash: string;
+  contractName: string;
+  solcVersion: string;
+  abiEntries: number;
+  standardJsonBytes: number | null;
+  standardJsonNote: string | null;
+  gateVerdict: "READY" | "NOT_READY";
+  gateEvaluatedAtMs: number;
+  recordedAtMs: number;
+}
+
+/** CORE-A3 — mirrors Rust `deploy_records::DeployRecordSaved`. */
+export interface DeployRecordSavedView {
+  record: DeployRecordSummaryView;
+  alreadySaved: boolean;
+  count: number;
 }
 
 /** HUP-S6.6 — mirrors Rust `postdeploy::VercelExport`. */

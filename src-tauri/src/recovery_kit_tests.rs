@@ -405,8 +405,11 @@ fn status_reports_presence_and_fingerprints_but_no_key_bytes() {
     let k = provisioned();
     let st = status_of(&k, &dir);
     assert!(st.keyring_reachable);
-    assert_eq!(st.keys.len(), 2);
-    assert!(st.keys.iter().all(|e| e.present));
+    // Every covered key is listed; the deploy records key is minted on the first saved deploy.
+    assert_eq!(st.keys.len(), DEVICE_KEYS.len());
+    for e in &st.keys {
+        assert_eq!(e.present, e.account != "deploy-records-key", "{}", e.account);
+    }
     assert!(st.keys.iter().all(|e| e.recorded_fingerprint.is_none()));
     let json = serde_json::to_string(&st).unwrap();
     assert!(!json.contains(&hex::encode([0x11u8; 32])));
