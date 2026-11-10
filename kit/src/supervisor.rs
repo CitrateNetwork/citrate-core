@@ -733,6 +733,43 @@ pub enum ControlResult {
     /// An automated start or restart was refused: the service is `Failed` or not running, and
     /// only a member Start revives it with a fresh retry budget. Nothing was committed.
     RequiresMemberStart(String),
+    /// CORE-D6: new starts are held (an update is being installed). Nothing was committed.
+    Held(String),
+}
+
+/// CORE-D6 (0.5.3): the gate every start passes. While it is held (an update is being installed),
+/// no supervisor starts and no Start or automated restart is committed, so no sidecar can come
+/// back between the pre-update drain and the relaunch (and no new binary from the installed
+/// bundle can start against the old app's data). Production supervisors share
+/// [`SpawnGate::global`]; tests give each supervisor its own gate.
+#[derive(Debug, Default)]
+pub struct SpawnGate {
+    hold: Mutex<Option<String>>,
+}
+
+impl SpawnGate {
+    /// The app-wide gate.
+    pub fn global() -> Arc<SpawnGate> {
+        static GLOBAL: std::sync::OnceLock<Arc<SpawnGate>> = std::sync::OnceLock::new();
+        GLOBAL
+            .get_or_init(|| Arc::new(SpawnGate::default()))
+            .clone()
+    }
+
+    /// Hold every new start, with the reason a refused start reports.
+    pub fn hold(&self, reason: impl Into<String>) {
+        *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.into());
+    }
+
+    /// Let starts through again.
+    pub fn release(&self) {
+        *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The reason starts are held, if they are.
+    pub fn held(&self) -> Option<String> {
+        self.hold.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 /// What became of an accepted control.
@@ -1228,6 +1265,8 @@ pub struct SupervisorConfig {
     /// period. If it stays up, health credit (attested or elapsed, as for any incarnation) resets
     /// the budget. A Stop, a member Start or shutdown cancels a pending slow retry.
     pub slow_retry: Option<Duration>,
+    /// CORE-D6: the gate starts pass ([`SpawnGate::global`] by default).
+    pub spawn_gate: Arc<SpawnGate>,
 }
 
 impl SupervisorConfig {
@@ -1248,6 +1287,7 @@ impl SupervisorConfig {
             collect_barrier: None,
             settle_barrier: None,
             slow_retry: None,
+            spawn_gate: SpawnGate::global(),
         }
     }
 }
@@ -1360,6 +1400,8 @@ pub struct Supervisor {
     deadlines: Arc<DeadlinePublisher>,
     /// This supervisor instance (see [`ControlToken::instance`]).
     instance: u64,
+    /// CORE-D6: the gate a Start or automated restart passes.
+    spawn_gate: Arc<SpawnGate>,
 }
 
 impl Supervisor {
@@ -1369,6 +1411,12 @@ impl Supervisor {
     /// [`MAX_DESCRIPTOR_BYTES`] (`InvalidInput`, nothing spawned) or if the OS refuses the
     /// monitor thread. No `.expect`, so the caller decides (F-2 LOW).
     pub fn start(config: SupervisorConfig) -> std::io::Result<Self> {
+        if let Some(reason) = config.spawn_gate.held() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("'{}' was not started: {reason}", config.spec.name),
+            ));
+        }
         let bytes = config.spec.descriptor_bytes();
         if bytes > MAX_DESCRIPTOR_BYTES {
             return Err(std::io::Error::new(
@@ -1463,6 +1511,7 @@ impl Supervisor {
             failed_barrier: config.failed_barrier.clone(),
             settle_barrier: config.settle_barrier.clone(),
         });
+        let spawn_gate = config.spawn_gate.clone();
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
             .name(format!("supervisor:{name}"))
@@ -1475,6 +1524,7 @@ impl Supervisor {
             owner,
             deadlines,
             instance,
+            spawn_gate,
         })
     }
 
@@ -1708,6 +1758,9 @@ impl Supervisor {
     /// `Starting`, `Alive` or in `Backoff`; otherwise `RequiresMemberStart`. A restart while a
     /// Start is still pending joins it.
     pub fn request_auto_restart(&self) -> ControlResult {
+        if let Some(reason) = self.spawn_gate.held() {
+            return ControlResult::Held(reason);
+        }
         let Some(mut c) = self.shared.lock_bounded() else {
             return ControlResult::Busy;
         };
@@ -1748,6 +1801,9 @@ impl Supervisor {
     }
 
     fn start_intent(&self, origin: StartOrigin) -> ControlResult {
+        if let Some(reason) = self.spawn_gate.held() {
+            return ControlResult::Held(reason);
+        }
         let Some(mut c) = self.shared.lock_bounded() else {
             return ControlResult::Busy;
         };
@@ -2491,6 +2547,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         collect_barrier,
         settle_barrier: _settle_barrier,
         slow_retry,
+        spawn_gate: _spawn_gate,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -3539,4 +3596,7 @@ mod tests {
 
     // CORE-D3: the slow retry after Failed.
     include!("supervisor_slow_retry_tests.rs");
+
+    // CORE-D6: the spawn gate held during an update install. Platform-neutral.
+    include!("supervisor_spawn_gate_tests.rs");
 }
