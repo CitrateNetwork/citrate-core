@@ -284,7 +284,8 @@ pub(crate) fn assemble(
 ) -> Result<DeployRecord, String> {
     if !chain.initcode.starts_with(&artifact.creation) {
         return Err(
-            "the code this transaction deployed is not this project's compiled contract".to_string(),
+            "the code this transaction deployed is not this project's compiled contract"
+                .to_string(),
         );
     }
     let initcode_hash = crate::deploy_gate::initcode_hash(&chain.initcode);
@@ -361,21 +362,27 @@ impl<'a> DeployRecordStore<'a> {
                     .is_some_and(|x| x == std::ffi::OsStr::new(EXT))
             })),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(format!("the deploy records folder cannot be read: {}", e.kind())),
+            Err(e) => Err(format!(
+                "the deploy records folder cannot be read: {}",
+                e.kind()
+            )),
         }
     }
 
     /// The records key. Minted only when `mint` and no sealed file exists yet.
     fn key(&self, mint: bool) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-        let unreachable = || "the keychain is not reachable; deploy records stay closed".to_string();
+        let unreachable =
+            || "the keychain is not reachable; deploy records stay closed".to_string();
         match self.keyring.get(KEY_ACCOUNT).map_err(|_| unreachable())? {
             Some(k) if k.len() == KEY_LEN => Ok(Some(Zeroizing::new(k))),
             Some(_) => Err("the deploy records key in the keychain is malformed".to_string()),
             None => {
                 if self.any_sealed_file()? {
-                    return Err("deploy records exist but their key is not in the keychain; \
+                    return Err(
+                        "deploy records exist but their key is not in the keychain; \
                                 restore it from your recovery kit"
-                        .to_string());
+                            .to_string(),
+                    );
                 }
                 if !mint {
                     return Ok(None);
@@ -453,7 +460,10 @@ impl<'a> DeployRecordStore<'a> {
         let path = self.file_for(project_id);
         match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("the deploy records file cannot be read: {}", e.kind())),
+            Err(e) => Err(format!(
+                "the deploy records file cannot be read: {}",
+                e.kind()
+            )),
             Ok(m) if !m.is_file() => Err("the deploy records file is not a plain file".to_string()),
             Ok(m) if m.len() as usize > MAX_FILE_BYTES => {
                 Err("this project's deploy records file is larger than the limit".to_string())
@@ -535,7 +545,11 @@ pub(crate) fn save_deploy_record<T: crate::rpc::RpcTransport>(
 ) -> Result<DeployRecordSaved, String> {
     let pid = project_id(&p.root);
     let chain = read_creation(client, tx_hash)?;
-    if let Some(r) = store.load(&pid)?.iter().find(|r| r.tx_hash == chain.tx_hash) {
+    if let Some(r) = store
+        .load(&pid)?
+        .iter()
+        .find(|r| r.tx_hash == chain.tx_hash)
+    {
         return store.save(&pid, r.clone());
     }
     let artifact = read_artifact(p)?;
