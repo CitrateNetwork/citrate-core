@@ -39,7 +39,7 @@ jobs:
           - os: windows-latest
             expected: 56
           - os: macos-15
-            expected: 82
+            expected: 87
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
