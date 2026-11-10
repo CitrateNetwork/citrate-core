@@ -166,6 +166,30 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
     expect(c.err).toMatch(/r1007\.nodeCheckpoint/);
   });
 
+  it("check --release fails when the applied profile's rpcUrl is not the cut's (core#611)", () => {
+    writeJson("release/network-cut.json", filledCut(json("release/network-cut.json")));
+    expect(py(["apply", "--root", root]).code).toBe(0);
+    const p = json("src-tauri/network/profiles.json");
+    p.profiles.r1007.rpcUrl = "https://rpc2.citrate.ai";
+    writeJson("src-tauri/network/profiles.json", p);
+    const c = py(["check", "--release", "--root", root, "--cut-only"]);
+    expect(c.code).not.toBe(0);
+    expect(c.err).toMatch(/r1007\.rpcUrl/);
+  });
+
+  it("apply fills a profile whose rpcUrl is unset: the cut is its one source (core#611)", () => {
+    const p = json("src-tauri/network/profiles.json");
+    p.profiles.r1007.rpcUrl = null;
+    p.profiles.r1007.pending.rpcUrl = "the public JSON-RPC of the r1007 fleet; set by the r1007 cut";
+    writeJson("src-tauri/network/profiles.json", p);
+    writeJson("release/network-cut.json", filledCut(json("release/network-cut.json")));
+    const r = py(["apply", "--root", root]);
+    expect(r.code, r.err).toBe(0);
+    const after = json("src-tauri/network/profiles.json").profiles.r1007;
+    expect(after.rpcUrl).toBe(CANDIDATE.rpcUrl);
+    expect(Object.keys(after.pending ?? {})).not.toContain("rpcUrl");
+  });
+
   it("check --release refuses it and names every pending value", () => {
     const r = py(["check", "--release"]);
     expect(r.code).not.toBe(0);
@@ -314,6 +338,7 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     ["a zero checkpoint interval", (c) => (c.chainParams.checkpoint_interval = 0), /chainParams.*checkpoint_interval/],
     ["a chain parameter that is not an integer", (c) => (c.chainParams.committee_size = "100"), /chainParams.*committee_size/],
     ["an undo window above the member retention", (c) => (c.chainParams.undo_window = 20000), /undo_window.*memberPruneRetain/],
+    ["a pruning depth above the member retention (core#611)", (c) => (c.chainParams.pruning_depth = 20000), /pruning_depth.*memberPruneRetain/],
     ["an RPC that is not https", (c) => (c.rpcUrl = "http://rpc.citrate.ai"), /rpcUrl.*https/],
     ["a provenance record with a malformed digest", (c) => (c.node["aarch64-apple-darwin"].provenance.sha256 = "8c"), /aarch64-apple-darwin.*provenance/],
   ];

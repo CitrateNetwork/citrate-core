@@ -184,6 +184,10 @@ def value_problems(cut: dict, profiles: dict) -> list:
             if isinstance(uw, int) and isinstance(keep, int) and uw > keep:
                 out.append(f"chainParams.undo_window {uw} is above the {pid} profile's memberPruneRetain {keep}: "
                            "a member would prune blocks it may have to undo (ADR CV-7a)")
+            pd = cp.get("pruning_depth")
+            if isinstance(pd, int) and isinstance(keep, int) and pd > keep:
+                out.append(f"chainParams.pruning_depth {pd} is above the {pid} profile's memberPruneRetain {keep}: "
+                           "a pruning member must keep at least the pruning depth (CORE-N5, ADR CV-7a)")
     url = cut.get("rpcUrl")
     if url is not None and not (isinstance(url, str) and HTTPS.fullmatch(url)):
         out.append(f"rpcUrl {url!r} is not an https URL")
@@ -434,7 +438,8 @@ def cmd_apply(a) -> None:
     if errors:
         raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
     p = profiles["profiles"][cut["profile"]]
-    other = [f for f in ("chainId", "nodeNetwork", "rpcUrl", "explorerUrl", "faucetUrl", "addressBook")
+    # rpcUrl is not a prerequisite: it is a cut value, and `apply` writes it (core#611).
+    other = [f for f in ("chainId", "nodeNetwork", "explorerUrl", "faucetUrl", "addressBook")
              if p.get(f) is None]
     if other:
         raise Refused(f"profile {cut['profile']} also has {other} unset; set them in {PROFILES} first")
