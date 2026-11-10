@@ -86,7 +86,35 @@ struct RawProfile {
     #[serde(default)]
     retired: Option<String>,
     #[serde(default)]
+    node_checkpoint: Option<RawNodeCheckpoint>,
+    #[serde(default)]
     pending: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawNodeCheckpoint {
+    interval: u64,
+    committee_size: u64,
+    vote_depth: u64,
+}
+
+/// The `[checkpoint]` values a node config must repeat on a genesis that compiles them (r1007).
+///
+/// The citrate-chain node compiles chain parameters for such a genesis and refuses to start when
+/// the config's `[checkpoint] interval`, `committee_size` or `vote_depth` differ from them (a
+/// per-node value would make the node propose, select and vote on other checkpoints than the
+/// fleet). `scripts/network-cut.py apply` writes them into the profile from the cut's
+/// `chainParams`, and [`render_node_network`] writes all three into `node.toml` explicitly. A
+/// profile without them (alpha-r1005, r1006) keeps the template's section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeCheckpoint {
+    /// `[checkpoint] interval` (the chain's `checkpoint_interval`).
+    pub interval: u64,
+    /// `[checkpoint] committee_size`.
+    pub committee_size: u64,
+    /// `[checkpoint] vote_depth` (the chain's `checkpoint_vote_depth`).
+    pub vote_depth: u64,
 }
 
 /// The fewest blocks a member node may keep when it prunes: the undo window (ADR-2026-11-03
@@ -126,6 +154,8 @@ pub struct NetworkProfile {
     /// CORE-N2: why this network is retired. A retired profile stays known (a data dir from it is
     /// still named, [`profile_for_genesis`]) but is refused like an unset one ([`Self::ready`]).
     pub retired: Option<String>,
+    /// The `[checkpoint]` values the node config repeats; `None` = the template's section.
+    pub node_checkpoint: Option<NodeCheckpoint>,
     /// For each unset field: what sets it.
     pub pending: BTreeMap<String, String>,
 }
@@ -154,6 +184,8 @@ pub struct ReadyNetwork {
     /// The blocks a member node keeps, or `None` for full history (at least
     /// [`MIN_MEMBER_PRUNE_RETAIN`]).
     pub member_prune_retain: Option<u64>,
+    /// The `[checkpoint]` values written into the node config, or `None` for the template's.
+    pub node_checkpoint: Option<NodeCheckpoint>,
 }
 
 /// Why a profile cannot be used.
@@ -275,7 +307,9 @@ pub fn node_genesis_profiles() -> Result<&'static [NodeGenesis], ProfileError> {
         .map_err(Clone::clone)
 }
 
-/// The genesis profile `name`, when the bundled node builds it.
+/// The genesis profile `name`, when the bundled node builds it. (Readiness looks it up in the
+/// table it is given, [`NetworkProfile::ready_with`]; this is the embedded table's lookup.)
+#[cfg(test)]
 pub fn node_genesis(name: &str) -> Option<&'static NodeGenesis> {
     node_genesis_profiles()
         .ok()?
@@ -305,6 +339,11 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
             min_chain_rev: p.min_chain_rev,
             member_prune_retain: p.member_prune_retain,
             retired: p.retired,
+            node_checkpoint: p.node_checkpoint.map(|c| NodeCheckpoint {
+                interval: c.interval,
+                committee_size: c.committee_size,
+                vote_depth: c.vote_depth,
+            }),
             pending: p.pending,
         })
         .collect();
@@ -424,6 +463,13 @@ impl NetworkProfile {
 
     /// Every value set and well formed, or why not.
     pub fn ready(&self) -> Result<ReadyNetwork, ProfileError> {
+        self.ready_with(node_genesis_profiles().unwrap_or(&[]))
+    }
+
+    /// [`Self::ready`] against a given table of the genesis profiles the bundled node builds (the
+    /// embedded `nodeGenesisProfiles` for [`Self::ready`]; tests pass the table of a profiles file
+    /// as the network cut writes it).
+    pub fn ready_with(&self, node_table: &[NodeGenesis]) -> Result<ReadyNetwork, ProfileError> {
         let missing = self.missing();
         if !missing.is_empty() {
             return Err(ProfileError::NotSet {
@@ -472,18 +518,20 @@ impl NetworkProfile {
         // node starts (the node would refuse it too, or an older one fall back to the chain-id
         // default genesis) and nothing is signed.
         let raw_gp = self.genesis_profile.clone().unwrap_or_default();
-        let node_genesis = node_genesis(&raw_gp).cloned().ok_or_else(|| {
-            let known: Vec<String> = node_genesis_profiles()
-                .map(|g| g.iter().map(|g| g.name.clone()).collect())
-                .unwrap_or_default();
-            invalid(
-                "genesisProfile",
-                format!(
+        let node_genesis = node_table
+            .iter()
+            .find(|g| g.name == raw_gp)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<String> = node_table.iter().map(|g| g.name.clone()).collect();
+                invalid(
+                    "genesisProfile",
+                    format!(
                     "{raw_gp:?} is not a genesis profile the bundled node builds (it builds: {})",
                     known.join(", ")
                 ),
-            )
-        })?;
+                )
+            })?;
         let node_network = self.node_network.clone().unwrap_or_default();
         if node_network.is_empty()
             || !node_network
@@ -527,6 +575,17 @@ impl NetworkProfile {
                 format!("{min_chain_rev:?} is not a commit (40 lowercase hex)"),
             ));
         }
+        if let Some(c) = self.node_checkpoint {
+            if c.interval == 0 || c.committee_size == 0 || c.vote_depth == 0 {
+                return Err(invalid(
+                    "nodeCheckpoint",
+                    format!(
+                        "interval {}, committeeSize {}, voteDepth {}: each must be positive",
+                        c.interval, c.committee_size, c.vote_depth
+                    ),
+                ));
+            }
+        }
         Ok(ReadyNetwork {
             id: self.id.clone(),
             label: self.label.clone(),
@@ -542,6 +601,7 @@ impl NetworkProfile {
             address_book_sha256,
             min_chain_rev,
             member_prune_retain: self.member_prune_retain,
+            node_checkpoint: self.node_checkpoint,
         })
     }
 
@@ -617,6 +677,11 @@ pub const GENESIS_PROFILE_PLACEHOLDER: &str = "{{GENESIS_PROFILE}}";
 /// CORE-N5: a profile with a member retention ([`ReadyNetwork::member_prune_retain`]) gets a pruned
 /// chain store keeping that many blocks (`[storage] pruning = true`, `keep_blocks`); without one
 /// the template's full-history values are kept.
+///
+/// A profile with [`ReadyNetwork::node_checkpoint`] (the r1007 cut) gets `[checkpoint] interval`,
+/// `committee_size` and `vote_depth` written explicitly, the values its genesis compiles, so the
+/// node's start-up check passes and no node default decides them; without it the template's
+/// `[checkpoint]` section is kept byte for byte.
 pub fn render_node_network(template: &str, net: &ReadyNetwork) -> String {
     let nodes: Vec<String> = net
         .bootnodes
@@ -627,30 +692,76 @@ pub fn render_node_network(template: &str, net: &ReadyNetwork) -> String {
         .replace(CHAIN_ID_PLACEHOLDER, &net.chain_id.to_string())
         .replace(GENESIS_PROFILE_PLACEHOLDER, &net.node_genesis.name)
         .replace(BOOTNODES_PLACEHOLDER, &nodes.join("\n"));
-    match net.member_prune_retain {
-        Some(keep) => set_storage_retention(&out, keep),
+    let out = match net.member_prune_retain {
+        Some(keep) => set_table_keys(
+            &out,
+            "storage",
+            &[
+                ("pruning", "true".into()),
+                ("keep_blocks", keep.to_string()),
+            ],
+        ),
+        None => out,
+    };
+    match net.node_checkpoint {
+        Some(c) => set_table_keys(
+            &out,
+            "checkpoint",
+            &[
+                ("interval", c.interval.to_string()),
+                ("committee_size", c.committee_size.to_string()),
+                ("vote_depth", c.vote_depth.to_string()),
+            ],
+        ),
         None => out,
     }
 }
 
-/// `[storage] pruning = true` and `keep_blocks = <keep>` in a rendered config: the two keys of the
-/// `[storage]` table are rewritten in place (every other line is kept byte for byte).
-fn set_storage_retention(config: &str, keep: u64) -> String {
-    let mut in_storage = false;
+/// `key = value` for each of `keys` inside the `[table]` of a rendered config: a key already in
+/// the table is rewritten in place, one that is not is added after the table's last key line.
+/// Every other line is kept byte for byte.
+fn set_table_keys(config: &str, table: &str, keys: &[(&str, String)]) -> String {
+    let header = format!("[{table}]");
+    let mut in_table = false;
+    let mut seen = vec![false; keys.len()];
     let mut out: Vec<String> = Vec::new();
+    // Index in `out` after which keys missing from the table are inserted.
+    let mut last_key_line: Option<usize> = None;
     for line in config.split('\n') {
         let t = line.trim_start();
         if t.starts_with('[') {
-            in_storage = t.starts_with("[storage]");
+            in_table = t.starts_with(&header);
+            if in_table {
+                last_key_line = Some(out.len());
+            }
         }
         let key = t.split('=').next().unwrap_or("").trim();
-        out.push(if in_storage && t.contains('=') && key == "pruning" {
-            "pruning = true".to_string()
-        } else if in_storage && t.contains('=') && key == "keep_blocks" {
-            format!("keep_blocks = {keep}")
+        let hit = if in_table && t.contains('=') && !t.starts_with('#') {
+            keys.iter().position(|(k, _)| *k == key)
         } else {
-            line.to_string()
-        });
+            None
+        };
+        match hit {
+            Some(i) => {
+                seen[i] = true;
+                out.push(format!("{} = {}", keys[i].0, keys[i].1));
+            }
+            None => out.push(line.to_string()),
+        }
+        if in_table && t.contains('=') && !t.starts_with('#') {
+            last_key_line = Some(out.len() - 1);
+        }
+    }
+    let missing: Vec<String> = keys
+        .iter()
+        .zip(&seen)
+        .filter(|(_, s)| !**s)
+        .map(|((k, v), _)| format!("{k} = {v}"))
+        .collect();
+    if !missing.is_empty() {
+        if let Some(at) = last_key_line {
+            out.splice(at + 1..at + 1, missing);
+        }
     }
     out.join("\n")
 }

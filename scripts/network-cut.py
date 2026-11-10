@@ -2,9 +2,10 @@
 """Check and apply the network cut file, release/network-cut.json (0.5.3 CORE-N1/N2).
 
 The cut file is the one place the values of a new genesis are written: block 0, the genesis
-profile the node compiles, the bootnode keys, the canonical address book digest, the chain rev
-the node and the app's chain crates are built from, the node's consensus fingerprint, and the
-node bytes for macOS arm64, Linux x86_64 and Linux aarch64. Every other file that pins one of
+profile the node compiles, the chain parameters it compiles for that block 0, the public RPC,
+the bootnode keys, the canonical address book digest, the chain rev the node and the app's chain
+crates are built from, the node's consensus fingerprint, and the node bytes for macOS arm64,
+Linux x86_64 and Linux aarch64. Every other file that pins one of
 them is written from it, so cutting the release is a fill of this file plus `apply`.
 
 check [--release] [--root <dir>] [--cut-only]
@@ -12,7 +13,9 @@ check [--release] [--root <dir>] [--cut-only]
     The file is well formed: known keys only; every value null or well formed; the bootnodes are
     exactly boot1-3.citrate.ai and rpc.citrate.ai on 30303 with distinct keys; the macOS and
     Linux aarch64 node assets are named after the chain rev; `pending` names exactly the null values, each with a
-    reason; the target and retired profiles exist in profiles.json.
+    reason; the chain parameters are exactly the node's named set of positive integers, with an
+    undo window the target profile's member retention covers; the RPC is https; the target and
+    retired profiles exist in profiles.json.
     With --release: nothing is pending, and the cut is applied: profiles.json, build-sidecar.sh,
     components.json, runtime-deps.sha256, the two Cargo.toml files and Cargo.lock all carry its
     values. Unless --cut-only, it then runs scripts/check-network-profile.sh --release
@@ -22,8 +25,11 @@ apply [--root <dir>]
 
     Refuses unless the file is complete (nothing pending, every value well formed) and the target
     profile has every other value set. Then writes, and writes nothing else:
-      src-tauri/network/profiles.json   the target profile's values, `pending` emptied, `active`,
-                                        its nodeGenesisProfiles entry, `retired` on each retired
+      src-tauri/network/profiles.json   the target profile's values (`rpcUrl`, and `nodeCheckpoint`:
+                                        the [checkpoint] interval, committee size and vote depth
+                                        the node requires, from chainParams), `pending` emptied,
+                                        `active`, its nodeGenesisProfiles entry, `retired` on each
+                                        retired
       scripts/build-sidecar.sh          MIN_CHAIN_REV
       release/components.json           citrate-node source.rev, federation, the three artifacts
       src-tauri/runtime-deps.sha256     the macOS and Linux aarch64 node pin lines, and a pin for
@@ -58,6 +64,8 @@ VALUES = [
     "genesisHash",
     "genesisProfile",
     "compiledActivations",
+    "chainParams",
+    "rpcUrl",
     "bootnodes",
     "addressBookSha256",
     "chainRev",
@@ -73,7 +81,32 @@ KEYS = {"_comment", "profile", "retire", "node", "pending"} | set(VALUES)
 # The r1007 fleet's P2P entry points (owner decision: boot1-3 + rpc.citrate.ai).
 BOOT_HOSTS = ["boot1.citrate.ai:30303", "boot2.citrate.ai:30303", "boot3.citrate.ai:30303", "rpc.citrate.ai:30303"]
 
+# The chain parameters the node compiles for the genesis (citrate-chain core/consensus
+# genesis_params.rs `GenesisChainParams`, in its field order; the node logs them at start-up as
+# "Genesis chain parameters: name=value,..."). The node refuses to start when its [checkpoint]
+# interval, committee_size or vote_depth differ from three of them, so the cut writes those into
+# the profile (`nodeCheckpoint`), which the app renders into node.toml.
+CHAIN_PARAMS = [
+    "slot_duration_secs",
+    "max_future_drift_secs",
+    "pruning_depth",
+    "undo_window",
+    "ghostdag_k",
+    "max_parents",
+    "merge_depth",
+    "checkpoint_interval",
+    "committee_size",
+    "checkpoint_vote_depth",
+    "include_gas_limit",
+    "accept_gas_limit",
+    "validator_activation_height",
+]
+# profiles.json nodeCheckpoint key -> chain parameter.
+NODE_CHECKPOINT = {"interval": "checkpoint_interval", "committeeSize": "committee_size",
+                   "voteDepth": "checkpoint_vote_depth"}
+
 HASH = re.compile(r"0x[0-9a-f]{64}")
+HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\s]*)?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 REV = re.compile(r"[0-9a-f]{40}")
 FINGERPRINT = re.compile(r"0x[0-9a-f]{32}")
@@ -133,6 +166,27 @@ def value_problems(cut: dict, profiles: dict) -> list:
     ca = cut.get("compiledActivations")
     if ca is not None and not isinstance(ca, bool):
         out.append("compiledActivations is true or false")
+    cp = cut.get("chainParams")
+    if cp is not None:
+        if not isinstance(cp, dict):
+            out.append(f"chainParams must map each of {CHAIN_PARAMS} to its value")
+        else:
+            missing = [k for k in CHAIN_PARAMS if k not in cp]
+            unknown = sorted(set(cp) - set(CHAIN_PARAMS))
+            if missing or unknown:
+                out.append(f"chainParams must have exactly the node's parameters: missing {missing}, unknown {unknown}")
+            for k in CHAIN_PARAMS:
+                v = cp.get(k)
+                if k in cp and not (isinstance(v, int) and not isinstance(v, bool) and v > 0):
+                    out.append(f"chainParams.{k} {v!r} is not a positive integer")
+            keep = profiles.get("profiles", {}).get(pid, {}).get("memberPruneRetain")
+            uw = cp.get("undo_window")
+            if isinstance(uw, int) and isinstance(keep, int) and uw > keep:
+                out.append(f"chainParams.undo_window {uw} is above the {pid} profile's memberPruneRetain {keep}: "
+                           "a member would prune blocks it may have to undo (ADR CV-7a)")
+    url = cut.get("rpcUrl")
+    if url is not None and not (isinstance(url, str) and HTTPS.fullmatch(url)):
+        out.append(f"rpcUrl {url!r} is not an https URL")
     b = cut.get("bootnodes")
     if b is not None:
         ms = [BOOTNODE.fullmatch(x) if isinstance(x, str) else None for x in b] if isinstance(b, list) else [None]
@@ -239,6 +293,11 @@ def load(root: Path):
 # what the cut writes
 # ---------------------------------------------------------------------------------------------
 
+def node_checkpoint(cut: dict) -> dict:
+    """The profile's nodeCheckpoint: the [checkpoint] values the node requires on this genesis."""
+    return {k: cut["chainParams"][param] for k, param in NODE_CHECKPOINT.items()}
+
+
 def applied_profiles(cut: dict, profiles: dict) -> dict:
     d = json.loads(json.dumps(profiles))
     pid = cut["profile"]
@@ -248,7 +307,9 @@ def applied_profiles(cut: dict, profiles: dict) -> dict:
     p["bootnodes"] = list(cut["bootnodes"])
     p["addressBookSha256"] = cut["addressBookSha256"]
     p["minChainRev"] = cut["chainRev"]
-    filled = {"genesisHash", "genesisProfile", "bootnodes", "addressBookSha256", "minChainRev"}
+    p["rpcUrl"] = cut["rpcUrl"]
+    p["nodeCheckpoint"] = node_checkpoint(cut)
+    filled = {"genesisHash", "genesisProfile", "bootnodes", "addressBookSha256", "minChainRev", "rpcUrl"}
     p["pending"] = {k: v for k, v in (p.get("pending") or {}).items() if k not in filled}
     d["nodeGenesisProfiles"][cut["genesisProfile"]] = {
         "genesisHash": cut["genesisHash"],
@@ -408,7 +469,8 @@ def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
         p = prof["profiles"][pid]
         for k, want in (("genesisHash", cut["genesisHash"]), ("genesisProfile", cut["genesisProfile"]),
                         ("bootnodes", cut["bootnodes"]), ("addressBookSha256", cut["addressBookSha256"]),
-                        ("minChainRev", rev)):
+                        ("minChainRev", rev), ("rpcUrl", cut["rpcUrl"]),
+                        ("nodeCheckpoint", node_checkpoint(cut))):
             if p.get(k) != want:
                 out.append(f"{PROFILES}: {pid}.{k} is {p.get(k)!r}, the cut has {want!r}")
         if p.get("pending"):

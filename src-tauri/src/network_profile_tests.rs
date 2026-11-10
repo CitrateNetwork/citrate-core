@@ -1243,3 +1243,219 @@ fn a_pruned_profile_renders_a_pruned_node_config_and_others_keep_full_history() 
     archive.member_prune_retain = None;
     assert_eq!(storage(&archive.ready().expect("ready")), (false, 100_000));
 }
+
+// ---- r1007: the node config a filled cut produces, against the chain's compiled parameters ----
+//
+// The r1007 node compiles chain parameters for its block 0 and refuses to start when the node
+// config's `[checkpoint]` interval, committee size or vote depth differ from them (citrate-chain
+// `node/src/genesis.rs` `check_checkpoint_params`, run at start-up on that genesis). The values
+// here are CANDIDATE fixtures (fixtures/network-cut/r1007-candidate.json), recorded before the
+// chain's integration step; scripts/network-cut.test.mjs applies the same candidate cut to a copy
+// of the repo and proves it writes exactly fixtures/network-cut/r1007-candidate.applied.json,
+// which is what these tests render.
+
+const R1007_CANDIDATE: &str = include_str!("../../fixtures/network-cut/r1007-candidate.json");
+const R1007_CANDIDATE_APPLIED: &str =
+    include_str!("../../fixtures/network-cut/r1007-candidate.applied.json");
+
+/// A value of the candidate chain parameters (fixture), by the chain's field name.
+fn candidate_param(name: &str) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(R1007_CANDIDATE).expect("candidate fixture");
+    assert_eq!(v["status"], "candidate", "the fixture says it is a candidate");
+    v["chainParams"][name]
+        .as_u64()
+        .unwrap_or_else(|| panic!("candidate chainParams.{name}"))
+}
+
+/// profiles.json as the cut writes it: the embedded file with the applied r1007 entries.
+fn applied_r1007_json() -> String {
+    let applied: serde_json::Value =
+        serde_json::from_str(R1007_CANDIDATE_APPLIED).expect("applied fixture");
+    profiles_json_with(|v| {
+        v["active"] = applied["active"].clone();
+        v["nodeGenesisProfiles"]["r1007"] = applied["nodeGenesisProfiles"]["r1007"].clone();
+        v["profiles"]["r1007"] = applied["profiles"]["r1007"].clone();
+    })
+}
+
+/// The r1007 network after the candidate cut, readied against its own nodeGenesisProfiles table
+/// (the cut adds the r1007 entry the bundled node builds).
+fn applied_r1007() -> ReadyNetwork {
+    let json = applied_r1007_json();
+    let (active, ps) = parse(&json).expect("applied profiles parse");
+    assert_eq!(active, R1007);
+    let table = parse_node_genesis(&json).expect("applied node genesis table parses");
+    ps.into_iter()
+        .find(|p| p.id == R1007)
+        .expect("r1007")
+        .ready_with(&table)
+        .unwrap_or_else(|e| panic!("the applied r1007 profile must be ready: {e}"))
+}
+
+fn rendered_toml(net: &ReadyNetwork) -> toml::Table {
+    render_node_network(include_str!("../config/member-node.toml"), net)
+        .replace("{{DATA_DIR}}", "/tmp/x")
+        .parse()
+        .expect("rendered config is valid TOML")
+}
+
+/// The comparison the r1007 node makes at start-up, on a rendered config: `[checkpoint]` interval,
+/// committee_size and vote_depth must equal the compiled values, where an absent key is the
+/// node's default (citrate-chain `node/src/config.rs` `CheckpointNodeConfig`: 50, 100 and
+/// `checkpoint::DEFAULT_VOTE_DEPTH` = 3). Returns the names that differ.
+fn checkpoint_differences(cfg: &toml::Table, interval: u64, committee: u64, depth: u64) -> Vec<&'static str> {
+    let cp = cfg.get("checkpoint").and_then(|v| v.as_table());
+    let get = |k: &str, default: u64| -> u64 {
+        cp.and_then(|t| t.get(k))
+            .map(|v| v.as_integer().and_then(|n| u64::try_from(n).ok()).expect("an integer"))
+            .unwrap_or(default)
+    };
+    let mut bad = Vec::new();
+    if get("interval", 50) != interval {
+        bad.push("interval");
+    }
+    if get("committee_size", 100) != committee {
+        bad.push("committee_size");
+    }
+    if get("vote_depth", 3) != depth {
+        bad.push("vote_depth");
+    }
+    bad
+}
+
+/// Red first: a filled r1007 cut gives a profile whose node config the r1007 node accepts: it
+/// names the r1007 genesis profile on chain 40204, its `[checkpoint]` repeats the compiled chain
+/// parameters exactly (explicitly, so a node default can never decide it), and it keeps at least
+/// the undo window when it prunes.
+#[test]
+fn a_filled_r1007_cut_renders_a_node_config_the_r1007_genesis_accepts() {
+    let net = applied_r1007();
+    let candidate: serde_json::Value = serde_json::from_str(R1007_CANDIDATE).unwrap();
+    assert_eq!(net.chain_id, 40204);
+    assert_eq!(net.genesis_hash, candidate["genesisHash"].as_str().unwrap());
+    assert_eq!(net.node_genesis.name, "r1007");
+    assert_eq!(net.node_genesis.genesis_hash, net.genesis_hash);
+    assert!(net.node_genesis.compiled_activations && !net.node_genesis.node_default);
+    assert_eq!(net.rpc_url, candidate["rpcUrl"].as_str().unwrap());
+    let cp = net
+        .node_checkpoint
+        .expect("a filled r1007 cut sets the profile's [checkpoint] values");
+    let (interval, committee, depth) = (
+        candidate_param("checkpoint_interval"),
+        candidate_param("committee_size"),
+        candidate_param("checkpoint_vote_depth"),
+    );
+    assert_eq!((cp.interval, cp.committee_size, cp.vote_depth), (interval, committee, depth));
+
+    let cfg = rendered_toml(&net);
+    assert_eq!(cfg["chain"]["chain_id"].as_integer(), Some(40204));
+    assert_eq!(cfg["chain"]["genesis_profile"].as_str(), Some("r1007"));
+    let boot = cfg["network"]["bootstrap_nodes"].as_array().expect("bootnodes");
+    assert_eq!(boot.len(), 4);
+    assert_eq!(
+        checkpoint_differences(&cfg, interval, committee, depth),
+        Vec::<&str>::new(),
+        "the r1007 node refuses this [checkpoint]"
+    );
+    // Explicit, not left to the node's defaults.
+    let section = cfg["checkpoint"].as_table().expect("[checkpoint]");
+    for k in ["interval", "committee_size", "vote_depth"] {
+        assert!(section.contains_key(k), "[checkpoint] {k} is written");
+    }
+    // CORE-N5 / CV-7a: a pruning member keeps at least the undo window and the pruning depth.
+    assert_eq!(cfg["storage"]["pruning"].as_bool(), Some(true));
+    let keep = u64::try_from(cfg["storage"]["keep_blocks"].as_integer().unwrap()).unwrap();
+    assert!(keep >= candidate_param("undo_window") && keep >= candidate_param("pruning_depth"));
+    // The template's `[chain] ghostdag_k` agrees with the compiled K (informational for the node,
+    // which takes K from its compiled parameters).
+    assert_eq!(
+        cfg["chain"]["ghostdag_k"].as_integer().map(|k| k as u64),
+        Some(candidate_param("ghostdag_k"))
+    );
+}
+
+/// The check above is not vacuous: each `[checkpoint]` value that differs from the compiled one
+/// is what the r1007 node refuses, and the rendered config carries whatever the profile says.
+#[test]
+fn a_differing_r1007_checkpoint_value_is_what_the_node_refuses() {
+    let (interval, committee, depth) = (
+        candidate_param("checkpoint_interval"),
+        candidate_param("committee_size"),
+        candidate_param("checkpoint_vote_depth"),
+    );
+    for (name, edit) in [
+        ("interval", (2, committee, depth)),
+        ("committee_size", (interval, 10, depth)),
+        ("vote_depth", (interval, committee, 1)),
+    ] {
+        let mut net = applied_r1007();
+        net.node_checkpoint = Some(NodeCheckpoint {
+            interval: edit.0,
+            committee_size: edit.1,
+            vote_depth: edit.2,
+        });
+        assert_eq!(
+            checkpoint_differences(&rendered_toml(&net), interval, committee, depth),
+            vec![name]
+        );
+    }
+}
+
+/// No behaviour change before the cut: a profile without `nodeCheckpoint` (alpha-r1005, r1006)
+/// renders the template's `[checkpoint]` section byte for byte, with no vote_depth line added.
+#[test]
+fn a_profile_without_node_checkpoint_keeps_the_template_checkpoint_section() {
+    let template = include_str!("../config/member-node.toml");
+    let section = |t: &str| -> String {
+        let start = t.find("\n[checkpoint]").expect("[checkpoint]");
+        t[start..].to_string()
+    };
+    for id in ["alpha-r1005", "r1006"] {
+        let p = profile(id).unwrap();
+        assert_eq!(p.node_checkpoint, None, "{id}");
+        let net = p.ready().expect("ready");
+        let out = render_node_network(template, &net);
+        assert_eq!(section(&out), section(template), "{id}");
+        assert!(!out.contains("vote_depth"), "{id}");
+    }
+    assert_eq!(r1007().node_checkpoint, None, "set by the cut, not before");
+}
+
+/// `nodeCheckpoint` is checked when it is read (an unknown key is a build defect) and when the
+/// profile is readied (a zero value is refused).
+#[test]
+fn a_malformed_node_checkpoint_is_refused() {
+    let with = |cp: serde_json::Value| {
+        profiles_json_with(|v| v["profiles"]["r1006"]["nodeCheckpoint"] = cp)
+    };
+    let r1006_of = |json: String| -> Result<ReadyNetwork, ProfileError> {
+        let (_, ps) = parse(&json)?;
+        ps.into_iter().find(|p| p.id == "r1006").expect("r1006").ready()
+    };
+    let ok = r1006_of(with(serde_json::json!({"interval": 50, "committeeSize": 100, "voteDepth": 3})));
+    assert!(
+        matches!(&ok, Ok(r) if r.node_checkpoint == Some(NodeCheckpoint { interval: 50, committee_size: 100, vote_depth: 3 })),
+        "{ok:?}"
+    );
+    for bad in [
+        serde_json::json!({"interval": 0, "committeeSize": 100, "voteDepth": 3}),
+        serde_json::json!({"interval": 50, "committeeSize": 0, "voteDepth": 3}),
+        serde_json::json!({"interval": 50, "committeeSize": 100, "voteDepth": 0}),
+    ] {
+        let r = r1006_of(with(bad.clone()));
+        assert!(
+            matches!(&r, Err(ProfileError::Invalid { field: "nodeCheckpoint", .. })),
+            "{bad}: {r:?}"
+        );
+    }
+    for bad in [
+        serde_json::json!({"interval": 50, "committeeSize": 100}),
+        serde_json::json!({"interval": 50, "committeeSize": 100, "voteDepth": 3, "quorum": 67}),
+        serde_json::json!({"interval": -1, "committeeSize": 100, "voteDepth": 3}),
+    ] {
+        assert!(
+            matches!(r1006_of(with(bad.clone())), Err(ProfileError::Malformed(_))),
+            "{bad}"
+        );
+    }
+}

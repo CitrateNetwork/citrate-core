@@ -38,8 +38,16 @@ const CUT_FILES = [
   "scripts/build-sidecar.sh",
 ];
 
+// The r1007 genesis values as the chain's genesis notes record them today: CANDIDATE fixtures
+// (fixtures/network-cut/r1007-candidate.json), never release values. The block-0 hash changes at the
+// chain's integration step; release values are written only into release/network-cut.json.
+const CANDIDATE = JSON.parse(fs.readFileSync(path.join(repo, "fixtures/network-cut/r1007-candidate.json"), "utf8"));
+// What `apply` writes into profiles.json from the candidate cut below (the r1007 profile, its
+// nodeGenesisProfiles entry, `active`). src-tauri/src/network_profile_tests.rs renders the member
+// node config from this same file, so the two tests together cover cut -> profile -> node.toml.
+const APPLIED = "fixtures/network-cut/r1007-candidate.applied.json";
 // Test-only values. Not a real genesis, key, commit or digest.
-const T_GENESIS = "0x" + "7e".repeat(32);
+const T_GENESIS = CANDIDATE.genesisHash;
 const T_REV = "7a".repeat(20);
 const T_FP = "0x" + "7f".repeat(16);
 const key = (b) => b.repeat(32);
@@ -55,8 +63,10 @@ const prov = (target, b) => ({ asset: `citrate-${target}-${T_REV.slice(0, 12)}.P
 const filledCut = (cut) => ({
   ...cut,
   genesisHash: T_GENESIS,
-  genesisProfile: "r1007",
-  compiledActivations: true,
+  genesisProfile: CANDIDATE.genesisProfile,
+  compiledActivations: CANDIDATE.compiledActivations,
+  rpcUrl: CANDIDATE.rpcUrl,
+  chainParams: { ...CANDIDATE.chainParams },
   bootnodes: T_BOOTNODES,
   addressBookSha256: "7b".repeat(32),
   chainRev: T_REV,
@@ -117,6 +127,7 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
       [
         "addressBookSha256",
         "bootnodes",
+        "chainParams",
         "chainRev",
         "compiledActivations",
         "consensusFingerprint",
@@ -125,6 +136,7 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
         "node.aarch64-apple-darwin",
         "node.aarch64-unknown-linux-gnu",
         "node.x86_64-unknown-linux-gnu",
+        "rpcUrl",
       ].sort(),
     );
     for (const [k, why] of Object.entries(cut.pending)) expect(why.trim().length, k).toBeGreaterThan(20);
@@ -143,10 +155,21 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
     expect(c.err).toMatch(/runtime-deps\.sha256.*x86_64-unknown-linux-gnu.*PROVENANCE/);
   });
 
+  it("check --release fails when the applied profile's [checkpoint] values are not the cut's", () => {
+    writeJson("release/network-cut.json", filledCut(json("release/network-cut.json")));
+    expect(py(["apply", "--root", root]).code).toBe(0);
+    const p = json("src-tauri/network/profiles.json");
+    p.profiles.r1007.nodeCheckpoint.interval = 2;
+    writeJson("src-tauri/network/profiles.json", p);
+    const c = py(["check", "--release", "--root", root, "--cut-only"]);
+    expect(c.code).not.toBe(0);
+    expect(c.err).toMatch(/r1007\.nodeCheckpoint/);
+  });
+
   it("check --release refuses it and names every pending value", () => {
     const r = py(["check", "--release"]);
     expect(r.code).not.toBe(0);
-    for (const k of ["genesisHash", "bootnodes", "chainRev", "consensusFingerprint", "node.aarch64-apple-darwin", "node.x86_64-unknown-linux-gnu", "node.aarch64-unknown-linux-gnu"]) {
+    for (const k of ["genesisHash", "bootnodes", "chainRev", "chainParams", "rpcUrl", "consensusFingerprint", "node.aarch64-apple-darwin", "node.x86_64-unknown-linux-gnu", "node.aarch64-unknown-linux-gnu"]) {
       expect(r.err).toContain(k);
     }
   });
@@ -210,9 +233,23 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
       bootnodes: T_BOOTNODES,
       addressBookSha256: "7b".repeat(32),
       minChainRev: T_REV,
+      rpcUrl: CANDIDATE.rpcUrl,
+      // The [checkpoint] values the r1007 node requires: it refuses to start when its node config
+      // names another interval, committee size or vote depth than the genesis compiles.
+      nodeCheckpoint: {
+        interval: CANDIDATE.chainParams.checkpoint_interval,
+        committeeSize: CANDIDATE.chainParams.committee_size,
+        voteDepth: CANDIDATE.chainParams.checkpoint_vote_depth,
+      },
       pending: {},
     });
     expect(prof.nodeGenesisProfiles.r1007).toEqual({ genesisHash: T_GENESIS, nodeDefault: false, compiledActivations: true });
+    // The profile the Rust render test reads is exactly what apply wrote from the candidate cut.
+    const { _comment, ...golden } = JSON.parse(fs.readFileSync(path.join(repo, APPLIED), "utf8"));
+    expect(
+      { active: prof.active, nodeGenesisProfiles: { r1007: prof.nodeGenesisProfiles.r1007 }, profiles: { r1007: prof.profiles.r1007 } },
+      `${APPLIED} is stale: apply the candidate cut (this test's filledCut) to a copy and copy the r1007 entries`,
+    ).toEqual(golden);
     expect(prof.profiles.r1006.retired).toMatch(/r1007/);
     // r1006's values are kept: a data dir from it is still recognised and named.
     const was = JSON.parse(before["src-tauri/network/profiles.json"]);
@@ -272,6 +309,12 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     ["a value left in pending", (c) => (c.pending = { genesisHash: "still owed" }), /pending/],
     ["a node build with no provenance record", (c) => delete c.node["x86_64-unknown-linux-gnu"].provenance, /x86_64-unknown-linux-gnu.*provenance/],
     ["a provenance record not named after its node bytes", (c) => (c.node["aarch64-unknown-linux-gnu"].provenance.asset = "PROVENANCE-linux.txt"), /aarch64-unknown-linux-gnu.*provenance/],
+    ["chain parameters missing one", (c) => delete c.chainParams.checkpoint_vote_depth, /chainParams.*checkpoint_vote_depth/],
+    ["chain parameters with an unknown one", (c) => (c.chainParams.block_time = 2), /chainParams.*block_time/],
+    ["a zero checkpoint interval", (c) => (c.chainParams.checkpoint_interval = 0), /chainParams.*checkpoint_interval/],
+    ["a chain parameter that is not an integer", (c) => (c.chainParams.committee_size = "100"), /chainParams.*committee_size/],
+    ["an undo window above the member retention", (c) => (c.chainParams.undo_window = 20000), /undo_window.*memberPruneRetain/],
+    ["an RPC that is not https", (c) => (c.rpcUrl = "http://rpc.citrate.ai"), /rpcUrl.*https/],
     ["a provenance record with a malformed digest", (c) => (c.node["aarch64-apple-darwin"].provenance.sha256 = "8c"), /aarch64-apple-darwin.*provenance/],
   ];
   for (const [what, edit, msg] of refusals) {

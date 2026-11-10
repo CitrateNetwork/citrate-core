@@ -67,8 +67,12 @@ FIELDS = [
     "minChainRev",
 ]
 # Optional keys (absent = not set): `memberPruneRetain` (CORE-N5, blocks a member keeps, at least
-# MIN_MEMBER_PRUNE_RETAIN) and `retired` (CORE-N2, why the network is retired; refused like unset).
-OPTIONAL = ["memberPruneRetain", "retired"]
+# MIN_MEMBER_PRUNE_RETAIN), `retired` (CORE-N2, why the network is retired; refused like unset) and
+# `nodeCheckpoint` (the [checkpoint] interval, committeeSize and voteDepth the node config repeats,
+# for a genesis that compiles them; written by scripts/network-cut.py apply from the cut's
+# chainParams; absent = the template's [checkpoint] section).
+OPTIONAL = ["memberPruneRetain", "retired", "nodeCheckpoint"]
+NODE_CHECKPOINT_KEYS = {"interval", "committeeSize", "voteDepth"}
 KNOWN = set(FIELDS) | {"label", "pending"} | set(OPTIONAL)
 # The undo window (ADR CV-7a): network_profile.rs MIN_MEMBER_PRUNE_RETAIN.
 MIN_MEMBER_PRUNE_RETAIN = 10_000
@@ -146,6 +150,10 @@ def optional_problems(p: dict) -> list:
     r = p.get("retired")
     if r is not None and not (isinstance(r, str) and r.strip()):
         out.append("retired is not a reason")
+    c = p.get("nodeCheckpoint")
+    if c is not None and not (isinstance(c, dict) and set(c) == NODE_CHECKPOINT_KEYS and all(
+            isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in c.values())):
+        out.append("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers")
     return out
 
 

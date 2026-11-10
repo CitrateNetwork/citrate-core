@@ -349,10 +349,14 @@ def check_profile(p, node_table):
         bad.append(f"memberPruneRetain {keep!r} is below the {MIN_MEMBER_PRUNE_RETAIN}-block undo window")
     if p.get("retired") is not None:
         bad.append(f"the profile is retired ({p.get('retired')})")
+    cp = p.get("nodeCheckpoint")
+    if cp is not None and not (isinstance(cp, dict) and set(cp) == {"interval", "committeeSize", "voteDepth"} and all(
+            isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in cp.values())):
+        bad.append(f"nodeCheckpoint {cp!r} is not {{interval, committeeSize, voteDepth}} of positive integers")
     if bad:
         raise Refused("profile", "profile not ready: " + "; ".join(bad))
     return {"chainId": cid, "genesisHash": g, "genesisProfile": gp, "memberPruneRetain": keep,
-            "compiledActivations": entry.get("compiledActivations") is True, "nodeNetwork": net,
+            "nodeCheckpoint": cp, "compiledActivations": entry.get("compiledActivations") is True, "nodeNetwork": net,
             "rpcUrl": url, "bootnodes": list(nodes), "addressBook": p.get("addressBook")}
 
 
@@ -415,6 +419,21 @@ def set_in_section(text, section, key, value):
     return text[: m.start(1)] + body + text[m.end(1):]
 
 
+def set_or_add_in_section(text, section, key, value):
+    """Set `key = value` inside `[section]`, appending it after the section's last key line when
+    it is not there (network_profile.rs set_table_keys)."""
+    try:
+        return set_in_section(text, section, key, value)
+    except Refused:
+        pass
+    m = re.search(rf"(?ms)^\[{re.escape(section)}\]\s*$(.*?)(?=^\[|\Z)", text)
+    if not m:
+        raise Refused("launch", f"member-node.toml has no [{section}] section")
+    keys = list(re.finditer(r"(?m)^[A-Za-z0-9_]+\s*=.*$", m.group(1)))
+    at = m.start(1) + (keys[-1].end() if keys else 0)
+    return text[:at] + f"\n{key} = {value}" + text[at:]
+
+
 def toml_str(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -438,6 +457,13 @@ def render_config(template, prof, data_dir, ports):
     if prof.get("memberPruneRetain") is not None:
         t = set_in_section(t, "storage", "pruning", "true")
         t = set_in_section(t, "storage", "keep_blocks", str(prof["memberPruneRetain"]))
+    # The r1007 cut: the [checkpoint] values the node requires on its genesis, written explicitly
+    # (network_profile::render_node_network); without them, the template's section.
+    if prof.get("nodeCheckpoint") is not None:
+        cp = prof["nodeCheckpoint"]
+        t = set_in_section(t, "checkpoint", "interval", str(cp["interval"]))
+        t = set_in_section(t, "checkpoint", "committee_size", str(cp["committeeSize"]))
+        t = set_or_add_in_section(t, "checkpoint", "vote_depth", str(cp["voteDepth"]))
     # Read back what the node will be given: mining must stay off (a fresh node is a follower).
     mining = re.search(r"(?ms)^\[mining\].*?^enabled\s*=\s*(\w+)", t)
     if not mining or mining.group(1) != "false":

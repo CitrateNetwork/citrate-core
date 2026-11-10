@@ -1,0 +1,39 @@
+{
+  "_comment": "CANDIDATE TEST FIXTURE, NOT A RELEASE VALUE. The r1007 entries of src-tauri/network/profiles.json as scripts/network-cut.py apply writes them from the candidate cut in scripts/network-cut.test.mjs (r1007-candidate.json plus test-only bootnode keys, chain rev and digests, none of them real). network-cut.test.mjs fails when apply stops producing exactly this; network_profile_tests.rs renders the member node config from it.",
+  "active": "r1007",
+  "nodeGenesisProfiles": {
+    "r1007": {
+      "genesisHash": "0x4e0465e0015f5bd712c4e8b9267d7fd831b4d1b488f83f2f86ca115820eaad29",
+      "nodeDefault": false,
+      "compiledActivations": true
+    }
+  },
+  "profiles": {
+    "r1007": {
+      "label": "Citrate testnet (r1007 genesis, 0.5.3)",
+      "chainId": 40204,
+      "genesisHash": "0x4e0465e0015f5bd712c4e8b9267d7fd831b4d1b488f83f2f86ca115820eaad29",
+      "genesisProfile": "r1007",
+      "nodeNetwork": "testnet",
+      "rpcUrl": "https://rpc.citrate.ai",
+      "explorerUrl": "https://explorer.citrate.ai",
+      "faucetUrl": "https://faucet.citrate.ai",
+      "bootnodes": [
+        "noise_b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1@boot1.citrate.ai:30303",
+        "noise_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2@boot2.citrate.ai:30303",
+        "noise_b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3@boot3.citrate.ai:30303",
+        "noise_c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4@rpc.citrate.ai:30303"
+      ],
+      "addressBook": "addresses/40204.json",
+      "addressBookSha256": "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+      "minChainRev": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+      "memberPruneRetain": 10000,
+      "pending": {},
+      "nodeCheckpoint": {
+        "interval": 50,
+        "committeeSize": 100,
+        "voteDepth": 3
+      }
+    }
+  }
+}

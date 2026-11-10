@@ -574,6 +574,21 @@ describe("r1007 acceptance (CORE-N6)", { timeout: 240_000 }, () => {
     expect(s2).toMatch(/^keep_blocks = 100000$/m);
   });
 
+  it("a profile with nodeCheckpoint gets the [checkpoint] values the app writes (r1007 cut)", async () => {
+    const r = await run({ prof: profile({ nodeCheckpoint: { interval: 50, committeeSize: 100, voteDepth: 3 } }) });
+    expect(r.v.verdict, r.stderr).toBe("PASS");
+    const cp = r.rec.config.match(/\[checkpoint\]([^[]*)/s)[1];
+    expect(cp).toMatch(/^interval = 50$/m);
+    expect(cp).toMatch(/^committee_size = 100$/m);
+    expect(cp).toMatch(/^vote_depth = 3$/m);
+    // Without it, the template's section, and no vote_depth line.
+    const plain = (await run()).rec.config.match(/\[checkpoint\]([^[]*)/s)[1];
+    expect(plain).not.toMatch(/vote_depth/);
+    const bad = await run({ prof: profile({ nodeCheckpoint: { interval: 0, committeeSize: 100, voteDepth: 3 } }) });
+    expect(bad.code).toBe(2);
+    expect(bad.v.rules[0].detail).toMatch(/nodeCheckpoint/);
+  });
+
   it("refuses a member retention below the 10,000-block undo window", async () => {
     const r = await run({ prof: profile({ memberPruneRetain: 9999 }) });
     expect(r.code).toBe(2);

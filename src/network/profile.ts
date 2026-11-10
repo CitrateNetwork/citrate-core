@@ -31,8 +31,22 @@ export type NetworkProfile = {
   memberPruneRetain?: number | null;
   /** CORE-N2: why the network is retired; a retired profile is refused like an unset one. */
   retired?: string | null;
+  /** The `[checkpoint]` values the node config repeats, for a genesis that compiles them (r1007:
+   *  the node refuses to start when they differ). Written by scripts/network-cut.py apply; absent
+   *  = the template's section. */
+  nodeCheckpoint?: NodeCheckpoint | null;
   pending: Record<string, string>;
 };
+
+/** network_profile.rs `NodeCheckpoint`: positive integers, exactly these keys. */
+export type NodeCheckpoint = { interval: number; committeeSize: number; voteDepth: number };
+
+function isNodeCheckpoint(c: unknown): boolean {
+  if (typeof c !== "object" || c === null || Array.isArray(c)) return false;
+  const keys = Object.keys(c).sort();
+  if (keys.join(",") !== "committeeSize,interval,voteDepth") return false;
+  return Object.values(c).every((v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0);
+}
 
 /** The undo window (ADR CV-7a): the fewest blocks a pruning member may keep (network_profile.rs). */
 export const MIN_MEMBER_PRUNE_RETAIN = 10_000;
@@ -147,6 +161,9 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   const out: string[] = [];
   if (p.memberPruneRetain != null && !(Number.isSafeInteger(p.memberPruneRetain) && p.memberPruneRetain >= MIN_MEMBER_PRUNE_RETAIN)) {
     out.push("memberPruneRetain is below the 10,000-block undo window");
+  }
+  if (p.nodeCheckpoint != null && !isNodeCheckpoint(p.nodeCheckpoint)) {
+    out.push("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers");
   }
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");
