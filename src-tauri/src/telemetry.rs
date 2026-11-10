@@ -137,9 +137,15 @@ pub(crate) fn has_vendor_key_shape(s: &str) -> bool {
     find_key_shape(s, VENDOR_KEY_PREFIXES).is_some()
 }
 
+/// Whether `s` carries any key shape [`redact_key_shapes`] removes (every prefix, including the
+/// proxy's route token). The diagnostics bundle's final check (CORE-D5).
+pub(crate) fn has_key_shape(s: &str) -> bool {
+    find_key_shape(s, KEY_PREFIXES).is_some()
+}
+
 /// Redact a key-shaped run wherever it sits in a line (`key=…`, `"x-api-key":"…"`, `Bearer …`):
 /// a known prefix at a word boundary followed by at least 12 more key characters.
-fn redact_key_shapes(s: &str) -> String {
+pub(crate) fn redact_key_shapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev: Option<char> = None;
     let mut i = 0;
@@ -162,12 +168,6 @@ fn redact_key_shapes(s: &str) -> String {
         i += c.len_utf8();
     }
     out
-}
-
-/// CORE-D5: what a sidecar log line keeps on disk: key shapes, emails and secret tokens redacted,
-/// hashes and addresses kept (they are what a node log is read for). Pure.
-pub(crate) fn redact_secrets(s: &str) -> String {
-    redact_tokens(&redact_key_shapes(s))
 }
 
 /// Scrub a text field: HOME→`~`, then redact hex blobs (addresses/hashes) and email/secret

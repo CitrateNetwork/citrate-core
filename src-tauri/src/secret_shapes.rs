@@ -1,5 +1,293 @@
-//! #613 review (P1): the secret shapes a sidecar log line or a diagnostics bundle must not carry.
-//! (Red: tests only.)
+//! #613 review (P1): the secret shapes a sidecar log line or a diagnostics bundle must not carry,
+//! found **anywhere** in a line, not only at the start of a whitespace-separated word:
+//!
+//! | shape | found as | replaced by |
+//! |---|---|---|
+//! | auth | the value after `Bearer` or `Basic` (any case), 8+ characters | `<redacted>` |
+//! | jwt | `eyJ….….…` anywhere, or three base64url segments of 16+ characters | `<redacted>` |
+//! | key/value | the value after a key ending in password, passwd, secret, token, api key, private key, mnemonic, seed or authorization, in `k=v`, `k: v`, `"k":"v"` and `k='v'` forms, any case | `<redacted>` |
+//! | hex64 | 64+ hex digits, bare or after `0x` (private-key shaped) | `<hex64 xxxxxx>`, 6 hex of its SHA-256, so equal values still line up |
+//! | email | `local@domain.tld` | `<redacted>` |
+//!
+//! [`redact`] replaces every hit; [`first_shape`] names the first one left (the bundle's final
+//! check). Both are pure. What they do not catch: free prose (a prompt, a message), and a seed
+//! phrase or key printed with no key name in front of it. That is why the content-bearing
+//! sidecars keep only lifecycle and error lines (`sidecar_logs::LogPolicy`).
+use sha2::Digest as _;
+
+pub const REDACTED: &str = "<redacted>";
+
+/// Key-name endings whose value is a secret (lowercase).
+const SECRET_KEYS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "api-key",
+    "apikey",
+    "private_key",
+    "private-key",
+    "privatekey",
+    "mnemonic",
+    "seed",
+    "authorization",
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Redact,
+    Hex,
+}
+
+struct Hit {
+    start: usize,
+    end: usize,
+    kind: Kind,
+    shape: &'static str,
+}
+
+fn b64url(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
+}
+
+fn run(b: &[u8], from: usize, f: impl Fn(u8) -> bool) -> usize {
+    let mut j = from;
+    while j < b.len() && f(b[j]) {
+        j += 1;
+    }
+    j
+}
+
+/// The value after `Bearer ` / `Basic `.
+fn auth_hits(b: &[u8], out: &mut Vec<Hit>) {
+    for scheme in [&b"bearer"[..], &b"basic"[..]] {
+        let n = scheme.len();
+        let mut i = 0;
+        while i + n < b.len() {
+            let at_word = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+            if at_word
+                && b[i..i + n].eq_ignore_ascii_case(scheme)
+                && (b[i + n] == b' ' || b[i + n] == b'\t')
+            {
+                let v = run(b, i + n, |c| c == b' ' || c == b'\t');
+                let e = run(b, v, |c| {
+                    !c.is_ascii_whitespace() && !b"\"',;<>".contains(&c)
+                });
+                if e - v >= 8 {
+                    out.push(Hit {
+                        start: v,
+                        end: e,
+                        kind: Kind::Redact,
+                        shape: "auth value",
+                    });
+                }
+                i = e.max(i + 1);
+                continue;
+            }
+            i += 1;
+        }
+    }
+}
+
+/// JWTs and three-segment base64url tokens.
+fn jwt_hits(b: &[u8], out: &mut Vec<Hit>) {
+    let mut i = 0;
+    while i < b.len() {
+        if !b64url(b[i]) || (i > 0 && (b64url(b[i - 1]) || b[i - 1] == b'.')) {
+            i += 1;
+            continue;
+        }
+        let jwt = b[i..].starts_with(b"eyJ");
+        let min = if jwt { 1 } else { 16 };
+        let s1 = run(b, i, b64url);
+        let mut ok = s1 - i >= if jwt { 4 } else { 16 } && s1 < b.len() && b[s1] == b'.';
+        let mut end = s1;
+        if ok {
+            let s2 = run(b, s1 + 1, b64url);
+            ok = s2 - (s1 + 1) >= min && s2 < b.len() && b[s2] == b'.';
+            if ok {
+                let s3 = run(b, s2 + 1, b64url);
+                ok = s3 - (s2 + 1) >= if jwt { 0 } else { 16 };
+                end = s3;
+            }
+        }
+        if ok {
+            out.push(Hit {
+                start: i,
+                end,
+                kind: Kind::Redact,
+                shape: "JWT",
+            });
+            i = end;
+        } else {
+            i = s1.max(i + 1);
+        }
+    }
+}
+
+/// Whether the identifier `id` (original case) ends in a secret key name at a word boundary.
+fn secret_key(id: &[u8]) -> bool {
+    let low = id.to_ascii_lowercase();
+    SECRET_KEYS.iter().any(|k| {
+        let k = k.as_bytes();
+        if !low.ends_with(k) {
+            return false;
+        }
+        let at = low.len() - k.len();
+        at == 0 || matches!(id[at - 1], b'_' | b'-' | b'.') || id[at].is_ascii_uppercase()
+    })
+}
+
+/// Values after a secret key name: `k=v`, `k: v`, `"k":"v"`, `k='v'`.
+fn kv_hits(b: &[u8], out: &mut Vec<Hit>) {
+    let id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
+    let mut i = 0;
+    while i < b.len() {
+        if !id(b[i]) || (i > 0 && id(b[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let e = run(b, i, id);
+        if !secret_key(&b[i..e]) {
+            i = e;
+            continue;
+        }
+        let mut j = e;
+        if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+            j += 1;
+        }
+        j = run(b, j, |c| c == b' ' || c == b'\t');
+        if j >= b.len() || (b[j] != b'=' && b[j] != b':') {
+            i = e;
+            continue;
+        }
+        j = run(b, j + 1, |c| c == b' ' || c == b'\t');
+        let (vs, ve) = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+            let q = b[j];
+            let close = run(b, j + 1, |c| c != q);
+            (j + 1, close)
+        } else {
+            (
+                j,
+                run(b, j, |c| {
+                    !c.is_ascii_whitespace() && !b",;&}])\"'".contains(&c)
+                }),
+            )
+        };
+        if ve > vs && &b[vs..ve] != REDACTED.as_bytes() && !b[vs..ve].starts_with(b"<hex64 ") {
+            out.push(Hit {
+                start: vs,
+                end: ve,
+                kind: Kind::Redact,
+                shape: "secret value",
+            });
+        }
+        i = ve.max(e);
+    }
+}
+
+/// 64+ hex digits, bare or after `0x`.
+fn hex_hits(b: &[u8], out: &mut Vec<Hit>) {
+    let mut i = 0;
+    while i < b.len() {
+        if i > 0 && b[i - 1].is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+        let prefixed = b[i] == b'0' && i + 1 < b.len() && (b[i + 1] == b'x' || b[i + 1] == b'X');
+        let digits = if prefixed { i + 2 } else { i };
+        let e = run(b, digits, |c| c.is_ascii_hexdigit());
+        if e - digits >= 64 && (e == b.len() || !b[e].is_ascii_alphanumeric()) {
+            out.push(Hit {
+                start: i,
+                end: e,
+                kind: Kind::Hex,
+                shape: "64-hex value",
+            });
+            i = e;
+            continue;
+        }
+        i = e.max(i + 1);
+    }
+}
+
+/// `local@domain.tld`.
+fn email_hits(b: &[u8], out: &mut Vec<Hit>) {
+    let local = |c: u8| c.is_ascii_alphanumeric() || b"._%+-".contains(&c);
+    let dom = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b'.';
+    for (at, _) in b.iter().enumerate().filter(|(_, c)| **c == b'@') {
+        let mut s = at;
+        while s > 0 && local(b[s - 1]) {
+            s -= 1;
+        }
+        let e = run(b, at + 1, dom);
+        let d = &b[at + 1..e];
+        let d = d.strip_suffix(b".").unwrap_or(d);
+        let tld_ok = d
+            .iter()
+            .rposition(|c| *c == b'.')
+            .is_some_and(|p| p > 0 && d.len() - p > 2);
+        if s < at && tld_ok {
+            out.push(Hit {
+                start: s,
+                end: at + 1 + d.len(),
+                kind: Kind::Redact,
+                shape: "email",
+            });
+        }
+    }
+}
+
+fn hits(s: &str) -> Vec<Hit> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    auth_hits(b, &mut out);
+    jwt_hits(b, &mut out);
+    kv_hits(b, &mut out);
+    hex_hits(b, &mut out);
+    email_hits(b, &mut out);
+    out.sort_by_key(|h| (h.start, std::cmp::Reverse(h.end)));
+    out
+}
+
+fn hex_tag(v: &str) -> String {
+    let v = v
+        .trim_start_matches("0x")
+        .trim_start_matches("0X")
+        .to_ascii_lowercase();
+    let d = sha2::Sha256::digest(v.as_bytes());
+    format!("<hex64 {}>", &hex::encode(d)[..6])
+}
+
+/// Replace every secret shape in `s`. Idempotent. Every hit starts and ends on an ASCII byte, so
+/// non-ASCII text around it is kept whole.
+pub fn redact(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut at = 0;
+    for h in hits(s) {
+        if h.start < at {
+            // Overlaps a hit already replaced: extend over it.
+            if h.end > at {
+                at = h.end;
+            }
+            continue;
+        }
+        out.push_str(&s[at..h.start]);
+        match h.kind {
+            Kind::Redact => out.push_str(REDACTED),
+            Kind::Hex => out.push_str(&hex_tag(&s[h.start..h.end])),
+        }
+        at = h.end;
+    }
+    out.push_str(&s[at..]);
+    out
+}
+
+/// The first secret shape left in `s`, if any (the bundle's final check).
+pub fn first_shape(s: &str) -> Option<&'static str> {
+    hits(s).first().map(|h| h.shape)
+}
 
 /// The fixture corpus: one line per shape, as a sidecar might print it, and the secret part that
 /// must not survive. Every value is assembled at run time from parts, so no scanner reads the
@@ -7,36 +295,109 @@
 #[cfg(test)]
 pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
     let opaque = ["opaqueSession", "Token1234567890"].concat();
-    let jwt = ["eyJhbGciOiJSUzI1NiJ9", ".", "eyJzdWIiOiJ4In0", ".", "c2lnbmF0dXJlc2lnbmF0dXJl"].concat();
-    let jwt2 = ["eyJhbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiJ4In0", ".", "abcdefghijklmnop"].concat();
-    let jwt_plain = ["QUJDREVGR0hJSktMTU5PUA", ".", "UVJTVFVWV1hZWjAxMjM0NQ", ".", "c2lnbmF0dXJlLXNpZ25hdHVyZQ"].concat();
+    let jwt = [
+        "eyJhbGciOiJSUzI1NiJ9",
+        ".",
+        "eyJzdWIiOiJ4In0",
+        ".",
+        "c2lnbmF0dXJlc2lnbmF0dXJl",
+    ]
+    .concat();
+    let jwt2 = [
+        "eyJhbGciOiJIUzI1NiJ9",
+        ".",
+        "eyJzdWIiOiJ4In0",
+        ".",
+        "abcdefghijklmnop",
+    ]
+    .concat();
+    let jwt_plain = [
+        "QUJDREVGR0hJSktMTU5PUA",
+        ".",
+        "UVJTVFVWV1hZWjAxMjM0NQ",
+        ".",
+        "c2lnbmF0dXJlLXNpZ25hdHVyZQ",
+    ]
+    .concat();
     let pw = ["hunter2", "hunter2"].concat();
     let api = ["3f9a8b7c6d5e", "4f3a2b1c0d9e8f7a6b5c"].concat();
     let basic = ["dXNlcjpwYX", "NzLXdvcmQ="].concat();
     let hex64 = "5e".repeat(32);
-    let words = ["abandon ability able about above absent ", "absorb abstract absurd abuse access accident"].concat();
+    let words = [
+        "abandon ability able about above absent ",
+        "absorb abstract absurd abuse access accident",
+    ]
+    .concat();
     vec![
-        ("bearer header", format!("Authorization: Bearer {opaque}"), opaque.clone()),
-        ("bearer lowercase", format!("auth=bearer {opaque} ok"), opaque.clone()),
-        ("basic header", format!("Authorization: Basic {basic}"), basic.clone()),
-        ("jwt in json", format!("{{\"id_token\":\"{jwt}\"}}"), jwt.clone()),
-        ("jwt in a query", format!("GET /mcp?token={jwt2}&x=1"), jwt2.clone()),
+        (
+            "bearer header",
+            format!("Authorization: Bearer {opaque}"),
+            opaque.clone(),
+        ),
+        (
+            "bearer lowercase",
+            format!("auth=bearer {opaque} ok"),
+            opaque.clone(),
+        ),
+        (
+            "basic header",
+            format!("Authorization: Basic {basic}"),
+            basic.clone(),
+        ),
+        (
+            "jwt in json",
+            format!("{{\"id_token\":\"{jwt}\"}}"),
+            jwt.clone(),
+        ),
+        (
+            "jwt in a query",
+            format!("GET /mcp?token={jwt2}&x=1"),
+            jwt2.clone(),
+        ),
         ("jwt after a word", format!("session={jwt}"), jwt.clone()),
-        ("jwt-shaped, no eyJ", format!("t {jwt_plain}"), jwt_plain.clone()),
+        (
+            "jwt-shaped, no eyJ",
+            format!("t {jwt_plain}"),
+            jwt_plain.clone(),
+        ),
         ("password=", format!("password={pw} next"), pw.clone()),
         ("api_key:", format!("api_key: {api}"), api.clone()),
-        ("api-key quoted", format!("\"x-api-key\": \"{api}\""), api.clone()),
+        (
+            "api-key quoted",
+            format!("\"x-api-key\": \"{api}\""),
+            api.clone(),
+        ),
         ("apiKey camel", format!("apiKey={api}"), api.clone()),
-        ("secret single quotes", format!("client_secret='{pw}'"), pw.clone()),
+        (
+            "secret single quotes",
+            format!("client_secret='{pw}'"),
+            pw.clone(),
+        ),
         ("passwd", format!("PASSWD = {pw}"), pw.clone()),
         ("private_key", format!("private_key: {pw}"), pw.clone()),
-        ("access_token", format!("access_token={opaque}"), opaque.clone()),
-        ("mnemonic quoted", format!("mnemonic=\"{words}\""), words.clone()),
+        (
+            "access_token",
+            format!("access_token={opaque}"),
+            opaque.clone(),
+        ),
+        (
+            "mnemonic quoted",
+            format!("mnemonic=\"{words}\""),
+            words.clone(),
+        ),
         ("seed", format!("seed: {pw}"), pw.clone()),
         ("bare 64-hex", format!("pk {hex64} loaded"), hex64.clone()),
         ("0x 64-hex", format!("key=0x{hex64}"), hex64.clone()),
-        ("64-hex in json", format!("{{\"k\":\"{hex64}\"}}"), hex64.clone()),
-        ("email", "contact member@example.com now".to_string(), "member@example.com".to_string()),
+        (
+            "64-hex in json",
+            format!("{{\"k\":\"{hex64}\"}}"),
+            hex64.clone(),
+        ),
+        (
+            "email",
+            "contact member@example.com now".to_string(),
+            "member@example.com".to_string(),
+        ),
     ]
 }
 

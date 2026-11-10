@@ -420,7 +420,7 @@ export function SidecarsHealthView({ health, error, alerts }: { health: Sidecars
 export function exportText(r: DiagnosticsExport): string {
   const kb = Math.max(1, Math.round(r.bytes / 1024));
   const who = r.sidecars.length ? `${r.logLines} log lines from ${r.sidecars.join(", ")}` : "no sidecar logs yet";
-  return `Saved ${r.path} (${kb} KB, ${who}). Read it before you share it: your home folder, addresses, hashes, emails, tokens and key-shaped text are redacted. Nothing was sent.`;
+  return `Saved ${r.path} (${kb} KB, ${who}). Read it before you share it: the scrub is best-effort (home folder, addresses, hashes, emails, tokens, passwords and key-shaped text are redacted; model, memory, messaging and Hermes logs keep only start, stop and error lines). Nothing was sent.`;
 }
 
 /** "Save diagnostics bundle": pick a file, then core writes the scrubbed bundle there. */

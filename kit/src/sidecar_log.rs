@@ -7,23 +7,32 @@
 //! on up to [`LogFileConfig::keep`]; the oldest is removed. So one sidecar never holds more than
 //! `max_bytes × (keep + 1)` on disk.
 //!
-//! - Every line passes through the configured filter before it is written (the app passes its
-//!   key-shape redaction, so a vendor key a sidecar prints never reaches the disk).
+//! - Every line passes through the configured filter before it is written. The filter can also
+//!   withhold a line (it returns `None`); withheld lines are counted, never written.
+//! - The disk write runs on the log's own writer thread, fed by a bounded queue ([`LogSink`]).
+//!   The output readers only queue, so a stalled disk never stops capture into the ring or
+//!   blocks the child on a full pipe; a line that finds the queue full is counted as dropped.
 //! - A line longer than [`MAX_LINE_BYTES`] is cut at a character boundary and marked.
 //! - The folder is owner-only (`0700`), each file `0600` (unix).
 //! - Writing is best effort: a failed write never stops capture into the ring or the child. The
 //!   failures are counted and the last one is kept, so the health read can say the file is behind.
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::{Arc, Mutex};
 
 /// A line longer than this is cut before it is written.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// The smallest rotation size accepted (a smaller value is raised to it).
 pub const MIN_MAX_BYTES: u64 = 4 * 1024;
 
-/// A filter applied to each line before it reaches the disk.
-pub type LineFilter = Arc<dyn Fn(&str) -> String + Send + Sync>;
+/// Lines queued for the writer thread by default.
+pub const DEFAULT_QUEUE_LINES: usize = 4096;
+
+/// A filter applied to each line before it reaches the disk: the line to write, or `None` to
+/// withhold it.
+pub type LineFilter = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Where and how a sidecar's output is kept on disk.
 #[derive(Clone)]
@@ -36,6 +45,8 @@ pub struct LogFileConfig {
     pub keep: usize,
     /// Applied to each line before it is written.
     pub filter: Option<LineFilter>,
+    /// Lines the writer thread's queue holds; a line past it is dropped and counted.
+    pub queue: usize,
 }
 
 impl std::fmt::Debug for LogFileConfig {
@@ -45,6 +56,7 @@ impl std::fmt::Debug for LogFileConfig {
             .field("max_bytes", &self.max_bytes)
             .field("keep", &self.keep)
             .field("filter", &self.filter.is_some())
+            .field("queue", &self.queue)
             .finish()
     }
 }
@@ -58,6 +70,10 @@ pub struct LogFileStatus {
     pub write_failures: u64,
     /// The last write failure, if any.
     pub last_error: Option<String>,
+    /// Lines the filter withheld (never written).
+    pub lines_withheld: u64,
+    /// Lines that found the writer's queue full (never written).
+    pub lines_dropped: u64,
 }
 
 /// The rotated file `n` (1-based) of `path`: `<name>.log.<n>`.
@@ -100,7 +116,8 @@ fn open_append(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
         // Never append through a link someone left at the log's name.
-        o.custom_flags(libc::O_NOFOLLOW);
+        // O_NONBLOCK: a FIFO planted at the log's name fails at once instead of blocking.
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let f = o.open(path)?;
     if !f.metadata()?.is_file() {
@@ -116,6 +133,7 @@ pub struct RotatingLog {
     size: u64,
     write_failures: u64,
     last_error: Option<String>,
+    withheld: u64,
 }
 
 impl RotatingLog {
@@ -129,6 +147,7 @@ impl RotatingLog {
             size: 0,
             write_failures: 0,
             last_error: None,
+            withheld: 0,
         }
     }
 
@@ -137,6 +156,8 @@ impl RotatingLog {
             path: self.config.path.display().to_string(),
             write_failures: self.write_failures,
             last_error: self.last_error.clone(),
+            lines_withheld: self.withheld,
+            lines_dropped: 0,
         }
     }
 
@@ -203,7 +224,13 @@ impl RotatingLog {
     /// Append one captured line. Best effort: a failure is counted, never raised.
     pub fn append(&mut self, ts_unix_ms: u64, stream: &str, line: &str) {
         let filtered = match &self.config.filter {
-            Some(f) => f(line),
+            Some(f) => match f(line) {
+                Some(l) => l,
+                None => {
+                    self.withheld = self.withheld.saturating_add(1);
+                    return;
+                }
+            },
             None => line.to_string(),
         };
         let text = format!("{ts_unix_ms} {stream} {}\n", bounded(&filtered));
@@ -213,6 +240,59 @@ impl RotatingLog {
             self.write_failures = self.write_failures.saturating_add(1);
             self.last_error = Some(e.to_string());
         }
+    }
+}
+
+struct SinkShared {
+    status: Mutex<LogFileStatus>,
+    dropped: AtomicU64,
+}
+
+/// A [`RotatingLog`] on its own writer thread behind a bounded queue. Sending never blocks.
+pub struct LogSink {
+    tx: SyncSender<(u64, &'static str, String)>,
+    shared: Arc<SinkShared>,
+}
+
+impl LogSink {
+    /// Start the writer thread for `config`. It ends when the sink is dropped.
+    pub fn spawn(name: &str, config: LogFileConfig) -> std::io::Result<LogSink> {
+        let (tx, rx) = sync_channel::<(u64, &'static str, String)>(config.queue.max(1));
+        let mut log = RotatingLog::new(config);
+        let shared = Arc::new(SinkShared {
+            status: Mutex::new(log.status()),
+            dropped: AtomicU64::new(0),
+        });
+        let sh = shared.clone();
+        std::thread::Builder::new()
+            .name(format!("supervisor:log-file:{name}"))
+            .spawn(move || {
+                for (ts, stream, line) in rx {
+                    log.append(ts, stream, &line);
+                    let st = log.status();
+                    *sh.status.lock().unwrap_or_else(|e| e.into_inner()) = st;
+                }
+            })?;
+        Ok(LogSink { tx, shared })
+    }
+
+    /// Queue one line for the disk; a full queue drops it (counted). Never blocks.
+    pub fn send(&self, ts_unix_ms: u64, stream: &'static str, line: String) {
+        if self.tx.try_send((ts_unix_ms, stream, line)).is_err() {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The writer's status, with the lines dropped at the queue.
+    pub fn status(&self) -> LogFileStatus {
+        let mut st = self
+            .shared
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        st.lines_dropped = self.shared.dropped.load(Ordering::Relaxed);
+        st
     }
 }
 

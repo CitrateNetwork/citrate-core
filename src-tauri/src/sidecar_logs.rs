@@ -4,18 +4,30 @@
 //! ([`citrate_core_kit::sidecar_log`]) under the OS app log folder:
 //! `<app log dir>/sidecars/<sidecar>.log`, rotated at [`MAX_LOG_BYTES`] with [`KEEP_ROTATED`]
 //! older files, so one sidecar holds at most 4 × 4 MiB and the nine at most 144 MiB. Each line is
-//! passed through [`disk_filter`] first: key shapes (the D-11 vendor prefixes, the gateway and proxy
-//! tokens), bearer tokens, JWTs and emails never reach the disk. Block hashes and addresses are
-//! kept, since they are what a node log is read for. "Delete my local data" removes the folder with
-//! the rest of the app log dir (`local_data.rs`, `RootKind::Logs`).
+//! passed through [`disk_filter`] first (#613 review):
+//! - [`crate::secret_shapes::redact`]: bearer and basic auth values, JWTs and three-segment tokens
+//!   anywhere in the line, values of password/secret/token/api-key/private-key/mnemonic/seed keys,
+//!   64-hex values (bare or `0x`, a short stable tag replaces them, so a block hash still lines
+//!   up), emails; then the D-11 vendor key prefixes. 40-hex addresses are kept.
+//! - [`LogPolicy::LifecycleOnly`] for the sidecars whose output can carry user content (Hermes,
+//!   memory, messaging, the chat and embedding models): only start, stop, listen, ready, version,
+//!   warning and error lines are written, cut at [`LIFECYCLE_LINE_CHARS`], and a line with a
+//!   payload field (`"prompt"`, `"content"`, `query:` and the like) is never written.
+//! - What it cannot promise: free text printed with none of those shapes, and a key or seed
+//!   phrase printed with no key name in front of it, on a sidecar with the full policy.
+//!
+//! "Delete my local data" removes the folder with the rest of the app log dir (`local_data.rs`,
+//! `RootKind::Logs`).
 //!
 //! **Diagnostics bundle.** [`diagnostics_logs_export`] writes one plain-text file the member picks
 //! with the save dialog, to review before sending it to anyone. It holds the app version and OS,
 //! every sidecar's health row (state, phase, restarts, last crash; from `sidecars_health`), the
 //! newest lines of each sidecar's log files, the crash records and the app's last panic. All of it
-//! is scrubbed with [`crate::telemetry::scrub`] (home folder, addresses and hashes, emails, tokens,
-//! key shapes) plus bare 64-hex runs (a private key printed without `0x`). Then the key tripwire
-//! runs on the whole text: if anything key-shaped is left, nothing is written. Nothing is sent.
+//! is scrubbed with [`crate::secret_shapes::redact`] and [`crate::telemetry::scrub`] (home folder,
+//! addresses and hashes, emails, tokens, key shapes); a content-bearing sidecar's crash records
+//! lose their stderr tail. Then the final check runs on the whole text: if any secret shape, key
+//! shape or PEM block is left, nothing is written. The scrub is best effort and the bundle says
+//! so; it is written for the member to read before sharing. Nothing is sent.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -68,44 +80,107 @@ pub fn file_stem(name: &str) -> String {
     }
 }
 
-/// What reaches the disk for each captured line.
-pub fn disk_filter(line: &str) -> String {
-    crate::telemetry::redact_secrets(line)
+/// What a sidecar's log file may keep (#613 review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogPolicy {
+    /// Every line, redacted (node, node agent, IPFS, cluster).
+    Full,
+    /// Only cut lifecycle and error lines, redacted, never a payload field (Hermes, memory,
+    /// messaging, the chat and embedding models: their output can carry prompts, memory results
+    /// or message previews).
+    LifecycleOnly,
+}
+
+/// The longest line a [`LogPolicy::LifecycleOnly`] sidecar keeps, in characters.
+pub const LIFECYCLE_LINE_CHARS: usize = 200;
+/// Lines queued for a sidecar's log writer.
+pub const LOG_QUEUE_LINES: usize = citrate_core_kit::sidecar_log::DEFAULT_QUEUE_LINES;
+
+/// Words that mark a lifecycle or error line (lowercase).
+const LIFECYCLE_WORDS: &[&str] = &[
+    "error", "warn", "panic", "fatal", "fail", "exit", "listen", "start", "stop", "shutdown",
+    "ready", "version", "bind",
+];
+/// Payload fields: a line carrying one is never kept for a content-bearing sidecar (lowercase).
+const PAYLOAD_MARKERS: &[&str] = &[
+    "\"prompt\"",
+    "\"content\"",
+    "\"messages\"",
+    "\"text\"",
+    "\"query\"",
+    "\"input\"",
+    "\"completion\"",
+    "prompt:",
+    "prompt=",
+    "content:",
+    "content=",
+    "query:",
+    "query=",
+    "preview:",
+];
+
+/// What reaches the disk for one captured line: the redacted line, or `None` to withhold it.
+pub fn disk_filter(line: &str, policy: LogPolicy) -> Option<String> {
+    let red = crate::telemetry::redact_key_shapes(&crate::secret_shapes::redact(line));
+    match policy {
+        LogPolicy::Full => Some(red),
+        LogPolicy::LifecycleOnly => {
+            let low = red.to_ascii_lowercase();
+            if PAYLOAD_MARKERS.iter().any(|m| low.contains(m))
+                || !LIFECYCLE_WORDS.iter().any(|w| low.contains(w))
+            {
+                return None;
+            }
+            if red.chars().count() <= LIFECYCLE_LINE_CHARS {
+                return Some(red);
+            }
+            let cut: String = red.chars().take(LIFECYCLE_LINE_CHARS).collect();
+            Some(format!("{cut} [cut]"))
+        }
+    }
 }
 
 /// The log-file config for `name` under `dir`.
-pub fn config_in(dir: &Path, name: &str) -> LogFileConfig {
+pub fn config_in(dir: &Path, name: &str, policy: LogPolicy) -> LogFileConfig {
     LogFileConfig {
         path: dir.join(format!("{}.log", file_stem(name))),
         max_bytes: MAX_LOG_BYTES,
         keep: KEEP_ROTATED,
-        filter: Some(std::sync::Arc::new(disk_filter)),
+        filter: Some(std::sync::Arc::new(move |l: &str| disk_filter(l, policy))),
+        queue: LOG_QUEUE_LINES,
     }
 }
 
 /// The crash-record file of each sidecar started in this session, by sidecar name, as its owner
-/// configured it (read by the diagnostics bundle).
-static CRASH_FILES: std::sync::Mutex<std::collections::BTreeMap<String, PathBuf>> =
+/// configured it, with its log policy (read by the diagnostics bundle).
+static CRASH_FILES: std::sync::Mutex<std::collections::BTreeMap<String, (PathBuf, LogPolicy)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Every registry owner calls this on its supervisor config before `Supervisor::start`: it sets
-/// the rotating log file (none before [`init`], e.g. unit tests that build a manager directly,
-/// which keeps output in the ring only) and records where the owner keeps crash records.
-pub(crate) fn attach(config: &mut citrate_core_kit::supervisor::SupervisorConfig) {
-    config.log_file = log_dir().map(|d| config_in(d, &config.spec.name));
+/// the rotating log file with the owner's policy (none before [`init`], e.g. unit tests that build
+/// a manager directly, which keeps output in the ring only) and records where the owner keeps
+/// crash records.
+pub(crate) fn attach(
+    config: &mut citrate_core_kit::supervisor::SupervisorConfig,
+    policy: LogPolicy,
+) {
+    config.log_file = log_dir().map(|d| config_in(d, &config.spec.name, policy));
     CRASH_FILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(config.spec.name.clone(), config.crash_record_path.clone());
+        .insert(
+            config.spec.name.clone(),
+            (config.crash_record_path.clone(), policy),
+        );
 }
 
-/// The crash-record files recorded by [`attach`], by sidecar name.
-pub(crate) fn crash_files_seen() -> Vec<(String, PathBuf)> {
+/// The crash-record files recorded by [`attach`]: (sidecar, file, policy).
+pub(crate) fn crash_files_seen() -> Vec<(String, PathBuf, LogPolicy)> {
     CRASH_FILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, (p, pol))| (k.clone(), p.clone(), *pol))
         .collect()
 }
 
@@ -113,49 +188,25 @@ pub(crate) fn crash_files_seen() -> Vec<(String, PathBuf)> {
 // The diagnostics bundle
 // ---------------------------------------------------------------------------
 
-/// Redact runs of 64 or more hex digits not already behind `0x` (private-key shaped).
-fn redact_bare_hex(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i].is_ascii_hexdigit() && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) {
-            let mut j = i;
-            while j < b.len() && b[j].is_ascii_hexdigit() {
-                j += 1;
-            }
-            let bounded = j == b.len() || !b[j].is_ascii_alphanumeric();
-            if j - i >= 64 && bounded {
-                out.push_str("<redacted>");
-                i = j;
-                continue;
-            }
-            out.push_str(&s[i..j]);
-            i = j;
-            continue;
-        }
-        let ch_len = s[i..].chars().next().map_or(1, char::len_utf8);
-        out.push_str(&s[i..i + ch_len]);
-        i += ch_len;
-    }
-    out
-}
-
-/// The bundle's scrub: the telemetry scrub, then bare 64-hex runs.
+/// The bundle's scrub: the secret shapes, the telemetry scrub (home folder, `0x` hex, key shapes,
+/// tokens, emails), then the secret shapes again (idempotent; it catches what the first two
+/// expose). The secret shapes run first so that the telemetry scrub cannot hide a token's scheme
+/// word and leave the token behind.
 pub fn bundle_scrub(text: &str, home: &str) -> String {
-    redact_bare_hex(&crate::telemetry::scrub(text, home))
+    let first = crate::secret_shapes::redact(text);
+    crate::secret_shapes::redact(&crate::telemetry::scrub(&first, home))
 }
 
-/// The key tripwire on a finished bundle: what must never be in it.
+/// The bundle's final check: what must never be in it. Refuses on any survivor.
 pub fn bundle_tripwire(text: &str) -> Result<(), String> {
-    if crate::telemetry::has_vendor_key_shape(text) {
+    if crate::telemetry::has_key_shape(text) {
         return Err("the bundle still holds something shaped like a provider key".into());
     }
     if text.contains("-----BEGIN") {
         return Err("the bundle holds a PEM block".into());
     }
-    if redact_bare_hex(text) != text {
-        return Err("the bundle holds a 64-hex run".into());
+    if let Some(shape) = crate::secret_shapes::first_shape(text) {
+        return Err(format!("the bundle still holds a {shape}"));
     }
     Ok(())
 }
@@ -227,8 +278,8 @@ pub struct BundleInputs<'a> {
     pub health_json: String,
     /// The sidecar log folder.
     pub log_dir: Option<&'a Path>,
-    /// (label, path) of each crash-record file.
-    pub crash_files: Vec<(String, PathBuf)>,
+    /// (label, path, the sidecar's log policy) of each crash-record file.
+    pub crash_files: Vec<(String, PathBuf, LogPolicy)>,
     /// The app's panic log.
     pub panic_file: Option<PathBuf>,
     pub home: &'a str,
@@ -254,6 +305,26 @@ fn tail_lines(path: &Path, n: usize) -> Vec<String> {
         .collect()
 }
 
+/// One crash-record line for the bundle. A content-bearing sidecar's stderr tail can carry user
+/// text, so it is withheld; a line that is not a crash record is withheld whole.
+fn crash_line(line: &str, policy: LogPolicy) -> String {
+    if policy == LogPolicy::Full {
+        return line.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(serde_json::Value::Object(mut m)) => {
+            if m.contains_key("stderr_tail") {
+                m.insert(
+                    "stderr_tail".into(),
+                    "(stderr tail withheld: this sidecar's output can carry user content)".into(),
+                );
+            }
+            serde_json::Value::Object(m).to_string()
+        }
+        _ => "(a line that is not a crash record was withheld)".to_string(),
+    }
+}
+
 /// Build the scrubbed bundle text. Returns the text, the sidecars included and the line count.
 pub fn build_bundle(inp: &BundleInputs<'_>) -> Result<(String, Vec<String>, usize), String> {
     let mut out = String::new();
@@ -263,8 +334,10 @@ pub fn build_bundle(inp: &BundleInputs<'_>) -> Result<(String, Vec<String>, usiz
         inp.app_version, inp.os, inp.made_at_unix_ms
     ));
     out.push_str(
-        "Review this file before you share it. Your home folder, addresses and hashes, emails, \
-         tokens and key-shaped text are redacted. It holds no wallet, key or seed.\n",
+        "Read this file before you share it. It is scrubbed on a best-effort basis: your home \
+         folder, addresses and hashes, emails, tokens, passwords and key-shaped values are \
+         redacted, and the model, memory, messaging and Hermes sidecars keep only start, stop and \
+         error lines. Free text a sidecar printed with none of those shapes is not removed.\n",
     );
     out.push_str("\n== Sidecar health (sidecars_health) ==\n");
     out.push_str(&inp.health_json);
@@ -293,14 +366,14 @@ pub fn build_bundle(inp: &BundleInputs<'_>) -> Result<(String, Vec<String>, usiz
     } else {
         out.push_str("\n== Sidecar logs ==\nThe log folder is not set up in this session.\n");
     }
-    for (label, path) in &inp.crash_files {
+    for (label, path, policy) in &inp.crash_files {
         let lines = tail_lines(path, CRASH_LINES);
         if lines.is_empty() {
             continue;
         }
         out.push_str(&format!("\n== {label} crash records ==\n"));
         for l in lines {
-            out.push_str(&l);
+            out.push_str(&crash_line(&l, *policy));
             out.push('\n');
         }
     }
@@ -336,10 +409,30 @@ pub fn check_export_path(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Refuse a link at `path`, on every platform (#613 review: Windows has no `O_NOFOLLOW`, so this
+/// check is what refuses it there; on unix the open refuses it as well).
+pub fn refuse_link(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            Err("a link at the export path is refused; choose a plain file".into())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The home folder for the scrub: `HOME`, else `USERPROFILE` (Windows), else none.
+pub fn home_from(get: impl Fn(&str) -> Option<String>) -> String {
+    get("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| get("USERPROFILE").filter(|h| !h.is_empty()))
+        .unwrap_or_default()
+}
+
 /// Write `text` to `path` (owner-only; a link at the path is refused).
 pub fn write_bundle(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     check_export_path(path)?;
+    refuse_link(path)?;
     let mut f = crate::journal_export::open_export_file(path)
         .map_err(|e| format!("the bundle could not be written: {e}"))?;
     f.write_all(text.as_bytes())
@@ -349,10 +442,14 @@ pub fn write_bundle(path: &Path, text: &str) -> Result<(), String> {
 
 /// The crash-record files for the bundle: the node's (written by every session that ran the node,
 /// `node.rs` `build_node_state`), then those recorded by [`attach`] in this session.
-fn crash_files(data: &Path) -> Vec<(String, PathBuf)> {
+fn crash_files(data: &Path) -> Vec<(String, PathBuf, LogPolicy)> {
     let node = data.join("node").join("crash-records.jsonl");
-    let mut v = vec![("node".to_string(), node.clone())];
-    v.extend(crash_files_seen().into_iter().filter(|(_, p)| *p != node));
+    let mut v = vec![("node".to_string(), node.clone(), LogPolicy::Full)];
+    v.extend(
+        crash_files_seen()
+            .into_iter()
+            .filter(|(_, p, _)| *p != node),
+    );
     v
 }
 
@@ -370,7 +467,7 @@ pub async fn diagnostics_logs_export(
         let dest = PathBuf::from(&path);
         check_export_path(&dest)?;
         let data = app_h.path().app_data_dir().map_err(|e| e.to_string())?;
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = home_from(|k| std::env::var(k).ok());
         let health = crate::services::sidecars_health_sync(&app_h, 0);
         let health_json = serde_json::to_string_pretty(&health).map_err(|e| e.to_string())?;
         let made = std::time::SystemTime::now()

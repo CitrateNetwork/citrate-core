@@ -322,7 +322,7 @@ fn the_health_row_reports_the_log_file_with_the_home_folder_scrubbed() {
         max_delay: std::time::Duration::from_millis(5),
         max_retries: 0,
     };
-    let mut lf = config_in(&t.0.join("sidecars"), "d5-health");
+    let mut lf = config_in(&t.0.join("sidecars"), "d5-health", LogPolicy::Full);
     lf.path = PathBuf::from(format!("{HOME}/Library/Logs/ai.citrate.core/sidecars/d5-health.log"));
     cfg.log_file = Some(lf);
     let sup = citrate_core_kit::supervisor::Supervisor::start(cfg).expect("start");
