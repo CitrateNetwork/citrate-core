@@ -15,6 +15,8 @@ import type {
   PostDeployStatus,
   SitePinView,
   VercelExportView,
+  DeployRecordSavedView,
+  DeployRecordSummaryView,
   VerifyOutcomeView,
 } from "../domains";
 import type {
@@ -110,6 +112,13 @@ export const tauriContracts: ContractsDomain = {
   },
   postdeployVercelExport(projectDir: string) {
     return invoke<VercelExportView>("postdeploy_vercel_export", { projectDir });
+  },
+  // CORE-A3 — durable, encrypted deploy records (data: 40204 RPC, forge artifact, gate store).
+  deployRecordSave(projectDir: string, txHash: string) {
+    return invoke<DeployRecordSavedView>("deploy_record_save", { projectDir, txHash });
+  },
+  deployRecords(projectDir: string) {
+    return invoke<DeployRecordSummaryView[]>("deploy_records_list", { projectDir });
   },
   // HUP-S6.2 / US-6.4 — contract templates (core renders; parameters are validated in Rust).
   templateList() {
