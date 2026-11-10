@@ -57,6 +57,8 @@ mod linux_webkit_env;
 mod contract_intel;
 mod contract_reader;
 mod deploy_gate;
+// CORE-A3 (0.5.3): durable deploy records, encrypted per project.
+mod deploy_records;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).

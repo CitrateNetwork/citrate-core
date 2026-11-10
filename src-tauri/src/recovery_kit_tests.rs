@@ -73,7 +73,10 @@ fn snapshot(k: &MemKeyring) -> HashMap<String, Vec<u8>> {
 #[test]
 fn covers_exactly_the_device_minted_keys_and_never_the_wallet() {
     let accounts: Vec<&str> = DEVICE_KEYS.iter().map(|k| k.account).collect();
-    assert_eq!(accounts, vec!["node-storage-key", "memory-store-key"]);
+    assert_eq!(
+        accounts,
+        vec!["node-storage-key", "memory-store-key", "deploy-records-key"]
+    );
     for k in DEVICE_KEYS {
         assert!(
             !k.account.starts_with("custody-"),
