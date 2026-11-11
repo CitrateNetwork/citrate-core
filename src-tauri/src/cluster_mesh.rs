@@ -204,11 +204,12 @@ mod tests {
 
     #[test]
     fn todays_build_changes_nothing_the_operator_env_or_off() {
-        // The shipped constants: neither precondition is met (a tripwire: flipping either one is an
-        // owner + security decision and must update this test on purpose).
+        // The shipped constants (a tripwire: flipping either one is an owner + security decision
+        // and must update this test on purpose). V60 MESH-1: the bundled daemon serves every group;
+        // the transport sign-off is still open, so the mesh default is unchanged (off).
         assert_eq!(
             [TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON],
-            [false, false],
+            [false, true],
             "the mesh default changed"
         );
         let off = decide(None, TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON, false);
@@ -227,6 +228,31 @@ mod tests {
             decide(Some("  "), false, false, false).source,
             MeshSource::Off
         );
+    }
+
+    /// V60 MESH-1: `MULTI_GROUP_DAEMON` may be true only while the bundled `cluster-daemon` is a
+    /// citrate-cluster rev recorded as serving every group. Bumping the pin in
+    /// `release/components.json` without checking the new rev (and recording it) fails here.
+    #[test]
+    fn the_multi_group_flag_matches_the_bundled_daemon() {
+        let components: serde_json::Value =
+            serde_json::from_str(include_str!("../../release/components.json"))
+                .expect("release/components.json parses");
+        let rev = components["components"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == "cluster-daemon"))
+            .and_then(|c| c["source"]["rev"].as_str())
+            .expect("cluster-daemon is pinned");
+        if MULTI_GROUP_DAEMON {
+            assert!(
+                MULTI_GROUP_DAEMON_REVS.contains(&rev),
+                "bundled cluster-daemon {rev} is not recorded as multi-group"
+            );
+        }
+        // Every recorded rev is a full 40-hex commit id.
+        for r in MULTI_GROUP_DAEMON_REVS {
+            assert!(r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()), "{r}");
+        }
     }
 
     #[test]
