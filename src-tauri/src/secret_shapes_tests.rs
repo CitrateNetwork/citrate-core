@@ -136,3 +136,22 @@ fn fewer_than_twelve_bip39_words_or_a_broken_run_is_left_alone() {
     let sentence = "please add the above account to the list and act on it now";
     assert_eq!(redact(sentence), sentence, "a normal sentence is left alone");
 }
+
+/// #619: the filler and non-ASCII separator rules keep prose and short runs untouched.
+#[test]
+fn varied_fillers_short_runs_and_accented_words_are_left_alone() {
+    let all = ["abandon ability able about above absent ", "absorb abstract absurd abuse access accident"].concat();
+    let w: Vec<&str> = all.split(' ').collect();
+    // Different short words between list words, as prose has them.
+    let fillers = ["the", "to", "a", "of", "in", "it", "is", "be", "we", "so", "if"];
+    let prose: String = w.iter().zip(fillers.iter().chain(std::iter::once(&"")))
+        .map(|(x, f)| format!("{x} {f}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(redact(&prose), prose, "varied fillers are prose, not a phrase");
+    let eleven_x = format!("{} x", w[..11].join(" x "));
+    assert_eq!(redact(&eleven_x), eleven_x, "11 words with a filler are not a phrase");
+    // A letter (accented or not) is not a separator.
+    let accented = w.join(" \u{e9} ");
+    assert_eq!(redact(&accented), accented, "a non-ASCII letter between words breaks the run");
+}
