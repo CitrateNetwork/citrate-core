@@ -74,10 +74,25 @@ manifest and recomputes the digest: anyone who can write to the backup folder ca
 backup that verifies. Keep backups where only you can write. Because of this, modes read from the
 manifest are masked on restore (permission bits only, never group- or world-writable).
 
-**The Memory part of an export is not encrypted.** It is a plain copy of the memory store as it is
-on disk (core does not encrypt the store at rest today, see `memory.rs`). The Files part is a
-plain copy of each file. A backup is as private as the folder it is written to; the surface says
-so.
+**Encrypted by default (0.6.0, STO-2).** An export is one file,
+`citrate-backup-YYYYMMDD-HHMMSS.citrate-backup`, sealed under a passphrase the member types twice
+(12 characters or more; it is never stored). The construction is the recovery kit's: the custody
+vault's Argon2id (64 MiB, 3 passes, 1 lane, recorded in the header and refused on any other value)
+and AES-256-GCM, run as the STREAM construction from the `aead` crate (7-byte random nonce prefix,
+32-bit big-endian chunk counter, last-chunk flag; 1 MiB chunks; the 52-byte header is the
+associated data of every chunk). A wrong passphrase, a changed byte, a truncated, reordered or
+extended file, or an unknown version is refused before any store is touched. The plain folder
+above is built and verified in a private staging dir in the app data dir, sealed into the chosen
+folder, and removed; restore and verify open the file into the same kind of staging dir, run the
+unchanged checks below on it, and remove it. The format is documented in
+`src-tauri/src/storage_backup_seal.rs`, with independent known-answer vectors in its tests.
+Datasets join the backup when DATA-1 lands; history is not included (amc Q-5).
+
+**An unencrypted backup is an explicit choice.** Ticking "Export without encryption" shows a
+warning and writes the plain folder described above. Its Memory part is a plain copy of the
+memory store as it is on disk (core does not encrypt the store at rest today, see `memory.rs`),
+and its Files part is a plain copy of each file. Such a backup is as private as the folder it is
+written to. Plain folders made by 0.5.x still verify and restore.
 
 **Verification** (`verify_folder`, run at the end of every export and at the start of every
 restore): the format matches; the entry digest matches; every path is a plain relative path under

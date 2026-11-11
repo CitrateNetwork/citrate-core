@@ -76,7 +76,7 @@ describe("K4 — tauri storage: V3 parameters and verified backup", () => {
     expect(p.bondsLive).toBe(false);
   });
 
-  it("backupExport → storage_backup_export with { dest, parts } and streams progress, then unlistens", async () => {
+  it("backupExport → storage_backup_export with { dest, parts, passphrase } and streams progress, then unlistens", async () => {
     const seen: unknown[] = [];
     listenMock.mockImplementationOnce(async (_ev: string, cb: (e: { payload: unknown }) => void) => {
       cb({ payload: { op: "export", phase: "files", done: 1, total: 2, item: "files/bafy1" } });
@@ -84,16 +84,42 @@ describe("K4 — tauri storage: V3 parameters and verified backup", () => {
       return unlistenMock;
     });
     invokeMock.mockResolvedValueOnce({ folder: "/b/citrate-backup-1" });
-    await tauriStorage.backupExport("/b", ["files", "memory"], (p) => seen.push(p));
+    await tauriStorage.backupExport("/b", ["files", "memory"], { passphrase: "correct horse battery" }, (p) => seen.push(p));
     expect(listenMock).toHaveBeenCalledWith("storage://backup-progress", expect.any(Function));
-    expect(invokeMock).toHaveBeenCalledWith("storage_backup_export", { dest: "/b", parts: ["files", "memory"] });
+    expect(invokeMock).toHaveBeenCalledWith("storage_backup_export", {
+      dest: "/b",
+      parts: ["files", "memory"],
+      passphrase: "correct horse battery",
+    });
     expect(seen).toEqual([{ op: "export", phase: "files", done: 1, total: 2, item: "files/bafy1" }]);
     expect(unlistenMock).toHaveBeenCalledTimes(1);
   });
 
+  it("STO-2: a plaintext export says so explicitly and sends no passphrase", async () => {
+    invokeMock.mockResolvedValueOnce({ folder: "/b/citrate-backup-1" });
+    await tauriStorage.backupExport("/b", ["memory"], { plaintext: true });
+    expect(invokeMock).toHaveBeenCalledWith("storage_backup_export", { dest: "/b", parts: ["memory"], plaintext: true });
+  });
+
+  it("STO-2: verify and restore of a sealed file carry its passphrase", async () => {
+    invokeMock.mockResolvedValueOnce({ ok: true });
+    await tauriStorage.backupVerify("/b/x.citrate-backup", "correct horse battery");
+    expect(invokeMock).toHaveBeenCalledWith("storage_backup_verify", {
+      folder: "/b/x.citrate-backup",
+      passphrase: "correct horse battery",
+    });
+    invokeMock.mockResolvedValueOnce({ folder: "/b/x.citrate-backup" });
+    await tauriStorage.backupRestore("/b/x.citrate-backup", ["files"], "correct horse battery", () => {});
+    expect(invokeMock).toHaveBeenCalledWith("storage_backup_restore", {
+      folder: "/b/x.citrate-backup",
+      parts: ["files"],
+      passphrase: "correct horse battery",
+    });
+  });
+
   it("backupRestore unlistens even when Rust refuses", async () => {
     invokeMock.mockRejectedValueOnce(new Error("the backup does not match its manifest (1 problem)"));
-    await expect(tauriStorage.backupRestore("/b/x", ["memory"], () => {})).rejects.toThrow(/does not match/);
+    await expect(tauriStorage.backupRestore("/b/x", ["memory"], undefined, () => {})).rejects.toThrow(/does not match/);
     expect(invokeMock).toHaveBeenCalledWith("storage_backup_restore", { folder: "/b/x", parts: ["memory"] });
     expect(unlistenMock).toHaveBeenCalledTimes(1);
   });
@@ -107,7 +133,7 @@ describe("K4 — tauri storage: V3 parameters and verified backup", () => {
   it("sim rejects backup and parameter reads with a plain reason (no fabricated values)", async () => {
     if (bridge.mode === "sim") {
       await expect(bridge.storage.pinParams()).rejects.toThrow(/desktop app/);
-      await expect(bridge.storage.backupExport("/x", ["files"])).rejects.toThrow(/desktop app/);
+      await expect(bridge.storage.backupExport("/x", ["files"], { plaintext: true })).rejects.toThrow(/desktop app/);
     }
   });
 });

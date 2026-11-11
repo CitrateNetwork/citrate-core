@@ -43,10 +43,14 @@
 //! as `memory.before-restore-<time>`, never deleted. The live socket (`memdag.sock`) and the
 //! crash log are not member data and are never copied.
 //!
-//! A backup is NOT encrypted. The memory store is not encrypted at rest by core (see `memory.rs`),
-//! and the Memory part is a plain copy of the store as it is on disk; Files are plain copies too.
-//! So the backup folder is created owner-only (0700 on Unix) and the surface tells
-//! the member to keep it somewhere private. Every dir and file this module creates (the backup
+//! STO-2: by default an export is ONE passphrase-sealed file ([`seal`]: the recovery kit's
+//! Argon2id + AES-256-GCM, run as a chunked STREAM, own magic, versioned header); the folder
+//! described above is built in a private staging dir under the app data dir and only its sealed
+//! form reaches the chosen folder. The plain folder is written to the chosen folder only when the
+//! member explicitly picks an unencrypted backup (the surface warns first). The memory store is not
+//! encrypted at rest by core (see `memory.rs`), so a plain backup's Memory part is a plain copy of
+//! the store as it is on disk; Files are plain copies too. So the backup folder is created
+//! owner-only (0700 on Unix) and the surface tells the member to keep it somewhere private. Every dir and file this module creates (the backup
 //! folder, its contents, and the restore staging dir and everything in it) is owner-only from
 //! creation (0700 dirs via `DirBuilder` mode, 0600 files via `OpenOptions` mode), never created at
 //! the umask default and narrowed afterwards. A restored file then gets its recorded mode.
@@ -67,6 +71,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::knowledge_import::ImportGuard;
 use crate::storage::{PinState, StorageManager};
+
+/// STO-2: the passphrase-sealed backup file (format and construction documented there).
+#[path = "storage_backup_seal.rs"]
+pub mod seal;
 
 /// The manifest file name at the root of a backup folder.
 pub const MANIFEST_NAME: &str = "citrate-backup.json";
@@ -333,6 +341,9 @@ pub struct ExportReport {
     pub daemon_restarted: bool,
     /// Anything the member should know that did not stop the export.
     pub notes: Vec<String>,
+    /// STO-2: the backup is one passphrase-sealed file (`folder` is its path), not a plain
+    /// folder.
+    pub encrypted: bool,
 }
 
 /// A Files object that came back under a different CID.
@@ -1066,6 +1077,7 @@ fn export_into(
         skipped,
         daemon_restarted,
         notes,
+        encrypted: false,
     })
 }
 
@@ -1335,6 +1347,144 @@ pub fn verify_report(folder: &Path) -> VerifyReport {
             ..base
         }),
     }
+}
+
+// ---------------------------------------------------------------------------
+// STO-2: encrypted backups
+// ---------------------------------------------------------------------------
+
+/// Create a NEW sealed-backup file name in `dest` that does not exist yet (`-2`, `-3`, … as the
+/// plain folder does). The file itself is created with `create_new` by the sealer, so a race
+/// still never overwrites.
+fn sealed_file_path(dest: &Path, now: u64) -> Result<PathBuf, BackupError> {
+    let base = backup_folder_name(now);
+    for n in 1..=999u32 {
+        let name = if n == 1 {
+            format!("{base}.{}", seal::FILE_EXT)
+        } else {
+            format!("{base}-{n}.{}", seal::FILE_EXT)
+        };
+        let p = dest.join(name);
+        if std::fs::symlink_metadata(&p).is_err() {
+            return Ok(p);
+        }
+    }
+    Err(BackupError::InvalidFolder(
+        "too many backups with the same name in that folder".to_string(),
+    ))
+}
+
+/// Export `parts` as ONE passphrase-sealed file in `dest` ([`seal`]). The plain K4 folder is
+/// built and verified in a private staging dir under `staging_root` (inside the app data dir,
+/// never the destination), sealed into `dest`, and the staging copy is removed whatever happens.
+/// Nothing readable is written to `dest`; a failed export removes its own partial file.
+#[allow(clippy::too_many_arguments)]
+pub fn export_sealed(
+    dest: &Path,
+    parts: &[Part],
+    files: Option<&StorageManager>,
+    memory: Option<&MemorySource<'_>>,
+    now: u64,
+    passphrase: &str,
+    staging_root: &Path,
+    on_progress: &mut dyn FnMut(&Progress),
+) -> Result<ExportReport, BackupError> {
+    seal::check_passphrase(passphrase)?;
+    let dest = check_destination(dest, memory)?;
+    let stage = seal::staging_dir(staging_root, "export")?;
+    create_private_dir(&stage).map_err(|e| io_err("create the staging folder", e))?;
+    let _guard = seal::StagingGuard(stage.clone());
+    // The inner export's own "done" names the staging folder; the member sees ours instead.
+    let mut inner = |p: &Progress| {
+        if p.phase != "done" {
+            on_progress(p)
+        }
+    };
+    let mut report = export(&stage, parts, files, memory, now, &mut inner)?;
+    let file = sealed_file_path(&dest, now)?;
+    on_progress(&Progress {
+        op: "export",
+        phase: "verify",
+        done: 0,
+        total: 0,
+        item: "encrypting the backup".to_string(),
+    });
+    if let Err(e) = seal::seal_folder(Path::new(&report.folder), &file, passphrase.as_bytes()) {
+        // Only ever our own new file (created with create_new).
+        let _ = std::fs::remove_file(&file);
+        return Err(e);
+    }
+    report.folder = file.to_string_lossy().to_string();
+    report.encrypted = true;
+    on_progress(&Progress {
+        op: "export",
+        phase: "done",
+        done: report.files + report.memory_files,
+        total: report.files + report.memory_files,
+        item: report.folder.clone(),
+    });
+    Ok(report)
+}
+
+/// Open the sealed backup `file` into a new staging dir under `staging_root`. The returned guard
+/// removes it when dropped.
+fn open_sealed_to_staging(
+    file: &Path,
+    passphrase: &str,
+    staging_root: &Path,
+) -> Result<(seal::StagingGuard, PathBuf), BackupError> {
+    let stage = seal::staging_dir(staging_root, "open")?;
+    let guard = seal::StagingGuard(stage.clone());
+    seal::open_into(file, passphrase.as_bytes(), &stage)?;
+    Ok((guard, stage))
+}
+
+/// Verify a sealed backup: open it (a wrong passphrase or a damaged file is reported as the
+/// problem) and run the K4 check on what it holds. Never an `Err`, like [`verify_report`].
+pub fn verify_sealed_report(file: &Path, passphrase: &str, staging_root: &Path) -> VerifyReport {
+    let name = file.to_string_lossy().to_string();
+    match open_sealed_to_staging(file, passphrase, staging_root) {
+        Ok((_guard, stage)) => VerifyReport {
+            folder: name,
+            ..verify_report(&stage)
+        },
+        Err(e) => VerifyReport {
+            folder: name,
+            ok: false,
+            created_at: None,
+            parts: Vec::new(),
+            file_count: 0,
+            total_bytes: 0,
+            mismatches: Vec::new(),
+            problem: Some(e.to_string()),
+        },
+    }
+}
+
+/// Restore from a sealed backup: open it into staging (refusing a wrong passphrase or a damaged
+/// file before any store is touched), then the unchanged K4 [`restore`] on the staged folder.
+#[allow(clippy::too_many_arguments)]
+pub fn restore_sealed(
+    file: &Path,
+    passphrase: &str,
+    staging_root: &Path,
+    parts: &[Part],
+    files: Option<&StorageManager>,
+    memory: Option<&MemorySource<'_>>,
+    now: u64,
+    on_progress: &mut dyn FnMut(&Progress),
+) -> Result<RestoreReport, BackupError> {
+    on_progress(&Progress {
+        op: "restore",
+        phase: "verify",
+        done: 0,
+        total: 0,
+        item: "opening the encrypted backup".to_string(),
+    });
+    let (_guard, stage) = open_sealed_to_staging(file, passphrase, staging_root)?;
+    let mut report = restore(&stage, parts, files, memory, now, on_progress)?;
+    report.folder = file.to_string_lossy().to_string();
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------
@@ -1885,16 +2035,40 @@ fn memory_source<'a>(mgr: &'a crate::memory::MemoryManager) -> Result<MemorySour
     })
 }
 
-/// **Command — storage_backup_export.** Export Files and/or Memory into a new verified backup
-/// folder inside the member-chosen `dest`. Emits [`PROGRESS_EVENT`] while it runs.
+/// The private staging root for sealed backups: `<app data>/backup-staging` (never the member's
+/// chosen folder).
+fn staging_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("backup-staging"))
+}
+
+/// **Command — storage_backup_export.** Export Files and/or Memory into the member-chosen
+/// `dest`. STO-2: with a `passphrase` the backup is ONE sealed file ([`seal`]); the plain K4
+/// folder is written only when the member chose `plaintext` explicitly. Neither, or both, is
+/// refused. Emits [`PROGRESS_EVENT`] while it runs.
 #[tauri::command]
 pub async fn storage_backup_export(
     app_h: tauri::AppHandle,
     dest: String,
     parts: Vec<String>,
+    passphrase: Option<crate::secret::SecretString>,
+    plaintext: Option<bool>,
 ) -> Result<ExportReport, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || storage_backup_export_sync(app_h.clone(), dest, parts)).await
+    crate::blocking::off_main(move || {
+        storage_backup_export_sync(
+            app_h.clone(),
+            dest,
+            parts,
+            passphrase,
+            plaintext.unwrap_or(false),
+        )
+    })
+    .await
 }
 
 /// Blocking body of [`storage_backup_export`]; reached only through [`crate::blocking::off_main`].
@@ -1902,8 +2076,12 @@ pub fn storage_backup_export_sync(
     app: tauri::AppHandle,
     dest: String,
     parts: Vec<String>,
+    passphrase: Option<crate::secret::SecretString>,
+    plaintext: bool,
 ) -> Result<ExportReport, String> {
     use tauri::Emitter;
+    let protection = seal::Protection::choose(passphrase.as_ref().map(|p| p.expose()), plaintext)
+        .map_err(|e| e.to_string())?;
     let parts = Part::parse_list(&parts).map_err(|e| e.to_string())?;
     let files = files_manager(&app)?;
     let mem_state = tauri::Manager::try_state::<crate::memory::MemoryState>(&app);
@@ -1914,44 +2092,76 @@ pub fn storage_backup_export_sync(
     let mut on = |p: &Progress| {
         let _ = app.emit(PROGRESS_EVENT, p);
     };
-    export(
-        Path::new(&dest),
-        &parts,
-        Some(&files),
-        mem_src.as_ref(),
-        unix_now(),
-        &mut on,
-    )
+    match protection {
+        seal::Protection::Plaintext => export(
+            Path::new(&dest),
+            &parts,
+            Some(&files),
+            mem_src.as_ref(),
+            unix_now(),
+            &mut on,
+        ),
+        seal::Protection::Passphrase(pass) => export_sealed(
+            Path::new(&dest),
+            &parts,
+            Some(&files),
+            mem_src.as_ref(),
+            unix_now(),
+            &pass,
+            &staging_root(&app)?,
+            &mut on,
+        ),
+    }
     .map_err(|e| e.to_string())
 }
 
-/// **Command — storage_backup_verify.** Check a backup folder against its manifest.
+/// **Command — storage_backup_verify.** Check a backup against its manifest: a plain backup
+/// folder, or (STO-2) a sealed backup file opened with `passphrase`.
 #[tauri::command]
-pub async fn storage_backup_verify(folder: String) -> Result<VerifyReport, String> {
+pub async fn storage_backup_verify(
+    app_h: tauri::AppHandle,
+    folder: String,
+    passphrase: Option<crate::secret::SecretString>,
+) -> Result<VerifyReport, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || storage_backup_verify_sync(folder)).await
+    crate::blocking::off_main(move || storage_backup_verify_sync(app_h.clone(), folder, passphrase))
+        .await
 }
 
 /// Blocking body of [`storage_backup_verify`]; reached only through [`crate::blocking::off_main`].
-pub fn storage_backup_verify_sync(folder: String) -> Result<VerifyReport, String> {
+pub fn storage_backup_verify_sync(
+    app: tauri::AppHandle,
+    folder: String,
+    passphrase: Option<crate::secret::SecretString>,
+) -> Result<VerifyReport, String> {
     let p = Path::new(&folder);
     if !p.is_absolute() {
-        return Err("choose a backup folder (an absolute path)".to_string());
+        return Err("choose a backup (an absolute path)".to_string());
+    }
+    if seal::is_sealed_file(p) {
+        let Some(pass) = passphrase else {
+            return Err("this backup is encrypted: enter its passphrase".to_string());
+        };
+        return Ok(verify_sealed_report(p, pass.expose(), &staging_root(&app)?));
     }
     Ok(verify_report(p))
 }
 
-/// **Command — storage_backup_restore.** Restore Files and/or Memory from a backup folder; refuses
-/// on any manifest mismatch before anything is touched. Emits [`PROGRESS_EVENT`].
+/// **Command — storage_backup_restore.** Restore Files and/or Memory from a backup folder or
+/// (STO-2) a sealed backup file; refuses on a wrong passphrase, a damaged file or any manifest
+/// mismatch before anything is touched. Emits [`PROGRESS_EVENT`].
 #[tauri::command]
 pub async fn storage_backup_restore(
     app_h: tauri::AppHandle,
     folder: String,
     parts: Vec<String>,
+    passphrase: Option<crate::secret::SecretString>,
 ) -> Result<RestoreReport, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || storage_backup_restore_sync(app_h.clone(), folder, parts))
-        .await
+    crate::blocking::off_main(move || {
+        storage_backup_restore_sync(app_h.clone(), folder, parts, passphrase)
+    })
+    .await
 }
 
 /// Blocking body of [`storage_backup_restore`]; reached only through [`crate::blocking::off_main`].
@@ -1959,13 +2169,18 @@ pub fn storage_backup_restore_sync(
     app: tauri::AppHandle,
     folder: String,
     parts: Vec<String>,
+    passphrase: Option<crate::secret::SecretString>,
 ) -> Result<RestoreReport, String> {
     use tauri::Emitter;
     let p = Path::new(&folder);
     if !p.is_absolute() {
-        return Err("choose a backup folder (an absolute path)".to_string());
+        return Err("choose a backup (an absolute path)".to_string());
     }
     let parts = Part::parse_list(&parts).map_err(|e| e.to_string())?;
+    let sealed = seal::is_sealed_file(p);
+    if sealed && passphrase.is_none() {
+        return Err("this backup is encrypted: enter its passphrase".to_string());
+    }
     let files = files_manager(&app)?;
     let mem_state = tauri::Manager::try_state::<crate::memory::MemoryState>(&app);
     let mem_src = match &mem_state {
@@ -1975,18 +2190,36 @@ pub fn storage_backup_restore_sync(
     let mut on = |pr: &Progress| {
         let _ = app.emit(PROGRESS_EVENT, pr);
     };
-    restore(
-        p,
-        &parts,
-        Some(&files),
-        mem_src.as_ref(),
-        unix_now(),
-        &mut on,
-    )
+    match passphrase.filter(|_| sealed) {
+        Some(pass) => restore_sealed(
+            p,
+            pass.expose(),
+            &staging_root(&app)?,
+            &parts,
+            Some(&files),
+            mem_src.as_ref(),
+            unix_now(),
+            &mut on,
+        ),
+        None => restore(
+            p,
+            &parts,
+            Some(&files),
+            mem_src.as_ref(),
+            unix_now(),
+            &mut on,
+        ),
+    }
     .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     include!("storage_backup_tests.rs");
+
+    /// STO-2: the encrypted backup file.
+    mod sealed {
+        use super::*;
+        include!("storage_backup_seal_tests.rs");
+    }
 }
