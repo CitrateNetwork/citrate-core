@@ -301,6 +301,27 @@ fn content_bearing_sidecars_write_only_allowlisted_lifecycle_lines() {
         assert!(out.starts_with(&format!("[withheld: {level} line")), "the marker names the level");
         assert!(!out.contains("note") && !out.contains("prompt"), "the marker carries no text from the line");
     }
+    // Round 5 P3: a free-text token (three or more letter-only segments joined by `-` or `.`) or a
+    // path under a home folder withholds an otherwise allowed line.
+    for leak in [
+        "started call-mom-about-the-biopsy",
+        "loaded /Users/me/Documents/divorce-lawyer-notes.txt",
+        "ready model=my-private-diary",
+        "loaded model /home/m/private.gguf",
+        "loaded model ~/notes/model.gguf",
+        "loaded model C:\\Users\\m\\model.gguf",
+        "started dentist.appointment.friday",
+    ] {
+        assert_eq!(f(leak), None, "a free-text token reached the disk");
+    }
+    assert_eq!(
+        f("loaded model /opt/models/qwen-2.5-7b.gguf").as_deref(),
+        Some("loaded model /opt/models/qwen-2.5-7b.gguf")
+    );
+    assert_eq!(
+        f("INFO llama-server version 0.3.1 starting").as_deref(),
+        Some("INFO llama-server version 0.3.1 starting")
+    );
     // P3: on an allowed line, a key=value token is kept only for a lifecycle key.
     assert_eq!(f("server listening on port=18090").as_deref(), Some("server listening on port=18090"));
     assert_eq!(f("server listening note=private_reminder"), None, "a key=value with a non-lifecycle key is withheld");

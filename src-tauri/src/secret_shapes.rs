@@ -561,6 +561,31 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
         &"qpzry9x8gf2tvdw0s3jn54khce6mua7l".repeat(2)[..58],
     ]
     .concat();
+    let w12: Vec<&str> = vec![
+        "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd",
+        "abuse", "access", "accident",
+    ];
+    let numbered = |sep: &str| {
+        w12.iter()
+            .enumerate()
+            .map(|(i, w)| format!("{}{sep}{w}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let numbered_padded = || {
+        w12.iter()
+            .enumerate()
+            .map(|(i, w)| format!("{:02} {w}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let numbered_hash = || {
+        w12.iter()
+            .enumerate()
+            .map(|(i, w)| format!("#{} {w}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let words = [
         "abandon ability able about above absent ",
         "absorb abstract absurd abuse access accident",
@@ -760,6 +785,23 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
             "absurd".to_string(),
         ),
         ("bare 12-word line", words.clone(), words.clone()),
+        // Round 5 (#613 review P1, BerryManifold and Matr0xshka): numbered and joined phrases.
+        ("numbered 1. w", numbered(". "), "abstract".to_string()),
+        ("numbered 1:w", numbered(":"), "abstract".to_string()),
+        ("numbered 1) w", numbered(") "), "abstract".to_string()),
+        ("numbered 01 w", numbered_padded(), "abstract".to_string()),
+        ("numbered #1 w", numbered_hash(), "abstract".to_string()),
+        ("numbered 1.w", numbered("."), "abstract".to_string()),
+        ("joined by -", w12.join("-"), "abstract".to_string()),
+        ("joined by .", w12.join("."), "abstract".to_string()),
+        ("joined by ;", w12.join(";"), "abstract".to_string()),
+        ("joined by |", w12.join("|"), "abstract".to_string()),
+        ("joined by _", w12.join("_"), "abstract".to_string()),
+        ("joined by /", w12.join("/"), "abstract".to_string()),
+        ("joined by +", w12.join("+"), "abstract".to_string()),
+        ("joined by :", w12.join(":"), "abstract".to_string()),
+        ("joined by ' - '", w12.join(" - "), "abstract".to_string()),
+        ("joined by ' | '", w12.join(" | "), "abstract".to_string()),
         (
             "24-word phrase, upper case",
             format!("restore {} {}", words.to_uppercase(), words.to_uppercase()),

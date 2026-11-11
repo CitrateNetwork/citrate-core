@@ -120,8 +120,19 @@ fn fewer_than_twelve_bip39_words_or_a_broken_run_is_left_alone() {
     let w: Vec<&str> = all.split(' ').collect();
     let eleven = w[..11].join(" ");
     assert_eq!(redact(&eleven), eleven, "11 words are not a phrase");
-    let dashed = w.join("-");
-    assert_eq!(redact(&dashed), dashed, "a run broken by dashes is not a phrase");
+    // Round 5: ordinary dash-joined compounds and 11 numbered words stay; a non-list word breaks
+    // the run.
+    let compounds = "state-of-the-art rate-limit back-off for the upload";
+    assert_eq!(redact(compounds), compounds, "ordinary compounds are left alone");
+    let eleven_numbered: String = w[..11]
+        .iter()
+        .enumerate()
+        .map(|(i, x)| format!("{}. {x}", i + 1))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(redact(&eleven_numbered), eleven_numbered, "11 numbered words are not a phrase");
+    let broken = format!("{} the {}", w[..6].join(" "), w[6..].join(" "));
+    assert_eq!(redact(&broken), broken, "a non-list word breaks the run");
     let sentence = "please add the above account to the list and act on it now";
     assert_eq!(redact(sentence), sentence, "a normal sentence is left alone");
 }
