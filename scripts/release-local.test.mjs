@@ -67,7 +67,8 @@ describe("release-local.sh arguments (--check-args)", () => {
 });
 
 describe("release-local.sh source", () => {
-  const src = fs.readFileSync(script, "utf8");
+  // The commands only: comment lines (the header describes the steps too) are left out.
+  const src = fs.readFileSync(script, "utf8").split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
   const at = (s) => {
     const i = src.indexOf(s);
     expect(i, s).toBeGreaterThan(-1);
@@ -108,5 +109,9 @@ describe("release-local.sh source", () => {
   it("refuses to start a real release below the free-space floor", () => {
     expect(src).toMatch(/REAL_FLOOR_GIB=25/);
     expect(src).toContain('[ "$FREE_GIB" -ge "$FLOOR" ]');
+  });
+
+  it("refuses, before signing, a target commit GitHub does not have", () => {
+    expect(at("repos/$REPO_SLUG/commits/$TARGET_SHA")).toBeLessThan(at("notarytool submit"));
   });
 });
