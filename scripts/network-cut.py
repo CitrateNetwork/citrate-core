@@ -23,6 +23,14 @@ check [--release] [--root <dir>] [--cut-only]
     values. Unless --cut-only, it then runs scripts/check-network-profile.sh --release
     --require-active <profile> as well (the embedded address book and the rest of the K6 gate).
 
+fill --values <file.json> [--apply] [--root <dir>]
+
+    The one-command cut (0.5.3): write the genesis outputs, a JSON object of cut values (and
+    `node.<target>` pins), into the cut file and clear them from `pending`. Refuses, writing
+    nothing, on an unknown key, a null, a malformed value or a value already in the cut (the
+    cut is written once). With --apply it then applies the cut, all or nothing: if the filled
+    cut is incomplete or would not apply cleanly, neither the cut nor any pin is written.
+
 apply [--root <dir>]
 
     Refuses unless the file is complete (nothing pending, every value well formed) and the target
@@ -453,12 +461,68 @@ def complete_problems(cut: dict, profiles: dict) -> list:
     return out
 
 
-def cmd_apply(a) -> None:
+def filled_cut(cut: dict, values: dict, profiles: dict) -> dict:
+    """`cut` with `values` written in and cleared from `pending`. Raises Refused, writing nothing."""
+    if not isinstance(values, dict):
+        raise Refused("the values file must be one JSON object")
+    unknown = sorted(set(values) - set(VALUES) - {"node"})
+    if unknown:
+        raise Refused(f"unknown keys {unknown}; a values file names cut values only ({VALUES + ['node']})")
+    out = json.loads(json.dumps(cut))
+    pending = dict(out.get("pending") or {})
+    items = [(k, v) for k, v in values.items() if k != "node"]
+    node = values.get("node", {})
+    if not isinstance(node, dict):
+        raise Refused("node must map a target to its pin")
+    bad_targets = sorted(set(node) - set(TARGETS))
+    if bad_targets:
+        raise Refused(f"node has unknown targets {bad_targets} (known: {TARGETS})")
+    for k, v in items + [(f"node.{t}", v) for t, v in node.items()]:
+        if v is None:
+            raise Refused(f"{k} is null; leave a value out to keep it pending")
+        if k.startswith("node."):
+            t = k[len("node."):]
+            have = out["node"].get(t)
+            slot = lambda val: out["node"].__setitem__(t, val)
+        else:
+            have = out.get(k)
+            slot = lambda val, k=k: out.__setitem__(k, val)
+        if have is not None and have != v:
+            raise Refused(f"{k} is already set in {CUT}; the cut is written once (edit it by hand to change it)")
+        slot(v)
+        pending.pop(k, None)
+    out["pending"] = pending
+    problems = shape_problems(out, profiles)
+    if problems:
+        raise Refused("the filled cut is not well formed; nothing was written:\n  " + "\n  ".join(problems))
+    return out
+
+
+def cmd_fill(a) -> None:
     root = Path(a.root)
     cut, profiles = load(root)
-    errors = complete_problems(cut, profiles)
-    if errors:
-        raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+    try:
+        values = json.loads(Path(a.values).read_text())
+    except (OSError, ValueError) as e:
+        raise Refused(f"the values file cannot be read as JSON: {e}")
+    new = filled_cut(cut, values, profiles)
+    if a.apply:
+        errors = complete_problems(new, profiles)
+        if errors:
+            raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+        # Plan the apply against the filled cut before writing anything (all or nothing).
+        writes = apply_plan(root, new, profiles)
+        write_atomic(root / CUT, dump(new))
+        print(f"network-cut fill: wrote {CUT}")
+        write_apply(root, new, writes)
+        return
+    write_atomic(root / CUT, dump(new))
+    left = null_keys(new)
+    print(f"network-cut fill: wrote {CUT} ({len(left)} value(s) still pending{': ' + ', '.join(left) if left else ''})")
+
+
+def apply_plan(root: Path, cut: dict, profiles: dict) -> dict:
+    """What `apply` writes for `cut`, checked. Raises Refused, writing nothing."""
     p = profiles["profiles"][cut["profile"]]
     # rpcUrl is not a prerequisite: it is a cut value, and `apply` writes it (core#611).
     other = [f for f in ("chainId", "nodeNetwork", "explorerUrl", "faucetUrl", "addressBook")
@@ -469,6 +533,10 @@ def cmd_apply(a) -> None:
     left = applied_problems(root, cut, overrides=writes, lock=False)
     if left:
         raise Refused("the cut would not apply cleanly; nothing was written:\n  " + "\n  ".join(left))
+    return writes
+
+
+def write_apply(root: Path, cut: dict, writes: dict) -> None:
     for rel, text in writes.items():
         if (root / rel).read_text() != text:
             write_atomic(root / rel, text)
@@ -478,6 +546,15 @@ def cmd_apply(a) -> None:
     print("    cargo update -p citrate-wallet-core -p citrate-commd   # Cargo.lock to the new chain rev")
     print(f"    scripts/sync-addresses.py --book <the canonical book> --genesis {cut['genesisHash']} --rpc <rpc>")
     print(f"    scripts/check-network-profile.sh --release --require-active {cut['profile']}")
+
+
+def cmd_apply(a) -> None:
+    root = Path(a.root)
+    cut, profiles = load(root)
+    errors = complete_problems(cut, profiles)
+    if errors:
+        raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+    write_apply(root, cut, apply_plan(root, cut, profiles))
 
 
 def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
@@ -629,9 +706,13 @@ def main() -> None:
     c.add_argument("--root", default=str(REPO))
     p = sub.add_parser("apply")
     p.add_argument("--root", default=str(REPO))
+    f = sub.add_parser("fill", help="write the genesis outputs (a JSON values file) into the cut")
+    f.add_argument("--values", required=True, help="JSON object: cut values (and node.<target> pins)")
+    f.add_argument("--apply", action="store_true", help="then apply the cut, all or nothing")
+    f.add_argument("--root", default=str(REPO))
     a = ap.parse_args()
     try:
-        cmd_check(a) if a.cmd == "check" else cmd_apply(a)
+        {"check": cmd_check, "apply": cmd_apply, "fill": cmd_fill}[a.cmd](a)
     except Refused as e:
         print(f"network-cut {a.cmd}: REFUSED: {e}", file=sys.stderr)
         sys.exit(1)
