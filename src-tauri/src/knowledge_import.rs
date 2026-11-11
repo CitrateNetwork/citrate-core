@@ -152,6 +152,12 @@ impl ImportRegistry {
         (!*closed).then(f)
     }
 
+    /// Reopen a closed registry (#614 review: a cancelled update install). Importers stopped by
+    /// the close are not restarted here; a new import or the memory daemon may start again.
+    pub fn reopen(&self) {
+        *lock(&self.gate) = false;
+    }
+
     /// App quit: close the registry, then stop and reap every running importer
     /// (SIGTERM, SIGKILL after `grace`). Idempotent. Returns how many were stopped.
     pub fn shutdown(&self, grace: Duration) -> usize {

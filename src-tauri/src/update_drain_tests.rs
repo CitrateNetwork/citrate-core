@@ -42,6 +42,7 @@ fn the_gate_is_held_before_anything_is_stopped_and_the_report_says_before_and_af
             if reads.get() == 1 { running() } else { drained() }
         },
         || stopped_with_gate_held.set(gate.held().is_some()),
+        Vec::new,
         || 42,
     );
     assert!(stopped_with_gate_held.get(), "no sidecar can restart while the drain stops them");
@@ -77,6 +78,7 @@ fn a_sidecar_still_alive_or_unread_after_the_drain_means_not_all_stopped() {
                 if reads.get() == 1 { running() } else { after.clone() }
             },
             || {},
+            Vec::new,
             || 0,
         );
         assert!(!report.all_stopped, "{o:?} {p:?}");
@@ -93,7 +95,7 @@ fn stopped_and_failed_phases_hold_no_process() {
         ServiceId::Comms => (ObservationKind::Observed, Some(Phase::Failed)),
         _ => (ObservationKind::NotSupervised, None),
     });
-    let report = drain_with(&gate, || after.clone(), || {}, || 0);
+    let report = drain_with(&gate, || after.clone(), || {}, Vec::new, || 0);
     assert!(report.all_stopped);
     assert_eq!(report.services.iter().find(|s| s.id == ServiceId::Comms).unwrap().after, "failed");
 }
@@ -127,6 +129,7 @@ fn a_real_supervisor_is_stopped_and_cannot_come_back_until_the_gate_is_released(
                 s.stop();
             }
         },
+        || gate.wait_until_no_children(std::time::Duration::from_secs(10)),
         || 0,
     );
     assert!(report.all_stopped, "{report:?}");
@@ -163,4 +166,44 @@ fn no_registry_owner_replaces_the_app_wide_gate() {
         assert!(src.contains("SupervisorConfig::new("), "{}", d.owner);
         assert!(!src.contains(".spawn_gate ="), "{} must not replace the spawn gate", d.owner);
     }
+}
+
+/// #614 review (P2): a child still exiting after the owners' stops (an empty slot is not an exit)
+/// means not all stopped, and the report names it.
+#[test]
+fn a_child_still_exiting_after_the_stops_means_not_all_stopped() {
+    let gate = SpawnGate::default();
+    let report = drain_with(&gate, drained, || {}, || vec!["citrate-node".to_string()], || 0);
+    assert!(!report.all_stopped);
+    assert_eq!(report.still_exiting, vec!["citrate-node".to_string()]);
+    let v = serde_json::to_value(&report).unwrap();
+    assert_eq!(v["stillExiting"][0], "citrate-node");
+    let ok = drain_with(&gate, drained, || {}, Vec::new, || 0);
+    assert!(ok.all_stopped && ok.still_exiting.is_empty());
+}
+
+/// #614 review (P2): cancelling releases the gate and reopens knowledge imports (the drain closed
+/// them), so the memory daemon and imports can start again without an app restart.
+#[test]
+fn cancelling_reopens_imports_and_releases_the_gate() {
+    let gate = SpawnGate::default();
+    let imports = crate::knowledge_import::ImportRegistry::default();
+    gate.hold(HOLD_REASON);
+    imports.shutdown(std::time::Duration::from_millis(10));
+    assert!(imports.is_closed());
+    cancel_with(&gate, &imports);
+    assert!(gate.held().is_none());
+    assert!(!imports.is_closed());
+    assert_eq!(imports.unless_closed(|| 7), Some(7));
+}
+
+#[test]
+fn the_production_drain_waits_for_real_exits_and_cancel_reopens_imports() {
+    let src = include_str!("update_drain.rs");
+    // Compared without whitespace, so rustfmt's line breaks do not matter.
+    let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(flat.contains("SpawnGate::global().wait_until_no_children("), "the command waits for real exits");
+    assert!(flat.contains("cancel_with(&SpawnGate::global(),&crate::knowledge_import::ImportRegistry::global()"));
+    // #614 review (P2): no claim that the node flushes on SIGTERM (it handles SIGINT only).
+    assert!(!src.contains("so the node flushes"), "the doc claims a flush the node does not do");
 }
