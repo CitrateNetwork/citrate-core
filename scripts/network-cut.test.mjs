@@ -502,3 +502,82 @@ describe("rpcUrl: allowlisted host, verified live by check --release (core#611)"
     expect(hits).toEqual(["scripts/network-cut.py"]);
   });
 });
+
+// 0.5.3 release readiness (owner decision 2026-11-11): one command fills the cut from the
+// genesis outputs and applies it. `fill --values <file>` writes the values into the cut file and
+// clears them from `pending`; with `--apply` it then applies, all or nothing.
+describe("network-cut.py fill (the one-command cut)", SLOW, () => {
+  const valuesOf = (cut) => {
+    const { profile, retire, pending, _comment, rpcHosts, ...values } = filledCut(cut);
+    return values;
+  };
+  const writeValues = (v) => {
+    const f = path.join(root, "cut-values.json");
+    fs.writeFileSync(f, JSON.stringify(v, null, 2));
+    return f;
+  };
+
+  it("fills every value, empties pending, and the cut checks", () => {
+    const f = writeValues(valuesOf(json("release/network-cut.json")));
+    const r = py(["fill", "--values", f, "--root", root]);
+    expect(r.code, r.err).toBe(0);
+    const cut = json("release/network-cut.json");
+    expect(cut.pending).toEqual({});
+    expect(cut.genesisHash).toBe(T_GENESIS);
+    expect(cut.chainRev).toBe(T_REV);
+    expect(cut.rpcHosts).toEqual(["rpc.citrate.ai"]);
+    expect(py(["check", "--root", root, "--cut-only"]).code).toBe(0);
+  });
+
+  it("a partial fill sets only those values and keeps the rest pending", () => {
+    const f = writeValues({ genesisHash: T_GENESIS, rpcUrl: CANDIDATE.rpcUrl });
+    expect(py(["fill", "--values", f, "--root", root]).code).toBe(0);
+    const cut = json("release/network-cut.json");
+    expect(cut.genesisHash).toBe(T_GENESIS);
+    expect(Object.keys(cut.pending)).not.toContain("genesisHash");
+    expect(Object.keys(cut.pending)).toContain("chainRev");
+  });
+
+  const refusals = [
+    ["an unknown key", { genesisHash: T_GENESIS, genesis_hash: T_GENESIS }, /unknown/],
+    ["a null value", { genesisHash: null }, /null/],
+    ["a malformed value", { genesisHash: "0x" + "00".repeat(32) }, /genesisHash/],
+    ["the target profile", { profile: "r1006" }, /unknown|profile/],
+    ["an unknown node target", { node: { "riscv64-unknown-linux-gnu": { sha256: "7d".repeat(32) } } }, /node/],
+  ];
+  for (const [what, v, msg] of refusals) {
+    it(`refuses ${what} and writes nothing`, () => {
+      const before = snapshot();
+      const r = py(["fill", "--values", writeValues(v), "--root", root]);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(msg);
+      expect(snapshot()).toEqual(before);
+    });
+  }
+
+  it("never replaces a value already in the cut", () => {
+    expect(py(["fill", "--values", writeValues({ genesisHash: T_GENESIS }), "--root", root]).code).toBe(0);
+    const before = snapshot();
+    const r = py(["fill", "--values", writeValues({ genesisHash: "0x" + "7e".repeat(32) }), "--root", root]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/already set/);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("fill --apply writes the cut and every pin in one go", () => {
+    const r = py(["fill", "--values", writeValues(valuesOf(json("release/network-cut.json"))), "--apply", "--root", root]);
+    expect(r.code, r.err).toBe(0);
+    expect(json("src-tauri/network/profiles.json").active).toBe("r1007");
+    expect(rd("scripts/build-sidecar.sh")).toContain(`MIN_CHAIN_REV="${T_REV}"`);
+    const c = py(["check", "--release", "--root", root, "--cut-only"]);
+    expect(c.err.split("\n").filter((l) => l.includes("FAIL:"))).toEqual([expect.stringMatching(/FAIL: Cargo\.lock/)]);
+  });
+
+  it("fill --apply with values missing writes nothing at all", () => {
+    const before = snapshot();
+    const r = py(["fill", "--values", writeValues({ genesisHash: T_GENESIS }), "--apply", "--root", root]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/not complete/);
+    expect(snapshot()).toEqual(before);
+  });
+});
