@@ -5,6 +5,7 @@ import {
   progressFraction,
   INITIAL_UPDATE_STATE,
   isNoPlatformInFeed,
+  applyStagedUpdate,
 } from "./updater";
 
 describe("updater — pure helpers", () => {
@@ -64,5 +65,105 @@ describe("updater — feed without this platform", () => {
     expect(isNoPlatformInFeed("signature verification failed")).toBe(false);
     expect(isNoPlatformInFeed("Could not fetch a valid release JSON from the remote")).toBe(false);
     expect(isNoPlatformInFeed("")).toBe(false);
+  });
+});
+
+describe("CORE-D6: the downloaded update is installed only after the sidecars are drained", () => {
+  type Step = "drain" | "cancel" | "install" | "relaunch";
+  const report = (allStopped: boolean) => ({
+    allStopped,
+    tookMs: 1200,
+    services: [
+      { id: "node", label: "Node", before: "alive", after: allStopped ? "notSupervised" : "stopping", stopped: allStopped },
+      { id: "memory", label: "Memory", before: "alive", after: "notSupervised", stopped: true },
+    ],
+  });
+  function steps(over: Partial<Record<Step, () => Promise<unknown>>> = {}) {
+    const calls: Step[] = [];
+    const mk = (n: Step, dflt: () => Promise<unknown>) => async () => {
+      calls.push(n);
+      return (over[n] ?? dflt)();
+    };
+    return {
+      calls,
+      s: {
+        drain: mk("drain", async () => report(true)) as () => Promise<ReturnType<typeof report>>,
+        cancel: mk("cancel", async () => undefined) as () => Promise<void>,
+        install: mk("install", async () => undefined) as () => Promise<void>,
+        relaunch: mk("relaunch", async () => undefined) as () => Promise<void>,
+      },
+    };
+  }
+
+  it("drains, then installs, then relaunches", async () => {
+    const { calls, s } = steps();
+    await expect(applyStagedUpdate(s)).resolves.toEqual({ ok: true });
+    expect(calls).toEqual(["drain", "install", "relaunch"]);
+  });
+
+  it("never installs while a sidecar is still running; releases the hold and names it", async () => {
+    const { calls, s } = steps({ drain: async () => report(false) });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "cancel"]);
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("Node (stopping) did not stop") });
+  });
+
+  it("a failed drain or a failed install releases the hold and says so; no relaunch", async () => {
+    const a = steps({ drain: async () => { throw new Error("internal: managed state unavailable"); } });
+    const ra = await applyStagedUpdate(a.s);
+    expect(a.calls).toEqual(["drain", "cancel"]);
+    expect(ra.ok ? "" : ra.error).toMatch(/services could not be stopped \(internal: managed state unavailable\)/);
+
+    const b = steps({ install: async () => { throw new Error("signature verification failed"); } });
+    const rb = await applyStagedUpdate(b.s);
+    expect(b.calls).toEqual(["drain", "install", "cancel"]);
+    expect(rb.ok ? "" : rb.error).toMatch(/could not be installed: signature verification failed\. Services stay stopped/);
+  });
+
+  it("a cancel that itself fails does not hide the reason", async () => {
+    const { s } = steps({ drain: async () => report(false), cancel: async () => { throw new Error("x"); } });
+    const r = await applyStagedUpdate(s);
+    expect(r.ok ? "" : r.error).toMatch(/did not stop/);
+  });
+
+  it("#614 review: a rejected relaunch keeps the services stopped and says the update is installed", async () => {
+    const { calls, s } = steps({ relaunch: async () => { throw new Error("restart refused"); } });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "install", "relaunch"]);
+    expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/The update is installed.*quit and reopen Citrate Core.*restart refused/s) });
+  });
+
+  it("#614 review: an install that does not finish in time keeps the services stopped and says what to do", async () => {
+    const { calls, s } = steps({ install: () => new Promise<void>(() => undefined) });
+    const r = await applyStagedUpdate(s, { installTimeoutMs: 30 });
+    expect(calls).toEqual(["drain", "install"]);
+    expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/did not finish installing.*Quit and reopen Citrate Core/s) });
+  });
+
+  it("#614 review: a drain that reports a child still exiting never installs", async () => {
+    const { calls, s } = steps({ drain: async () => ({ ...report(true), allStopped: false, stillExiting: ["citrate-node"] }) });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "cancel"]);
+    expect(r.ok ? "" : r.error).toMatch(/citrate-node is still exiting/);
+  });
+
+  it("#614 review: the hook releases a hold left by an earlier page, and shows a kept-stopped result as installed", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(BRIDGE_MODE !== "tauri"\) return;\s*\/\/ #614 review[^\n]*\n[^\n]*update_prepare_cancel/);
+    expect(src).toMatch(/r\.keepStopped \? "installed" : "error"/);
+    const banner = fs.readFileSync(path.resolve(__dirname, "UpdateBanner.tsx"), "utf8");
+    expect(banner).toMatch(/state\.status === "installed"/);
+  });
+
+  it("the hook downloads with the plugin's download() and installs only from restart (source check)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
+    expect(src).not.toMatch(/downloadAndInstall\(/);
+    expect(src).toMatch(/await update\.download\(/);
+    expect(src).toMatch(/install: \(\) => update\.install\(\)/);
+    expect(src).toMatch(/invoke<DrainReport>\("update_prepare"/);
   });
 });

@@ -166,11 +166,21 @@ describe("HUP-S6.6 / S6.7 — the Contract reader and post-deploy seams", () => 
     expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_vercel_export", { projectDir: "/p" });
   });
 
+  it("CORE-A3: deploy-record calls map to their commands", async () => {
+    invokeMock.mockResolvedValue(null);
+    await tauriContracts.deployRecordSave("/p", "0xabc");
+    expect(invokeMock).toHaveBeenLastCalledWith("deploy_record_save", { projectDir: "/p", txHash: "0xabc" });
+    await tauriContracts.deployRecords("/p");
+    expect(invokeMock).toHaveBeenLastCalledWith("deploy_records_list", { projectDir: "/p" });
+  });
+
   it("sim is honest — reads and post-deploy steps need the desktop node", async () => {
     if (bridge.mode === "sim") {
       await expect(bridge.contracts.source(ADDR)).rejects.toThrow(/desktop node/i);
       await expect(bridge.contracts.proposeWrite(ADDR, "0xa0712d68", "0")).rejects.toThrow(/desktop node/i);
       await expect(bridge.contracts.postdeployPinSite("/p")).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.deployRecordSave("/p", "0xabc")).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.deployRecords("/p")).rejects.toThrow(/desktop node/i);
     }
   });
   it("forge calls map to their commands (HUP-S6.2 / S6.3)", async () => {

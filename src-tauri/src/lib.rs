@@ -57,6 +57,8 @@ mod linux_webkit_env;
 mod contract_intel;
 mod contract_reader;
 mod deploy_gate;
+// CORE-A3 (0.5.3): durable deploy records, encrypted per project.
+mod deploy_records;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -172,6 +174,8 @@ mod shell;
 mod skill_registry;
 mod skills_local;
 mod telemetry;
+// CORE-D6 (0.5.3): drain the sidecars before an update is installed.
+mod update_drain;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -739,6 +743,10 @@ pub fn run() {
             postdeploy::postdeploy_switch_site,
             postdeploy::postdeploy_pin_site,
             postdeploy::postdeploy_vercel_export,
+            // CORE-A3: durable, encrypted deploy records per project.
+            deploy_records::deploy_record_save,
+            deploy_records::deploy_records_list,
+            deploy_records::deploy_record_get,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,
@@ -1094,6 +1102,9 @@ pub fn run() {
             services::services_snapshot,
             // CORE-D4 — every sidecar's health: state, counters, last crash, slow retry, log tail.
             services::sidecars_health,
+            // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
+            update_drain::update_prepare,
+            update_drain::update_prepare_cancel,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
