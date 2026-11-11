@@ -27,6 +27,22 @@ fn free_port() -> u16 {
         .expect("a free loopback port")
 }
 
+/// Start the manager `build(port)` makes, on a free loopback port. A start refused because the
+/// port was taken between the pick and the start's own check (`PortInUse`, core#621) is retried
+/// with a fresh port; any other error fails the test.
+fn start_on_a_free_port(build: impl Fn(u16) -> HermesManager) -> HermesManager {
+    const TRIES: usize = 20;
+    for _ in 0..TRIES {
+        let mgr = build(free_port());
+        match mgr.start() {
+            Ok(()) => return mgr,
+            Err(HermesError::PortInUse(_)) => continue,
+            Err(e) => panic!("the stand-in Hermes did not start: {e}"),
+        }
+    }
+    panic!("no free control port in {TRIES} tries")
+}
+
 fn script(path: &Path, body: &str) -> PathBuf {
     std::fs::write(path, body).expect("write a stand-in script");
     use std::os::unix::fs::PermissionsExt;
@@ -139,18 +155,19 @@ fn a_hard_killed_hermes_leaves_no_managed_browser_behind() {
         pids: Vec::new(),
         dirs: vec![dir.clone(), profile.clone()],
     };
-    let mgr = HermesManager::new(
-        fake_hermes(&dir),
-        dir.join("bearer.token"),
-        dir.join("crashes.log"),
-    )
-    .with_control_addr(&format!("127.0.0.1:{}", free_port()))
-    .with_spawn_args(vec![
-        fake_browser(&dir).display().to_string(),
-        profile.display().to_string(),
-        pidfile.display().to_string(),
-    ]);
-    mgr.start().expect("the stand-in Hermes starts");
+    let mgr = start_on_a_free_port(|port| {
+        HermesManager::new(
+            fake_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+        .with_spawn_args(vec![
+            fake_browser(&dir).display().to_string(),
+            profile.display().to_string(),
+            pidfile.display().to_string(),
+        ])
+    });
     let browser = read_pid(&pidfile);
     cleanup.pids.push(browser);
     assert!(alive(browser), "the browser runs while Hermes runs");
@@ -210,14 +227,15 @@ fn the_next_start_stops_a_browser_left_by_a_hermes_that_ended_without_core() {
     assert!(alive(browser), "the browser outlived the earlier Hermes");
 
     // The next start.
-    let mgr = HermesManager::new(
-        idle_hermes(&dir),
-        dir.join("bearer.token"),
-        dir.join("crashes.log"),
-    )
-    .with_browser_record(record.clone())
-    .with_control_addr(&format!("127.0.0.1:{}", free_port()));
-    mgr.start().expect("the next Hermes starts");
+    let mgr = start_on_a_free_port(|port| {
+        HermesManager::new(
+            idle_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_browser_record(record.clone())
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+    });
     let left = gone_within(browser, Duration::from_secs(3));
     let profile_left = profile.exists();
     mgr.stop();
@@ -225,4 +243,82 @@ fn the_next_start_stops_a_browser_left_by_a_hermes_that_ended_without_core() {
     assert!(left, "the earlier run's browser is still running after the next start");
     assert!(!profile_left, "the earlier run's profile is still there");
     assert!(!record.exists(), "the handled record is removed");
+}
+
+// core#621: `free_port()` only picks a port; another test in the same run can take it before
+// `start()` checks it, and the start then fails with `PortInUse`. The tests start through
+// `start_on_a_free_port`, which retries a start refused for a taken port with a fresh one.
+
+#[test]
+fn a_port_taken_between_the_pick_and_the_start_is_retried_with_a_fresh_one() {
+    let dir = scratch("portrace");
+    let _cleanup = Cleanup {
+        pids: Vec::new(),
+        dirs: vec![dir.clone()],
+    };
+    let taken: std::cell::RefCell<Option<std::net::TcpListener>> = std::cell::RefCell::new(None);
+    let ports = std::cell::RefCell::new(Vec::new());
+    let mgr = start_on_a_free_port(|port| {
+        ports.borrow_mut().push(port);
+        // The first pick is taken by "another test" before the start checks it.
+        if taken.borrow().is_none() {
+            *taken.borrow_mut() = std::net::TcpListener::bind(("127.0.0.1", port)).ok();
+        }
+        HermesManager::new(
+            idle_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+    });
+    let ports = ports.into_inner();
+    assert!(ports.len() >= 2, "the taken port was retried");
+    assert_ne!(ports[0], *ports.last().expect("a port"), "the retry used a fresh port");
+    assert!(mgr.is_started());
+    mgr.stop();
+}
+
+#[test]
+fn hermes_starts_on_free_ports_in_parallel_while_ports_are_being_taken() {
+    // A competitor binds ephemeral ports the whole time, as the rest of the suite does.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s = stop.clone();
+    let competitor = std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while !s.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(l) = std::net::TcpListener::bind("127.0.0.1:0") {
+                held.push(l);
+            }
+            if held.len() > 64 {
+                held.drain(..32);
+            }
+        }
+    });
+    let workers: Vec<_> = (0..8)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let dir = scratch(&format!("parallel{i}"));
+                let _cleanup = Cleanup {
+                    pids: Vec::new(),
+                    dirs: vec![dir.clone()],
+                };
+                for _ in 0..3 {
+                    let mgr = start_on_a_free_port(|port| {
+                        HermesManager::new(
+                            idle_hermes(&dir),
+                            dir.join("bearer.token"),
+                            dir.join("crashes.log"),
+                        )
+                        .with_control_addr(&format!("127.0.0.1:{port}"))
+                    });
+                    mgr.stop();
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().expect("every parallel start succeeded");
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = competitor.join();
 }
