@@ -27,6 +27,22 @@ fn free_port() -> u16 {
         .expect("a free loopback port")
 }
 
+/// Start the manager `build(port)` makes, on a free loopback port. A start refused because the
+/// port was taken between the pick and the start's own check (`PortInUse`, core#621) is retried
+/// with a fresh port; any other error fails the test.
+fn start_on_a_free_port(build: impl Fn(u16) -> HermesManager) -> HermesManager {
+    const TRIES: usize = 20;
+    for _ in 0..TRIES {
+        let mgr = build(free_port());
+        match mgr.start() {
+            Ok(()) => return mgr,
+            Err(HermesError::PortInUse(_)) => continue,
+            Err(e) => panic!("the stand-in Hermes did not start: {e}"),
+        }
+    }
+    panic!("no free control port in {TRIES} tries")
+}
+
 fn script(path: &Path, body: &str) -> PathBuf {
     std::fs::write(path, body).expect("write a stand-in script");
     use std::os::unix::fs::PermissionsExt;
@@ -139,18 +155,19 @@ fn a_hard_killed_hermes_leaves_no_managed_browser_behind() {
         pids: Vec::new(),
         dirs: vec![dir.clone(), profile.clone()],
     };
-    let mgr = HermesManager::new(
-        fake_hermes(&dir),
-        dir.join("bearer.token"),
-        dir.join("crashes.log"),
-    )
-    .with_control_addr(&format!("127.0.0.1:{}", free_port()))
-    .with_spawn_args(vec![
-        fake_browser(&dir).display().to_string(),
-        profile.display().to_string(),
-        pidfile.display().to_string(),
-    ]);
-    mgr.start().expect("the stand-in Hermes starts");
+    let mgr = start_on_a_free_port(|port| {
+        HermesManager::new(
+            fake_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+        .with_spawn_args(vec![
+            fake_browser(&dir).display().to_string(),
+            profile.display().to_string(),
+            pidfile.display().to_string(),
+        ])
+    });
     let browser = read_pid(&pidfile);
     cleanup.pids.push(browser);
     assert!(alive(browser), "the browser runs while Hermes runs");
@@ -210,14 +227,15 @@ fn the_next_start_stops_a_browser_left_by_a_hermes_that_ended_without_core() {
     assert!(alive(browser), "the browser outlived the earlier Hermes");
 
     // The next start.
-    let mgr = HermesManager::new(
-        idle_hermes(&dir),
-        dir.join("bearer.token"),
-        dir.join("crashes.log"),
-    )
-    .with_browser_record(record.clone())
-    .with_control_addr(&format!("127.0.0.1:{}", free_port()));
-    mgr.start().expect("the next Hermes starts");
+    let mgr = start_on_a_free_port(|port| {
+        HermesManager::new(
+            idle_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_browser_record(record.clone())
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+    });
     let left = gone_within(browser, Duration::from_secs(3));
     let profile_left = profile.exists();
     mgr.stop();
