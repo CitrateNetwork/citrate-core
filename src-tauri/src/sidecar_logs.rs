@@ -188,13 +188,40 @@ const ERROR_LEVELS: &[(&str, &str)] = &[
     ("warn", "warning"),
 ];
 
-/// A technical token: a number, address, path, version or `k=v`, with no quote or bracket.
+/// The keys a `k=v` token on an allowed lifecycle line may have (lowercase).
+const LIFECYCLE_KEYS: &[&str] = &[
+    "port",
+    "host",
+    "addr",
+    "address",
+    "bind",
+    "threads",
+    "slots",
+    "ctx",
+    "n_ctx",
+    "model",
+    "version",
+    "pid",
+    "code",
+    "status",
+    "ms",
+    "gpu",
+    "layers",
+    "n_gpu_layers",
+    "batch",
+];
+
+/// A technical token: a number, address, path or version, or `k=v` with a lifecycle key, with no
+/// quote or bracket.
 fn technical(tok: &str) -> bool {
-    !tok.is_empty()
-        && !tok.contains(['"', '\'', '{', '}', '[', ']', '(', ')', '`'])
-        && tok
-            .chars()
-            .any(|c| c.is_ascii_digit() || ".:/=_-<>".contains(c))
+    if tok.is_empty() || tok.contains(['"', '\'', '{', '}', '[', ']', '(', ')', '`']) {
+        return false;
+    }
+    if let Some((k, _)) = tok.split_once('=') {
+        return LIFECYCLE_KEYS.contains(&k.to_ascii_lowercase().as_str());
+    }
+    tok.chars()
+        .any(|c| c.is_ascii_digit() || ".:/_-<>".contains(c))
 }
 
 /// Whether `line` is an allowlisted lifecycle line: every word a lifecycle word or technical, at

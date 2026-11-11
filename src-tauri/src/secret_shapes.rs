@@ -8,6 +8,7 @@
 //! | key/value | the value after a key ending in password, passwd, pwd, pass, secret, token, credential(s), api key, private key, secret access key, access key id, mnemonic, seed, seed phrase, recovery phrase or authorization, in `k=v`, `k: v`, `k => v`, `"k":"v"`, `k='v'` and `--k v` forms, any case; for the phrase keys and authorization an unquoted value runs to the end of the line | `<redacted>` |
 //! | hex64 | 64+ hex digits, bare or after `0x` (private-key shaped) | `<hex64 xxxxxx>`, 6 hex of its SHA-256, so equal values still line up |
 //! | email | `local@domain.tld` | `<redacted>` |
+//! | seed phrase | 12 or more consecutive BIP-39 English words (any case), separated by spaces, commas, quotes or brackets, whatever key names them | `<redacted>` |
 //! | token | GitHub (`ghp_` ... `github_pat_`), Slack (`xox?-`) and `sk-` tokens, AWS key ids (`AKIA`/`ASIA`), `nsec1` keys, WIF private keys | `<redacted>` |
 //! | cookie | the whole value after `Cookie` or `Set-Cookie` (`:` or `=`, quoted or not) to the end of the line or the closing quote | `<redacted>` |
 //!
@@ -47,6 +48,7 @@ const SECRET_KEYS: &[&str] = &[
     "secret_access_key",
     "access_key_id",
     "access_key",
+    "passphrase",
 ];
 
 /// Keys whose value runs to the end of the line when it is not quoted: a phrase of words (seed,
@@ -61,7 +63,11 @@ const LINE_KEYS: &[&str] = &[
     "recovery-phrase",
     "recoveryphrase",
     "authorization",
+    "passphrase",
 ];
+
+/// The shortest BIP-39 phrase; any run of this many consecutive wordlist words is redacted.
+pub const MIN_PHRASE_WORDS: usize = 12;
 
 /// Token prefixes: (prefix, the fewest characters after it, whether `_` and `-` count).
 const TOKEN_PREFIXES: &[(&str, usize, bool)] = &[
@@ -399,9 +405,59 @@ fn cookie_hits(b: &[u8], out: &mut Vec<Hit>) {
     }
 }
 
+/// A seed phrase by its value (#613 review round 4): a run of [`MIN_PHRASE_WORDS`] or more
+/// consecutive words from the BIP-39 English list (case-insensitive), separated only by spaces,
+/// tabs, commas, quotes or brackets, is redacted wherever it appears, whatever key (if any) names
+/// it. The wordlist is the `bip39` crate's English list, compiled in (no network). 12 to 24 words
+/// is the BIP-39 range; a longer run is redacted whole.
+fn phrase_hits(b: &[u8], out: &mut Vec<Hit>) {
+    let sep = |c: u8| b" \t,'\"[](){}".contains(&c);
+    // (start, end) of each maximal ASCII-letter word, with whether it is a BIP-39 word.
+    let mut words: Vec<(usize, usize, bool)> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_alphabetic() && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) {
+            let e = run(b, i, |c| c.is_ascii_alphabetic());
+            let bounded = e == b.len() || !b[e].is_ascii_alphanumeric();
+            let w = std::str::from_utf8(&b[i..e])
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let is_word = bounded && bip39::Language::English.find_word(&w).is_some();
+            words.push((i, e, is_word));
+            i = e;
+        } else {
+            i += 1;
+        }
+    }
+    let mut k = 0;
+    while k < words.len() {
+        if !words[k].2 {
+            k += 1;
+            continue;
+        }
+        let mut last = k;
+        while last + 1 < words.len()
+            && words[last + 1].2
+            && b[words[last].1..words[last + 1].0].iter().all(|c| sep(*c))
+        {
+            last += 1;
+        }
+        if last + 1 - k >= MIN_PHRASE_WORDS {
+            out.push(Hit {
+                start: words[k].0,
+                end: words[last].1,
+                kind: Kind::Redact,
+                shape: "seed phrase",
+            });
+        }
+        k = last + 1;
+    }
+}
+
 fn hits(s: &str) -> Vec<Hit> {
     let b = s.as_bytes();
     let mut out = Vec::new();
+    phrase_hits(b, &mut out);
     cookie_hits(b, &mut out);
     auth_hits(b, &mut out);
     prefix_hits(b, &mut out);
