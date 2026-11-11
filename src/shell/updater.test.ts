@@ -170,7 +170,7 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     const path = await import("node:path");
     const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
     // The mount cancel is a plain cancel (no installFailed): Rust refuses it after an install began.
-    expect(src).toMatch(/invoke<void>\("update_prepare_cancel", \{\}\)[\s\S]{0,200}INSTALL_HELD/);
+    expect(src).toMatch(/invoke<void>\("update_prepare_cancel", \{\}\)[\s\S]{0,200}isInstallHeld/);
     expect(src).toMatch(/beginInstall: \(\) => invoke<void>\("update_install_begin", \{\}\)/);
     expect(src).toMatch(/cancel: \(installFailed\?: boolean\) => invoke<void>\("update_prepare_cancel", \{ installFailed: installFailed \?\? null \}\)/);
   });

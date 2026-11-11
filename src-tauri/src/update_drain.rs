@@ -151,10 +151,17 @@ pub async fn update_prepare(app_h: tauri::AppHandle) -> std::result::Result<Drai
 /// only the install's own failure releases the hold; a plain cancel (a reloaded page) is refused,
 /// so no sidecar (the node's autostart included) can start from a half-replaced bundle before the
 /// app quits.
+///
+/// `installFailed` on [`update_prepare_cancel`] is taken from the webview, which is the app's own
+/// code: Rust cannot confirm the install failed. This protects the reloaded page's on-mount
+/// cancel; it is not a guard against a hostile page (#619).
 pub(crate) static INSTALL_BEGUN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// What a refused cancel says (the webview shows the installed state on it).
+/// The stable code a refused cancel starts with; `updater.ts` matches it, not the prose (#619).
+pub const INSTALL_HELD_CODE: &str = "install_held";
+
+/// What a refused cancel says after its code (the webview shows the installed state on it).
 pub const INSTALL_HELD: &str =
     "an update is being installed or is installed; services stay stopped until you quit and reopen Citrate Core";
 
@@ -172,7 +179,8 @@ pub(crate) fn mark_installing_with(
 
 /// Release the gate and reopen knowledge imports, which the drain's `shutdown_all_sidecars`
 /// closed (#614 review): without this, imports and the memory daemon stay refused until restart.
-/// After the install began, only `install_failed` releases them (#617 review).
+/// After the install began, only `install_failed` releases them (#617 review). The flag is the
+/// webview's word (trusted: the app's own code), not a guard against a hostile page (#619).
 pub(crate) fn cancel_with(
     gate: &SpawnGate,
     imports: &crate::knowledge_import::ImportRegistry,
@@ -180,7 +188,7 @@ pub(crate) fn cancel_with(
     install_failed: bool,
 ) -> Result<(), String> {
     if begun.load(std::sync::atomic::Ordering::SeqCst) && !install_failed {
-        return Err(INSTALL_HELD.to_string());
+        return Err(format!("{INSTALL_HELD_CODE}: {INSTALL_HELD}"));
     }
     begun.store(false, std::sync::atomic::Ordering::SeqCst);
     imports.reopen();

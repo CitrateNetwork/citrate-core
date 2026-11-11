@@ -414,9 +414,26 @@ fn cookie_hits(b: &[u8], out: &mut Vec<Hit>) {
 /// consecutive words from the BIP-39 English list (case-insensitive) is redacted wherever it
 /// appears, whatever key (if any) names it. Two words belong to one run when the gap between them
 /// has no letter and is short: whitespace, quotes, brackets, commas and joiners (`- . ; | _ / + :`)
-/// and a word number (`1.`, `1:`, `1)`, `01`, `#1`) are all accepted. The wordlist is the `bip39` crate's English list, compiled in (no network). 12 to 24 words
+/// and a word number (`1.`, `1:`, `1)`, `01`, `#1`) are all accepted, as are non-ASCII marks
+/// (`•`, `·`), literal `\n` / `\r` / `\t` escapes, and one short filler token repeated between
+/// every pair (#619). A phrase printed one word per log line is out of reach: each line is
+/// filtered on its own. The wordlist is the `bip39` crate's English list, compiled in (no network). 12 to 24 words
 /// is the BIP-39 range; a longer run is redacted whole.
 fn phrase_hits(b: &[u8], out: &mut Vec<Hit>) {
+    // Literal escape sequences (`\n`, `\r`, `\t`, as `{:?}` or JSON print them) count as
+    // whitespace: mask them to spaces, keeping every offset.
+    let mut m = b.to_vec();
+    let mut i = 0;
+    while i + 1 < m.len() {
+        if m[i] == b'\\' && matches!(m[i + 1], b'n' | b'r' | b't') {
+            m[i] = b' ';
+            m[i + 1] = b' ';
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let b = &m[..];
     // (start, end) of each maximal ASCII-letter word, with whether it is a BIP-39 word.
     let mut words: Vec<(usize, usize, bool)> = Vec::new();
     let mut i = 0;
@@ -432,14 +449,16 @@ fn phrase_hits(b: &[u8], out: &mut Vec<Hit>) {
             i += 1;
         }
     }
-    // Between two words of a phrase: no letter, at most MAX_JOIN_MARKS characters that are not
-    // whitespace (punctuation, digits, `#`: a word number like ` 12. ` or a joiner like `-`), and
-    // at most MAX_JOIN_LEN in all.
-    let joins = |a: usize, z: usize| {
-        let gap = &b[a..z];
-        !gap.iter().any(|c| c.is_ascii_alphabetic() || *c >= 0x80)
-            && gap.len() <= MAX_JOIN_LEN
-            && gap.iter().filter(|c| !c.is_ascii_whitespace()).count() <= MAX_JOIN_MARKS
+    // The gap between two phrase words, as characters: no letter (a non-ASCII letter included),
+    // at most MAX_JOIN_MARKS that are not whitespace (punctuation, digits, `#`, non-ASCII marks
+    // such as `•`), at most MAX_JOIN_LEN in all.
+    let gap_ok = |a: usize, z: usize| {
+        let Ok(gap) = std::str::from_utf8(&b[a..z]) else {
+            return false;
+        };
+        !gap.chars().any(char::is_alphabetic)
+            && gap.chars().count() <= MAX_JOIN_LEN
+            && gap.chars().filter(|c| !c.is_whitespace()).count() <= MAX_JOIN_MARKS
     };
     let mut k = 0;
     while k < words.len() {
@@ -448,11 +467,42 @@ fn phrase_hits(b: &[u8], out: &mut Vec<Hit>) {
             continue;
         }
         let mut last = k;
-        while last + 1 < words.len() && words[last + 1].2 && joins(words[last].1, words[last + 1].0)
-        {
-            last += 1;
+        // A filler: one short ASCII token (at most 3 letters) that is not a list word, repeated
+        // as the same token between every pair of the run (`abandon x ability x ...`). A run is
+        // either all direct joins or all filler joins, so a single stray word still breaks it and
+        // prose, which varies its short words, never forms one.
+        let mut filler: Option<Option<&[u8]>> = None; // None: not decided; Some(None): direct
+        loop {
+            let next = last + 1;
+            if filler.is_none_or(|f| f.is_none())
+                && next < words.len()
+                && words[next].2
+                && gap_ok(words[last].1, words[next].0)
+            {
+                filler = Some(None);
+                last = next;
+                continue;
+            }
+            let (f, after) = (next, next + 1);
+            if filler != Some(None)
+                && after < words.len()
+                && !words[f].2
+                && words[f].1 - words[f].0 <= 3
+                && words[after].2
+                && gap_ok(words[last].1, words[f].0)
+                && gap_ok(words[f].1, words[after].0)
+            {
+                let tok = &b[words[f].0..words[f].1];
+                if filler.is_none_or(|t| t.is_some_and(|t| t.eq_ignore_ascii_case(tok))) {
+                    filler = Some(Some(tok));
+                    last = after;
+                    continue;
+                }
+            }
+            break;
         }
-        if last + 1 - k >= MIN_PHRASE_WORDS {
+        let count = (k..=last).filter(|x| words[*x].2).count();
+        if count >= MIN_PHRASE_WORDS {
             out.push(Hit {
                 start: words[k].0,
                 end: words[last].1,
