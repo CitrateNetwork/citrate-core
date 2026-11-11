@@ -15,19 +15,41 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HUB = path.join(ROOT, "design", "fl-hub");
 const DIRECTIONS = ["direction-a.html", "direction-b.html", "direction-c.html"];
 const read = (p) => readFileSync(p, "utf8");
 
+/** Every source the production build can read: TS/JS in every form, CSS, HTML, JSON. */
+const SOURCE = /\.(tsx?|jsx?|mjs|cjs|css|html|json)$/;
+const TEST_FILE = /\.test\.(tsx?|jsx?|mjs|cjs)$/;
+
 function walk(dir, out = []) {
   for (const e of readdirSync(dir)) {
     const p = path.join(dir, e);
     if (statSync(p).isDirectory()) walk(p, out);
-    else if (/\.(tsx?|css|html|json)$/.test(e) && !/\.test\.tsx?$/.test(e)) out.push(p);
+    else if (SOURCE.test(e) && !TEST_FILE.test(e)) out.push(p);
   }
   return out;
+}
+
+/**
+ * Whether `src` points at the design/ folder by any path form a build follows: a quoted module
+ * specifier or string (`from "…"`, `import "…"`, `import("…")`, `new URL("…")`,
+ * `import.meta.glob("…")`, CSS `@import "…"`) or an unquoted CSS `url(…)`, with design/ as any
+ * path segment. Prose in parentheses, "(design/…)", is not a reference.
+ */
+function pointsAtDesign(src) {
+  return /(?:["'`]|\b(?:url|import|glob|URL)\(\s*["'`]?)\s*(?:\.{1,2}\/)*(?:[\w.@-]+\/)*design\//.test(src);
+}
+
+/** The page's visible text, from the parsed document (no regex HTML stripping). */
+function visibleText(html) {
+  const doc = new JSDOM(html).window.document;
+  for (const n of doc.querySelectorAll("script, style, template, noscript")) n.remove();
+  return (doc.body?.textContent ?? "").replace(/\s+/g, " ");
 }
 
 describe("UX-0 · FL hub mocks live only under design/", () => {
@@ -40,6 +62,38 @@ describe("UX-0 · FL hub mocks live only under design/", () => {
     const vite = read(path.join(ROOT, "vite.config.ts"));
     expect(vite).not.toMatch(/design\//);
     expect(vite, "a second build input could pull a mock page into dist").not.toMatch(/rollupOptions\s*:\s*\{[^}]*input/);
+    expect(vite, "design/ as Vite's public dir would copy the mocks into dist").not.toMatch(/publicDir\s*:\s*["'`](?:\.{1,2}\/)*design\b/);
+  });
+
+  it("the Tauri bundle resources do not include design/", () => {
+    const conf = JSON.parse(read(path.join(ROOT, "src-tauri", "tauri.conf.json")));
+    const res = conf.bundle?.resources ?? [];
+    const entries = Array.isArray(res) ? res : [...Object.keys(res), ...Object.values(res)];
+    expect(entries.filter((r) => /(^|[\\/])design([\\/]|$)/.test(String(r)))).toEqual([]);
+  });
+
+  it("the design/ matcher catches every path form a build follows", () => {
+    for (const s of [
+      'import x from "../design/fl-hub/a.js"',
+      'import "../../design/fl-hub/hub.css"',
+      "const m = await import('../design/x.mjs')",
+      'new URL("../design/fl-hub/a.png", import.meta.url)',
+      'import.meta.glob("../design/**/*.html")',
+      '@import "../design/fl-hub/hub.css";',
+      "background: url(../design/fl-hub/screens/a.png)",
+      "export * from `design/fl-hub/x.js`",
+    ]) {
+      expect(pointsAtDesign(s), s).toBe(true);
+    }
+    for (const s of [
+      'import x from "./designer/a.js"',
+      'const t = "redesign/notes"',
+      "// see design/ in the repo root",
+      "// model (design/CitrateCore.dc.html): constructor",
+      "   the design bundle (design/).",
+    ]) {
+      expect(pointsAtDesign(s), s).toBe(false);
+    }
   });
 
   it("the shared stylesheet and the index carry no colour literal either", () => {
@@ -50,8 +104,10 @@ describe("UX-0 · FL hub mocks live only under design/", () => {
     }
   });
 
-  it("no production module under src/ imports from design/", () => {
-    const hits = walk(path.join(ROOT, "src")).filter((f) => /(from\s+|import\s*\(|url\()\s*["'][^"']*design\//.test(read(f)));
+  it("no production module under src/ points at design/ (TS, JS, MJS, CSS, HTML, JSON)", () => {
+    const files = walk(path.join(ROOT, "src"));
+    expect(files.some((f) => f.endsWith(".css")), "the walk must see the stylesheets").toBe(true);
+    const hits = files.filter((f) => pointsAtDesign(read(f)));
     expect(hits.map((f) => path.relative(ROOT, f))).toEqual([]);
   });
 });
@@ -60,12 +116,7 @@ describe("UX-0 · each direction page", () => {
   for (const name of DIRECTIONS) {
     const file = path.join(HUB, name);
     const html = existsSync(file) ? read(file) : "";
-    const text = html
-      .replace(/<style[\s\S]*?<\/style>/g, " ")
-      .replace(/<script[\s\S]*?<\/script>/g, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/\s+/g, " ");
+    const text = html ? visibleText(html) : "";
 
     it(`${name}: says it is a design mock with fixture data`, () => {
       expect(html).toMatch(/data-design-mock/);
