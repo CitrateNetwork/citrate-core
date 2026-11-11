@@ -1426,6 +1426,19 @@ pub fn export_sealed(
     Ok(report)
 }
 
+/// The staging root's name under the app data dir (see [`staging_root`]).
+pub(crate) const STAGING_DIR_NAME: &str = "backup-staging";
+
+/// STO-2 P3: remove staging dirs an earlier run left behind (an app killed mid-export or
+/// mid-restore cannot run the staging guard). Run once at app start, before any backup can
+/// run. Only our own entries are removed: directories (never symlinks) under
+/// `<app data>/backup-staging` whose names start with `export-` or `open-`. Returns how many
+/// were removed.
+pub(crate) fn sweep_staging(app_data: &Path) -> Result<usize, BackupError> {
+    let _ = app_data;
+    Ok(0)
+}
+
 /// Open the sealed backup `file` into a new staging dir under `staging_root`. The returned guard
 /// removes it when dropped.
 fn open_sealed_to_staging(

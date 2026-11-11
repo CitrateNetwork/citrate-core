@@ -381,3 +381,42 @@ fn the_sealed_module_uses_only_the_vault_kdf_and_the_existing_aead() {
     assert!(src.contains("aead::stream::{DecryptorBE32, EncryptorBE32}"));
     assert!(!src.contains("Argon2::new("), "no second KDF");
 }
+
+// ---------------------------------------------------------------- start-up sweep (P3)
+
+#[test]
+fn start_up_sweep_removes_leftover_staging_and_nothing_else() {
+    let app = tmp_dir("sto2-sweep");
+    let root = app.join(STAGING_DIR_NAME);
+    std::fs::create_dir_all(root.join("export-0011223344556677/citrate-backup-x/memory")).unwrap();
+    std::fs::write(root.join("export-0011223344556677/citrate-backup-x/memory/a"), b"PLAINTEXT").unwrap();
+    std::fs::create_dir_all(root.join("open-8899aabbccddeeff")).unwrap();
+    // Not ours: a differently named dir, a plain file, and a symlink to a dir outside.
+    std::fs::create_dir_all(root.join("keep-me")).unwrap();
+    std::fs::write(root.join("export-not-a-dir"), b"x").unwrap();
+    let outside = app.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("precious"), b"keep").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, root.join("export-link")).unwrap();
+
+    let removed = sweep_staging(&app).expect("sweep");
+    assert_eq!(removed, 2, "the two staging dirs");
+    assert!(!root.join("export-0011223344556677").exists());
+    assert!(!root.join("open-8899aabbccddeeff").exists());
+    assert!(root.join("keep-me").exists());
+    assert!(root.join("export-not-a-dir").exists());
+    assert_eq!(std::fs::read(outside.join("precious")).unwrap(), b"keep", "a symlink is never followed");
+    // No staging root at all is fine.
+    assert_eq!(sweep_staging(&app.join("nowhere")).unwrap(), 0);
+}
+
+#[test]
+fn the_start_up_sweep_runs_in_app_setup_and_uses_the_command_staging_root() {
+    let lib = include_str!("lib.rs");
+    let setup = &lib[lib.find(".setup(|app| {").expect("setup")..];
+    assert!(setup.contains("storage_backup::sweep_staging("), "sweep wired into setup");
+    let module = include_str!("storage_backup.rs");
+    let root_fn = &module[module.find("fn staging_root<").expect("staging_root")..];
+    assert!(root_fn[..root_fn.find("\n}\n").unwrap()].contains("STAGING_DIR_NAME"));
+}
