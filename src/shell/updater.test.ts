@@ -69,7 +69,7 @@ describe("updater — feed without this platform", () => {
 });
 
 describe("CORE-D6: the downloaded update is installed only after the sidecars are drained", () => {
-  type Step = "drain" | "cancel" | "install" | "relaunch";
+  type Step = "drain" | "cancel" | "begin" | "install" | "relaunch";
   const report = (allStopped: boolean) => ({
     allStopped,
     tookMs: 1200,
@@ -79,16 +79,17 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     ],
   });
   function steps(over: Partial<Record<Step, () => Promise<unknown>>> = {}) {
-    const calls: Step[] = [];
-    const mk = (n: Step, dflt: () => Promise<unknown>) => async () => {
-      calls.push(n);
+    const calls: string[] = [];
+    const mk = (n: Step, dflt: () => Promise<unknown>) => async (arg?: unknown) => {
+      calls.push(arg === true ? `${n}:installFailed` : n);
       return (over[n] ?? dflt)();
     };
     return {
       calls,
       s: {
         drain: mk("drain", async () => report(true)) as () => Promise<ReturnType<typeof report>>,
-        cancel: mk("cancel", async () => undefined) as () => Promise<void>,
+        cancel: mk("cancel", async () => undefined) as (installFailed?: boolean) => Promise<void>,
+        beginInstall: mk("begin", async () => undefined) as () => Promise<void>,
         install: mk("install", async () => undefined) as () => Promise<void>,
         relaunch: mk("relaunch", async () => undefined) as () => Promise<void>,
       },
@@ -98,7 +99,7 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
   it("drains, then installs, then relaunches", async () => {
     const { calls, s } = steps();
     await expect(applyStagedUpdate(s)).resolves.toEqual({ ok: true });
-    expect(calls).toEqual(["drain", "install", "relaunch"]);
+    expect(calls).toEqual(["drain", "begin", "install", "relaunch"]);
   });
 
   it("never installs while a sidecar is still running; releases the hold and names it", async () => {
@@ -116,7 +117,7 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
 
     const b = steps({ install: async () => { throw new Error("signature verification failed"); } });
     const rb = await applyStagedUpdate(b.s);
-    expect(b.calls).toEqual(["drain", "install", "cancel"]);
+    expect(b.calls).toEqual(["drain", "begin", "install", "cancel:installFailed"]);
     expect(rb.ok ? "" : rb.error).toMatch(/could not be installed: signature verification failed\. Services stay stopped/);
   });
 
@@ -129,14 +130,14 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
   it("#614 review: a rejected relaunch keeps the services stopped and says the update is installed", async () => {
     const { calls, s } = steps({ relaunch: async () => { throw new Error("restart refused"); } });
     const r = await applyStagedUpdate(s);
-    expect(calls).toEqual(["drain", "install", "relaunch"]);
+    expect(calls).toEqual(["drain", "begin", "install", "relaunch"]);
     expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/The update is installed.*quit and reopen Citrate Core.*restart refused/s) });
   });
 
   it("#614 review: an install that does not finish in time keeps the services stopped and says what to do", async () => {
     const { calls, s } = steps({ install: () => new Promise<void>(() => undefined) });
     const r = await applyStagedUpdate(s, { installTimeoutMs: 30 });
-    expect(calls).toEqual(["drain", "install"]);
+    expect(calls).toEqual(["drain", "begin", "install"]);
     expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/did not finish installing.*Quit and reopen Citrate Core/s) });
   });
 
@@ -155,6 +156,23 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     expect(src).toMatch(/r\.keepStopped \? "installed" : "error"/);
     const banner = fs.readFileSync(path.resolve(__dirname, "UpdateBanner.tsx"), "utf8");
     expect(banner).toMatch(/state\.status === "installed"/);
+  });
+
+  it("#617 review: the install is marked begun before it runs; if that is refused nothing installs", async () => {
+    const { calls, s } = steps({ begin: async () => { throw new Error("the services were not drained"); } });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "begin", "cancel"]);
+    expect(r.ok ? "" : r.error).toMatch(/not installed.*the services were not drained/);
+  });
+
+  it("#617 review: a page reload keeps the hold once an install began, and shows the installed state", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
+    // The mount cancel is a plain cancel (no installFailed): Rust refuses it after an install began.
+    expect(src).toMatch(/invoke<void>\("update_prepare_cancel", \{\}\)[\s\S]{0,200}INSTALL_HELD/);
+    expect(src).toMatch(/beginInstall: \(\) => invoke<void>\("update_install_begin", \{\}\)/);
+    expect(src).toMatch(/cancel: \(installFailed\?: boolean\) => invoke<void>\("update_prepare_cancel", \{ installFailed: installFailed \?\? null \}\)/);
   });
 
   it("the hook downloads with the plugin's download() and installs only from restart (source check)", async () => {

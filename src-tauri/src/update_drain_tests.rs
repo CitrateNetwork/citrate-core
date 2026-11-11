@@ -147,7 +147,7 @@ fn a_real_supervisor_is_stopped_and_cannot_come_back_until_the_gate_is_released(
 #[test]
 fn the_drain_commands_name_their_data_sources_and_are_registered() {
     let src = include_str!("update_drain.rs");
-    for cmd in ["update_prepare", "update_prepare_cancel"] {
+    for cmd in ["update_prepare", "update_prepare_cancel", "update_install_begin"] {
         let at = src.find(&format!("pub async fn {cmd}(")).unwrap_or_else(|| panic!("{cmd}"));
         let doc = &src[src[..at].rfind(&format!("/// **{cmd}**")).unwrap_or_else(|| panic!("{cmd} doc"))..at];
         assert!(doc.contains("Data source"), "{cmd} names its data source (Rule 7)");
@@ -191,7 +191,8 @@ fn cancelling_reopens_imports_and_releases_the_gate() {
     gate.hold(HOLD_REASON);
     imports.shutdown(std::time::Duration::from_millis(10));
     assert!(imports.is_closed());
-    cancel_with(&gate, &imports);
+    let begun = std::sync::atomic::AtomicBool::new(false);
+    cancel_with(&gate, &imports, &begun, false).expect("no install began: cancel releases");
     assert!(gate.held().is_none());
     assert!(!imports.is_closed());
     assert_eq!(imports.unless_closed(|| 7), Some(7));
@@ -203,7 +204,28 @@ fn the_production_drain_waits_for_real_exits_and_cancel_reopens_imports() {
     // Compared without whitespace, so rustfmt's line breaks do not matter.
     let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(flat.contains("SpawnGate::global().wait_until_no_children("), "the command waits for real exits");
-    assert!(flat.contains("cancel_with(&SpawnGate::global(),&crate::knowledge_import::ImportRegistry::global()"));
+    assert!(flat.contains("cancel_with(&SpawnGate::global(),&crate::knowledge_import::ImportRegistry::global(),&INSTALL_BEGUN,"));
     // #614 review (P2): no claim that the node flushes on SIGTERM (it handles SIGINT only).
     assert!(!src.contains("so the node flushes"), "the doc claims a flush the node does not do");
+}
+
+/// #617 review: once the install began the bundle may be replaced, so a plain cancel (a reloaded
+/// page) keeps the hold and the imports closed until the app quits. Only the install's own failure
+/// path releases it.
+#[test]
+fn after_the_install_began_only_an_install_failure_releases_the_hold() {
+    let gate = SpawnGate::default();
+    let imports = crate::knowledge_import::ImportRegistry::default();
+    let begun = std::sync::atomic::AtomicBool::new(false);
+    assert!(mark_installing_with(&gate, &begun).unwrap_err().contains("not drained"), "no drain, no install");
+    gate.hold(HOLD_REASON);
+    imports.shutdown(std::time::Duration::from_millis(10));
+    mark_installing_with(&gate, &begun).expect("drained: the install may begin");
+    let e = cancel_with(&gate, &imports, &begun, false).unwrap_err();
+    assert!(e.contains("quit"), "{e}");
+    assert!(gate.held().is_some(), "the hold stays across a page reload");
+    assert!(imports.is_closed());
+    cancel_with(&gate, &imports, &begun, true).expect("the install failed: release");
+    assert!(gate.held().is_none() && !imports.is_closed());
+    assert!(!begun.load(std::sync::atomic::Ordering::SeqCst));
 }
