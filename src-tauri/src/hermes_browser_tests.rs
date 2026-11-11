@@ -226,3 +226,81 @@ fn the_next_start_stops_a_browser_left_by_a_hermes_that_ended_without_core() {
     assert!(!profile_left, "the earlier run's profile is still there");
     assert!(!record.exists(), "the handled record is removed");
 }
+
+// core#621: `free_port()` only picks a port; another test in the same run can take it before
+// `start()` checks it, and the start then fails with `PortInUse`. The tests start through
+// `start_on_a_free_port`, which retries a start refused for a taken port with a fresh one.
+
+#[test]
+fn a_port_taken_between_the_pick_and_the_start_is_retried_with_a_fresh_one() {
+    let dir = scratch("portrace");
+    let _cleanup = Cleanup {
+        pids: Vec::new(),
+        dirs: vec![dir.clone()],
+    };
+    let taken: std::cell::RefCell<Option<std::net::TcpListener>> = std::cell::RefCell::new(None);
+    let ports = std::cell::RefCell::new(Vec::new());
+    let mgr = start_on_a_free_port(|port| {
+        ports.borrow_mut().push(port);
+        // The first pick is taken by "another test" before the start checks it.
+        if taken.borrow().is_none() {
+            *taken.borrow_mut() = std::net::TcpListener::bind(("127.0.0.1", port)).ok();
+        }
+        HermesManager::new(
+            idle_hermes(&dir),
+            dir.join("bearer.token"),
+            dir.join("crashes.log"),
+        )
+        .with_control_addr(&format!("127.0.0.1:{port}"))
+    });
+    let ports = ports.into_inner();
+    assert!(ports.len() >= 2, "the taken port was retried");
+    assert_ne!(ports[0], *ports.last().expect("a port"), "the retry used a fresh port");
+    assert!(mgr.is_started());
+    mgr.stop();
+}
+
+#[test]
+fn hermes_starts_on_free_ports_in_parallel_while_ports_are_being_taken() {
+    // A competitor binds ephemeral ports the whole time, as the rest of the suite does.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s = stop.clone();
+    let competitor = std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while !s.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(l) = std::net::TcpListener::bind("127.0.0.1:0") {
+                held.push(l);
+            }
+            if held.len() > 64 {
+                held.drain(..32);
+            }
+        }
+    });
+    let workers: Vec<_> = (0..8)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let dir = scratch(&format!("parallel{i}"));
+                let _cleanup = Cleanup {
+                    pids: Vec::new(),
+                    dirs: vec![dir.clone()],
+                };
+                for _ in 0..3 {
+                    let mgr = start_on_a_free_port(|port| {
+                        HermesManager::new(
+                            idle_hermes(&dir),
+                            dir.join("bearer.token"),
+                            dir.join("crashes.log"),
+                        )
+                        .with_control_addr(&format!("127.0.0.1:{port}"))
+                    });
+                    mgr.stop();
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().expect("every parallel start succeeded");
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = competitor.join();
+}
