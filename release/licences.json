@@ -215,7 +215,7 @@
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
         "packages": 23,
-        "lock": "sha256:aafa4ee0b4e3e15c2d41abb96aacb8a23f4fde3b00f3f02a2b400f9fc50f5981"
+        "lock": "sha256:8c2c65adf6abacd97cbcaa458e79e17765c412957df52faa9db9764ba2fc422e"
       }
     },
     {
