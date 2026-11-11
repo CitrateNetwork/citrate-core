@@ -1435,8 +1435,28 @@ pub(crate) const STAGING_DIR_NAME: &str = "backup-staging";
 /// `<app data>/backup-staging` whose names start with `export-` or `open-`. Returns how many
 /// were removed.
 pub(crate) fn sweep_staging(app_data: &Path) -> Result<usize, BackupError> {
-    let _ = app_data;
-    Ok(0)
+    let root = app_data.join(STAGING_DIR_NAME);
+    let rd = match std::fs::read_dir(&root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(io_err("list the backup staging folder", e)),
+    };
+    let mut removed = 0;
+    for entry in rd {
+        let entry = entry.map_err(|e| io_err("list the backup staging folder", e))?;
+        let name = entry.file_name();
+        let ours = name
+            .to_str()
+            .is_some_and(|n| n.starts_with("export-") || n.starts_with("open-"));
+        // `file_type` does not follow symlinks: a link is never ours, whatever its name.
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if ours && is_dir {
+            std::fs::remove_dir_all(entry.path())
+                .map_err(|e| io_err("remove a leftover backup staging folder", e))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Open the sealed backup `file` into a new staging dir under `staging_root`. The returned guard
@@ -2056,7 +2076,7 @@ fn staging_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf,
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join("backup-staging"))
+        .join(STAGING_DIR_NAME))
 }
 
 /// **Command — storage_backup_export.** Export Files and/or Memory into the member-chosen

@@ -396,6 +396,15 @@ pub fn run() {
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
             hermes::clean_leftover_browser(handle);
+            // STO-2 P3: a backup staging copy an earlier (killed) run left behind is removed
+            // before any backup can run. It may hold plaintext of the member's stores.
+            if let Ok(dir) = app.path().app_data_dir() {
+                match storage_backup::sweep_staging(&dir) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("[storage] removed {n} leftover backup staging folder(s)"),
+                    Err(e) => eprintln!("[storage] {e}"),
+                }
+            }
             // RC52 P-9a: spawn-time MCP files an earlier run left are removed, and member MCP env
             // values an older version kept in plain text move to the keychain (in the background).
             mcp_servers::startup(handle);
