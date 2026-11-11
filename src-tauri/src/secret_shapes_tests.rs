@@ -14,11 +14,11 @@ fn corpus() -> Vec<(&'static str, String, String)> {
 #[test]
 fn every_corpus_shape_is_found_and_redacted_and_nothing_survives() {
     for (shape, line, secret) in corpus() {
-        assert!(first_shape(&line).is_some(), "{shape}: not detected in {line:?}");
+        assert!(first_shape(&line).is_some(), "{shape}: not detected");
         let out = redact(&line);
-        assert!(!out.contains(&secret), "{shape}: {secret:?} survived in {out:?}");
-        assert_eq!(first_shape(&out), None, "{shape}: a shape is still found in {out:?}");
-        assert!(out.contains(REDACTED) || out.contains("<hex64 "), "{shape}: {out:?}");
+        assert!(!out.contains(&secret), "{shape}: the planted value survived");
+        assert_eq!(first_shape(&out), None, "{shape}: a shape is still found");
+        assert!(out.contains(REDACTED) || out.contains("<hex64 "), "{shape}: no redaction marker");
     }
 }
 
@@ -27,14 +27,14 @@ fn every_corpus_shape_is_found_and_redacted_and_nothing_survives() {
 fn the_reviewers_lines_lose_every_token() {
     let opaque = cat(&["opaqueSession", "Token1234567890"]);
     let out = redact(&format!("Authorization: Bearer {opaque}"));
-    assert!(!out.contains(&opaque), "{out}");
+    assert!(!out.contains(&opaque), "the bearer token survived");
     let jwt = cat(&["eyJhbGciOiJSUzI1NiJ9", ".", "eyJzdWIiOiJ4In0", ".", "c2lnbmF0dXJlc2lnbmF0dXJl"]);
     assert!(!redact(&format!("{{\"id_token\":\"{jwt}\"}}")).contains("eyJ"));
     assert!(!redact(&format!("GET /mcp?token={jwt}")).contains("eyJ"));
     let pw = cat(&["hunter2", "hunter2"]);
     let api = cat(&["3f9a8b7c6d5e", "4f3a2b1c0d9e8f7a6b5c"]);
     let out = redact(&format!("password={pw} api_key: {api}"));
-    assert!(!out.contains(&pw) && !out.contains(&api), "{out}");
+    assert!(!out.contains(&pw) && !out.contains(&api), "a planted value survived");
     assert_eq!(redact(&format!("password={pw} api_key: {api}")), "password=<redacted> api_key: <redacted>");
 }
 
@@ -50,9 +50,13 @@ fn ordinary_log_lines_are_unchanged() {
         "basic setup done",
         "proceed with the next seed_nodes refresh",
         "tokens processed: 12",
+        "passes: 3 of 4, bypass=off",
+        "Authorization header missing",
+        "peer 12D3KooWQ1xB7xXyZ3abcdefghijkmnopqrstuvwxyzABCDEFG connected",
+        "cid QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG pinned",
     ] {
-        assert_eq!(redact(line), line, "{line}");
-        assert_eq!(first_shape(line), None, "{line}");
+        assert_eq!(redact(line), line, "an ordinary line was changed");
+        assert_eq!(first_shape(line), None, "an ordinary line was flagged");
     }
 }
 
@@ -78,4 +82,28 @@ fn redaction_is_idempotent_and_keeps_non_ascii_text_intact() {
     let pw = cat(&["hunter2", "hunter2"]);
     let line = format!("état: café password={pw} » fin");
     assert_eq!(redact(&line), "état: café password=<redacted> » fin");
+}
+
+/// #613 review (P2, CodeQL): the redaction tests never print a planted value (or a line holding
+/// one) in an assertion message, so a failing run does not log it and the scanner has nothing to
+/// flag. Messages name the shape only.
+#[test]
+fn redaction_tests_never_print_planted_values() {
+    let files = [
+        ("secret_shapes_tests.rs", include_str!("secret_shapes_tests.rs")),
+        ("sidecar_logs_tests.rs", include_str!("sidecar_logs_tests.rs")),
+        ("kit supervisor_log_file_tests.rs", include_str!("../../kit/src/supervisor_log_file_tests.rs")),
+    ];
+    let forbidden = ["{secret", "{out", "{line", "{text", "{planted", "{e} in", "{body", "{kept"];
+    for (name, src) in files {
+        for (i, l) in src.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("let forbidden") || !(t.starts_with("assert") || t.contains("panic!(") || t.starts_with('"')) {
+                continue;
+            }
+            for f in forbidden {
+                assert!(!t.contains(f), "{name}:{} prints {f}..}} in an assertion message", i + 1);
+            }
+        }
+    }
 }

@@ -323,6 +323,26 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
     let api = ["3f9a8b7c6d5e", "4f3a2b1c0d9e8f7a6b5c"].concat();
     let basic = ["dXNlcjpwYX", "NzLXdvcmQ="].concat();
     let hex64 = "5e".repeat(32);
+    let aws_secret = ["wJalrXUtnFEMI", "K7MDENGbPxRfiCY", "SYNTHETIC0"].concat();
+    let akia = ["AKIA", "SYNTHETIC", "0000000"].concat();
+    let ghp = ["ghp", "_", "SyntheticSyntheticSynthetic0123456789"].concat();
+    let gpat = [
+        "github",
+        "_pat_",
+        "11SYNTHETIC0_SyntheticSyntheticSynthetic",
+    ]
+    .concat();
+    let xoxb = ["xox", "b-", "123456789012-1234567890123-SyntheticToken"].concat();
+    let sk = ["sk", "-", "proj-SyntheticSyntheticSynthetic01"].concat();
+    let b58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+    let wif = ["5", &b58[..50]].concat();
+    let wifk = ["K", &b58[1..52]].concat();
+    let nsec = [
+        "nsec",
+        "1",
+        &"qpzry9x8gf2tvdw0s3jn54khce6mua7l".repeat(2)[..58],
+    ]
+    .concat();
     let words = [
         "abandon ability able about above absent ",
         "absorb abstract absurd abuse access accident",
@@ -397,6 +417,95 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
             "email",
             "contact member@example.com now".to_string(),
             "member@example.com".to_string(),
+        ),
+        // Round 3 (#613 review P1, lead).
+        (
+            "mnemonic unquoted, all words",
+            format!("mnemonic: {words}"),
+            words.clone(),
+        ),
+        ("seed= unquoted", format!("seed={words}"), words.clone()),
+        (
+            "seed_phrase =>",
+            format!("seed_phrase => {words}"),
+            words.clone(),
+        ),
+        ("seedPhrase:", format!("seedPhrase: {words}"), words.clone()),
+        (
+            "recovery_phrase quoted",
+            format!("recovery_phrase=\"{words}\""),
+            words.clone(),
+        ),
+        (
+            "--mnemonic flag",
+            format!("citrate wallet import --mnemonic {words}"),
+            words.clone(),
+        ),
+        (
+            "AWS_SECRET_ACCESS_KEY",
+            format!("AWS_SECRET_ACCESS_KEY={aws_secret}"),
+            aws_secret.clone(),
+        ),
+        (
+            "secret_access_key:",
+            format!("secret_access_key: {aws_secret}"),
+            aws_secret.clone(),
+        ),
+        (
+            "access_key_id",
+            format!("access_key_id = {akia}"),
+            akia.clone(),
+        ),
+        (
+            "AKIA key id bare",
+            format!("using {akia} for uploads"),
+            akia.clone(),
+        ),
+        ("password =>", format!("password => {pw}"), pw.clone()),
+        (
+            "--password flag",
+            format!("login --password {pw} --user m"),
+            pw.clone(),
+        ),
+        ("pwd=", format!("pwd={pw} next"), pw.clone()),
+        ("pass=", format!("pass={pw}"), pw.clone()),
+        ("credentials=", format!("credentials={api}"), api.clone()),
+        (
+            "Authorization Token",
+            format!("Authorization: Token {opaque}"),
+            opaque.clone(),
+        ),
+        (
+            "Authorization custom scheme",
+            format!("authorization: Custom realm {opaque}"),
+            opaque.clone(),
+        ),
+        (
+            "Bearer: no space",
+            format!("got Bearer:{opaque}"),
+            opaque.clone(),
+        ),
+        ("ghp_ token", format!("token {ghp}"), ghp.clone()),
+        ("github_pat_ token", format!("using {gpat}"), gpat.clone()),
+        ("xoxb- token", format!("slack {xoxb}"), xoxb.clone()),
+        ("sk- token", format!("model key {sk}"), sk.clone()),
+        ("WIF private key", format!("wif {wif}"), wif.clone()),
+        ("WIF compressed", format!("wif {wifk}"), wifk.clone()),
+        ("nsec1 key", format!("nostr {nsec}"), nsec.clone()),
+        (
+            "cookie header",
+            format!("Cookie: theme=dark; sid={opaque}"),
+            opaque.clone(),
+        ),
+        (
+            "set-cookie header",
+            format!("Set-Cookie: session={opaque}; Path=/; HttpOnly"),
+            opaque.clone(),
+        ),
+        (
+            "set-cookie in json",
+            format!("{{\"set-cookie\":\"sid={opaque}\"}}"),
+            opaque.clone(),
         ),
     ]
 }

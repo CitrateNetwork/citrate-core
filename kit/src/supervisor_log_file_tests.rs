@@ -32,8 +32,8 @@ fn captured_lines_reach_the_log_file_with_their_stream() {
     let sup = Supervisor::start(cfg).expect("supervisor starts");
     let path = tmp.path("logs").join("printer.log");
     let text = wait_for_file(&path, |t| t.contains("OUT_ON_DISK") && t.contains("ERR_ON_DISK"), Duration::from_secs(5));
-    assert!(text.lines().any(|l| l.ends_with(" out OUT_ON_DISK")), "{text}");
-    assert!(text.lines().any(|l| l.ends_with(" err ERR_ON_DISK")), "{text}");
+    assert!(text.lines().any(|l| l.ends_with(" out OUT_ON_DISK")), "the file text is not as expected");
+    assert!(text.lines().any(|l| l.ends_with(" err ERR_ON_DISK")), "the file text is not as expected");
     // The ring still has them too.
     let ring = sup.logs();
     assert!(ring.iter().any(|l| l.line == "OUT_ON_DISK"));
@@ -85,8 +85,8 @@ fn the_configured_filter_keeps_a_key_off_the_disk_but_not_out_of_the_ring() {
     let sup = Supervisor::start(cfg).expect("supervisor starts");
     let path = tmp.path("logs").join("printer.log");
     let text = wait_for_file(&path, |t| t.contains("note="), Duration::from_secs(5));
-    assert!(text.contains("note=<redacted>"), "{text}");
-    assert!(!text.contains("PLANTED"), "{text}");
+    assert!(text.contains("note=<redacted>"), "the file text is not as expected");
+    assert!(!text.contains("PLANTED"), "the file text is not as expected");
     sup.stop();
 }
 

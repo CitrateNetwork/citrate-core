@@ -36,12 +36,12 @@ fn a_line_on_disk_keeps_addresses_tags_64_hex_and_never_keeps_a_key_token_or_ema
     let line = format!("imported {BLOCK_HASH} from {ADDR} key={} auth: eyJhbGciOiJIUzI1NiJ9.payload.sig mail=member@example.com", vendor_shape());
     let out = disk_filter(&line, LogPolicy::Full).expect("a full-policy line is kept");
     // #613 review: a 64-hex value is private-key shaped, so even a block hash becomes a short tag.
-    assert!(!out.contains(&BLOCK_HASH[2..]), "{out}");
-    assert!(out.contains("<hex64 "), "{out}");
-    assert!(out.contains(ADDR), "{out}");
-    assert!(!out.contains("PLANTED"), "{out}");
-    assert!(!out.contains("eyJhbGci"), "{out}");
-    assert!(!out.contains("member@example.com"), "{out}");
+    assert!(!out.contains(&BLOCK_HASH[2..]), "the filtered line is not as expected");
+    assert!(out.contains("<hex64 "), "the filtered line is not as expected");
+    assert!(out.contains(ADDR), "the filtered line is not as expected");
+    assert!(!out.contains("PLANTED"), "the filtered line is not as expected");
+    assert!(!out.contains("eyJhbGci"), "the filtered line is not as expected");
+    assert!(!out.contains("member@example.com"), "the filtered line is not as expected");
     assert_eq!(
         disk_filter("Validated and imported 32/32 blocks", LogPolicy::Full).as_deref(),
         Some("Validated and imported 32/32 blocks")
@@ -117,8 +117,8 @@ fn the_newest_lines_are_read_across_rotated_files_in_order() {
     write_lines(&path, 20, 25, "");
     let lines = tail_of_logs(&path, 3, 12, 1 << 20);
     assert_eq!(lines.len(), 12);
-    assert!(lines[0].starts_with("13 out"), "{lines:?}");
-    assert!(lines[11].starts_with("24 out"), "{lines:?}");
+    assert!(lines[0].starts_with("13 out"), "the oldest kept line is wrong");
+    assert!(lines[11].starts_with("24 out"), "the newest kept line is wrong");
     // A byte budget smaller than one file keeps only whole newest lines.
     let few = tail_of_logs(&path, 3, 100, 40);
     assert!(!few.is_empty() && few.last().unwrap().starts_with("24 out"), "{few:?}");
@@ -173,7 +173,7 @@ fn the_bundle_holds_health_logs_crashes_and_panics_and_no_secret() {
     assert!(text.contains("panic at src/node.rs:10: boom"));
     let hex = hex64();
     for planted in ["PLANTED", hex.as_str(), HOME, "a@b.co", &ADDR[2..]] {
-        assert!(!text.contains(planted), "{planted} leaked into the bundle");
+        assert!(!text.contains(planted), "a planted value leaked into the bundle");
     }
     assert!(text.contains("~/projects"), "the home folder becomes ~");
     bundle_tripwire(&text).expect("a finished bundle passes the key tripwire");
@@ -234,8 +234,8 @@ fn the_bundle_scrub_and_tripwire_cover_every_corpus_shape() {
     for (shape, line, secret) in crate::secret_shapes::test_corpus() {
         assert!(bundle_tripwire(&line).is_err(), "{shape}: the tripwire refuses it unredacted");
         let out = bundle_scrub(&line, HOME);
-        assert!(!out.contains(&secret), "{shape}: {out}");
-        bundle_tripwire(&out).unwrap_or_else(|e| panic!("{shape}: {e} in {out}"));
+        assert!(!out.contains(&secret), "{shape}: the planted value survived");
+        bundle_tripwire(&out).unwrap_or_else(|e| panic!("{shape}: the final check refused it ({})", e.len()));
     }
 }
 
@@ -258,31 +258,52 @@ fn a_bundle_with_every_planted_shape_carries_none_of_them() {
 fn the_bundle_says_what_the_scrub_does_and_no_more() {
     let (text, _, _) = build_bundle(&inputs(None, vec![], None)).unwrap();
     assert!(!text.contains("holds no wallet, key or seed"), "a claim the code does not establish");
-    assert!(text.contains("best-effort"), "{text}");
-    assert!(text.contains("Read this file before you share it"), "{text}");
+    assert!(text.contains("best-effort"), "the bundle text is not as expected");
+    assert!(text.contains("Read this file before you share it"), "the bundle text is not as expected");
 }
 
 #[test]
-fn content_bearing_sidecars_keep_only_cut_lifecycle_and_error_lines() {
+fn content_bearing_sidecars_write_only_allowlisted_lifecycle_lines() {
     let f = |l: &str| disk_filter(l, LogPolicy::LifecycleOnly);
-    assert_eq!(f("server listening on 127.0.0.1:18090").as_deref(), Some("server listening on 127.0.0.1:18090"));
-    assert!(f("error: slot 0 failed to load").is_some());
+    // Allowlisted shapes: every word is a lifecycle word or technical (a number, address, path,
+    // version, key=value with no prose).
+    for keep in [
+        "server listening on 127.0.0.1:18090",
+        "INFO hermes-agent version 0.3.1 starting",
+        "main: model loaded in 1520 ms",
+        "shutting down",
+        "embed server ready on port 18091",
+    ] {
+        assert_eq!(f(keep).as_deref(), Some(keep), "an allowlisted lifecycle line was not kept as it is");
+    }
+    // Free text, tracebacks, Python dicts and JSON bodies never reach the disk.
     for body in [
         "the member asked about their savings plan",
+        "starting conversation about my savings plan",
         "{\"role\":\"user\",\"content\":\"my private note\"}",
+        "{'prompt': 'my private note', 'temperature': 0.2}",
         "memory.search result: dentist appointment friday",
         "preview: hi, are we still on for tonight?",
-        "error while handling {\"prompt\": \"my private note\"}",
+        "  File \"/app/agent.py\", line 12, in respond",
+        "    reply = handle(note=\"my private note\")",
     ] {
-        assert_eq!(f(body), None, "{body}");
+        let out = f(body);
+        assert!(out.as_deref().is_none_or(|o| !o.contains("private") && !o.contains("savings") && !o.contains("dentist") && !o.contains("tonight")), "content reached the disk");
     }
-    let long = format!("warn: {}", "x".repeat(1000));
-    let kept = f(&long).expect("a warning is kept");
-    assert!(kept.chars().count() <= LIFECYCLE_LINE_CHARS + 16, "{}", kept.len());
-    assert!(kept.ends_with(" [cut]"));
-    // Secrets are still redacted on the lines that are kept.
+    // An error, warning or traceback is noted with no text from it.
+    for (line, level) in [
+        ("error while handling {\"prompt\": \"my private note\"}", "error"),
+        ("WARNING: slow tool call for the note about my savings", "warning"),
+        ("Traceback (most recent call last):", "traceback"),
+        ("panic: index out of range for the user's note", "error"),
+    ] {
+        let out = f(line).expect("an error-level line leaves a marker");
+        assert!(out.starts_with(&format!("[withheld: {level} line")), "the marker names the level");
+        assert!(!out.contains("note") && !out.contains("prompt"), "the marker carries no text from the line");
+    }
     let pw = ["hunter2", "hunter2"].concat();
-    assert_eq!(f(&format!("error: login failed password={pw}")).as_deref(), Some("error: login failed password=<redacted>"));
+    let out = f(&format!("error: login failed password={pw}")).expect("a marker");
+    assert!(!out.contains(&pw));
     // The full policy keeps prose.
     assert!(disk_filter("the member asked about their savings plan", LogPolicy::Full).is_some());
 }
@@ -299,7 +320,7 @@ fn crash_records_of_content_bearing_sidecars_drop_their_stderr_tail() {
     let (text, _, _) = build_bundle(&inputs(None, vec![("hermes".into(), crash, LogPolicy::LifecycleOnly)], None)).unwrap();
     assert!(text.contains("== hermes crash records =="));
     assert!(text.contains("exit status: 1"));
-    assert!(!text.contains("my private note"), "{text}");
+    assert!(!text.contains("my private note"), "the bundle text is not as expected");
     assert!(text.contains("stderr tail withheld"));
 }
 
