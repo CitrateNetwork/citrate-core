@@ -22,9 +22,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// CL-S4 transport sign-off recorded in this build. PENDING OWNER + SECURITY SIGN-OFF: `false`.
-/// V60 MESH-2: it may be `true` only with a valid sign-off record at `release/signoffs/CL-S4.json`
-/// (the owner and the security lead against a pinned packet); the test
-/// `signed_flag_requires_signoff_record` fails the build otherwise.
+/// V60 MESH-2: it may be `true` only with a sign-off record at `release/signoffs/CL-S4.json` that
+/// VERIFIES: the owner's and the security lead's EIP-191 signatures recover to the keys registered
+/// for those roles in `release/signoffs/signers.json`, and the packet copy committed beside the
+/// record hashes to the signed sha256. The test `signed_flag_requires_signoff_record` fails the
+/// build otherwise.
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
 /// The bundled daemon serves every group from one process. Built in citrate-cluster (HUP-S8.4);
@@ -201,7 +203,9 @@ pub async fn cluster_mesh_set_enabled(
     .await
 }
 
-/// V60 MESH-2: the CL-S4 sign-off record and its check. It is a build gate: only the tests read it
+/// V60 MESH-2: the CL-S4 sign-off record and its check. `validate` checks the shape; `verify`
+/// (required before `TRANSPORT_SIGNED_OFF` may be true) checks each role's signature against the
+/// registered role key and the committed packet copy against the signed digest. It is a build gate: only the tests read it
 /// (the record is evidence for whoever flips [`TRANSPORT_SIGNED_OFF`], not something the app loads).
 #[cfg(test)]
 mod signoff {
@@ -209,6 +213,12 @@ mod signoff {
 
     /// Where the record lives, relative to `src-tauri/`.
     pub(super) const RECORD: &str = "../release/signoffs/CL-S4.json";
+    /// The exact packet the signers reviewed, committed beside the record; its SHA-256 must equal
+    /// the record's `packet.sha256` (a reviewer diffs it against citrate-cluster at `packet.rev`).
+    pub(super) const PACKET: &str = "../release/signoffs/CL-S4_SIGNOFF_PACKET.md";
+    /// Who may sign each role: `{ "owner": "<address>", "security-lead": "<address>" }`. Set by the
+    /// owner; a role missing here means no record can verify.
+    pub(super) const SIGNERS: &str = "../release/signoffs/signers.json";
 
     /// The roles that must both sign, each by a different person.
     const ROLES: [&str; 2] = ["owner", "security-lead"];
@@ -237,6 +247,67 @@ mod signoff {
         pub role: String,
         pub github: String,
         pub date: String,
+        /// EIP-191 signature (65 bytes, hex) over [`signing_message`] by the role's registered key.
+        pub sig: String,
+    }
+
+    /// What a signer signs: the role, the person, the date and the pinned packet, one field per
+    /// line so no field can run into another.
+    pub(super) fn signing_message(
+        role: &str,
+        github: &str,
+        date: &str,
+        packet: &serde_json::Value,
+    ) -> String {
+        let f = |k: &str| packet[k].as_str().unwrap_or_default().to_string();
+        format!(
+            "citrate-core CL-S4 sign-off v1\nrole: {role}\ngithub: {github}\ndate: {date}\nrepo: {}\npath: {}\nrev: {}\nsha256: {}",
+            f("repo"),
+            f("path"),
+            f("rev"),
+            f("sha256")
+        )
+    }
+
+    /// Full check: [`validate`], then the committed packet copy hashes to `packet.sha256`, the
+    /// registry names a different address for each role, and each role's signature over
+    /// [`signing_message`] recovers to that role's registered address.
+    pub(super) fn verify(text: &str, packet: &[u8], registry: &str) -> Result<(), String> {
+        use sha2::{Digest, Sha256};
+        let r = validate(text)?;
+        if hex::encode(Sha256::digest(packet)) != r.packet.sha256.to_ascii_lowercase() {
+            return Err("the committed packet does not match the signed sha256".into());
+        }
+        let reg: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(registry).map_err(|e| format!("signers registry: {e}"))?;
+        let canon = |a: &str| a.trim().trim_start_matches("0x").to_ascii_lowercase();
+        let packet_json = serde_json::json!({
+            "repo": r.packet.repo, "path": r.packet.path,
+            "rev": r.packet.rev, "sha256": r.packet.sha256,
+        });
+        let mut seen: Vec<String> = Vec::new();
+        for role in ROLES {
+            let want = reg
+                .get(role)
+                .map(|a| canon(a))
+                .ok_or_else(|| format!("no {role} registered in the signers registry"))?;
+            if seen.contains(&want) {
+                return Err("the owner and the security lead must be different keys".into());
+            }
+            seen.push(want.clone());
+            let s = r
+                .signers
+                .iter()
+                .find(|s| s.role == role)
+                .ok_or_else(|| format!("no {role} signature"))?;
+            let msg = signing_message(role, &s.github, &s.date, &packet_json);
+            if crate::device_link::recover_eip191(&msg, &s.sig).as_deref() != Some(want.as_str()) {
+                return Err(format!(
+                    "the {role} signature is not by the registered {role} key"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn hex_of_len(s: &str, n: usize) -> bool {
@@ -282,6 +353,9 @@ mod signoff {
                 return Err(format!(
                     "the {role} signature needs a GitHub handle and a date"
                 ));
+            }
+            if !hex_of_len(s.sig.trim_start_matches("0x"), 130) {
+                return Err(format!("the {role} signature must be 65 bytes of hex"));
             }
             let who = s.github.trim().to_ascii_lowercase();
             if people.contains(&who) {
@@ -356,26 +430,43 @@ mod tests {
                 ],
             })
         };
-        let registry = serde_json::json!({ "owner": addr(&owner_key), "security-lead": addr(&sec_key) })
-            .to_string();
+        let registry =
+            serde_json::json!({ "owner": addr(&owner_key), "security-lead": addr(&sec_key) })
+                .to_string();
         let good = base(&owner_key, &sec_key, &sha).to_string();
         assert!(signoff::verify(&good, &packet, &registry).is_ok());
 
         // Signed by a key that is not the registered one for its role.
         let wrong = base(&other_key, &sec_key, &sha).to_string();
-        assert!(signoff::verify(&wrong, &packet, &registry).is_err(), "unregistered owner key");
+        assert!(
+            signoff::verify(&wrong, &packet, &registry).is_err(),
+            "unregistered owner key"
+        );
         // The committed packet copy is not the one that was signed.
-        assert!(signoff::verify(&good, b"another packet", &registry).is_err(), "packet changed");
+        assert!(
+            signoff::verify(&good, b"another packet", &registry).is_err(),
+            "packet changed"
+        );
         // A field changed after signing.
         let tampered = good.replace("2026-11-21", "2026-11-22");
-        assert!(signoff::verify(&tampered, &packet, &registry).is_err(), "date changed after signing");
+        assert!(
+            signoff::verify(&tampered, &packet, &registry).is_err(),
+            "date changed after signing"
+        );
         // The registry must name two different signers, one per role.
-        let one = serde_json::json!({ "owner": addr(&owner_key), "security-lead": addr(&owner_key) })
-            .to_string();
+        let one =
+            serde_json::json!({ "owner": addr(&owner_key), "security-lead": addr(&owner_key) })
+                .to_string();
         let same = base(&owner_key, &owner_key, &sha).to_string();
-        assert!(signoff::verify(&same, &packet, &one).is_err(), "one key for both roles");
+        assert!(
+            signoff::verify(&same, &packet, &one).is_err(),
+            "one key for both roles"
+        );
         let partial = serde_json::json!({ "owner": addr(&owner_key) }).to_string();
-        assert!(signoff::verify(&good, &packet, &partial).is_err(), "no security-lead registered");
+        assert!(
+            signoff::verify(&good, &packet, &partial).is_err(),
+            "no security-lead registered"
+        );
         assert!(signoff::verify(&good, &packet, "not json").is_err());
     }
 
@@ -390,8 +481,8 @@ mod tests {
                 "sha256": "a".repeat(64),
             },
             "signers": [
-                { "role": "owner", "github": "SaulBuilds", "date": "2026-11-20" },
-                { "role": "security-lead", "github": "kurtatwork", "date": "2026-11-21" },
+                { "role": "owner", "github": "SaulBuilds", "date": "2026-11-20", "sig": format!("0x{}", "ab".repeat(65)) },
+                { "role": "security-lead", "github": "kurtatwork", "date": "2026-11-21", "sig": format!("0x{}", "cd".repeat(65)) },
             ],
         });
         assert!(signoff::validate(&good.to_string()).is_ok());
