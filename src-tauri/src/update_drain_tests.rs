@@ -200,8 +200,10 @@ fn cancelling_reopens_imports_and_releases_the_gate() {
 #[test]
 fn the_production_drain_waits_for_real_exits_and_cancel_reopens_imports() {
     let src = include_str!("update_drain.rs");
-    assert!(src.contains("SpawnGate::global().wait_until_no_children("), "the command waits for real exits");
-    assert!(src.contains("cancel_with(&SpawnGate::global(), &crate::knowledge_import::ImportRegistry::global())"));
+    // Compared without whitespace, so rustfmt's line breaks do not matter.
+    let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(flat.contains("SpawnGate::global().wait_until_no_children("), "the command waits for real exits");
+    assert!(flat.contains("cancel_with(&SpawnGate::global(),&crate::knowledge_import::ImportRegistry::global()"));
     // #614 review (P2): no claim that the node flushes on SIGTERM (it handles SIGINT only).
     assert!(!src.contains("so the node flushes"), "the doc claims a flush the node does not do");
 }

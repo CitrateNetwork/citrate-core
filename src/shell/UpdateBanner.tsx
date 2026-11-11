@@ -17,6 +17,7 @@ export function UpdateBanner() {
       state.status === "downloading" ||
       state.status === "ready" ||
       state.status === "installing" ||
+      state.status === "installed" ||
       state.status === "error");
   if (!visible) return null;
 
@@ -51,6 +52,8 @@ export function UpdateBanner() {
             ? "Update ready to install"
             : state.status === "installing"
               ? "Stopping services and installing…"
+              : state.status === "installed"
+                ? "Restart Citrate Core to finish the update"
             : state.status === "downloading"
               ? "Downloading update…"
               : state.status === "error"
@@ -66,7 +69,7 @@ export function UpdateBanner() {
         )}
       </div>
 
-      {state.status === "error" ? (
+      {state.status === "error" || state.status === "installed" ? (
         <p style={{ margin: 0, fontSize: 12, color: "var(--danger)", lineHeight: 1.5 }}>
           {state.error || "Could not download the update. Check your connection and try again."}
         </p>

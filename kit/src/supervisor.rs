@@ -742,9 +742,20 @@ pub enum ControlResult {
 /// back between the pre-update drain and the relaunch (and no new binary from the installed
 /// bundle can start against the old app's data). Production supervisors share
 /// [`SpawnGate::global`]; tests give each supervisor its own gate.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SpawnGate {
     hold: Mutex<Option<String>>,
+    /// #614 review: every supervisor started under this gate (instance, name), so a drain can wait
+    /// until none of them has a live child. Weak: a dropped supervisor leaves on its own.
+    started: Mutex<Vec<(u64, String, std::sync::Weak<Shared>)>>,
+}
+
+impl std::fmt::Debug for SpawnGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnGate")
+            .field("held", &self.held())
+            .finish()
+    }
 }
 
 impl SpawnGate {
@@ -769,6 +780,44 @@ impl SpawnGate {
     /// The reason starts are held, if they are.
     pub fn held(&self) -> Option<String> {
         self.hold.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn track(&self, instance: u64, name: &str, shared: &Arc<Shared>) {
+        let mut v = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        v.retain(|(_, _, w)| w.strong_count() > 0);
+        v.push((instance, name.to_string(), Arc::downgrade(shared)));
+    }
+
+    /// #614 review: the supervisors started under this gate whose child is still running (its pid
+    /// is published until the child is reaped). An empty owner slot is not proof of an exit: a
+    /// Stop in flight, or a monitor detached past its join timeout, still has a child. A cell
+    /// that cannot be read in bounded time counts as running.
+    pub fn live_children(&self) -> Vec<String> {
+        let mut v = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        v.retain(|(_, _, w)| w.strong_count() > 0);
+        let mut out: Vec<String> = v
+            .iter()
+            .filter_map(|(_, name, w)| {
+                let shared = w.upgrade()?;
+                let live = shared.lock_bounded().is_none_or(|c| c.status.pid.is_some());
+                live.then(|| name.clone())
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Wait up to `within` until no supervisor under this gate has a live child; returns the
+    /// names still running at the end (empty when all exited).
+    pub fn wait_until_no_children(&self, within: Duration) -> Vec<String> {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            let live = self.live_children();
+            if live.is_empty() || std::time::Instant::now() >= deadline {
+                return live;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -1512,6 +1561,7 @@ impl Supervisor {
             settle_barrier: config.settle_barrier.clone(),
         });
         let spawn_gate = config.spawn_gate.clone();
+        spawn_gate.track(instance, &name, &shared);
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
             .name(format!("supervisor:{name}"))

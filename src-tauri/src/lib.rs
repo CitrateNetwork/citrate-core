@@ -170,11 +170,11 @@ mod seam;
 mod serve;
 mod serve_plan;
 mod services;
-// CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod shell;
 mod skill_registry;
 mod skills_local;
 mod telemetry;
+// CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod update_drain;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
