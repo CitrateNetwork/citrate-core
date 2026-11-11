@@ -1,0 +1,16 @@
+[Unit]
+Description=Citrate background service (S0-SVC-SPIKE stand-in)
+
+[Service]
+Type=simple
+Environment=SPIKE_BIN=%h/.local/opt/citrate/bin
+Environment=SPIKE_DATA=%h/.local/share/ai.citrate.core-spike
+ExecStart=%h/.local/opt/citrate/svc-spike.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=default.target
