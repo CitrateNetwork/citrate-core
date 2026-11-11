@@ -618,3 +618,39 @@ describe("r1007 acceptance (CORE-N6)", { timeout: 240_000 }, () => {
     expect(status((await run()).v, "not_wedged")).toBe("skip");
   });
 });
+
+// core#611 item 6: a `[checkpoint]` header with a trailing comment is the same table, as it is for
+// the app's renderer (network_profile.rs set_table_keys matches the header by prefix).
+describe("section headers with a trailing comment (core#611)", () => {
+  const call = (fn, text) =>
+    py([
+      "-I",
+      "-c",
+      `import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("cold_sync", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+try:
+    print(json.dumps({"ok": m.${fn}(sys.argv[2], "checkpoint", "vote_depth", "3")}))
+except m.Refused as e:
+    print(json.dumps({"refused": str(e)}))`,
+      script,
+      text,
+    ]);
+
+  it("set_or_add_in_section finds [checkpoint] # comment and adds the key there", async () => {
+    const r = await call("set_or_add_in_section", "[chain]\nchain_id = 40204\n\n[checkpoint] # compiled values\ninterval = 50\ncommittee_size = 100\n\n[rpc]\nport = 1\n");
+    const out = JSON.parse(r.stdout);
+    expect(out.ok, r.stderr + r.stdout).toBeDefined();
+    expect(out.ok).toMatch(/\[checkpoint\] # compiled values\ninterval = 50\ncommittee_size = 100\nvote_depth = 3\n/);
+  });
+
+  it("set_in_section sets a key under a commented header, and still refuses a missing table", async () => {
+    const ok = JSON.parse((await call("set_in_section", "[checkpoint]   # note\nvote_depth = 1\n")).stdout);
+    expect(ok.ok).toBe("[checkpoint]   # note\nvote_depth = 3\n");
+    const missing = JSON.parse((await call("set_in_section", "[chain]\nchain_id = 1\n")).stdout);
+    expect(missing.refused).toMatch(/no \[checkpoint\] section/);
+    // A longer table name is not this table.
+    const other = JSON.parse((await call("set_in_section", "[checkpointing]\nvote_depth = 1\n")).stdout);
+    expect(other.refused).toMatch(/no \[checkpoint\] section/);
+  });
+});

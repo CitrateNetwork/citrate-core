@@ -14,9 +14,11 @@ check [--release] [--root <dir>] [--cut-only]
     exactly boot1-3.citrate.ai and rpc.citrate.ai on 30303 with distinct keys; the macOS and
     Linux aarch64 node assets are named after the chain rev; `pending` names exactly the null values, each with a
     reason; the chain parameters are exactly the node's named set of positive integers, with an
-    undo window the target profile's member retention covers; the RPC is https; the target and
-    retired profiles exist in profiles.json.
-    With --release: nothing is pending, and the cut is applied: profiles.json, build-sidecar.sh,
+    undo window and pruning depth the target profile's member retention covers; the RPC is https on
+    a host in `rpcHosts`; the target and retired profiles exist in profiles.json.
+    With --release: nothing is pending; the RPC itself answers eth_chainId with the target profile's
+    chain id and eth_getBlockByNumber 0x0 with the cut's genesisHash (no redirects; an RPC that
+    cannot be asked fails the check); and the cut is applied: profiles.json, build-sidecar.sh,
     components.json, runtime-deps.sha256, the two Cargo.toml files and Cargo.lock all carry its
     values. Unless --cut-only, it then runs scripts/check-network-profile.sh --release
     --require-active <profile> as well (the embedded address book and the rest of the K6 gate).
@@ -48,6 +50,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -77,7 +82,7 @@ MAC = "aarch64-apple-darwin"
 # 2026-11-08, its Linux aarch64 job on ubuntu-24.04-arm): their pin is a runtime_deps_asset named
 # after the rev plus its line in runtime-deps.sha256. Linux x86_64 stays an inline sha256.
 STAGED = (MAC, "aarch64-unknown-linux-gnu")
-KEYS = {"_comment", "profile", "retire", "node", "pending"} | set(VALUES)
+KEYS = {"_comment", "profile", "retire", "node", "pending", "rpcHosts"} | set(VALUES)
 # The r1007 fleet's P2P entry points (owner decision: boot1-3 + rpc.citrate.ai).
 BOOT_HOSTS = ["boot1.citrate.ai:30303", "boot2.citrate.ai:30303", "boot3.citrate.ai:30303", "rpc.citrate.ai:30303"]
 
@@ -107,6 +112,13 @@ NODE_CHECKPOINT = {"interval": "checkpoint_interval", "committeeSize": "committe
 
 HASH = re.compile(r"0x[0-9a-f]{64}")
 HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\s]*)?")
+# An rpcHosts entry: a lowercase DNS host name (no scheme, port or path).
+HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+")
+# core#611 item 2: `check --release` asks the cut's rpcUrl for its chain and block 0. The tests send
+# that request to a stand-in through this variable, which takes only a loopback http endpoint.
+PROBE_ENV = "NETWORK_CUT_RPC_PROBE"
+LOOPBACK_PROBE = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}")
+PROBE_TIMEOUT_SECS = 15
 SHA256 = re.compile(r"[0-9a-f]{64}")
 REV = re.compile(r"[0-9a-f]{40}")
 FINGERPRINT = re.compile(r"0x[0-9a-f]{32}")
@@ -188,9 +200,19 @@ def value_problems(cut: dict, profiles: dict) -> list:
             if isinstance(pd, int) and isinstance(keep, int) and pd > keep:
                 out.append(f"chainParams.pruning_depth {pd} is above the {pid} profile's memberPruneRetain {keep}: "
                            "a pruning member must keep at least the pruning depth (CORE-N5, ADR CV-7a)")
+    hosts = cut.get("rpcHosts")
+    hosts_ok = (isinstance(hosts, list) and hosts and len(set(map(str, hosts))) == len(hosts)
+                and all(isinstance(h, str) and HOSTNAME.fullmatch(h) for h in hosts))
+    if not hosts_ok:
+        out.append("rpcHosts must be a non-empty list of distinct lowercase host names (no scheme, port "
+                   "or path): the hosts the release RPC may be on (core#611)")
     url = cut.get("rpcUrl")
     if url is not None and not (isinstance(url, str) and HTTPS.fullmatch(url)):
         out.append(f"rpcUrl {url!r} is not an https URL")
+    elif url is not None and hosts_ok:
+        host = urllib.parse.urlsplit(url).hostname
+        if host not in hosts:
+            out.append(f"rpcUrl {url!r} is not on a host in rpcHosts {hosts}")
     b = cut.get("bootnodes")
     if b is not None:
         ms = [BOOTNODE.fullmatch(x) if isinstance(x, str) else None for x in b] if isinstance(b, list) else [None]
@@ -522,6 +544,59 @@ def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
     return out
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect could move the probe to a host that is not allowlisted: refuse it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirect to {newurl} refused", headers, fp)
+
+
+def rpc_call(url: str, method: str, params: list):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"content-type": "application/json"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=PROBE_TIMEOUT_SECS) as r:
+        data = json.loads(r.read(1 << 20))
+    if not isinstance(data, dict):
+        raise ValueError("the answer is not a JSON-RPC object")
+    if data.get("error") is not None:
+        raise ValueError(f"{method} answered an error: {data['error']}")
+    return data.get("result")
+
+
+def live_rpc_problems(cut: dict, profiles: dict) -> list:
+    """core#611 item 2: the cut's rpcUrl serves the target profile's chain id and the cut's block 0.
+    Fails closed: an RPC that cannot be asked is a failure, never a pass."""
+    url = cut["rpcUrl"]
+    target = url
+    probe = os.environ.get(PROBE_ENV)
+    if probe is not None:
+        if not LOOPBACK_PROBE.fullmatch(probe):
+            return [f"{PROBE_ENV} is set to {probe!r}; it takes only a loopback test endpoint "
+                    "(http://127.0.0.1:<port>), and a release check runs without it"]
+        print(f"network-cut check: the rpcUrl probe goes to the test endpoint {probe}, not {url}",
+              file=sys.stderr)
+        target = probe
+    chain = profiles.get("profiles", {}).get(cut["profile"], {}).get("chainId")
+    try:
+        cid = rpc_call(target, "eth_chainId", [])
+        block0 = rpc_call(target, "eth_getBlockByNumber", ["0x0", False])
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return [f"rpcUrl {url} could not be checked live (a release check fails closed): {e}"]
+    out = []
+    try:
+        cid_n = int(cid, 16) if isinstance(cid, str) and cid.lower().startswith("0x") else None
+    except ValueError:
+        cid_n = None
+    if cid_n is None or cid_n != chain:
+        out.append(f"rpcUrl {url} serves chain {cid!r}, not {cut['profile']}'s chain {chain}")
+    h = block0.get("hash") if isinstance(block0, dict) else None
+    if not (isinstance(h, str) and h.lower() == cut["genesisHash"]):
+        out.append(f"rpcUrl {url} serves block 0 {h!r}, not the cut's genesisHash {cut['genesisHash']}")
+    return out
+
+
 def cmd_check(a) -> None:
     root = Path(a.root)
     cut, profiles = load(root)
@@ -530,6 +605,7 @@ def cmd_check(a) -> None:
     if a.release:
         errors += [f"{k} is pending: {(cut.get('pending') or {}).get(k, 'no reason')}" for k in nulls]
         if not errors:
+            errors += live_rpc_problems(cut, profiles)
             errors += applied_problems(root, cut)
             if not a.cut_only:
                 r = subprocess.run(["bash", str(root / "scripts" / "check-network-profile.sh"), "--release",

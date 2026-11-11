@@ -410,7 +410,7 @@ def launch_constants(node_rs):
 
 def set_in_section(text, section, key, value):
     """Set `key = value` inside `[section]` of a TOML text; refuse when the key is not there."""
-    m = re.search(rf"(?ms)^\[{re.escape(section)}\]\s*$(.*?)(?=^\[|\Z)", text)
+    m = re.search(rf"(?ms)^\[{re.escape(section)}\][ \t]*(?:#[^\n]*)?$(.*?)(?=^\[|\Z)", text)
     if not m:
         raise Refused("launch", f"member-node.toml has no [{section}] section")
     body, n = re.subn(rf"(?m)^{re.escape(key)}\s*=.*$", lambda _: f"{key} = {value}", m.group(1), count=1)
@@ -426,7 +426,7 @@ def set_or_add_in_section(text, section, key, value):
         return set_in_section(text, section, key, value)
     except Refused:
         pass
-    m = re.search(rf"(?ms)^\[{re.escape(section)}\]\s*$(.*?)(?=^\[|\Z)", text)
+    m = re.search(rf"(?ms)^\[{re.escape(section)}\][ \t]*(?:#[^\n]*)?$(.*?)(?=^\[|\Z)", text)
     if not m:
         raise Refused("launch", f"member-node.toml has no [{section}] section")
     keys = list(re.finditer(r"(?m)^[A-Za-z0-9_]+\s*=.*$", m.group(1)))

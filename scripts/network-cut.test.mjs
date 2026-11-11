@@ -13,8 +13,8 @@
 //
 // The apply cases run on a copy of the files the cut writes, in a fresh temp dir, with test-only
 // values defined below (never real genesis values, Rule 1). Nothing touches the repo.
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { spawnSync } from "node:child_process";
+import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,8 +90,52 @@ const filledCut = (cut) => ({
   pending: {},
 });
 
+// core#611 item 2: `check --release` asks the cut's rpcUrl for eth_chainId and block 0. In the
+// tests that request goes to a stand-in RPC on loopback (NETWORK_CUT_RPC_PROBE), a separate
+// process because py() blocks this one. It answers from a JSON file each test can rewrite.
+const RPC_STAND_IN = `
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+answers = sys.argv[1]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        req = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        a = json.load(open(answers))
+        if a.get("status", 200) != 200:
+            self.send_response(a["status"]); self.end_headers(); return
+        body = a.get("raw") or json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": a.get(req["method"])})
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers()
+        self.wfile.write(body.encode())
+s = HTTPServer(("127.0.0.1", 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()
+`;
+let rpcProc;
+let rpcPort;
+let answersPath;
+const goodAnswers = () => ({ eth_chainId: "0x9d0c", eth_getBlockByNumber: { number: "0x0", hash: T_GENESIS } });
+const setAnswers = (a) => fs.writeFileSync(answersPath, JSON.stringify(a));
+beforeAll(async () => {
+  answersPath = path.join(fs.mkdtempSync("/tmp/core053-rpc-"), "answers.json");
+  setAnswers(goodAnswers());
+  rpcProc = spawn("python3", ["-I", "-c", RPC_STAND_IN, answersPath], { stdio: ["ignore", "pipe", "inherit"] });
+  rpcPort = await new Promise((res) => rpcProc.stdout.once("data", (d) => res(Number(String(d).trim()))));
+});
+afterAll(() => {
+  rpcProc?.kill();
+  if (answersPath) fs.rmSync(path.dirname(answersPath), { recursive: true, force: true });
+});
+beforeEach(() => answersPath && setAnswers(goodAnswers()));
+
 let root;
-const env = () => ({ PATH: process.env.PATH, HOME: root ?? repo, LANG: "C.UTF-8" });
+let probe; // undefined: the stand-in; null: no override (the real rpcUrl); a string: that value
+const env = () => {
+  const e = { PATH: process.env.PATH, HOME: root ?? repo, LANG: "C.UTF-8" };
+  const p = probe === undefined ? `http://127.0.0.1:${rpcPort}` : probe;
+  if (p !== null) e.NETWORK_CUT_RPC_PROBE = p;
+  return e;
+};
 function py(args) {
   const r = spawnSync("python3", ["-I", cutPy, ...args], { env: env(), encoding: "utf8" });
   return { code: r.status, out: r.stdout, err: r.stderr };
@@ -115,6 +159,7 @@ beforeEach(() => {
 afterEach(() => {
   if (root && root.startsWith("/tmp/core053-cut-")) fs.rmSync(root, { recursive: true, force: true });
   root = undefined;
+  probe = undefined;
 });
 
 describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
@@ -354,4 +399,106 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
       expect(snapshot()).toEqual(before);
     });
   }
+});
+
+// core#611 item 2 (lead decision): the rpcUrl host is on the cut's allowlist, and `check --release`
+// asks the RPC itself for chain 40204 and the cut's block 0, failing closed.
+describe("rpcUrl: allowlisted host, verified live by check --release (core#611)", SLOW, () => {
+  const applied = () => {
+    writeJson("release/network-cut.json", filledCut(json("release/network-cut.json")));
+    expect(py(["apply", "--root", root]).code).toBe(0);
+  };
+  const release = () => py(["check", "--release", "--root", root, "--cut-only"]);
+
+  it("the shipped cut allowlists rpc.citrate.ai", () => {
+    expect(json("release/network-cut.json").rpcHosts).toEqual(["rpc.citrate.ai"]);
+  });
+
+  const hostRefusals = [
+    ["a host that only starts with an allowlisted one", "https://rpc.citrate.ai.attacker.io"],
+    ["another host", "https://rpc.example.org"],
+    ["user info in front of the host", "https://rpc.citrate.ai@attacker.io"],
+  ];
+  for (const [what, url] of hostRefusals) {
+    it(`check refuses an rpcUrl on ${what}`, () => {
+      const cut = filledCut(json("release/network-cut.json"));
+      cut.rpcUrl = url;
+      writeJson("release/network-cut.json", cut);
+      const r = py(["check", "--root", root]);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(/rpcUrl.*(rpcHosts|https)/);
+    });
+  }
+
+  it("a second allowlisted host is accepted, and a malformed allowlist is refused", () => {
+    const cut = filledCut(json("release/network-cut.json"));
+    cut.rpcHosts = ["rpc.citrate.ai", "rpc-r1007.citrate.ai"];
+    cut.rpcUrl = "https://rpc-r1007.citrate.ai";
+    writeJson("release/network-cut.json", cut);
+    expect(py(["check", "--root", root]).code).toBe(0);
+    for (const bad of [[], ["RPC.citrate.ai"], ["rpc.citrate.ai", "rpc.citrate.ai"], ["https://rpc.citrate.ai"], "rpc.citrate.ai"]) {
+      writeJson("release/network-cut.json", { ...cut, rpcHosts: bad });
+      const r = py(["check", "--root", root]);
+      expect(r.code, JSON.stringify(bad)).not.toBe(0);
+      expect(r.err).toMatch(/rpcHosts/);
+    }
+  });
+
+  it("check --release asks the RPC and passes that part when it serves chain 40204 and the cut's block 0", () => {
+    applied();
+    const r = release();
+    expect(r.err).not.toMatch(/FAIL: rpcUrl/);
+    expect(r.err).toMatch(/probe goes to the test endpoint http:\/\/127\.0\.0\.1:\d+, not https:\/\/rpc\.citrate\.ai/);
+    // What is left is the Cargo.lock the cut does not write (as in the apply test above).
+    expect(r.err.split("\n").filter((l) => l.includes("FAIL:"))).toEqual([expect.stringMatching(/FAIL: Cargo\.lock/)]);
+  });
+
+  const liveRefusals = [
+    ["another chain", { ...goodAnswers(), eth_chainId: "0x1" }, /chain.*40204/],
+    ["another block 0", { ...goodAnswers(), eth_getBlockByNumber: { number: "0x0", hash: "0x" + "ab".repeat(32) } }, /block 0.*genesisHash/],
+    ["no block 0", { ...goodAnswers(), eth_getBlockByNumber: null }, /block 0/],
+    ["an HTTP error", { status: 503 }, /could not be checked live/],
+    ["an answer that is not JSON", { raw: "<html>" }, /could not be checked live/],
+  ];
+  for (const [what, answers, msg] of liveRefusals) {
+    it(`check --release fails closed on ${what}`, () => {
+      applied();
+      setAnswers(answers);
+      const r = release();
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(msg);
+    });
+  }
+
+  it("check --release fails closed when the RPC cannot be reached", () => {
+    applied();
+    probe = "http://127.0.0.1:9";
+    const r = release();
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/rpcUrl.*could not be checked live/);
+  });
+
+  it("the probe override takes only a loopback http test endpoint", () => {
+    applied();
+    for (const p of ["https://rpc.example.org", "http://10.0.0.5:8545", "http://127.0.0.1:8545/x", ""]) {
+      probe = p;
+      const r = release();
+      expect(r.code, p).not.toBe(0);
+      expect(r.err).toMatch(/NETWORK_CUT_RPC_PROBE/);
+    }
+  });
+
+  it("no workflow or script sets the probe override", () => {
+    const hits = [];
+    const walk = (d) => {
+      for (const e of fs.readdirSync(path.join(repo, d), { withFileTypes: true })) {
+        const rel = path.join(d, e.name);
+        if (e.isDirectory()) walk(rel);
+        else if (!rel.endsWith(".test.mjs") && fs.readFileSync(path.join(repo, rel), "utf8").includes("NETWORK_CUT_RPC_PROBE")) hits.push(rel);
+      }
+    };
+    walk(".github");
+    walk("scripts");
+    expect(hits).toEqual(["scripts/network-cut.py"]);
+  });
 });
