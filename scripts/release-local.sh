@@ -143,7 +143,7 @@ tauri --version >/dev/null 2>&1 || die "the Tauri CLI is not installed here (npm
 check_app_version() {
   local v
   v="$(plutil -extract CFBundleShortVersionString raw "$1/Contents/Info.plist" 2>/dev/null)" || die "no CFBundleShortVersionString in $1"
-  [ "$v" = "$VERSION" ] || die "$1 is version $v, not $VERSION"
+  [ "$v" = "$APP_VERSION" ] || die "$1 is version $v, not $APP_VERSION"
 }
 # The version of the app inside a DMG (attached read-only, never browsed or run).
 check_dmg_version() {
@@ -153,11 +153,13 @@ check_dmg_version() {
   local rc=0
   ( check_app_version "$mnt/$APP_NAME" ) || rc=1
   hdiutil detach -quiet "$mnt" || hdiutil detach -quiet -force "$mnt" || true
-  [ "$rc" -eq 0 ] || die "the app inside $1 is not version $VERSION"
+  [ "$rc" -eq 0 ] || die "the app inside $1 is not version $APP_VERSION"
 }
 
 # ---- 1. build (real) or the given app (rehearsal) -----------------------------------------------
 if [ "$REHEARSAL" -eq 0 ]; then
+  # The app must be the release version.
+  APP_VERSION="$VERSION"
   say "1/7 verifying the staged inputs"
   (cd "$ROOT" && node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin)
   (cd "$ROOT" && node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256)
@@ -176,6 +178,11 @@ if [ "$REHEARSAL" -eq 0 ]; then
 else
   say "1/7 rehearsal: codesigning the given app and making its DMG"
   [ -d "$APP" ] || die "no app at $APP"
+  # A rehearsal is tagged with a throwaway version, so the app (often built from this tree) carries
+  # its own; the signed copy and the app inside the DMG must both be that version.
+  APP_VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" ||
+    die "no CFBundleShortVersionString in $APP"
+  say "1/7 the rehearsal app is version $APP_VERSION (tagged $TAG)"
   cp -R "$APP" "$WORK/$APP_NAME"
   APP="$WORK/$APP_NAME"
   codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$APP"
@@ -309,6 +316,8 @@ if [ "$REHEARSAL" -eq 0 ]; then
     done
   say "the fallback feed and every update file answer anonymously"
 elif [ "$CLEANUP" -eq 1 ]; then
-  gh release delete "$TAG" --repo "$REPO_SLUG" --yes --cleanup-tag
+  # A draft has no git tag, so there is no tag to clean up (--cleanup-tag fails on a draft).
+  gh release delete "$TAG" --repo "$REPO_SLUG" --yes
+  if gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then die "the rehearsal draft $TAG is still there"; fi
   say "rehearsal draft $TAG deleted"
 fi
