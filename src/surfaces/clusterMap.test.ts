@@ -51,3 +51,22 @@ describe("clusterMapModel", () => {
     expect(m.nodes[0].member).toBe("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
   });
 });
+
+describe("ClusterMap render", () => {
+  it("draws one node per peer, a dashed edge for a relayed peer and no edge for an offline one", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { ClusterMap } = await import("./ClusterMap");
+    const html = renderToStaticMarkup(
+      createElement(ClusterMap, {
+        peers: [peer("aa", true, "direct"), peer("bb", true, "relayed"), peer("cc", false)],
+      }),
+    );
+    expect(html.match(/data-node=/g)?.length).toBe(3);
+    expect(html.match(/data-edge=/g)?.length).toBe(2);
+    expect(html).toContain('data-edge="bb" data-style="dashed"');
+    expect(html).toContain('data-edge="aa" data-style="solid"');
+    expect(html).not.toContain('data-edge="cc"');
+    expect(html).toContain("2 of 3 online: 1 direct, 1 through a relay.");
+  });
+});
