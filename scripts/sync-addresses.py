@@ -75,6 +75,9 @@ OPTIONAL = [
     "BenchmarkRegistry",
     "CapsuleRegistry",
     "InferenceRouter",
+    # 0.6.0 FLM-CORE-1: the WorkMarket escrow (ceremony genesis). The offers read model stays
+    # "not available in this build" until the book carries it.
+    "WorkMarket",
 ]
 
 # Always used with .fullmatch (Python's `$` also matches before a final "\n").
