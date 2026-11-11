@@ -180,6 +180,13 @@ mod skills_local;
 mod telemetry;
 // CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod update_drain;
+// V60 SVC-1: the background service (`citrate-core --svc`), its socket, and its unit files.
+mod svc;
+#[cfg(unix)]
+mod svc_run;
+#[cfg(unix)]
+mod svc_server;
+mod svc_units;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -326,6 +333,15 @@ pub fn node_mcp_stdio_main() -> i32 {
 
 /// The flag `main` checks for the stdio shim (shared with Hermes's built-in `node` entry).
 pub const NODE_MCP_STDIO_FLAG: &str = node_mcp_http::STDIO_FLAG;
+
+/// V60 SVC-1: the flag `main` checks to run as the background service (see `svc`).
+pub const SVC_FLAG: &str = svc::SVC_FLAG;
+
+/// V60 SVC-1: `citrate-core --svc`, the background service. Runs without starting the app.
+#[cfg(unix)]
+pub fn svc_main() -> i32 {
+    svc_run::svc_main()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -510,6 +526,26 @@ pub fn run() {
             // and is handed to the spawned node in an owner-only key file (CITRATE_STORAGE_KEY_FILE).
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
+            // V60 SVC-1: the link to the background service. While it answers, the node and kubo
+            // commands go to it and the in-process supervisors stay idle; otherwise in-process.
+            app.manage(svc::build_link_state(&app.handle().clone()));
+            {
+                let handle = app.handle().clone();
+                let _ = std::thread::Builder::new().name("svc-attach".into()).spawn(move || {
+                    match tauri::Manager::try_state::<svc::SvcLinkState>(&handle).map(|s| s.link()) {
+                        Some(svc::Link::Attached(client)) => {
+                            eprintln!("[svc] attached to the background service (pid {})", client.hello.pid);
+                            if svc::restart_if_stale(&client, env!("CARGO_PKG_VERSION")) {
+                                svc::invalidate_link(&handle);
+                            }
+                        }
+                        Some(svc::Link::InProcess(why)) => {
+                            eprintln!("[svc] node and kubo run in the app: {why}");
+                        }
+                        None => {}
+                    }
+                });
+            }
             // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
             // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
             node::spawn_mining_watchdog(app.handle().clone());

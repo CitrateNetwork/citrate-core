@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- V60 SVC-1: the Citrate background service, a per-user LaunchAgent. Rendered by
+     src-tauri/src/svc_units.rs ({{EXE}} and {{LOG}} are XML-escaped there) and written to
+     ~/Library/LaunchAgents/ai.citrate.svc.plist. KeepAlive restarts a crash but not a requested
+     stop (exit 0); ExitTimeOut is above the 30 s drain. Spike: docs/spikes/svc-2026-11-10/. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>ai.citrate.svc</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{EXE}}</string>
+		<string>--svc</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ExitTimeOut</key>
+	<integer>40</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>StandardOutPath</key>
+	<string>{{LOG}}</string>
+	<key>StandardErrorPath</key>
+	<string>{{LOG}}</string>
+</dict>
+</plist>
