@@ -301,6 +301,9 @@ fn content_bearing_sidecars_write_only_allowlisted_lifecycle_lines() {
         assert!(out.starts_with(&format!("[withheld: {level} line")), "the marker names the level");
         assert!(!out.contains("note") && !out.contains("prompt"), "the marker carries no text from the line");
     }
+    // P3: on an allowed line, a key=value token is kept only for a lifecycle key.
+    assert_eq!(f("server listening on port=18090").as_deref(), Some("server listening on port=18090"));
+    assert_eq!(f("server listening note=private_reminder"), None, "a key=value with a non-lifecycle key is withheld");
     let pw = ["hunter2", "hunter2"].concat();
     let out = f(&format!("error: login failed password={pw}")).expect("a marker");
     assert!(!out.contains(&pw));

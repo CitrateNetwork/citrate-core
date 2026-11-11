@@ -111,3 +111,17 @@ fn redaction_tests_never_print_planted_values() {
         }
     }
 }
+
+/// Round 4: a run shorter than 12 BIP-39 words is ordinary text, and a run broken by `-` or `.` is
+/// not a phrase.
+#[test]
+fn fewer_than_twelve_bip39_words_or_a_broken_run_is_left_alone() {
+    let all = ["abandon ability able about above absent ", "absorb abstract absurd abuse access accident"].concat();
+    let w: Vec<&str> = all.split(' ').collect();
+    let eleven = w[..11].join(" ");
+    assert_eq!(redact(&eleven), eleven, "11 words are not a phrase");
+    let dashed = w.join("-");
+    assert_eq!(redact(&dashed), dashed, "a run broken by dashes is not a phrase");
+    let sentence = "please add the above account to the list and act on it now";
+    assert_eq!(redact(sentence), sentence, "a normal sentence is left alone");
+}

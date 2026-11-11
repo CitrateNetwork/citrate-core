@@ -669,6 +669,46 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
             format!("{{\"set-cookie\":\"sid={opaque}\"}}"),
             opaque.clone(),
         ),
+        // Round 4 (#613 review P1, BerryManifold): a seed phrase by its value, whatever the key.
+        (
+            "seed phrase: (space)",
+            format!("seed phrase: {words}"),
+            words.clone(),
+        ),
+        (
+            "recovery words =",
+            format!("recovery words = {words}"),
+            words.clone(),
+        ),
+        (
+            "wallet words:",
+            format!("wallet words: {words}"),
+            words.clone(),
+        ),
+        (
+            "backup_phrase quoted",
+            format!("backup_phrase=\"{words}\""),
+            words.clone(),
+        ),
+        ("passphrase=", format!("passphrase={pw}"), pw.clone()),
+        (
+            "bracketed word list",
+            format!(
+                "words: [{}]",
+                words
+                    .split(' ')
+                    .map(|w| format!("\"{w}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            "absurd".to_string(),
+        ),
+        ("bare 12-word line", words.clone(), words.clone()),
+        (
+            "24-word phrase, upper case",
+            format!("restore {} {}", words.to_uppercase(), words.to_uppercase()),
+            words.to_uppercase(),
+        ),
     ]
 }
 
