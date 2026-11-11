@@ -1045,6 +1045,10 @@ export interface PinParams {
 /** K4 — a storage part a backup can hold. */
 export type BackupPart = "files" | "memory";
 
+/** STO-2 — how an export is written: sealed under a passphrase (the default), or the plain K4
+ *  folder, which the member must choose explicitly. */
+export type BackupProtection = { passphrase: string } | { plaintext: true };
+
 /** K4 — one export/restore progress step (Rust `storage_backup::Progress`). */
 export interface BackupProgress {
   op: "export" | "restore";
@@ -1077,6 +1081,8 @@ export interface BackupExportReport {
   skipped: { item: string; reason: string }[];
   daemonRestarted: boolean;
   notes: string[];
+  /** STO-2: `folder` is one passphrase-sealed file, not a plain folder. */
+  encrypted: boolean;
 }
 
 export interface BackupVerifyReport {
@@ -1116,12 +1122,23 @@ export interface StorageDomain {
   unpin(cid: string): Promise<void>;
   /** K4: the IPFSIncentivesV3 BOND / REWARD / ROUNDS parameters, read from chain 40204. */
   pinParams(): Promise<PinParams>;
-  /** K4: export Files and/or Memory into a new verified backup folder inside `dest`. */
-  backupExport(dest: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupExportReport>;
-  /** K4: check a backup folder against its manifest (sha256 + size per file). */
-  backupVerify(folder: string): Promise<BackupVerifyReport>;
-  /** K4: restore from a backup folder; Rust refuses on any manifest mismatch before touching anything. */
-  backupRestore(folder: string, parts: BackupPart[], onProgress?: (p: BackupProgress) => void): Promise<BackupRestoreReport>;
+  /** K4 + STO-2: export Files and/or Memory into `dest`, as one passphrase-sealed file or, when the
+   *  member chose it, a plain verified folder. */
+  backupExport(
+    dest: string,
+    parts: BackupPart[],
+    protection: BackupProtection,
+    onProgress?: (p: BackupProgress) => void,
+  ): Promise<BackupExportReport>;
+  /** K4: check a backup against its manifest (sha256 + size per file). A sealed file needs its passphrase. */
+  backupVerify(path: string, passphrase?: string): Promise<BackupVerifyReport>;
+  /** K4: restore from a backup; Rust refuses a wrong passphrase or any manifest mismatch before touching anything. */
+  backupRestore(
+    path: string,
+    parts: BackupPart[],
+    passphrase?: string,
+    onProgress?: (p: BackupProgress) => void,
+  ): Promise<BackupRestoreReport>;
 }
 
 // ── C-19 groups: secure 1:1 + group comms, admin RBAC (lane s3) ──

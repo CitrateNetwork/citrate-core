@@ -7,16 +7,28 @@
 // `storage_backup_verify`, `storage_backup_restore`); progress comes from the
 // `storage://backup-progress` event. The surface never reads or writes the stores itself.
 //
-// Verifiable: a backup folder carries `citrate-backup.json`, a manifest with the size and SHA-256
-// of every file. Restore first checks the folder here (the member sees the result), and Rust
-// checks it again and REFUSES on any mismatch before touching anything.
+// Verifiable: a backup carries `citrate-backup.json`, a manifest with the size and SHA-256 of
+// every file. Restore first checks the backup here (the member sees the result), and Rust checks
+// it again and REFUSES on any mismatch before touching anything.
+//
+// STO-2: a backup is one file sealed under the member's passphrase by default (Argon2id +
+// AES-256-GCM in Rust; the passphrase is never stored). The plain folder is written only when the
+// member ticks "without encryption" and sees the warning.
 // =====================================================================
 import { useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import { storageSlice, exportBackup, checkBackup, restoreBackup } from "../shell/slices/storage";
 import type { BackupPart } from "../bridge/domains";
-import { describeMismatch, humanBytes, progressPct, progressText } from "./storageTruth";
+import {
+  describeMismatch,
+  exportProtection,
+  humanBytes,
+  MIN_BACKUP_PASSPHRASE,
+  progressPct,
+  progressText,
+  SEALED_EXT,
+} from "./storageTruth";
 
 const PART_LABEL: Record<BackupPart, string> = { files: "Files", memory: "Memory" };
 
@@ -27,6 +39,18 @@ const partList = (parts: BackupPart[]) => parts.map((p) => PART_LABEL[p]).join("
 async function pickFolder(title: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({ directory: true, multiple: false, title });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Ask the OS for an encrypted backup file (Tauri dialog). Null when cancelled. */
+async function pickSealedFile(title: string): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    directory: false,
+    multiple: false,
+    title,
+    filters: [{ name: "Citrate encrypted backup", extensions: [SEALED_EXT] }],
+  });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -68,6 +92,12 @@ export function StorageBackup({ store }: SurfaceProps) {
   const st = storageSlice.use();
   const [exportParts, setExportParts] = useState<BackupPart[]>(["files", "memory"]);
   const [restoreParts, setRestoreParts] = useState<BackupPart[]>([]);
+  const [pass, setPass] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [plaintext, setPlaintext] = useState(false);
+  const [sealedPath, setSealedPath] = useState<string | null>(null);
+  const [restorePass, setRestorePass] = useState("");
+  const choice = exportProtection(pass, confirm, plaintext);
   const busy = st.backupOp !== null;
   const desktop = bridge.mode === "tauri";
   const check = st.restoreCheck;
@@ -75,8 +105,13 @@ export function StorageBackup({ store }: SurfaceProps) {
   const onExport = async () => {
     if (!desktop) return;
     try {
+      if (!choice.protection) return;
       const dest = await pickFolder("Choose where to save the backup");
-      if (dest) await exportBackup(dest, exportParts);
+      if (dest) {
+        await exportBackup(dest, exportParts, choice.protection);
+        setPass("");
+        setConfirm("");
+      }
     } catch (e) {
       store.toast("Couldn't open the folder picker (" + (e instanceof Error ? e.message : String(e)) + ")");
     }
@@ -87,6 +122,8 @@ export function StorageBackup({ store }: SurfaceProps) {
     try {
       const folder = await pickFolder("Choose a citrate-backup folder");
       if (!folder) return;
+      setSealedPath(null);
+      setRestorePass("");
       await checkBackup(folder);
       const c = storageSlice.get().restoreCheck;
       setRestoreParts(c?.ok ? [...c.parts] : []);
@@ -95,12 +132,32 @@ export function StorageBackup({ store }: SurfaceProps) {
     }
   };
 
+  const onChooseSealed = async () => {
+    if (!desktop) return;
+    try {
+      const file = await pickSealedFile("Choose an encrypted backup file");
+      if (!file) return;
+      setSealedPath(file);
+      setRestorePass("");
+      setRestoreParts([]);
+    } catch (e) {
+      store.toast("Couldn't open the file picker (" + (e instanceof Error ? e.message : String(e)) + ")");
+    }
+  };
+
+  const onOpenSealed = async () => {
+    if (!sealedPath || !restorePass) return;
+    await checkBackup(sealedPath, restorePass);
+    const c = storageSlice.get().restoreCheck;
+    setRestoreParts(c?.ok ? [...c.parts] : []);
+  };
+
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 960 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Backup</span>
         <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>
-          files + memory · to a folder you choose
+          files + memory · encrypted · to a folder you choose
         </span>
       </div>
 
@@ -114,21 +171,64 @@ export function StorageBackup({ store }: SurfaceProps) {
       <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
         <span className="eyebrow">Export a backup</span>
         <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-          Copies the files kept on this node and your memory graph into a new dated folder, with a manifest that lists
-          the SHA-256 of every file. The memory daemon pauses while its store is copied and starts again after. The Memory
-          part of a backup is not encrypted (nor are the files), and the manifest is not signed, so keep the backup
-          somewhere only you can read and write.
+          Copies the files kept on this node and your memory graph into one dated backup file, encrypted with a
+          passphrase you choose (Argon2id and AES-256-GCM). Inside is a manifest that lists the SHA-256 of every file.
+          The memory daemon pauses while its store is copied and starts again after. The passphrase is not saved
+          anywhere: without it the backup can&apos;t be opened, by you or by Citrate.
         </p>
         <PartPicker parts={exportParts} setParts={setExportParts} allowed={["files", "memory"]} />
+        {!plaintext && (
+          <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <input
+              type="password"
+              aria-label="Backup passphrase"
+              placeholder={`Passphrase (${MIN_BACKUP_PASSPHRASE}+ characters)`}
+              value={pass}
+              autoComplete="new-password"
+              onChange={(e) => setPass(e.target.value)}
+              style={{ minWidth: 240 }}
+            />
+            <input
+              type="password"
+              aria-label="Repeat the backup passphrase"
+              placeholder="Repeat the passphrase"
+              value={confirm}
+              autoComplete="new-password"
+              onChange={(e) => setConfirm(e.target.value)}
+              style={{ minWidth: 240 }}
+            />
+          </span>
+        )}
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+          <input type="checkbox" checked={plaintext} onChange={(e) => setPlaintext(e.target.checked)} />
+          Export without encryption
+        </label>
+        {plaintext && (
+          <p role="alert" data-testid="plaintext-warning" style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--warn, var(--danger))", margin: 0 }}>
+            Not encrypted: the backup is a plain folder, and anyone who can open it can read your memory graph and every
+            backed-up file. The manifest is not signed. Only use this for a disk only you can reach.
+          </p>
+        )}
+        {choice.reason && !plaintext && (pass || confirm) && (
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>{choice.reason}</span>
+        )}
         <span>
-          <button className="btn btn-primary btn-sm" onClick={() => void onExport()} disabled={!desktop || busy || exportParts.length === 0}>
-            {st.backupOp === "export" ? "Exporting…" : "Export to a folder…"}
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => void onExport()}
+            disabled={!desktop || busy || exportParts.length === 0 || !choice.protection}
+          >
+            {st.backupOp === "export" ? "Exporting…" : plaintext ? "Export unencrypted to a folder…" : "Export encrypted to a folder…"}
           </button>
         </span>
         {st.backupOp === "export" && <ProgressBar />}
         {st.lastExport && (
           <div data-testid="export-report" style={{ display: "flex", flexDirection: "column", gap: 4, borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
-            <span style={{ fontSize: 13, color: "var(--ok)" }}>Backup written and checked against its manifest.</span>
+            <span style={{ fontSize: 13, color: "var(--ok)" }}>
+              {st.lastExport.encrypted
+                ? "Encrypted backup written. Its contents were checked against the manifest before sealing."
+                : "Unencrypted backup written and checked against its manifest."}
+            </span>
             <span style={{ fontSize: 12.5 }}>Backed up {partList(st.lastExport.parts)}.</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)", wordBreak: "break-all" }}>{st.lastExport.folder}</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
@@ -161,15 +261,36 @@ export function StorageBackup({ store }: SurfaceProps) {
       <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
         <span className="eyebrow">Restore from a backup</span>
         <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-          Choose a citrate-backup folder. It&apos;s checked file by file against its manifest first; a backup that
-          doesn&apos;t match is refused and nothing changes. Restoring Memory keeps your current memory store beside the
+          Choose an encrypted backup file (and enter its passphrase) or a plain citrate-backup folder. It&apos;s checked
+          file by file against its manifest first; a wrong passphrase or a backup that doesn&apos;t match is refused and
+          nothing changes. Restoring Memory keeps your current memory store beside the
           restored one instead of deleting it. Restored files are pinned on this node (a local pin, no bond).
         </p>
-        <span>
+        <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => void onChooseSealed()} disabled={!desktop || busy}>
+            Choose an encrypted backup…
+          </button>
           <button className="btn btn-secondary btn-sm" onClick={() => void onChooseBackup()} disabled={!desktop || busy}>
-            {st.backupOp === "verify" ? "Checking…" : "Choose a backup folder…"}
+            {st.backupOp === "verify" && !sealedPath ? "Checking…" : "Choose a plain backup folder…"}
           </button>
         </span>
+        {sealedPath && (
+          <span data-testid="sealed-open" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", wordBreak: "break-all" }}>{sealedPath}</span>
+            <input
+              type="password"
+              aria-label="Passphrase of this backup"
+              placeholder="Passphrase"
+              value={restorePass}
+              autoComplete="current-password"
+              onChange={(e) => setRestorePass(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
+            <button className="btn btn-secondary btn-sm" onClick={() => void onOpenSealed()} disabled={busy || !restorePass}>
+              {st.backupOp === "verify" ? "Opening…" : "Open and check"}
+            </button>
+          </span>
+        )}
 
         {check && check.ok && (
           <div data-testid="restore-check-ok" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -183,7 +304,7 @@ export function StorageBackup({ store }: SurfaceProps) {
               <button
                 className="btn btn-primary btn-sm"
                 disabled={busy || restoreParts.length === 0}
-                onClick={() => void restoreBackup(check.folder, restoreParts)}
+                onClick={() => void restoreBackup(check.folder, restoreParts, sealedPath === check.folder ? restorePass : undefined)}
               >
                 {st.backupOp === "restore" ? "Restoring…" : "Restore " + restoreParts.map((p) => PART_LABEL[p]).join(" and ")}
               </button>
@@ -193,7 +314,11 @@ export function StorageBackup({ store }: SurfaceProps) {
 
         {check && !check.ok && (
           <div role="alert" data-testid="restore-check-refused" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, color: "var(--danger)" }}>Restore refused: this folder doesn&apos;t match its manifest.</span>
+            <span style={{ fontSize: 13, color: "var(--danger)" }}>
+              {check.problem && /passphrase/i.test(check.problem)
+                ? "Restore refused: that passphrase doesn't open this backup, or the file is damaged."
+                : "Restore refused: this backup doesn't match its manifest."}
+            </span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", wordBreak: "break-all" }}>{check.folder}</span>
             {check.problem && (
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)" }}>

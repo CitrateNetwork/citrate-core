@@ -2,7 +2,8 @@
 // restore (manifest mismatch). Rust does the work; these pin what the member is shown.
 import { describe, it, expect, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { StorageBackup, exportProtection } from "./StorageBackup";
+import { StorageBackup } from "./StorageBackup";
+import { exportProtection } from "./storageTruth";
 import { storageSlice } from "../shell/slices/storage";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";

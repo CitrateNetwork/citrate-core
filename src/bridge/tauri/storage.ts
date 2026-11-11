@@ -55,13 +55,16 @@ export const tauriStorage: StorageDomain = {
   pinParams() {
     return invoke<PinParams>("storage_pin_params");
   },
-  backupExport(dest, parts, onProgress) {
-    return withProgress(onProgress, () => invoke<BackupExportReport>("storage_backup_export", { dest, parts }));
+  backupExport(dest, parts, protection, onProgress) {
+    const args =
+      "plaintext" in protection ? { dest, parts, plaintext: true } : { dest, parts, passphrase: protection.passphrase };
+    return withProgress(onProgress, () => invoke<BackupExportReport>("storage_backup_export", args));
   },
-  backupVerify(folder) {
-    return invoke<BackupVerifyReport>("storage_backup_verify", { folder });
+  backupVerify(folder, passphrase) {
+    return invoke<BackupVerifyReport>("storage_backup_verify", passphrase ? { folder, passphrase } : { folder });
   },
-  backupRestore(folder, parts, onProgress) {
-    return withProgress(onProgress, () => invoke<BackupRestoreReport>("storage_backup_restore", { folder, parts }));
+  backupRestore(folder, parts, passphrase, onProgress) {
+    const args = passphrase ? { folder, parts, passphrase } : { folder, parts };
+    return withProgress(onProgress, () => invoke<BackupRestoreReport>("storage_backup_restore", args));
   },
 };
