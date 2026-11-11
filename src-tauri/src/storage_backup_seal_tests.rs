@@ -420,3 +420,88 @@ fn the_start_up_sweep_runs_in_app_setup_and_uses_the_command_staging_root() {
     let root_fn = &module[module.find("fn staging_root<").expect("staging_root")..];
     assert!(root_fn[..root_fn.find("\n}\n").unwrap()].contains("STAGING_DIR_NAME"));
 }
+
+// ---------------------------------------------------------------- the staging root itself (#629 P1)
+
+/// `<app>/backup-staging` replaced by a symlink to `elsewhere`, which holds dirs named like ours.
+#[cfg(unix)]
+fn linked_staging_root(tag: &str) -> (PathBuf, PathBuf) {
+    let app = tmp_dir(tag);
+    let elsewhere = app.join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("export-0000000000000000")).unwrap();
+    std::fs::write(elsewhere.join("export-0000000000000000/keep"), b"keep").unwrap();
+    std::fs::create_dir_all(elsewhere.join("open-1111111111111111")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, app.join(STAGING_DIR_NAME)).unwrap();
+    (app, elsewhere)
+}
+
+#[cfg(unix)]
+#[test]
+fn the_sweep_refuses_a_staging_root_that_is_a_symlink() {
+    let (app, elsewhere) = linked_staging_root("sto2-root-link-sweep");
+    let err = sweep_staging(&app).expect_err("a linked staging root is refused");
+    assert!(err.to_string().contains("staging folder"), "{err}");
+    assert!(elsewhere.join("export-0000000000000000/keep").exists(), "nothing deleted at the link target");
+    assert!(elsewhere.join("open-1111111111111111").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn export_and_open_refuse_a_staging_root_that_is_a_symlink() {
+    let s = export_sealed_both("sto2-root-link-ok");
+    let (app, elsewhere) = linked_staging_root("sto2-root-link-ops");
+    let root = app.join(STAGING_DIR_NAME);
+    let before: Vec<_> = std::fs::read_dir(&elsewhere).unwrap().map(|e| e.unwrap().file_name()).collect();
+
+    // Open (verify and restore) would write decrypted data into the staging root.
+    let v = verify_sealed_report(Path::new(&s.report.folder), PASS, &root);
+    assert!(!v.ok && v.problem.unwrap_or_default().contains("staging folder"));
+    let fresh = FakeKubo::new();
+    let mgr = files_manager(&s.root.join("other"), fresh.clone());
+    let r = restore_sealed(Path::new(&s.report.folder), PASS, &root, &[Part::Files], Some(&mgr), None, 1, &mut no_progress());
+    assert!(r.expect_err("restore refused").to_string().contains("staging folder"));
+    assert!(fresh.blobs.lock().unwrap().is_empty());
+
+    // Export would build the plain folder there.
+    let dest = app.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let kubo = FakeKubo::new();
+    kubo.put_pinned(b"x");
+    let mgr = files_manager(&app, kubo);
+    let e = export_sealed(&dest, &[Part::Files], Some(&mgr), None, 7, PASS, &root, &mut no_progress());
+    assert!(e.expect_err("export refused").to_string().contains("staging folder"));
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "nothing written to the destination");
+
+    let after: Vec<_> = std::fs::read_dir(&elsewhere).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(before.len(), after.len(), "nothing created at the link target");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_staging_root_that_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let app = tmp_dir("sto2-root-mode");
+    let root = app.join(STAGING_DIR_NAME);
+    std::fs::create_dir_all(root.join("export-2222222222222222")).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = sweep_staging(&app).expect_err("0755 refused");
+    assert!(err.to_string().contains("staging folder"), "{err}");
+    assert!(root.join("export-2222222222222222").exists());
+    let s = export_sealed_both("sto2-root-mode-ok");
+    let v = verify_sealed_report(Path::new(&s.report.folder), PASS, &root);
+    assert!(!v.ok && v.problem.unwrap_or_default().contains("staging folder"));
+}
+
+#[test]
+fn a_missing_staging_root_is_created_owner_only() {
+    let app = tmp_dir("sto2-root-create");
+    let root = app.join(STAGING_DIR_NAME);
+    let s = export_sealed_both("sto2-root-create-ok");
+    assert!(verify_sealed_report(Path::new(&s.report.folder), PASS, &root).ok);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::symlink_metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "created 0700, got {mode:o}");
+    }
+}
