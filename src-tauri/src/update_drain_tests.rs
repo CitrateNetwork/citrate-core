@@ -229,3 +229,25 @@ fn after_the_install_began_only_an_install_failure_releases_the_hold() {
     assert!(gate.held().is_none() && !imports.is_closed());
     assert!(!begun.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+/// #619: the refusal carries a stable code the webview matches, not prose.
+#[test]
+fn the_install_held_refusal_starts_with_its_code() {
+    let gate = SpawnGate::default();
+    let imports = crate::knowledge_import::ImportRegistry::default();
+    let begun = std::sync::atomic::AtomicBool::new(false);
+    gate.hold(HOLD_REASON);
+    mark_installing_with(&gate, &begun).expect("drained");
+    let e = cancel_with(&gate, &imports, &begun, false).unwrap_err();
+    assert!(e.starts_with(&format!("{INSTALL_HELD_CODE}: ")), "the refusal starts with its code");
+    assert_eq!(INSTALL_HELD_CODE, "install_held");
+}
+
+/// #619: the docs say the webview's `installFailed` is trusted (the app's own code), so the flag
+/// is not read as a guard against a hostile page.
+#[test]
+fn the_docs_say_install_failed_is_trusted_from_the_webview() {
+    let src = include_str!("update_drain.rs");
+    let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("not a guard against a hostile page"), "INSTALL_BEGUN / cancel_with say what the flag trusts");
+}

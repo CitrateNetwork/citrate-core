@@ -114,8 +114,14 @@ export interface DrainReport {
   tookMs: number;
 }
 
-/** #617 review: Rust's refusal of a plain cancel once the install began (update_drain INSTALL_HELD). */
-const INSTALL_HELD = /being installed or is installed/;
+/** #619: the code Rust's refusal of a plain cancel starts with once the install began
+ *  (update_drain INSTALL_HELD_CODE). Matched by code, never by its wording. */
+const INSTALL_HELD_CODE = "install_held";
+
+/** Whether an error from `update_prepare_cancel` is the install-held refusal. */
+export function isInstallHeld(message: string): boolean {
+  return new RegExp(`(^|:\\s*)${INSTALL_HELD_CODE}:`).test(message);
+}
 
 /** #614 review: how long the plugin's install may take before the member is told what to do. */
 export const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -301,13 +307,13 @@ export function useAppUpdate() {
   useEffect(() => {
     if (BRIDGE_MODE !== "tauri") return;
     // #614 review (P3): an earlier page's drain must not hold the services for the session.
-    // #617 review: once an install began Rust refuses this (INSTALL_HELD): the hold stays until
+    // #617 review: once an install began Rust refuses this (INSTALL_HELD_CODE): the hold stays until
     // the app quits, and this page shows the installed state instead of offering a restart.
     void import("../bridge/tauri/invoke")
       .then(({ invoke }) => invoke<void>("update_prepare_cancel", {}))
       .catch((e: unknown) => {
         const m = msgOf(e);
-        if (INSTALL_HELD.test(m)) patch({ status: "installed", error: "The update is installed. Please quit and reopen Citrate Core to finish it." });
+        if (isInstallHeld(m)) patch({ status: "installed", error: "The update is installed. Please quit and reopen Citrate Core to finish it." });
       });
   }, [patch]);
 

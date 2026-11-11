@@ -170,7 +170,7 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     const path = await import("node:path");
     const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
     // The mount cancel is a plain cancel (no installFailed): Rust refuses it after an install began.
-    expect(src).toMatch(/invoke<void>\("update_prepare_cancel", \{\}\)[\s\S]{0,200}INSTALL_HELD/);
+    expect(src).toMatch(/invoke<void>\("update_prepare_cancel", \{\}\)[\s\S]{0,200}isInstallHeld/);
     expect(src).toMatch(/beginInstall: \(\) => invoke<void>\("update_install_begin", \{\}\)/);
     expect(src).toMatch(/cancel: \(installFailed\?: boolean\) => invoke<void>\("update_prepare_cancel", \{ installFailed: installFailed \?\? null \}\)/);
   });
@@ -185,3 +185,24 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     expect(src).toMatch(/invoke<DrainReport>\("update_prepare"/);
   });
 });
+
+describe("#619: the install-held refusal is matched by its code", () => {
+  it("Rust and the webview agree on the code", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const ts = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
+    const rs = fs.readFileSync(path.resolve(__dirname, "../../src-tauri/src/update_drain.rs"), "utf8");
+    const code = /pub const INSTALL_HELD_CODE: &str = "([a-z_]+)";/.exec(rs)?.[1];
+    expect(code).toBe("install_held");
+    expect(ts).toContain(`const INSTALL_HELD_CODE = "${code}";`);
+    expect(ts).not.toMatch(/being installed or is installed/);
+  });
+
+  it("isInstallHeld matches the code prefix only", async () => {
+    const { isInstallHeld } = await import("./updater");
+    expect(isInstallHeld("install_held: an update is being installed")).toBe(true);
+    expect(isInstallHeld("Error: install_held: x")).toBe(true);
+    expect(isInstallHeld("an update is being installed or is installed")).toBe(false);
+  });
+});
+
