@@ -10,9 +10,10 @@
 //!   64-hex values (bare or `0x`, a short stable tag replaces them, so a block hash still lines
 //!   up), emails; then the D-11 vendor key prefixes. 40-hex addresses are kept.
 //! - [`LogPolicy::LifecycleOnly`] for the sidecars whose output can carry user content (Hermes,
-//!   memory, messaging, the chat and embedding models): only start, stop, listen, ready, version,
-//!   warning and error lines are written, cut at [`LIFECYCLE_LINE_CHARS`], and a line with a
-//!   payload field (`"prompt"`, `"content"`, `query:` and the like) is never written.
+//!   memory, messaging, the chat and embedding models) is an allowlist: only a line of lifecycle
+//!   words and technical tokens (numbers, addresses, paths, versions) is written, up to
+//!   [`LIFECYCLE_LINE_CHARS`]. An error, warning or traceback leaves a marker with its level and
+//!   length and no text from it; every other line is withheld.
 //! - What it cannot promise: free text printed with none of those shapes, and a key or seed
 //!   phrase printed with no key name in front of it, on a sidecar with the full policy.
 //!
@@ -96,46 +97,150 @@ pub const LIFECYCLE_LINE_CHARS: usize = 200;
 /// Lines queued for a sidecar's log writer.
 pub const LOG_QUEUE_LINES: usize = citrate_core_kit::sidecar_log::DEFAULT_QUEUE_LINES;
 
-/// Words that mark a lifecycle or error line (lowercase).
+/// The words an allowlisted lifecycle line may use besides technical tokens (lowercase).
 const LIFECYCLE_WORDS: &[&str] = &[
-    "error", "warn", "panic", "fatal", "fail", "exit", "listen", "start", "stop", "shutdown",
-    "ready", "version", "bind",
+    "listening",
+    "listen",
+    "starting",
+    "started",
+    "start",
+    "stopping",
+    "stopped",
+    "stop",
+    "shutting",
+    "shutdown",
+    "down",
+    "exiting",
+    "exited",
+    "exit",
+    "ready",
+    "loaded",
+    "loading",
+    "model",
+    "version",
+    "build",
+    "bound",
+    "bind",
+    "server",
+    "http",
+    "https",
+    "on",
+    "at",
+    "in",
+    "port",
+    "ms",
+    "s",
+    "with",
+    "threads",
+    "slots",
+    "api",
+    "ok",
+    "done",
+    "info",
+    "debug",
+    "main",
+    "up",
+    "healthy",
+    "health",
+    "embed",
+    "embedding",
+    "chat",
+    "hermes",
+    "memory",
+    "comms",
+    "agent",
+    "daemon",
+    "sidecar",
+    "relay",
+    "store",
+    "socket",
+    "llama",
+    "llama-server",
+    "and",
+    "of",
+    "to",
 ];
-/// Payload fields: a line carrying one is never kept for a content-bearing sidecar (lowercase).
-const PAYLOAD_MARKERS: &[&str] = &[
-    "\"prompt\"",
-    "\"content\"",
-    "\"messages\"",
-    "\"text\"",
-    "\"query\"",
-    "\"input\"",
-    "\"completion\"",
-    "prompt:",
-    "prompt=",
-    "content:",
-    "content=",
-    "query:",
-    "query=",
-    "preview:",
+/// At least one of these makes the line a lifecycle event.
+const LIFECYCLE_EVENTS: &[&str] = &[
+    "listening",
+    "starting",
+    "started",
+    "stopping",
+    "stopped",
+    "shutting",
+    "shutdown",
+    "exiting",
+    "exited",
+    "ready",
+    "loaded",
+    "loading",
+    "version",
+    "bound",
+    "healthy",
+];
+/// Error-level words: such a line leaves a marker with no text from it (lowercase).
+const ERROR_LEVELS: &[(&str, &str)] = &[
+    ("traceback", "traceback"),
+    ("panic", "error"),
+    ("fatal", "error"),
+    ("exception", "error"),
+    ("error", "error"),
+    ("warn", "warning"),
 ];
 
+/// A technical token: a number, address, path, version or `k=v`, with no quote or bracket.
+fn technical(tok: &str) -> bool {
+    !tok.is_empty()
+        && !tok.contains(['"', '\'', '{', '}', '[', ']', '(', ')', '`'])
+        && tok
+            .chars()
+            .any(|c| c.is_ascii_digit() || ".:/=_-<>".contains(c))
+}
+
+/// Whether `line` is an allowlisted lifecycle line: every word a lifecycle word or technical, at
+/// least one lifecycle event, and within [`LIFECYCLE_LINE_CHARS`].
+fn allowlisted(line: &str) -> bool {
+    if line.chars().count() > LIFECYCLE_LINE_CHARS {
+        return false;
+    }
+    let mut event = false;
+    for raw in line.split_whitespace() {
+        let tok = raw.trim_end_matches([':', ',', ';']);
+        let low = tok.to_ascii_lowercase();
+        if LIFECYCLE_EVENTS.contains(&low.as_str()) {
+            event = true;
+        }
+        if !(LIFECYCLE_WORDS.contains(&low.as_str()) || technical(tok)) {
+            return false;
+        }
+    }
+    event
+}
+
 /// What reaches the disk for one captured line: the redacted line, or `None` to withhold it.
+///
+/// [`LogPolicy::LifecycleOnly`] is an allowlist (#613 review round 3): only a line whose every word
+/// is a lifecycle word or technical is written. Any other line is withheld; one at an error level
+/// leaves `[withheld: <level> line, <n> chars, from a content-bearing sidecar]`, with no text from
+/// it, so free text, tracebacks, Python dicts and JSON bodies never reach the disk.
 pub fn disk_filter(line: &str, policy: LogPolicy) -> Option<String> {
     let red = crate::telemetry::redact_key_shapes(&crate::secret_shapes::redact(line));
     match policy {
         LogPolicy::Full => Some(red),
         LogPolicy::LifecycleOnly => {
-            let low = red.to_ascii_lowercase();
-            if PAYLOAD_MARKERS.iter().any(|m| low.contains(m))
-                || !LIFECYCLE_WORDS.iter().any(|w| low.contains(w))
-            {
-                return None;
-            }
-            if red.chars().count() <= LIFECYCLE_LINE_CHARS {
+            if allowlisted(&red) {
                 return Some(red);
             }
-            let cut: String = red.chars().take(LIFECYCLE_LINE_CHARS).collect();
-            Some(format!("{cut} [cut]"))
+            let low = line.to_ascii_lowercase();
+            ERROR_LEVELS
+                .iter()
+                .find(|(w, _)| low.contains(w))
+                .map(|(_, level)| {
+                    format!(
+                        "[withheld: {level} line, {} chars, from a content-bearing sidecar]",
+                        line.chars().count()
+                    )
+                })
         }
     }
 }
