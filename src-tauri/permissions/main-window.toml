@@ -381,6 +381,11 @@ commands.allow = [
   "update_prepare",
   "update_prepare_cancel",
   "update_install_begin",
+  # V60 SVC-2: the background service (onboarding step, Settings › Node).
+  "svc_status",
+  "svc_set_enabled",
+  "svc_power_set",
+  "svc_power_status",
   "diagnostics_logs_export",
   "store_catalog",
   "store_stage",

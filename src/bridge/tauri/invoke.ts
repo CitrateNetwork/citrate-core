@@ -80,6 +80,9 @@ const LONG: Record<string, number> = {
   hermes_stop: 45_000,
   // The terminal-commands switch restarts a running Hermes: a stop (~10 s grace) plus a start.
   hermes_terminal_set: 60_000,
+  // V60 SVC-2: turning the background service on writes and loads the unit, waits up to 15 s for
+  // it to answer, then hands the node over; off drains it (30 s exit wait, 45 s socket bound).
+  svc_set_enabled: 120_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
   hermes_session_open_cloud: 45_000,

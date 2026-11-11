@@ -5,6 +5,7 @@ import { TierPanel } from "./TierPanel";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { bridge } from "../bridge";
 import { AgentIdentityStep } from "./AgentIdentityStep";
+import { BackgroundServiceStep } from "../node/BackgroundServicePanel";
 import { ActivationTxPanel } from "./ActivationTxPanel";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
@@ -1129,6 +1130,9 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       <div className="mono" style={dataSrc}>
         Data sources — local node RPC · node-agent supervision API 127.0.0.1:19600
       </div>
+
+      {/* V60 SVC-2 (03 §3.5): "Keep your node running", on by default; off says the exact sentence. */}
+      <BackgroundServiceStep variant="setup" />
 
       {/* S6.5 — local model in-flow (BC-3). The local model runs independently of chain sync, so we
           do NOT make the member wait for a FULL sync to proceed: once the node is confirmed syncing

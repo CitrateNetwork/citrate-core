@@ -15,20 +15,21 @@
 //! `SMAppService` registration (macOS 13+) is not used: it needs the plist inside the bundle
 //! and an Objective-C call; the LaunchAgent file works on every supported macOS.
 
-// SVC-1 ships the units and the plan; their caller is SVC-2's `svc_set_enabled` (the member's
-// choice at setup and in Settings › Node), which removes this allow.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// The LaunchAgent label.
 pub const LAUNCH_AGENT_LABEL: &str = "ai.citrate.svc";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// The systemd user unit name.
 pub const SYSTEMD_UNIT: &str = "citrate-svc.service";
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PLIST_TEMPLATE: &str = include_str!("../svc/ai.citrate.svc.plist");
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const SYSTEMD_TEMPLATE: &str = include_str!("../svc/citrate-svc.service");
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// Escape text for an XML element.
 pub(crate) fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -45,6 +46,7 @@ pub(crate) fn xml_escape(s: &str) -> String {
     out
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// Quote a path as one systemd command-line word: double quotes, `\` and `"` escaped, `%`
 /// doubled (specifier) and `$` doubled (variable expansion).
 pub(crate) fn systemd_quote(s: &str) -> String {
@@ -78,6 +80,7 @@ fn check_path(p: &Path) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// The rendered LaunchAgent.
 pub fn render_plist(exe: &Path, log: &Path) -> Result<String, String> {
     let exe = check_path(exe)?;
@@ -87,6 +90,7 @@ pub fn render_plist(exe: &Path, log: &Path) -> Result<String, String> {
         .replace("{{LOG}}", &xml_escape(&log)))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// The rendered systemd user unit.
 pub fn render_systemd(exe: &Path) -> Result<String, String> {
     let exe = check_path(exe)?;
@@ -138,6 +142,7 @@ fn cmd(p: &str, a: &[&str]) -> (String, Vec<String>) {
     (p.to_string(), a.iter().map(|s| s.to_string()).collect())
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// The macOS plan for user `uid`.
 pub fn macos_plan(home: &Path, uid: u32, exe: &Path, log: &Path) -> Result<UnitPlan, String> {
     let unit_path = home
@@ -159,6 +164,7 @@ pub fn macos_plan(home: &Path, uid: u32, exe: &Path, log: &Path) -> Result<UnitP
     })
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// The Linux plan for `user`.
 pub fn linux_plan(config_home: &Path, user: &str, exe: &Path) -> Result<UnitPlan, String> {
     let unit_path = config_home.join("systemd/user").join(SYSTEMD_UNIT);
