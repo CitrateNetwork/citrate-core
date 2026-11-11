@@ -11,18 +11,28 @@
 //! it calls [`update_prepare`] **before** `install()`:
 //! 1. the app-wide spawn gate ([`citrate_core_kit::supervisor::SpawnGate::global`]) is held, so no
 //!    sidecar starts, restarts or is respawned from here on;
-//! 2. every sidecar is stopped through its owner (`shutdown_all_sidecars`: SIGTERM, grace, then
-//!    SIGKILL, so the node flushes its database and mem-mcp closes its store);
-//! 3. the services snapshot is read again, and the report says, per sidecar, what it was before
+//! 2. every sidecar is stopped through its owner (`shutdown_all_sidecars`). On macOS and Linux
+//!    that is SIGTERM, then SIGKILL after the stop grace; on Windows a hard kill. The node does not
+//!    handle SIGTERM yet (it waits on SIGINT), so it ends without its own shutdown path; its
+//!    RocksDB write-ahead log keeps the database consistent. A node SIGTERM handler is a chain
+//!    follow-up (CHAIN-INTEG);
+//! 3. the drain waits (up to [`EXIT_WAIT`]) until no supervisor under the gate has a live child.
+//!    An empty owner slot is not an exit: a member Stop in flight, or a monitor detached past its
+//!    join timeout, still has one. The children still running are reported as `stillExiting`;
+//! 4. the services snapshot is read again, and the report says, per sidecar, what it was before
 //!    and after. `allStopped` is true only when no sidecar is still supervised in a phase with a
-//!    process.
+//!    process and no child is still exiting.
 //!
 //! The webview installs only when `allStopped` is true. If it is false, or the install fails, it
-//! calls [`update_prepare_cancel`], which releases the gate. The sidecars stay stopped until they
-//! are started again (or the app restarts), and the member is told so.
+//! calls [`update_prepare_cancel`], which releases the gate and reopens knowledge imports (the
+//! drain closed them), so the memory daemon and imports can start again. The sidecars stay stopped
+//! until they are started again (or the app restarts), and the member is told so.
 use citrate_core_kit::supervisor::{Phase, SpawnGate};
 
 use crate::services::{ObservationKind, ServiceEntry, ServiceId, ServicesSnapshot};
+
+/// How long the drain waits for the stopped sidecars' children to exit.
+pub const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What a start refused during the drain reports.
 pub const HOLD_REASON: &str =
@@ -47,6 +57,8 @@ pub struct DrainedService {
 #[serde(rename_all = "camelCase")]
 pub struct DrainReport {
     pub all_stopped: bool,
+    /// Sidecars whose child had not exited when the drain stopped waiting.
+    pub still_exiting: Vec<String>,
     pub services: Vec<DrainedService>,
     pub took_ms: u64,
 }
@@ -74,17 +86,20 @@ fn is_stopped(e: &ServiceEntry) -> bool {
     }
 }
 
-/// Hold the gate, stop everything, and report. `read` is the services snapshot; `stop_all` the
-/// owners' stop paths; `elapsed_ms` the time it took (injected so the tests are exact).
+/// Hold the gate, stop everything, wait for the children to exit, and report. `read` is the
+/// services snapshot; `stop_all` the owners' stop paths; `wait_exit` the wait for real exits (the
+/// names still running); `elapsed_ms` the time it took (injected so the tests are exact).
 pub(crate) fn drain_with(
     gate: &SpawnGate,
     read: impl Fn() -> ServicesSnapshot,
     stop_all: impl FnOnce(),
+    wait_exit: impl FnOnce() -> Vec<String>,
     elapsed_ms: impl FnOnce() -> u64,
 ) -> DrainReport {
     gate.hold(HOLD_REASON);
     let before = read();
     stop_all();
+    let still_exiting = wait_exit();
     let after = read();
     let services: Vec<DrainedService> = after
         .services
@@ -101,7 +116,10 @@ pub(crate) fn drain_with(
         })
         .collect();
     DrainReport {
-        all_stopped: !services.is_empty() && services.iter().all(|s| s.stopped),
+        all_stopped: !services.is_empty()
+            && services.iter().all(|s| s.stopped)
+            && still_exiting.is_empty(),
+        still_exiting,
         services,
         took_ms: elapsed_ms(),
     }
@@ -120,17 +138,29 @@ pub async fn update_prepare(app_h: tauri::AppHandle) -> std::result::Result<Drai
             &SpawnGate::global(),
             || crate::services::services_snapshot_sync(&app_h),
             || crate::shutdown_all_sidecars(&app_h),
+            || SpawnGate::global().wait_until_no_children(EXIT_WAIT),
             || t0.elapsed().as_millis() as u64,
         ))
     })
     .await
 }
 
-/// **update_prepare_cancel** — the update was not installed: release the spawn gate so services
-/// can be started again. Nothing is restarted here. Data source: the app-wide spawn gate.
+/// Release the gate and reopen knowledge imports, which the drain's `shutdown_all_sidecars`
+/// closed (#614 review): without this, imports and the memory daemon stay refused until restart.
+pub(crate) fn cancel_with(gate: &SpawnGate, imports: &crate::knowledge_import::ImportRegistry) {
+    imports.reopen();
+    gate.release();
+}
+
+/// **update_prepare_cancel** — the update was not installed: release the spawn gate and reopen
+/// knowledge imports so services can be started again. Nothing is restarted here. Data source:
+/// the app-wide spawn gate and the knowledge-import registry.
 #[tauri::command]
 pub async fn update_prepare_cancel() -> std::result::Result<(), String> {
-    SpawnGate::global().release();
+    cancel_with(
+        &SpawnGate::global(),
+        &crate::knowledge_import::ImportRegistry::global(),
+    );
     Ok(())
 }
 

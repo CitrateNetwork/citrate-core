@@ -126,6 +126,37 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     expect(r.ok ? "" : r.error).toMatch(/did not stop/);
   });
 
+  it("#614 review: a rejected relaunch keeps the services stopped and says the update is installed", async () => {
+    const { calls, s } = steps({ relaunch: async () => { throw new Error("restart refused"); } });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "install", "relaunch"]);
+    expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/The update is installed.*quit and reopen Citrate Core.*restart refused/s) });
+  });
+
+  it("#614 review: an install that does not finish in time keeps the services stopped and says what to do", async () => {
+    const { calls, s } = steps({ install: () => new Promise<void>(() => undefined) });
+    const r = await applyStagedUpdate(s, { installTimeoutMs: 30 });
+    expect(calls).toEqual(["drain", "install"]);
+    expect(r).toEqual({ ok: false, keepStopped: true, error: expect.stringMatching(/did not finish installing.*Quit and reopen Citrate Core/s) });
+  });
+
+  it("#614 review: a drain that reports a child still exiting never installs", async () => {
+    const { calls, s } = steps({ drain: async () => ({ ...report(true), allStopped: false, stillExiting: ["citrate-node"] }) });
+    const r = await applyStagedUpdate(s);
+    expect(calls).toEqual(["drain", "cancel"]);
+    expect(r.ok ? "" : r.error).toMatch(/citrate-node is still exiting/);
+  });
+
+  it("#614 review: the hook releases a hold left by an earlier page, and shows a kept-stopped result as installed", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(BRIDGE_MODE !== "tauri"\) return;\s*\/\/ #614 review[^\n]*\n[^\n]*update_prepare_cancel/);
+    expect(src).toMatch(/r\.keepStopped \? "installed" : "error"/);
+    const banner = fs.readFileSync(path.resolve(__dirname, "UpdateBanner.tsx"), "utf8");
+    expect(banner).toMatch(/state\.status === "installed"/);
+  });
+
   it("the hook downloads with the plugin's download() and installs only from restart (source check)", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");

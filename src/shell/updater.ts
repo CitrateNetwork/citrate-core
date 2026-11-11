@@ -12,10 +12,13 @@
 //     critical patch, which only auto-*downloads*).
 //   - CORE-D6 (0.5.3): the update is installed only after the sidecars are
 //     drained. On the restart click: `update_prepare` (Rust update_drain.rs)
-//     holds every new sidecar start and stops every sidecar through its owner;
-//     only when it reports every one stopped does `install()` run, then the
-//     relaunch. If the drain is incomplete or the install fails, the hold is
-//     released (`update_prepare_cancel`) and the member is told why.
+//     holds every new sidecar start, stops every sidecar through its owner and
+//     waits for their children to exit; only when it reports every one stopped
+//     does `install()` run (bounded by INSTALL_TIMEOUT_MS), then the relaunch.
+//     If the drain is incomplete or the install fails, the hold is released
+//     (`update_prepare_cancel`) and the member is told why. If the install
+//     times out or the relaunch fails, the bundle may already be replaced: the
+//     hold stays and the banner asks the member to quit and reopen the app.
 //
 // The plugin modules are dynamically imported inside the Tauri-gated path so the
 // web bundle never eagerly loads Tauri internals.
@@ -34,6 +37,7 @@ export type UpdateStatus =
   | "downloading"
   | "ready" // downloaded + staged; awaiting an explicit restart
   | "installing" // CORE-D6: services drained, the update being installed, then the relaunch
+  | "installed" // #614 review: installed (or maybe installed) but not relaunched; quit and reopen
   | "error";
 
 export interface UpdateState {
@@ -104,9 +108,18 @@ type PluginUpdate = {
 /** CORE-D6: what `update_prepare` reports. Mirrors Rust `update_drain::DrainReport`. */
 export interface DrainReport {
   allStopped: boolean;
+  /** #614 review: sidecars whose child had not exited when the drain stopped waiting. */
+  stillExiting?: string[];
   services: { id: string; label: string; before: string; after: string; stopped: boolean }[];
   tookMs: number;
 }
+
+/** #614 review: how long the plugin's install may take before the member is told what to do. */
+export const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** The result of applying a downloaded update. `keepStopped`: the bundle may already be replaced,
+ *  so the services stay held and the member is asked to quit and reopen the app. */
+export type ApplyResult = { ok: true } | { ok: false; error: string; keepStopped?: boolean };
 
 /** CORE-D6: the steps of applying a downloaded update, injected so the order is testable. */
 export interface ApplySteps {
@@ -126,7 +139,7 @@ const msgOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * reports every sidecar stopped. Returns an error for the member on any refusal or failure,
  * after releasing the hold.
  */
-export async function applyStagedUpdate(steps: ApplySteps): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function applyStagedUpdate(steps: ApplySteps, opts: { installTimeoutMs?: number } = {}): Promise<ApplyResult> {
   let report: DrainReport;
   try {
     report = await steps.drain();
@@ -136,19 +149,39 @@ export async function applyStagedUpdate(steps: ApplySteps): Promise<{ ok: true }
   }
   if (!report.allStopped) {
     const left = report.services.filter((s) => !s.stopped).map((s) => `${s.label} (${s.after})`);
+    const exiting = (report.stillExiting ?? []).map((n) => `${n} is still exiting`);
     await steps.cancel().catch(() => undefined);
     return {
       ok: false,
-      error: `The update was not installed: ${left.join(", ") || "a service"} did not stop. Services stay stopped until you start them or restart the app.`,
+      error: `The update was not installed: ${[...left.map((l) => `${l} did not stop`), ...exiting].join(", ") || "a service did not stop"}. Services stay stopped until you start them or restart the app.`,
     };
   }
+  const limit = opts.installTimeoutMs ?? INSTALL_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((res) => {
+    timer = setTimeout(() => res("timeout"), limit);
+  });
   try {
-    await steps.install();
+    const done = await Promise.race([steps.install().then(() => "done" as const), timedOut]);
+    if (done === "timeout") {
+      // The bundle may be part-way replaced: never release the hold or restart sidecars from it.
+      return {
+        ok: false,
+        keepStopped: true,
+        error: `The update did not finish installing within ${Math.round(limit / 60000) || 1} min. Quit and reopen Citrate Core; if the old version opens, update again.`,
+      };
+    }
   } catch (e) {
     await steps.cancel().catch(() => undefined);
     return { ok: false, error: `The update could not be installed: ${msgOf(e)}. Services stay stopped until you start them or restart the app.` };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  await steps.relaunch();
+  try {
+    await steps.relaunch();
+  } catch (e) {
+    return { ok: false, keepStopped: true, error: `The update is installed. Please quit and reopen Citrate Core to finish it (the app could not restart itself: ${msgOf(e)}).` };
+  }
   return { ok: true };
 }
 
@@ -244,10 +277,18 @@ export function useAppUpdate() {
       install: () => update.install(),
       relaunch,
     });
-    if (!r.ok) patch({ status: "error", error: r.error });
+    if (!r.ok) patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
   }, [patch]);
 
   const dismiss = useCallback(() => patch({ dismissed: true }), [patch]);
+
+  // A fresh page has no install in flight: release a hold an earlier page left (it reloaded
+  // between the drain and the install or cancel). Nothing is restarted.
+  useEffect(() => {
+    if (BRIDGE_MODE !== "tauri") return;
+    // #614 review (P3): an earlier page's drain must not hold the services for the session.
+    void import("../bridge/tauri/invoke").then(({ invoke }) => invoke<void>("update_prepare_cancel", {})).catch(() => undefined);
+  }, []);
 
   // Auto-check on mount + interval (Tauri only).
   useEffect(() => {
