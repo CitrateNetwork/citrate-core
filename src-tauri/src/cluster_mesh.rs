@@ -202,6 +202,68 @@ pub async fn cluster_mesh_set_enabled(
 mod tests {
     use super::*;
 
+    /// V60 MESH-2 (F-C3): `TRANSPORT_SIGNED_OFF` follows the CL-S4 sign-off record, not an edit.
+    /// With the flag true, `release/signoffs/CL-S4.json` must exist and name the owner and the
+    /// security lead against a pinned packet; without the record, flipping the flag fails the build.
+    #[test]
+    fn signed_flag_requires_signoff_record() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(signoff::RECORD);
+        let record = std::fs::read_to_string(&path);
+        if TRANSPORT_SIGNED_OFF {
+            let text = record.unwrap_or_else(|_| {
+                panic!("TRANSPORT_SIGNED_OFF is true but {} is missing", path.display())
+            });
+            signoff::validate(&text).expect("the CL-S4 sign-off record is valid");
+        } else if let Ok(text) = record {
+            // A record may land before the flag flips; it must still be well formed.
+            signoff::validate(&text).expect("the CL-S4 sign-off record is valid");
+        }
+    }
+
+    #[test]
+    fn a_signoff_record_needs_the_owner_and_the_security_lead_on_a_pinned_packet() {
+        let good = serde_json::json!({
+            "wp": "CL-S4",
+            "packet": {
+                "repo": "CitrateNetwork/citrate-cluster",
+                "path": ".agentile/planset/CL-S4_SIGNOFF_PACKET.md",
+                "rev": "755cf217226094147e4e67909ab96ccbb5aeeb2a",
+                "sha256": "a".repeat(64),
+            },
+            "signers": [
+                { "role": "owner", "github": "SaulBuilds", "date": "2026-11-20" },
+                { "role": "security-lead", "github": "kurtatwork", "date": "2026-11-21" },
+            ],
+        });
+        assert!(signoff::validate(&good.to_string()).is_ok());
+
+        let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            signoff::validate(&v.to_string())
+        };
+        assert!(mutate(&|v| v["wp"] = "CL-S3".into()).is_err(), "another WP");
+        assert!(
+            mutate(&|v| v["packet"]["repo"] = "someone/else".into()).is_err(),
+            "another repo"
+        );
+        assert!(mutate(&|v| v["packet"]["rev"] = "main".into()).is_err(), "a branch, not a commit");
+        assert!(mutate(&|v| v["packet"]["sha256"] = "abc".into()).is_err(), "no packet digest");
+        assert!(
+            mutate(&|v| v["signers"] = serde_json::json!([v["signers"][0].clone()])).is_err(),
+            "the owner alone"
+        );
+        assert!(
+            mutate(&|v| v["signers"][1]["github"] = "SaulBuilds".into()).is_err(),
+            "one person in both roles"
+        );
+        assert!(
+            mutate(&|v| v["signers"][0]["date"] = "soon".into()).is_err(),
+            "a date that is not a date"
+        );
+        assert!(signoff::validate("not json").is_err());
+    }
+
     #[test]
     fn todays_build_changes_nothing_the_operator_env_or_off() {
         // The shipped constants: neither precondition is met (a tripwire: flipping either one is an
