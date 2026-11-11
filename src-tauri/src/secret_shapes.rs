@@ -812,6 +812,30 @@ pub(crate) fn test_corpus() -> Vec<(&'static str, String, String)> {
         ("joined by :", w12.join(":"), "abstract".to_string()),
         ("joined by ' - '", w12.join(" - "), "abstract".to_string()),
         ("joined by ' | '", w12.join(" | "), "abstract".to_string()),
+        // #619 (Matr0xshka, BerryManifold): a non-ASCII separator, a repeated filler token, and
+        // literal escape sequences (`{:?}` or JSON output).
+        (
+            "bullet separator",
+            w12.join(" \u{2022} "),
+            "abstract".to_string(),
+        ),
+        (
+            "middle-dot joined",
+            w12.join("\u{00b7}"),
+            "abstract".to_string(),
+        ),
+        (
+            "repeated filler token",
+            format!("{} x", w12.join(" x ")),
+            "abstract".to_string(),
+        ),
+        ("escaped newlines", w12.join("\\n"), "abstract".to_string()),
+        (
+            "escaped crlf in json",
+            format!("{{\"note\":\"{}\"}}", w12.join("\\r\\n")),
+            "abstract".to_string(),
+        ),
+        ("escaped tabs", w12.join("\\t"), "abstract".to_string()),
         (
             "24-word phrase, upper case",
             format!("restore {} {}", words.to_uppercase(), words.to_uppercase()),
