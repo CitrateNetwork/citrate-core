@@ -466,8 +466,8 @@ mod tests {
                 "wp": "CL-S4",
                 "packet": pk,
                 "signers": [
-                    signer("owner", "SaulBuilds", "2026-11-20", owner_sig_key),
-                    signer("security-lead", "kurtatwork", "2026-11-21", sec_sig_key),
+                    signer("owner", "example-owner", "2026-11-20", owner_sig_key),
+                    signer("security-lead", "example-security-lead", "2026-11-21", sec_sig_key),
                 ],
             })
         };
@@ -509,6 +509,27 @@ mod tests {
             "no security-lead registered"
         );
         assert!(signoff::verify(&good, &packet, "not json").is_err());
+        // Review P3 (#631, Matr0xshka): a role listed twice is refused, in the registry (a JSON
+        // object with a repeated key would otherwise keep only the last) and in the record.
+        let dup_registry = format!(
+            r#"{{"owner":"{}","security-lead":"{}","owner":"{}"}}"#,
+            addr(&owner_key),
+            addr(&sec_key),
+            addr(&other_key)
+        );
+        assert!(signoff::verify(&good, &packet, &dup_registry).is_err(), "owner registered twice");
+        let extra_role = serde_json::json!({
+            "owner": addr(&owner_key), "security-lead": addr(&sec_key), "auditor": addr(&other_key)
+        })
+        .to_string();
+        assert!(signoff::verify(&good, &packet, &extra_role).is_err(), "unknown role in registry");
+        let mut two_owners: serde_json::Value = serde_json::from_str(&good).expect("json");
+        let first = two_owners["signers"][0].clone();
+        two_owners["signers"].as_array_mut().expect("array").push(first);
+        assert!(
+            signoff::validate(&two_owners.to_string()).is_err(),
+            "two owner entries in the record"
+        );
     }
 
     #[test]
@@ -522,8 +543,8 @@ mod tests {
                 "sha256": "a".repeat(64),
             },
             "signers": [
-                { "role": "owner", "github": "SaulBuilds", "date": "2026-11-20", "sig": format!("0x{}", "ab".repeat(65)) },
-                { "role": "security-lead", "github": "kurtatwork", "date": "2026-11-21", "sig": format!("0x{}", "cd".repeat(65)) },
+                { "role": "owner", "github": "example-owner", "date": "2026-11-20", "sig": format!("0x{}", "ab".repeat(65)) },
+                { "role": "security-lead", "github": "example-security-lead", "date": "2026-11-21", "sig": format!("0x{}", "cd".repeat(65)) },
             ],
         });
         assert!(signoff::validate(&good.to_string()).is_ok());
@@ -551,7 +572,7 @@ mod tests {
             "the owner alone"
         );
         assert!(
-            mutate(&|v| v["signers"][1]["github"] = "SaulBuilds".into()).is_err(),
+            mutate(&|v| v["signers"][1]["github"] = "example-owner".into()).is_err(),
             "one person in both roles"
         );
         assert!(
