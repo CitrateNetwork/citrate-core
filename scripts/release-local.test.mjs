@@ -38,7 +38,7 @@ describe("release-local.sh arguments (--check-args)", () => {
   it("a real release takes the app's own version and is the latest release", () => {
     const r = run(["--version", conf.version, ...linux()]);
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toMatch(new RegExp(`tag v${conf.version.replace(/\./g, "\\.")}, latest release`));
+    expect(r.out).toContain(`tag v${conf.version}, latest release`);
   });
 
   it("a rehearsal takes a throwaway version and an app, and is a draft prerelease", () => {
@@ -115,3 +115,86 @@ describe("release-local.sh source", () => {
     expect(at("repos/$REPO_SLUG/commits/$TARGET_SHA")).toBeLessThan(at("notarytool submit"));
   });
 });
+
+// #633 review (BerryManifold P1): the DMG is the one named for this version, never "the first".
+describe("release-local.sh --select-dmg (the DMG the build made for this version)", () => {
+  const sel = (bundle, version) => spawnSync("bash", [script, "--select-dmg", bundle, "--version", version], { encoding: "utf8" });
+  const dmgDir = () => {
+    const d = path.join(dir, "bundle", "dmg");
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  };
+
+  it("takes exactly <productName>_<version>_aarch64.dmg", () => {
+    const d = dmgDir();
+    fs.writeFileSync(path.join(d, `${conf.productName}_9.9.9_aarch64.dmg`), "new");
+    const r = sel(path.join(dir, "bundle"), "9.9.9");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe(path.join(d, `${conf.productName}_9.9.9_aarch64.dmg`));
+  });
+
+  it("refuses when an older DMG is still there (it sorts first and would ship)", () => {
+    const d = dmgDir();
+    fs.writeFileSync(path.join(d, `${conf.productName}_0.5.2_aarch64.dmg`), "stale");
+    fs.writeFileSync(path.join(d, `${conf.productName}_9.9.9_aarch64.dmg`), "new");
+    const r = sel(path.join(dir, "bundle"), "9.9.9");
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/other DMG.*0\.5\.2/);
+  });
+
+  it("refuses when the DMG for this version is missing", () => {
+    const d = dmgDir();
+    fs.writeFileSync(path.join(d, `${conf.productName}_0.5.2_aarch64.dmg`), "stale");
+    const r = sel(path.join(dir, "bundle"), "9.9.9");
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/no .*_9\.9\.9_aarch64\.dmg/);
+  });
+});
+
+// #633 review: the money-path guards.
+describe("release-local.sh release guards (source)", () => {
+  const raw = fs.readFileSync(script, "utf8");
+  const src = raw.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+  const at = (s) => {
+    const i = src.indexOf(s);
+    expect(i, s).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it("checks the version in the app and in the app inside the DMG before notarizing", () => {
+    expect(src).toContain("plutil -extract CFBundleShortVersionString raw");
+    expect(src).toContain("hdiutil attach -nobrowse -readonly");
+    expect(at("check_app_version \"$APP\"")).toBeLessThan(at("notarytool submit"));
+    expect(at("check_dmg_version")).toBeLessThan(at("notarytool submit"));
+  });
+
+  it("gives the updater key only to the signing step, after the build", () => {
+    expect(src).not.toMatch(/^export TAURI_SIGNING_PRIVATE_KEY/m);
+    expect(at("TAURI_SIGNING_PRIVATE_KEY=")).toBeGreaterThan(at("tauri build"));
+    expect(src).toMatch(/createUpdaterArtifacts":false/);
+  });
+
+  it("pins the updater public key to the one 0.5.2 installs trust", () => {
+    const v052 = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQzM4MkREMTA3RjA4QzUKUldURkNIOFEzWUxEanZsN096Vk1WWm9WMllUUE5GNXVUYVFYeGRQNFluRnVlVG5vWVZnV0F6eXAK";
+    expect(src).toContain(`V052_UPDATER_PUBKEY="${v052}"`);
+    expect(conf.plugins.updater.pubkey).toBe(v052);
+    expect(at("V052_UPDATER_PUBKEY\" ]")).toBeLessThan(at("notarytool submit"));
+  });
+
+  it("verifies the read-back by sha256 digest against SHA256SUMS", () => {
+    expect(src).toMatch(/\.digest/);
+    expect(src).toMatch(/sha256:\$/);
+  });
+
+  it("creates the real release as a draft, verifies it, and only then makes it latest", () => {
+    const create = at("--draft --latest=false \\\n    --target \"$TARGET_SHA\" --title \"Citrate Core $VERSION\"");
+    const verify = at("the release holds every asset");
+    const flip = at("gh release edit \"$TAG\" --repo \"$REPO_SLUG\" --draft=false --latest");
+    const anon = at("releases/latest/download/latest.json");
+    expect(create).toBeLessThan(verify);
+    expect(verify).toBeLessThan(flip);
+    expect(flip).toBeLessThan(anon);
+    expect(src.match(/--draft=false/g)).toHaveLength(1);
+  });
+});
+
