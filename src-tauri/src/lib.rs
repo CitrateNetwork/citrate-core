@@ -1113,6 +1113,7 @@ pub fn run() {
             // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
             update_drain::update_prepare,
             update_drain::update_prepare_cancel,
+            update_drain::update_install_begin,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call

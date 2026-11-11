@@ -114,6 +114,9 @@ export interface DrainReport {
   tookMs: number;
 }
 
+/** #617 review: Rust's refusal of a plain cancel once the install began (update_drain INSTALL_HELD). */
+const INSTALL_HELD = /being installed or is installed/;
+
 /** #614 review: how long the plugin's install may take before the member is told what to do. */
 export const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -125,8 +128,12 @@ export type ApplyResult = { ok: true } | { ok: false; error: string; keepStopped
 export interface ApplySteps {
   /** Hold new sidecar starts and stop every sidecar (`update_prepare`). */
   drain: () => Promise<DrainReport>;
-  /** Release the hold (`update_prepare_cancel`); the sidecars stay stopped. */
-  cancel: () => Promise<void>;
+  /** Release the hold (`update_prepare_cancel`); the sidecars stay stopped. `installFailed`: the
+   *  install itself failed (the only release Rust accepts once the install began). */
+  cancel: (installFailed?: boolean) => Promise<void>;
+  /** #617 review: mark the install begun (`update_install_begin`); refused unless drained. From
+   *  then on a reloaded page cannot release the hold. */
+  beginInstall: () => Promise<void>;
   /** The plugin's install of the downloaded bytes (on Windows it starts the installer and exits). */
   install: () => Promise<void>;
   relaunch: () => Promise<void>;
@@ -156,6 +163,12 @@ export async function applyStagedUpdate(steps: ApplySteps, opts: { installTimeou
       error: `The update was not installed: ${[...left.map((l) => `${l} did not stop`), ...exiting].join(", ") || "a service did not stop"}. Services stay stopped until you start them or restart the app.`,
     };
   }
+  try {
+    await steps.beginInstall();
+  } catch (e) {
+    await steps.cancel().catch(() => undefined);
+    return { ok: false, error: `The update was not installed: ${msgOf(e)}. Services stay stopped until you start them or restart the app.` };
+  }
   const limit = opts.installTimeoutMs ?? INSTALL_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<"timeout">((res) => {
@@ -172,7 +185,7 @@ export async function applyStagedUpdate(steps: ApplySteps, opts: { installTimeou
       };
     }
   } catch (e) {
-    await steps.cancel().catch(() => undefined);
+    await steps.cancel(true).catch(() => undefined);
     return { ok: false, error: `The update could not be installed: ${msgOf(e)}. Services stay stopped until you start them or restart the app.` };
   } finally {
     if (timer) clearTimeout(timer);
@@ -273,7 +286,8 @@ export function useAppUpdate() {
     const r = await applyStagedUpdate({
       // Each sidecar may take its full stop grace; the drain gets three minutes.
       drain: () => invoke<DrainReport>("update_prepare", {}, 180_000),
-      cancel: () => invoke<void>("update_prepare_cancel", {}),
+      cancel: (installFailed?: boolean) => invoke<void>("update_prepare_cancel", { installFailed: installFailed ?? null }),
+      beginInstall: () => invoke<void>("update_install_begin", {}),
       install: () => update.install(),
       relaunch,
     });
@@ -287,8 +301,15 @@ export function useAppUpdate() {
   useEffect(() => {
     if (BRIDGE_MODE !== "tauri") return;
     // #614 review (P3): an earlier page's drain must not hold the services for the session.
-    void import("../bridge/tauri/invoke").then(({ invoke }) => invoke<void>("update_prepare_cancel", {})).catch(() => undefined);
-  }, []);
+    // #617 review: once an install began Rust refuses this (INSTALL_HELD): the hold stays until
+    // the app quits, and this page shows the installed state instead of offering a restart.
+    void import("../bridge/tauri/invoke")
+      .then(({ invoke }) => invoke<void>("update_prepare_cancel", {}))
+      .catch((e: unknown) => {
+        const m = msgOf(e);
+        if (INSTALL_HELD.test(m)) patch({ status: "installed", error: "The update is installed. Please quit and reopen Citrate Core to finish it." });
+      });
+  }, [patch]);
 
   // Auto-check on mount + interval (Tauri only).
   useEffect(() => {

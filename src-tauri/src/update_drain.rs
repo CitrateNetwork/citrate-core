@@ -147,21 +147,69 @@ pub async fn update_prepare(app_h: tauri::AppHandle) -> std::result::Result<Drai
 
 /// Release the gate and reopen knowledge imports, which the drain's `shutdown_all_sidecars`
 /// closed (#614 review): without this, imports and the memory daemon stay refused until restart.
-pub(crate) fn cancel_with(gate: &SpawnGate, imports: &crate::knowledge_import::ImportRegistry) {
+/// #617 review: set once the plugin's install may have started replacing the bundle. From then on
+/// only the install's own failure releases the hold; a plain cancel (a reloaded page) is refused,
+/// so no sidecar (the node's autostart included) can start from a half-replaced bundle before the
+/// app quits.
+pub(crate) static INSTALL_BEGUN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// What a refused cancel says (the webview shows the installed state on it).
+pub const INSTALL_HELD: &str =
+    "an update is being installed or is installed; services stay stopped until you quit and reopen Citrate Core";
+
+/// Mark the install begun. Refused unless the drain holds the gate.
+pub(crate) fn mark_installing_with(
+    gate: &SpawnGate,
+    begun: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    if gate.held().is_none() {
+        return Err("the services were not drained (not drained); drain before installing".into());
+    }
+    begun.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// Release the gate and reopen knowledge imports, which the drain's `shutdown_all_sidecars`
+/// closed (#614 review): without this, imports and the memory daemon stay refused until restart.
+/// After the install began, only `install_failed` releases them (#617 review).
+pub(crate) fn cancel_with(
+    gate: &SpawnGate,
+    imports: &crate::knowledge_import::ImportRegistry,
+    begun: &std::sync::atomic::AtomicBool,
+    install_failed: bool,
+) -> Result<(), String> {
+    if begun.load(std::sync::atomic::Ordering::SeqCst) && !install_failed {
+        return Err(INSTALL_HELD.to_string());
+    }
+    begun.store(false, std::sync::atomic::Ordering::SeqCst);
     imports.reopen();
     gate.release();
+    Ok(())
+}
+
+/// **update_install_begin** — the webview is about to call the plugin's install: from here a plain
+/// cancel keeps the hold until the app quits. Refused unless the services were drained.
+/// Data source: the app-wide spawn gate.
+#[tauri::command]
+pub async fn update_install_begin() -> std::result::Result<(), String> {
+    mark_installing_with(&SpawnGate::global(), &INSTALL_BEGUN)
 }
 
 /// **update_prepare_cancel** — the update was not installed: release the spawn gate and reopen
-/// knowledge imports so services can be started again. Nothing is restarted here. Data source:
-/// the app-wide spawn gate and the knowledge-import registry.
+/// knowledge imports so services can be started again. Nothing is restarted here. Once the
+/// install began, refused (the hold stays until the app quits) unless `install_failed`.
+/// Data source: the app-wide spawn gate and the knowledge-import registry.
 #[tauri::command]
-pub async fn update_prepare_cancel() -> std::result::Result<(), String> {
+pub async fn update_prepare_cancel(
+    install_failed: Option<bool>,
+) -> std::result::Result<(), String> {
     cancel_with(
         &SpawnGate::global(),
         &crate::knowledge_import::ImportRegistry::global(),
-    );
-    Ok(())
+        &INSTALL_BEGUN,
+        install_failed.unwrap_or(false),
+    )
 }
 
 #[cfg(test)]
