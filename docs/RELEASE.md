@@ -425,14 +425,22 @@ and the Linux update files are built (docs/RELEASE_LINUX.md):
 ```sh
 # the four Linux files in one folder: Citrate-Core-linux-{x86_64,aarch64}.{AppImage,deb}
 scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir>            # build and verify, publish nothing
-scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir> --publish  # then gh release create v0.5.3 --latest
+scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir> --publish  # draft release, verify, then latest
 ```
 
 It refuses to start below 25 GiB free, without the Developer ID identity, the `citrate` notary
 profile, the v2 updater key and its keychain passphrase, or when GitHub does not have the release
-commit. The update tarball is made from the stapled app, and every `.sig` is verified with
-`minisign` against the key pinned in `tauri.conf.json`. After publishing it reads the fallback feed
-anonymously and fetches every URL it names. It never runs the built app.
+commit, or when the updater pubkey in `tauri.conf.json` is not the one 0.5.2 installs pin (the
+script carries that key as `V052_UPDATER_PUBKEY`). It takes the DMG by its exact name
+(`<productName>_<version>_aarch64.dmg`) and refuses if any other DMG is in the bundle folder, and
+before notarizing it checks `CFBundleShortVersionString` of the app and of the app inside the DMG
+(attached read-only) against `--version`. The build makes no updater artifacts and never sees the
+updater key; the key is in the environment only of the signing step. The update tarball is made from
+the stapled app, and every `.sig` is verified with `minisign` against the pinned key. With
+`--publish` it creates the release as a **draft**, checks that every asset's sha256 on GitHub
+matches `SHA256SUMS` (and `SHA256SUMS` itself), and only then publishes it as latest
+(`gh release edit --draft=false --latest`). Then it reads the fallback feed anonymously and fetches
+every URL it names. It never runs the built app.
 
 **Rehearsal** (no release): `--rehearsal --version <throwaway x.y.z> --app <any .app>` codesigns
 and notarizes that app for real, signs with the real key and creates only a **draft prerelease**

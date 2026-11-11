@@ -80,8 +80,9 @@ describe("release-local.sh source", () => {
     expect(src.match(/gh release create/g)).toHaveLength(2);
   });
 
-  it("the real release is --latest and is checked anonymously through the fallback feed 0.5.2 reads", () => {
-    expect(src).toMatch(/--repo "\$REPO_SLUG" --latest \\\n/);
+  it("the real release becomes latest only by the post-verify flip, and is checked anonymously through the fallback feed 0.5.2 reads", () => {
+    expect(src).not.toMatch(/gh release create[^\n]*--latest \\\n/);
+    expect(src).toContain('gh release edit "$TAG" --repo "$REPO_SLUG" --draft=false --latest');
     expect(src).toContain("releases/latest/download/latest.json");
   });
 
@@ -95,7 +96,9 @@ describe("release-local.sh source", () => {
 
   it("verifies every signature against the pinned updater key, and points latest.json at the release", () => {
     expect(src).toMatch(/minisign -V -q -P "\$PUBKEY"/);
-    expect(src).toContain('["plugins"]["updater"]["pubkey"]');
+    expect(src).toContain("['plugins']['updater']['pubkey']");
+    expect(src).toContain('base64.b64decode(sys.argv[1])');
+    expect(src).toContain('"$V052_UPDATER_PUBKEY")"');
     expect(src).toContain('BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"');
     for (const p of ["darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"]) expect(src).toContain(p);
   });

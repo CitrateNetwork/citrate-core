@@ -64,7 +64,7 @@ This replaces the hosting part of decision 2 and section 3's steps 3 and 4 for 0
   the repository's **latest, non-prerelease** release.
 - One command does it: `scripts/release-local.sh` (build, sign, notarize, staple, update files,
   `tauri signer sign`, signatures verified against the pinned key, `latest.json` for the five
-  platforms, `SHA256SUMS`, `gh release create v0.5.3 --latest`, then the anonymous check of the
+  platforms, `SHA256SUMS`, the release created as a draft, every asset checked by sha256 against `SHA256SUMS`, only then published as latest, then the anonymous check of the
   fallback feed and every update file). Runbook: [RELEASE.md](../RELEASE.md#the-local-release-script-053).
 
 ## 3. The release steps (approved plan, before 2026-11-11)
