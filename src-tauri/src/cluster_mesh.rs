@@ -413,6 +413,30 @@ mod tests {
         }
     }
 
+    /// Review follow-up (#631, BerryManifold): the sign-off files are code-owned by the owner, so a
+    /// PR that changes the signer registry and the record together still needs the owner's review
+    /// (main requires code-owner reviews). GitHub accepts ANY one listed owner per path, so listing
+    /// a second owner here would not require both; the second person is the record's own signature.
+    #[test]
+    fn the_signoff_files_are_code_owned_by_the_owner() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/CODEOWNERS");
+        let text = std::fs::read_to_string(path).expect(".github/CODEOWNERS");
+        // The LAST matching pattern wins in CODEOWNERS, so the rule must come after `*`.
+        let rules: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let star = rules.iter().rposition(|l| l.starts_with("* "));
+        let signoffs = rules
+            .iter()
+            .rposition(|l| l.split_whitespace().next() == Some("/release/signoffs/"))
+            .expect("a /release/signoffs/ rule");
+        assert!(star.is_none_or(|s| s < signoffs), "the rule must come after `*`");
+        let owners: Vec<&str> = rules[signoffs].split_whitespace().skip(1).collect();
+        assert_eq!(owners, vec!["@SaulBuilds"], "owned by the owner alone");
+    }
+
     /// Review P2 (#631): signatures and the packet digest are checked, not just their format.
     #[test]
     fn a_signoff_record_verifies_only_with_registered_signers_and_the_signed_packet() {
