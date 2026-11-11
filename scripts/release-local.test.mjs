@@ -171,6 +171,25 @@ describe("release-local.sh release guards (source)", () => {
     expect(at("check_dmg_version")).toBeLessThan(at("notarytool submit"));
   });
 
+  it("a rehearsal checks against the version its app was built with, not the throwaway tag version", () => {
+    // A rehearsal of an app built from this tree (0.5.3) uses a throwaway --version, so comparing the
+    // app with --version would always refuse it. The check stays; its expected value differs.
+    expect(src).toContain('APP_VERSION="$VERSION"');
+    const read = at('APP_VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"');
+    expect(read).toBeGreaterThan(at("rehearsal: codesigning the given app"));
+    expect(read).toBeLessThan(at('cp -R "$APP" "$WORK/$APP_NAME"'));
+    expect(src).toContain('[ "$v" = "$APP_VERSION" ]');
+    expect(src).not.toContain('[ "$v" = "$VERSION" ]');
+    expect(src).toContain('is not version $APP_VERSION"');
+  });
+
+  it("a rehearsal cleanup deletes the draft without a tag cleanup (a draft has no tag) and checks it is gone", () => {
+    expect(src).toContain('gh release delete "$TAG" --repo "$REPO_SLUG" --yes\n');
+    expect(src).not.toContain("--cleanup-tag");
+    expect(at('gh release delete "$TAG"')).toBeLessThan(at('rehearsal draft $TAG deleted'));
+    expect(src).toMatch(/gh release view "\$TAG" --repo "\$REPO_SLUG" >\/dev\/null 2>&1; then die "the rehearsal draft \$TAG is still there"/);
+  });
+
   it("gives the updater key only to the signing step, after the build", () => {
     expect(src).not.toMatch(/^export TAURI_SIGNING_PRIVATE_KEY/m);
     expect(at("TAURI_SIGNING_PRIVATE_KEY=")).toBeGreaterThan(at("tauri build"));
