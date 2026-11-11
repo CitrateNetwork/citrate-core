@@ -211,14 +211,40 @@ const LIFECYCLE_KEYS: &[&str] = &[
     "batch",
 ];
 
+/// A token that reads as text (round 5 P3): a path under a home folder, or three or more
+/// letter-only segments joined by `-` or `.` (`call-mom-about-the-biopsy`).
+fn free_text(tok: &str) -> bool {
+    let low = tok.to_ascii_lowercase();
+    if low.starts_with("/users/")
+        || low.starts_with("/home/")
+        || low.starts_with("~/")
+        || low.starts_with("~\\")
+        || low.contains(":\\users\\")
+        || low.contains("/users/")
+        || low.contains("/home/")
+    {
+        return true;
+    }
+    tok.split(['/', '\\']).any(|part| {
+        let segs: Vec<&str> = part.split(['-', '.']).collect();
+        segs.len() >= 3
+            && segs
+                .iter()
+                .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic()))
+    })
+}
+
 /// A technical token: a number, address, path or version, or `k=v` with a lifecycle key, with no
 /// quote or bracket.
 fn technical(tok: &str) -> bool {
     if tok.is_empty() || tok.contains(['"', '\'', '{', '}', '[', ']', '(', ')', '`']) {
         return false;
     }
-    if let Some((k, _)) = tok.split_once('=') {
-        return LIFECYCLE_KEYS.contains(&k.to_ascii_lowercase().as_str());
+    if free_text(tok) {
+        return false;
+    }
+    if let Some((k, v)) = tok.split_once('=') {
+        return LIFECYCLE_KEYS.contains(&k.to_ascii_lowercase().as_str()) && !free_text(v);
     }
     tok.chars()
         .any(|c| c.is_ascii_digit() || ".:/_-<>".contains(c))
