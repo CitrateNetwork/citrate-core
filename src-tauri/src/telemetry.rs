@@ -16,7 +16,7 @@ use std::path::Path;
 pub(crate) const TELEMETRY_INGEST_URL: &str = "https://telemetry.citrate.ai/report";
 
 /// The local crash file the panic hook appends to (under the app data dir).
-const CRASH_FILE: &str = "diagnostics/last-panic.log";
+pub(crate) const CRASH_FILE: &str = "diagnostics/last-panic.log";
 
 // --------------------------------------------------------------------------
 // WP-T.3 — scrub (pure). Best-effort PII strip; over-redaction is safe (Rule 1).
@@ -137,9 +137,15 @@ pub(crate) fn has_vendor_key_shape(s: &str) -> bool {
     find_key_shape(s, VENDOR_KEY_PREFIXES).is_some()
 }
 
+/// Whether `s` carries any key shape [`redact_key_shapes`] removes (every prefix, including the
+/// proxy's route token). The diagnostics bundle's final check (CORE-D5).
+pub(crate) fn has_key_shape(s: &str) -> bool {
+    find_key_shape(s, KEY_PREFIXES).is_some()
+}
+
 /// Redact a key-shaped run wherever it sits in a line (`key=…`, `"x-api-key":"…"`, `Bearer …`):
 /// a known prefix at a word boundary followed by at least 12 more key characters.
-fn redact_key_shapes(s: &str) -> String {
+pub(crate) fn redact_key_shapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev: Option<char> = None;
     let mut i = 0;

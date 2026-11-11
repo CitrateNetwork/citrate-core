@@ -170,6 +170,10 @@ mod seam;
 mod serve;
 mod serve_plan;
 mod services;
+// CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
+mod sidecar_logs;
+// #613 review: the secret shapes kept off the disk and out of the diagnostics bundle.
+mod secret_shapes;
 mod shell;
 mod skill_registry;
 mod skills_local;
@@ -370,6 +374,10 @@ pub fn run() {
             // or when it commits to another chain id). Transaction sends additionally check the
             // RPC's chain id and block-0 hash against the profile before broadcasting.
             network_profile::install_network_gate();
+            // CORE-D5: the sidecar log folder is set before any sidecar can start.
+            if let Ok(dir) = app.path().app_log_dir() {
+                sidecar_logs::init(&dir);
+            }
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
             // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,
@@ -1105,6 +1113,8 @@ pub fn run() {
             // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
             update_drain::update_prepare,
             update_drain::update_prepare_cancel,
+            // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
+            sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,

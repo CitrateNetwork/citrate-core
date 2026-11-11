@@ -23,6 +23,9 @@
 //   sidecar its state, retry counters, last crash, the slow retry after Failed (CORE-D3), the node's
 //   liveness note (CORE-D2) and the last lines its supervisor captured, scrubbed in Rust. Alerts
 //   (CORE-D3, the `sidecars://alert` event) show as a banner while the tab is open.
+// - Log files (CORE-D5): each health row names its sidecar's log file on disk (from the same read)
+//   and says when lines could not be written. "Save diagnostics bundle" writes the scrubbed bundle
+//   (`diagnostics_logs_export`, Rust `sidecar_logs.rs`) to a file the member picks; nothing is sent.
 // =====================================================================
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -30,7 +33,7 @@ import type { Store } from "../shell/store";
 import { bridge, isUnavailable } from "../bridge";
 import { startRuntime, stopRuntime } from "../shell/slices/agent";
 import { sidecarAlertText, untilText } from "../shell/sidecarAlert";
-import type { ServiceEntry, ServiceId, ServicePhase, ServiceReadiness, ServicesSnapshot, SidecarAlert, SidecarHealth, SidecarsHealth } from "../bridge/domains";
+import type { DiagnosticsExport, ServiceEntry, ServiceId, ServicePhase, ServiceReadiness, ServicesSnapshot, SidecarAlert, SidecarHealth, SidecarsHealth } from "../bridge/domains";
 
 /** How often the tab re-reads the snapshot while it is open. */
 const POLL_MS = 2000;
@@ -358,6 +361,12 @@ function HealthRow({ h, takenAt }: { h: SidecarHealth; takenAt: number }) {
           {h.note}
         </span>
       )}
+      {observedRow && h.logFile && (
+        <span data-testid="health-logfile" className="mono" style={mono}>
+          Log file: {h.logFile.path}
+          {h.logFile.writeFailures > 0 ? ` · ${h.logFile.writeFailures} line${h.logFile.writeFailures === 1 ? "" : "s"} could not be written${h.logFile.lastError ? ` (${h.logFile.lastError})` : ""}` : ""}
+        </span>
+      )}
       {observedRow && (
         <details>
           <summary className="mono" style={{ ...mono, cursor: "pointer" }}>
@@ -405,6 +414,55 @@ export function SidecarsHealthView({ health, error, alerts }: { health: Sidecars
       </div>
     </div>
   );
+}
+
+/** The words for a finished diagnostics export (CORE-D5). */
+export function exportText(r: DiagnosticsExport): string {
+  const kb = Math.max(1, Math.round(r.bytes / 1024));
+  const who = r.sidecars.length ? `${r.logLines} log lines from ${r.sidecars.join(", ")}` : "no sidecar logs yet";
+  return `Saved ${r.path} (${kb} KB, ${who}). Read it before you share it: the scrub is best-effort (home folder, addresses, hashes, emails, tokens, passwords and key-shaped text are redacted; model, memory, messaging and Hermes logs keep only start, stop and error lines). Nothing was sent.`;
+}
+
+/** "Save diagnostics bundle": pick a file, then core writes the scrubbed bundle there. */
+export function DiagnosticsExportBar({ pickPath, exportTo }: { pickPath: () => Promise<string | null>; exportTo: (path: string) => Promise<DiagnosticsExport> }) {
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<{ ok: boolean; text: string } | null>(null);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const path = await pickPath();
+      if (!path) {
+        setOut(null);
+        return;
+      }
+      setOut({ ok: true, text: exportText(await exportTo(path)) });
+    } catch (e) {
+      setOut({ ok: false, text: `The diagnostics bundle was not saved: ${errorText(e)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button className="btn btn-sm btn-secondary" data-testid="diag-export" disabled={busy} onClick={() => void run()}>
+          {busy ? "Saving…" : "Save diagnostics bundle"}
+        </button>
+        <span className="mono" style={mono}>source · diagnostics_logs_export · health, sidecar log files, crash records</span>
+      </div>
+      {out && (
+        <span data-testid="diag-export-out" role={out.ok ? "status" : "alert"} style={{ fontSize: 12, color: out.ok ? "var(--tx-2)" : "var(--danger)", wordBreak: "break-all" }}>
+          {out.text}
+        </span>
+      )}
+    </div>
+  );
+}
+
+async function pickBundlePath(): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const day = new Date().toISOString().slice(0, 10);
+  return save({ defaultPath: `citrate-diagnostics-${day}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
 }
 
 /** Polls `sidecars_health` while open and keeps the alerts this tab has seen (newest first, at most 5). */
@@ -456,7 +514,12 @@ function SidecarsHealthSection() {
     };
   }, [read]);
 
-  return <SidecarsHealthView health={health} error={error} alerts={alerts} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SidecarsHealthView health={health} error={error} alerts={alerts} />
+      <DiagnosticsExportBar pickPath={pickBundlePath} exportTo={(p) => bridge.services.exportDiagnostics(p)} />
+    </div>
+  );
 }
 
 function errorText(e: unknown): string {

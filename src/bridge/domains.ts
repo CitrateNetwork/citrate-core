@@ -2757,12 +2757,27 @@ export interface SidecarLogLine {
   stream: "out" | "err" | string;
   line: string;
 }
+/** CORE-D5: a sidecar's log file on disk (path scrubbed in Rust: the home folder reads `~`). */
+export interface SidecarLogFile {
+  path: string;
+  writeFailures: number;
+  lastError: string | null;
+}
 export interface SidecarHealth extends ServiceEntry {
   counters: SidecarRetryCounters | null;
   slowRetry: SidecarSlowRetry | null;
   logTail: SidecarLogLine[];
   logLinesKept: number | null;
   note: string | null;
+  /** CORE-D5: unset by a build without log files; null when no supervisor keeps one. */
+  logFile?: SidecarLogFile | null;
+}
+/** CORE-D5: what `diagnostics_logs_export` wrote. Mirrors Rust `sidecar_logs::DiagnosticsExport`. */
+export interface DiagnosticsExport {
+  path: string;
+  bytes: number;
+  sidecars: string[];
+  logLines: number;
 }
 export interface SidecarsHealth {
   takenAtUnixMs: number;
@@ -2783,6 +2798,9 @@ export interface ServicesDomain {
   health(lines?: number): Promise<SidecarsHealth>;
   /** CORE-D3: subscribe to sidecar alerts; resolves to the unsubscribe function. */
   onAlert(cb: (alert: SidecarAlert) => void): Promise<() => void>;
+  /** CORE-D5: write the scrubbed diagnostics bundle (health, sidecar logs, crash records, panics)
+   *  to a `.txt` file the member chose. Local only; nothing is sent. */
+  exportDiagnostics(path: string): Promise<DiagnosticsExport>;
 }
 
 // ---- D-11 (RC52) — cloud model providers (ADR-2026-10-26). Mirrors Rust `providers_ipc.rs`. ----

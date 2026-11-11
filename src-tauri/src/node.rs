@@ -1015,6 +1015,8 @@ impl NodeManager {
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
         config.slow_retry = crate::services::slow_retry_every();
+        // CORE-D5: keep its output on disk too (rotating files under the app log dir).
+        crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::LogPolicy::Full);
         config.backoff = BackoffPolicy::new();
         config.healthy_after = NODE_HEALTHY_AFTER;
         let sup = match Supervisor::start(config) {

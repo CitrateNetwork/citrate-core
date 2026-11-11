@@ -1316,6 +1316,9 @@ pub struct SupervisorConfig {
     pub slow_retry: Option<Duration>,
     /// CORE-D6: the gate starts pass ([`SpawnGate::global`] by default).
     pub spawn_gate: Arc<SpawnGate>,
+    /// CORE-D5: keep every captured line on disk too, in rotating files
+    /// ([`crate::sidecar_log::RotatingLog`]). `None` (the default) keeps output in the ring only.
+    pub log_file: Option<crate::sidecar_log::LogFileConfig>,
 }
 
 impl SupervisorConfig {
@@ -1337,6 +1340,7 @@ impl SupervisorConfig {
             settle_barrier: None,
             slow_retry: None,
             spawn_gate: SpawnGate::global(),
+            log_file: None,
         }
     }
 }
@@ -1357,6 +1361,9 @@ struct Shared {
     /// The bounded ring of the most recent captured stdout/stderr lines. Reader threads push;
     /// the `logs()` accessor snapshots it. Survives restarts.
     logs: LogRing,
+    /// CORE-D5: the on-disk copy of the captured lines, when configured: a writer thread behind a
+    /// bounded queue, so a stalled disk never stops the readers. Survives restarts.
+    log_file: Option<crate::sidecar_log::LogSink>,
     epoch: u64,
     /// See [`SupervisorConfig::failed_barrier`].
     failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1365,6 +1372,21 @@ struct Shared {
 }
 
 impl Shared {
+    /// One captured line: into the ring, and (CORE-D5) onto disk when a log file is configured.
+    fn capture(&self, stream: &'static str, line: String) {
+        let ts = self.clock.now_unix_ms();
+        let for_disk = self.log_file.as_ref().map(|_| line.clone());
+        // The ring first: what the app shows never waits on the disk.
+        self.logs.push(LogLine {
+            ts,
+            stream: stream.to_string(),
+            line,
+        });
+        if let (Some(sink), Some(l)) = (&self.log_file, for_disk) {
+            sink.send(ts, stream, l);
+        }
+    }
+
     /// The cell, for the monitor's short critical sections. Poison-tolerant.
     fn lock(&self) -> MutexGuard<'_, Cell> {
         self.cell.lock().unwrap_or_else(|e| e.into_inner())
@@ -1556,6 +1578,10 @@ impl Supervisor {
             wake: Condvar::new(),
             clock: config.clock.clone(),
             logs: LogRing::new(),
+            log_file: config
+                .log_file
+                .clone()
+                .and_then(|c| crate::sidecar_log::LogSink::spawn(&name, c).ok()),
             epoch,
             failed_barrier: config.failed_barrier.clone(),
             settle_barrier: config.settle_barrier.clone(),
@@ -1730,6 +1756,11 @@ impl Supervisor {
     /// folds this into the Node LOG panel so a packaged build shows REAL node output.
     pub fn logs(&self) -> Vec<LogLine> {
         self.shared.logs.snapshot()
+    }
+
+    /// CORE-D5: the on-disk log's path and write failures, when this supervisor keeps one.
+    pub fn log_file_status(&self) -> Option<crate::sidecar_log::LogFileStatus> {
+        self.shared.log_file.as_ref().map(|f| f.status())
     }
 
     /// The sidecar name.
@@ -2256,11 +2287,7 @@ fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) -> Vec
             .spawn(move || {
                 let reader = BufReader::new(out);
                 for line in reader.lines().map_while(std::result::Result::ok) {
-                    shared.logs.push(LogLine {
-                        ts: shared.clock.now_unix_ms(),
-                        stream: "out".to_string(),
-                        line,
-                    });
+                    shared.capture("out", line);
                 }
             })
         {
@@ -2277,11 +2304,7 @@ fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) -> Vec
             .spawn(move || {
                 let reader = BufReader::new(err);
                 for line in reader.lines().map_while(std::result::Result::ok) {
-                    shared.logs.push(LogLine {
-                        ts: shared.clock.now_unix_ms(),
-                        stream: "err".to_string(),
-                        line,
-                    });
+                    shared.capture("err", line);
                 }
             })
         {
@@ -2598,6 +2621,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         settle_barrier: _settle_barrier,
         slow_retry,
         spawn_gate: _spawn_gate,
+        log_file: _log_file,
     } = config;
     // Dropped last: marks the cell if this thread unwinds (core#398).
     let _exit = MonitorExit(shared.clone());
@@ -3634,6 +3658,10 @@ fn clear_pid(shared: &Shared) {
 mod tests {
     #[cfg(unix)]
     include!("supervisor_tests.rs");
+
+    // CORE-D5: captured output kept on disk in rotating files (uses the unix helpers above).
+    #[cfg(unix)]
+    include!("supervisor_log_file_tests.rs");
 
     #[cfg(windows)]
     include!("supervisor_windows_tests.rs");
