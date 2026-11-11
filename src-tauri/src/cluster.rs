@@ -433,6 +433,10 @@ struct PeerView {
     /// HUP-S8.1: the member a device peer acts for (absent for a member's own identity).
     #[serde(default)]
     member: Option<String>,
+    /// V60 MESH-4: how an online peer is reached, `direct` or `relayed` (citrate-cluster
+    /// S0-NAT-SPIKE daemons). Absent from an older daemon.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// HUP-S8.1: one device under a member (mirrors cluster-daemon `DeviceViewWire`).
@@ -564,6 +568,27 @@ pub struct ClusterPeerDto {
     /// HUP-S8.1: set when this peer is a linked device; the member it acts for.
     #[serde(skip_serializing_if = "Option::is_none")]
     member: Option<String>,
+    /// V60 MESH-4: `direct` or `relayed` for an online peer when the daemon reports it; absent
+    /// otherwise (the Cluster screen then says only "online").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link: Option<&'static str>,
+}
+
+impl From<PeerView> for ClusterPeerDto {
+    fn from(p: PeerView) -> Self {
+        // Only the two kinds the daemon defines are passed on, and only for an online peer.
+        let link = match (p.online, p.link.as_deref()) {
+            (true, Some("direct")) => Some("direct"),
+            (true, Some("relayed")) => Some("relayed"),
+            _ => None,
+        };
+        ClusterPeerDto {
+            address: p.address,
+            online: p.online,
+            member: p.member,
+            link,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -885,14 +910,7 @@ pub async fn cluster_peers(
 ) -> std::result::Result<Vec<ClusterPeerDto>, String> {
     feed_roster(&app, &group).await?;
     match route(&app, Request::Peers { group })? {
-        Response::Peers { peers } => Ok(peers
-            .into_iter()
-            .map(|p| ClusterPeerDto {
-                address: p.address,
-                online: p.online,
-                member: p.member,
-            })
-            .collect()),
+        Response::Peers { peers } => Ok(peers.into_iter().map(ClusterPeerDto::from).collect()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }

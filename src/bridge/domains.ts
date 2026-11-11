@@ -1178,6 +1178,8 @@ export interface ClusterPeer {
   online: boolean;
   /** HUP-S8.1: set when this peer is a linked device; the member it acts for. */
   member?: string;
+  /** V60 MESH-4: how an online peer is reached, when the cluster daemon reports it. */
+  link?: "direct" | "relayed";
 }
 /** HUP-S8.1: one linked device under a member, as the cluster daemon admits it. */
 export interface ClusterDevice {
