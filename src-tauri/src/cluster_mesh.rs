@@ -432,7 +432,10 @@ mod tests {
             .iter()
             .rposition(|l| l.split_whitespace().next() == Some("/release/signoffs/"))
             .expect("a /release/signoffs/ rule");
-        assert!(star.is_none_or(|s| s < signoffs), "the rule must come after `*`");
+        assert!(
+            star.is_none_or(|s| s < signoffs),
+            "the rule must come after `*`"
+        );
         let owners: Vec<&str> = rules[signoffs].split_whitespace().skip(1).collect();
         assert_eq!(owners, vec!["@SaulBuilds"], "owned by the owner alone");
     }
