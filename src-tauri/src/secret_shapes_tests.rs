@@ -89,10 +89,14 @@ fn redaction_is_idempotent_and_keeps_non_ascii_text_intact() {
 /// flag. Messages name the shape only.
 #[test]
 fn redaction_tests_never_print_planted_values() {
+    // The kit file is read at run time: a compiled include from another crate's tree would break
+    // the K6 scanned-tree check (kit wallet_tests k6_compiled_sources_stay_in_the_scanned_trees).
+    let kit = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../kit/src/supervisor_log_file_tests.rs");
+    let kit_src = std::fs::read_to_string(&kit).expect("the kit log-file tests are readable");
     let files = [
         ("secret_shapes_tests.rs", include_str!("secret_shapes_tests.rs")),
         ("sidecar_logs_tests.rs", include_str!("sidecar_logs_tests.rs")),
-        ("kit supervisor_log_file_tests.rs", include_str!("../../kit/src/supervisor_log_file_tests.rs")),
+        ("kit supervisor_log_file_tests.rs", kit_src.as_str()),
     ];
     let forbidden = ["{secret", "{out", "{line", "{text", "{planted", "{e} in", "{body", "{kept"];
     for (name, src) in files {
