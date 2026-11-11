@@ -45,6 +45,7 @@ import { desktopGrantsIo } from "../agent/grants/grants";
 import type { GoogleServiceStatus } from "../agent/schedule/schedule";
 import { invoke } from "../bridge/tauri/invoke";
 import { EscalationSettings } from "./EscalationSettings";
+import { BackgroundServiceStep } from "../node/BackgroundServicePanel";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
@@ -867,6 +868,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
             </div>
           </div>
         )}
+
+        {/* V60 SVC-2: Settings › Node · the background service and its power rules. */}
+        {s.sSec === "node" && <BackgroundServiceStep variant="settings" />}
 
         {/* ---------- API endpoints & keys ---------- */}
         {s.sSec === "api" && (

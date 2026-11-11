@@ -187,6 +187,8 @@ mod svc_run;
 #[cfg(unix)]
 mod svc_server;
 mod svc_units;
+// V60 SVC-2: the member's choice (onboarding, Settings › Node) and the power rules.
+mod svc_settings;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -1150,6 +1152,10 @@ pub fn run() {
             update_drain::update_prepare,
             update_drain::update_prepare_cancel,
             update_drain::update_install_begin,
+            svc_settings::svc_status,
+            svc_settings::svc_set_enabled,
+            svc_settings::svc_power_set,
+            svc_settings::svc_power_status,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
