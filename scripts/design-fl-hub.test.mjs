@@ -42,6 +42,14 @@ describe("UX-0 · FL hub mocks live only under design/", () => {
     expect(vite, "a second build input could pull a mock page into dist").not.toMatch(/rollupOptions\s*:\s*\{[^}]*input/);
   });
 
+  it("the shared stylesheet and the index carry no colour literal either", () => {
+    for (const f of ["hub.css", "index.html"]) {
+      const p = path.join(HUB, f);
+      const src = existsSync(p) ? read(p).replace(/\/\*[\s\S]*?\*\//g, "") : "missing";
+      expect(src.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![\w-])|rgba?\(|hsla?\(|missing/g) ?? [], f).toEqual([]);
+    }
+  });
+
   it("no production module under src/ imports from design/", () => {
     const hits = walk(path.join(ROOT, "src")).filter((f) => /(from\s+|import\s*\(|url\()\s*["'][^"']*design\//.test(read(f)));
     expect(hits.map((f) => path.relative(ROOT, f))).toEqual([]);

@@ -46,6 +46,27 @@
   --on-danger: #ffffff;        /* on --danger (deep red here)           */
 
   --focus-ring: 0 0 0 3px rgba(142,204,9,.35);
+
+  /* V60 UX-0: FL round ring, lease dots, escrow bar and cluster map (planset v060 03 §2).
+     Declared in BOTH register blocks: a var() in a custom property resolves where it is
+     declared, so a :root-only copy would keep charter colours inside an instrument subtree.
+     Kit names only; the map is design/KIT_TOKEN_MAP.md, checked by kitTokens.test.ts. */
+  --fl-band: var(--deep-evergreen);          /* FL hub header band            */
+  --fl-on-band: var(--paper);
+  --fl-ring-track: var(--line-2);            /* segments not reached yet      */
+  --fl-ring-done: var(--citrate-green-deep); /* segments passed               */
+  --fl-ring-current: var(--citrate-green-dark);
+  --fl-ring-disputed: var(--warn);
+  --fl-ring-expired: var(--tx-3);
+  --fl-lease-leased: var(--tx-2);            /* hollow dot                    */
+  --fl-lease-submitted: var(--tx-1);         /* filled dot                    */
+  --fl-lease-verified: var(--ok);            /* tick                          */
+  --fl-lease-rejected: var(--danger);        /* struck                        */
+  --fl-escrow-paid: var(--ok);
+  --fl-escrow-reserved: var(--info);
+  --fl-escrow-refundable: var(--tx-3);
+  --mesh-edge-direct: var(--ok);             /* solid                         */
+  --mesh-edge-relayed: var(--tx-2);          /* dashed                        */
 }
 
 [data-register="instrument"] {
@@ -93,6 +114,26 @@
   --border-1: var(--line-1);
   --border-2: var(--line-2);
   --border-strong: var(--line-strong);
+
+  /* V60 UX-0: FL and mesh tokens, instrument values (see the charter block). FL live views
+     default to this register (03 §1). The lime is the current segment here; the deep green
+     marks passed segments (the register's --accent-deep is the lighter hover lime). */
+  --fl-band: var(--deep-evergreen);
+  --fl-on-band: var(--tx-1);
+  --fl-ring-track: var(--line-2);
+  --fl-ring-done: var(--citrate-green-deep);
+  --fl-ring-current: var(--accent);
+  --fl-ring-disputed: var(--warn);
+  --fl-ring-expired: var(--tx-3);
+  --fl-lease-leased: var(--tx-2);
+  --fl-lease-submitted: var(--tx-1);
+  --fl-lease-verified: var(--ok);
+  --fl-lease-rejected: var(--danger);
+  --fl-escrow-paid: var(--ok);
+  --fl-escrow-reserved: var(--info);
+  --fl-escrow-refundable: var(--tx-3);
+  --mesh-edge-direct: var(--ok);
+  --mesh-edge-relayed: var(--tx-2);
 }
 
 /* Zone hues (categorical, both registers — ALF handoff) */
