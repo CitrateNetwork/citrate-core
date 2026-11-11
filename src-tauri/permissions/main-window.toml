@@ -380,6 +380,7 @@ commands.allow = [
   "sidecars_health",
   "update_prepare",
   "update_prepare_cancel",
+  "update_install_begin",
   "diagnostics_logs_export",
   "store_catalog",
   "store_stage",

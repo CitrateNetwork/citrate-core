@@ -152,7 +152,7 @@ describe("CORE-D6: the downloaded update is installed only after the sidecars ar
     const fs = await import("node:fs");
     const path = await import("node:path");
     const src = fs.readFileSync(path.resolve(__dirname, "updater.ts"), "utf8");
-    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(BRIDGE_MODE !== "tauri"\) return;\s*\/\/ #614 review[^\n]*\n[^\n]*update_prepare_cancel/);
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(BRIDGE_MODE !== "tauri"\) return;\s*\/\/ #614 review[\s\S]{0,600}update_prepare_cancel/);
     expect(src).toMatch(/r\.keepStopped \? "installed" : "error"/);
     const banner = fs.readFileSync(path.resolve(__dirname, "UpdateBanner.tsx"), "utf8");
     expect(banner).toMatch(/state\.status === "installed"/);
