@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// CL-S4 transport sign-off recorded in this build. PENDING OWNER + SECURITY SIGN-OFF: `false`.
+/// V60 MESH-2: it may be `true` only with a valid sign-off record at `release/signoffs/CL-S4.json`
+/// (the owner and the security lead against a pinned packet); the test
+/// `signed_flag_requires_signoff_record` fails the build otherwise.
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
 /// The bundled daemon serves every group from one process. Built in citrate-cluster (HUP-S8.4);
@@ -198,6 +201,98 @@ pub async fn cluster_mesh_set_enabled(
     .await
 }
 
+/// V60 MESH-2: the CL-S4 sign-off record and its check. It is a build gate: only the tests read it
+/// (the record is evidence for whoever flips [`TRANSPORT_SIGNED_OFF`], not something the app loads).
+#[cfg(test)]
+mod signoff {
+    use serde::Deserialize;
+
+    /// Where the record lives, relative to `src-tauri/`.
+    pub(super) const RECORD: &str = "../release/signoffs/CL-S4.json";
+
+    /// The roles that must both sign, each by a different person.
+    const ROLES: [&str; 2] = ["owner", "security-lead"];
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Record {
+        pub wp: String,
+        pub packet: Packet,
+        pub signers: Vec<Signer>,
+    }
+
+    /// The packet that was reviewed, pinned to a commit and a digest of the file at that commit.
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Packet {
+        pub repo: String,
+        pub path: String,
+        pub rev: String,
+        pub sha256: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Signer {
+        pub role: String,
+        pub github: String,
+        pub date: String,
+    }
+
+    fn hex_of_len(s: &str, n: usize) -> bool {
+        s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    /// `YYYY-MM-DD` with a plausible month and day.
+    fn is_date(s: &str) -> bool {
+        let b = s.as_bytes();
+        if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+            return false;
+        }
+        let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().ok();
+        matches!(
+            (num(0..4), num(5..7), num(8..10)),
+            (Some(y), Some(m), Some(d)) if y >= 2026 && (1..=12).contains(&m) && (1..=31).contains(&d)
+        )
+    }
+
+    pub(super) fn validate(text: &str) -> Result<Record, String> {
+        let r: Record =
+            serde_json::from_str(text).map_err(|e| format!("not a sign-off record: {e}"))?;
+        if r.wp != "CL-S4" {
+            return Err(format!("record is for {}, not CL-S4", r.wp));
+        }
+        if r.packet.repo != "CitrateNetwork/citrate-cluster" || r.packet.path.trim().is_empty() {
+            return Err("the packet must be a file in CitrateNetwork/citrate-cluster".into());
+        }
+        if !hex_of_len(&r.packet.rev, 40) {
+            return Err("packet.rev must be a full commit id".into());
+        }
+        if !hex_of_len(&r.packet.sha256, 64) {
+            return Err("packet.sha256 must be the file's SHA-256".into());
+        }
+        let mut people: Vec<String> = Vec::new();
+        for role in ROLES {
+            let s = r
+                .signers
+                .iter()
+                .find(|s| s.role == role)
+                .ok_or_else(|| format!("no {role} signature"))?;
+            if s.github.trim().is_empty() || !is_date(&s.date) {
+                return Err(format!(
+                    "the {role} signature needs a GitHub handle and a date"
+                ));
+            }
+            let who = s.github.trim().to_ascii_lowercase();
+            if people.contains(&who) {
+                return Err("the owner and the security lead must be different people".into());
+            }
+            people.push(who);
+        }
+        Ok(r)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,7 +306,10 @@ mod tests {
         let record = std::fs::read_to_string(&path);
         if TRANSPORT_SIGNED_OFF {
             let text = record.unwrap_or_else(|_| {
-                panic!("TRANSPORT_SIGNED_OFF is true but {} is missing", path.display())
+                panic!(
+                    "TRANSPORT_SIGNED_OFF is true but {} is missing",
+                    path.display()
+                )
             });
             signoff::validate(&text).expect("the CL-S4 sign-off record is valid");
         } else if let Ok(text) = record {
@@ -247,8 +345,14 @@ mod tests {
             mutate(&|v| v["packet"]["repo"] = "someone/else".into()).is_err(),
             "another repo"
         );
-        assert!(mutate(&|v| v["packet"]["rev"] = "main".into()).is_err(), "a branch, not a commit");
-        assert!(mutate(&|v| v["packet"]["sha256"] = "abc".into()).is_err(), "no packet digest");
+        assert!(
+            mutate(&|v| v["packet"]["rev"] = "main".into()).is_err(),
+            "a branch, not a commit"
+        );
+        assert!(
+            mutate(&|v| v["packet"]["sha256"] = "abc".into()).is_err(),
+            "no packet digest"
+        );
         assert!(
             mutate(&|v| v["signers"] = serde_json::json!([v["signers"][0].clone()])).is_err(),
             "the owner alone"
