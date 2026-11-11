@@ -33,6 +33,7 @@ import { linkStatusOf, tauriFleet, type FleetApi } from "../bridge/tauri/fleet";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { bridge } from "../bridge";
 import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevices";
+import { peerStateLabel } from "./clusterReachability";
 
 function shortAddr(a: string): string {
   if (!a) return "—";
@@ -334,7 +335,7 @@ export function Cluster({ store, s }: SurfaceProps) {
                       color: p.online ? "var(--ok, #2e9e5b)" : "var(--tx-3)",
                     }}
                   >
-                    {p.online ? "online" : "authorized · offline"}
+                    {peerStateLabel(p)}
                   </span>
                 </div>
               ))

@@ -6,14 +6,15 @@
 //!
 //! 1. the CL-S4 transport sign-off (citrate-cluster Rule 8, security lead + owner):
 //!    [`TRANSPORT_SIGNED_OFF`];
-//! 2. a daemon that serves every group from one process: [`MULTI_GROUP_DAEMON`]. HUP-S8.4 built it
-//!    in citrate-cluster (`hup/n7-cluster-mesh-prereqs`: one swarm per group, group seeds, opt-in
-//!    mDNS). The constant stays `false` until that branch is merged and the bundled daemon is
-//!    rebuilt from it, so this build never claims a daemon it does not ship;
+//! 2. a daemon that serves every group from one process: [`MULTI_GROUP_DAEMON`]. citrate-cluster
+//!    main serves every group (HUP-S8.4: one swarm per group, group seeds, opt-in mDNS; merged in
+//!    citrate-cluster #11), and the bundled daemon is built from main at the rev pinned in
+//!    `release/components.json`. V60 MESH-1: the flag is `true`, and a test ties it to the pin
+//!    ([`MULTI_GROUP_DAEMON_REVS`]), so a pin bump to an unchecked rev fails the build;
 //! 3. the two-machine soak and a 50-node ladder step on separate machines (DGX team).
 //!
-//! Both constants are `false` and pending owner sign-off, so [`decide`] gives exactly today's answer:
-//! the operator's env, or off. When both flip, the mesh is on by default on [`DEFAULT_LISTEN`] and a
+//! [`TRANSPORT_SIGNED_OFF`] is still `false` (pending owner + security sign-off), so [`decide`] gives
+//! exactly today's answer: the operator's env, or off. When both flip, the mesh is on by default on [`DEFAULT_LISTEN`] and a
 //! member can turn it off (`<app data>/cluster/mesh.json`, `cluster_mesh_set_enabled`). The member
 //! sees the honest state either way (`cluster_mesh_status`).
 
@@ -29,9 +30,22 @@ use serde::{Deserialize, Serialize};
 /// build otherwise.
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
-/// The bundled daemon serves every group from one process. Built in citrate-cluster (HUP-S8.4);
-/// `false` until the bundled daemon is rebuilt from that branch. PENDING OWNER SIGN-OFF.
-pub(crate) const MULTI_GROUP_DAEMON: bool = false;
+/// The bundled daemon serves every group from one process (citrate-cluster HUP-S8.4, on main since
+/// #11). V60 MESH-1: `true`, because the pinned `cluster-daemon` rev is in
+/// [`MULTI_GROUP_DAEMON_REVS`]. On its own this turns nothing on: the mesh default also needs
+/// [`TRANSPORT_SIGNED_OFF`].
+pub(crate) const MULTI_GROUP_DAEMON: bool = true;
+
+/// V60 MESH-1: the citrate-cluster revs checked to serve every group from one daemon process. The
+/// test `the_multi_group_flag_matches_the_bundled_daemon` requires the `cluster-daemon` rev pinned in
+/// `release/components.json` to be one of these while [`MULTI_GROUP_DAEMON`] is true. Add a rev here
+/// only after checking that daemon (citrate-cluster `tests/multigroup_multiprocess.rs` and
+/// `tests/mesh1_multigroup.rs` green at that rev).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const MULTI_GROUP_DAEMON_REVS: &[&str] = &[
+    // citrate-cluster main, P-fleet (#11); shipped in 0.5.0 and 0.5.1.
+    "755cf217226094147e4e67909ab96ccbb5aeeb2a",
+];
 
 /// Listen address when the mesh is on by default. PENDING OWNER SIGN-OFF (port 4211, all interfaces).
 pub(crate) const DEFAULT_LISTEN: &str = "/ip4/0.0.0.0/tcp/4211";
@@ -522,11 +536,12 @@ mod tests {
 
     #[test]
     fn todays_build_changes_nothing_the_operator_env_or_off() {
-        // The shipped constants: neither precondition is met (a tripwire: flipping either one is an
-        // owner + security decision and must update this test on purpose).
+        // The shipped constants (a tripwire: flipping either one is an owner + security decision
+        // and must update this test on purpose). V60 MESH-1: the bundled daemon serves every group;
+        // the transport sign-off is still open, so the mesh default is unchanged (off).
         assert_eq!(
             [TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON],
-            [false, false],
+            [false, true],
             "the mesh default changed"
         );
         let off = decide(None, TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON, false);
@@ -545,6 +560,34 @@ mod tests {
             decide(Some("  "), false, false, false).source,
             MeshSource::Off
         );
+    }
+
+    /// V60 MESH-1: `MULTI_GROUP_DAEMON` may be true only while the bundled `cluster-daemon` is a
+    /// citrate-cluster rev recorded as serving every group. Bumping the pin in
+    /// `release/components.json` without checking the new rev (and recording it) fails here.
+    #[test]
+    fn the_multi_group_flag_matches_the_bundled_daemon() {
+        let components: serde_json::Value =
+            serde_json::from_str(include_str!("../../release/components.json"))
+                .expect("release/components.json parses");
+        let rev = components["components"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == "cluster-daemon"))
+            .and_then(|c| c["source"]["rev"].as_str())
+            .expect("cluster-daemon is pinned");
+        if MULTI_GROUP_DAEMON {
+            assert!(
+                MULTI_GROUP_DAEMON_REVS.contains(&rev),
+                "bundled cluster-daemon {rev} is not recorded as multi-group"
+            );
+        }
+        // Every recorded rev is a full 40-hex commit id.
+        for r in MULTI_GROUP_DAEMON_REVS {
+            assert!(
+                r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{r}"
+            );
+        }
     }
 
     #[test]

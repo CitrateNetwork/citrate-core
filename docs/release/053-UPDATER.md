@@ -49,7 +49,25 @@ cutover, so "Update required" has an update to offer. On the first 0.5.3 start t
 moves to r1007 and the old chain is kept in `node/chain.r1006.bak/` (CORE-N3,
 [053-NETWORK.md](053-NETWORK.md)); the wallet, pins, Hermes settings and Store are untouched.
 
-## 3. The release steps (approved plan)
+## Owner decision (2026-11-11): the release Mac, and update files on the GitHub release
+
+This replaces the hosting part of decision 2 and section 3's steps 3 and 4 for 0.5.3:
+
+- 0.5.3 is built, signed (Developer ID, v2 updater key) and notarized on the release Mac, not in CI
+  (Actions holds no signing secrets).
+- The update files (`Citrate-Core.app.tar.gz`, both AppImages, both `.deb`, each with its `.sig`)
+  are assets of the **v0.5.3 GitHub release**, and `latest.json` points at those assets
+  (`https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.3/<file>`). The repository
+  is public, so the assets answer anonymously. No CDN ACL change.
+- A 0.5.2 install reads feed 1 (CDN, 403 today), and tauri-plugin-updater 2.10.1 moves on from a
+  non-2xx endpoint to feed 2, `releases/latest/download/latest.json`. So the v0.5.3 release must be
+  the repository's **latest, non-prerelease** release.
+- One command does it: `scripts/release-local.sh` (build, sign, notarize, staple, update files,
+  `tauri signer sign`, signatures verified against the pinned key, `latest.json` for the five
+  platforms, `SHA256SUMS`, the release created as a draft, every asset checked by sha256 against `SHA256SUMS`, only then published as latest, then the anonymous check of the
+  fallback feed and every update file). Runbook: [RELEASE.md](../RELEASE.md#the-local-release-script-053).
+
+## 3. The release steps (approved plan, before 2026-11-11)
 
 1. **Build and sign** 0.5.3 as for 0.5.2, from the tree after the network cut, with
    `CITRATE_ACCESS_GATE_URL=https://www.citrate.ai/api/access/verify` in the build environment
