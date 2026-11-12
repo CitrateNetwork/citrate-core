@@ -35,7 +35,11 @@
 #                                         [--log-dir DIR] [--work DIR]
 #   scripts/ci/linux-native-acceptance.sh --fetch <aarch64|x86_64> [--cache DIR] ...
 #        download the packages pinned in linux-native-acceptance/pins.txt (sha256-checked);
-#        add --fetch-only to download and stop
+#        add --fetch-only to download and stop. Each pin must be an asset of its GitHub release
+#        (the owner's 053-UPDATER decision: release files are hosted on GitHub releases) whose
+#        sha256 digest GitHub reports equals the pin; that is checked before any download.
+#   scripts/ci/linux-native-acceptance.sh --check-pins
+#        check every pin that way (all arches; needs gh and GH_TOKEN) and stop
 #   scripts/ci/linux-native-acceptance.sh --update-e2e DIR [--log-dir DIR] [--work DIR]
 #        the update-e2e scenario on the AppImages update-e2e-build.sh wrote to DIR
 #   scripts/ci/linux-native-acceptance.sh --self-test [--log-dir DIR]
@@ -59,6 +63,7 @@ HERE="$ROOT/scripts/ci/linux-native-acceptance"
 # shellcheck source=scripts/ci/lib/pidns.sh
 . "$ROOT/scripts/ci/lib/pidns.sh"
 
+PIN_REPO="CitrateNetwork/citrate-core"
 SIDECAR_NAMES="citrate node-agent mem-mcp llama-server ipfs comms-member-daemon cluster-daemon hermes"
 
 die() { echo "::error::$*" >&2; exit 2; }
@@ -81,6 +86,7 @@ outer_main() {
       --self-test) SELFTEST=1; shift ;;
       --fetch-only) FETCH_ONLY=1; shift ;;
       --update-e2e) UE="$2"; shift 2 ;;
+      --check-pins) check_pins ""; exit $? ;;
       -h|--help) sed -n '2,56p' "$SELF"; exit 0 ;;
       *) die "unknown argument: $1" ;;
     esac
@@ -137,9 +143,40 @@ cleanup_run() {
   echo "logs: $run/logs"
 }
 
+# A pin is the GitHub release asset v<ver>/Citrate-Core-linux-<arch>.<kind>, and the release must
+# hold that asset with the pinned sha256 (GitHub's digest), checked before anything is downloaded.
+check_pin() { # ver arch kind sha url
+  local ver="$1" arch="$2" kind="$3" sha="$4" url="$5" name digest
+  name="Citrate-Core-linux-$arch.$kind"
+  [ "$url" = "https://github.com/$PIN_REPO/releases/download/v$ver/$name" ] ||
+    { echo "::error::pin $ver $arch $kind is not the GitHub release asset v$ver/$name: $url"; return 1; }
+  command -v gh >/dev/null || { echo "::error::gh is needed to check the pin against the release"; return 1; }
+  digest="$(gh release view "v$ver" --repo "$PIN_REPO" --json assets \
+    -q ".assets[] | select(.name == \"$name\") | .digest" 2>/dev/null)" ||
+    { echo "::error::no release v$ver on $PIN_REPO"; return 1; }
+  [ -n "$digest" ] || { echo "::error::release v$ver has no asset $name"; return 1; }
+  [ "$digest" = "sha256:$sha" ] ||
+    { echo "::error::release v$ver's $name is $digest, not the pinned sha256:$sha"; return 1; }
+  echo "  $ver $arch $kind: asset on release v$ver, digest matches the pin"
+}
+
+check_pins() { # arch ("" = every arch)
+  local want="$1" role ver a kind sha url n=0 bad=0
+  [ -f "$HERE/pins.txt" ] || die "missing $HERE/pins.txt"
+  while read -r role ver a kind sha url; do
+    case "$role" in ''|\#*) continue ;; esac
+    [ -z "$want" ] || [ "$a" = "$want" ] || continue
+    check_pin "$ver" "$a" "$kind" "$sha" "$url" || bad=1
+    n=$((n + 1))
+  done <"$HERE/pins.txt"
+  [ "$n" -gt 0 ] || { echo "::error::no pins${want:+ for arch $want}"; return 1; }
+  return "$bad"
+}
+
 fetch_pinned() { # arch cache
   local arch="$1" cache="$2" line role ver a kind sha url f
   [ -f "$HERE/pins.txt" ] || die "missing $HERE/pins.txt"
+  check_pins "$arch" || return 1
   local n=0
   while read -r role ver a kind sha url; do
     case "$role" in ''|\#*) continue ;; esac
