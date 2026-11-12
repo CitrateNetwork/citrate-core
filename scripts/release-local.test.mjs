@@ -47,6 +47,19 @@ describe("release-local.sh arguments (--check-args)", () => {
     expect(r.out).toMatch(/tag rehearsal-0\.0\.53, draft prerelease/);
   });
 
+  it("--linux-arches x86_64 ships Linux x86_64 only, and the feed does not list linux-aarch64 (owner 2026-11-12)", () => {
+    for (const f of LINUX.filter((f) => f.includes("aarch64"))) fs.rmSync(path.join(dir, "linux", f));
+    const r = run(["--version", conf.version, "--linux-arches", "x86_64", ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("Linux x86_64 only; the feed does not list linux-aarch64 or linux-aarch64-deb");
+  });
+
+  it("without --linux-arches every Linux arch is required (the default is unchanged)", () => {
+    const r = run(["--version", conf.version, ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("Linux x86_64 aarch64");
+  });
+
   const refusals = [
     ["a version that is not x.y.z", () => ["--version", "0.5.3-rc.1", ...linux()], /x\.y\.z/],
     ["a real release whose version is not the app's", () => ["--version", "9.9.9", ...linux()], /not tauri\.conf\.json/],
@@ -55,6 +68,9 @@ describe("release-local.sh arguments (--check-args)", () => {
     ["a rehearsal without an app", () => ["--rehearsal", "--version", "0.0.53", ...linux()], /--app/],
     ["a rehearsal on the app's own version", () => ["--rehearsal", "--version", conf.version, "--app", path.join(dir, "Citrate Core.app"), ...linux()], /throwaway version/],
     ["a missing Linux update file", () => { fs.rmSync(path.join(dir, "linux", LINUX[3])); return ["--version", conf.version, ...linux()]; }, /no .*linux-aarch64\.deb/],
+    ["an unknown Linux arch", () => ["--version", conf.version, "--linux-arches", "x86_64,riscv64", ...linux()], /--linux-arches.*riscv64/],
+    ["no Linux arch", () => ["--version", conf.version, "--linux-arches", "", ...linux()], /--linux-arches/],
+    ["--linux-arches x86_64 with an x86_64 file missing", () => { fs.rmSync(path.join(dir, "linux", LINUX[1])); return ["--version", conf.version, "--linux-arches", "x86_64", ...linux()]; }, /no .*linux-x86_64\.deb/],
     ["no --out", () => ["--version", conf.version, "--linux-dir", path.join(dir, "linux")], /--out/],
   ];
   for (const [what, args, msg] of refusals) {
@@ -100,7 +116,10 @@ describe("release-local.sh source", () => {
     expect(src).toContain('base64.b64decode(sys.argv[1])');
     expect(src).toContain('"$V052_UPDATER_PUBKEY")"');
     expect(src).toContain('BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"');
-    for (const p of ["darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"]) expect(src).toContain(p);
+    // The platform keys are the 0.5.2 feed's: darwin-aarch64, then linux-<arch> and linux-<arch>-deb per shipped arch.
+    expect(src).toContain("PLATFORMS=(darwin-aarch64)");
+    expect(src).toContain('PLATFORMS+=("linux-$a" "linux-$a-deb")');
+    expect(src).toContain('LINUX_FILES+=("Citrate-Core-linux-$a.AppImage" "Citrate-Core-linux-$a.deb")');
   });
 
   it("never runs the built app and keeps the key off argv", () => {
@@ -164,6 +183,12 @@ describe("release-local.sh release guards (source)", () => {
     return i;
   };
 
+  it("checks latest.json names exactly the platforms built (not a fixed five)", () => {
+    expect(src).not.toContain('want = {"darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"}');
+    expect(src).toContain('want = set(sys.argv[4:])');
+    expect(src).toMatch(/"\$OUT\/latest.json" "\$VERSION" "\$BASE_URL" "\$\{PLATFORMS\[@\]\}"/);
+  });
+
   it("checks the version in the app and in the app inside the DMG before notarizing", () => {
     expect(src).toContain("plutil -extract CFBundleShortVersionString raw");
     expect(src).toContain("hdiutil attach -nobrowse -readonly");
@@ -220,3 +245,85 @@ describe("release-local.sh release guards (source)", () => {
   });
 });
 
+
+// Owner 2026-11-12: 0.5.3 is private. No GitHub release; the updater files go to Spaces
+// citrate-cdn under downloads/updater/ (public-read on exactly those objects), the installers and
+// SHA256SUMS to downloads/<file> as PRIVATE objects (served by the invite gate's presigned links).
+describe("release-local.sh --publish-target spaces", () => {
+  const raw = fs.readFileSync(script, "utf8");
+  const src = raw.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+  const at = (s) => {
+    const i = src.indexOf(s);
+    expect(i, s).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it("takes --publish-target spaces and says where each kind of file goes", () => {
+    const r = run(["--version", conf.version, "--publish-target", "spaces", ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("publish target spaces: updater files public-read under s3://citrate-cdn/downloads/updater/, installers and SHA256SUMS private under s3://citrate-cdn/downloads/; no GitHub release");
+  });
+
+  it("a spaces rehearsal stays under its own prefix", () => {
+    const r = run(["--rehearsal", "--version", "0.0.56", "--app", path.join(dir, "Citrate Core.app"), "--publish-target", "spaces", ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("s3://citrate-cdn/downloads/rehearsal-0.0.56/updater/");
+  });
+
+  it("refuses an unknown publish target", () => {
+    const r = run(["--version", conf.version, "--publish-target", "s3-public", ...linux()]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/--publish-target.*github.*spaces/);
+  });
+
+  it("the GitHub path is still the default", () => {
+    const r = run(["--version", conf.version, ...linux()]);
+    expect(r.out).toContain("publish target github");
+  });
+
+  it("points latest.json at the CDN objects", () => {
+    expect(src).toContain('BASE_URL="$CDN_PUBLIC/$UPD_PREFIX/v$VERSION"');
+    expect(src).toContain('CDN_PUBLIC="https://$CDN_BUCKET.$CDN_REGION.cdn.digitaloceanspaces.com"');
+  });
+
+  it("uploads updater files public-read, installers and SHA256SUMS private, and latest.json last", () => {
+    const upd = at('put_object "$UPD_PREFIX/v$VERSION/$n" "$f" public-read');
+    const inst = at('put_object "$INST_PREFIX/$(gate_name "$n")" "$f" private');
+    const sums = at('put_object "$INST_PREFIX/SHA256SUMS" "$OUT/SHA256SUMS" private');
+    const verify = at("every updater object is public-read and every installer is private");
+    const feed = at('put_object "$UPD_PREFIX/latest.json" "$OUT/latest.json" public-read');
+    expect(upd).toBeLessThan(verify);
+    expect(inst).toBeLessThan(verify);
+    expect(sums).toBeLessThan(verify);
+    expect(verify).toBeLessThan(feed);
+    expect(feed).toBeLessThan(at("the feed and every URL in it answer 200 anonymously at their sha256"));
+  });
+
+  it("names the DMG as the invite gate does (citrate-landing src/lib/download.ts)", () => {
+    expect(src).toContain('Citrate-Core_"$VERSION"_aarch64.dmg) echo "Citrate-Core-macos-arm64.dmg"');
+  });
+
+  it("checks anonymously: updater objects 200 at their sha256, installers refused", () => {
+    expect(src).toMatch(/anon_sha "\$u"/);
+    expect(src).toMatch(/anon_code "\$CDN_ORIGIN\/\$INST_PREFIX\/\$\(gate_name "\$n"\)"/);
+    expect(src).toContain('[ "$c" = "403" ] || die');
+  });
+
+  it("never creates a GitHub release on the spaces path, and keeps the secret off argv and output", () => {
+    const spaces = src.slice(at('sha_of() {'), at("say \"7/7 creating the DRAFT PRERELEASE $TAG (never latest)\""));
+    expect(spaces).not.toContain("gh release");
+    expect(src).toContain('AWS_SECRET_ACCESS_KEY="$(security find-generic-password -s "$SPACES_KEY_ITEM" -w)"');
+    expect(src).not.toMatch(/echo[^\n]*AWS_SECRET/);
+    expect(src).not.toMatch(/--secret|aws configure set/);
+  });
+
+  it("counts objects in a way Spaces answers (it omits KeyCount on an empty listing: rehearsal 0.0.56)", () => {
+    expect(src).not.toContain("--query KeyCount");
+    expect(src.match(/--query 'length\(Contents \|\| `\[\]`\)'/g)).toHaveLength(2);
+  });
+
+  it("a spaces rehearsal cleanup removes only its own prefix", () => {
+    expect(src).toContain('s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive');
+    expect(src).not.toMatch(/s3 rm "s3:\/\/\$CDN_BUCKET\/downloads\/"/);
+  });
+});
