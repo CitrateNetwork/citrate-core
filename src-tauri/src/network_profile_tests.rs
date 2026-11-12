@@ -826,6 +826,8 @@ fn r1006() -> &'static NetworkProfile {
 /// writes after the reroll).
 fn r1006_filled() -> NetworkProfile {
     let mut p = r1006().clone();
+    // The r1007 cut retired r1006 (0.5.3); these cases test r1006's own rules, so not retired.
+    p.retired = None;
     p.genesis_hash = Some(FIXTURE_GENESIS.into());
     p.address_book_sha256 = Some("5c".repeat(32));
     p.min_chain_rev = Some("1f".repeat(20));
@@ -836,6 +838,7 @@ fn r1006_filled() -> NetworkProfile {
 /// r1006 as shipped before the reroll fill: the three reroll values unset, each with a reason.
 fn r1006_unfilled() -> NetworkProfile {
     let mut p = r1006().clone();
+    p.retired = None;
     p.genesis_hash = None;
     p.address_book_sha256 = None;
     p.min_chain_rev = None;
@@ -877,7 +880,7 @@ fn r1006_has_the_values_known_today_and_only_the_reroll_values_unset() {
 /// `R1006_GENESIS`; book: citrate-chain contracts/addresses/r1006/40204.json at a857443e; rev: the
 /// node the fleet runs.
 #[test]
-fn r1006_is_filled_with_the_reroll_values_and_active() {
+fn r1006_is_filled_with_the_reroll_values_and_retired_by_the_r1007_cut() {
     let p = r1006();
     assert_eq!(p.genesis_hash.as_deref(), Some(R1006_GENESIS));
     assert_eq!(
@@ -890,11 +893,11 @@ fn r1006_is_filled_with_the_reroll_values_and_active() {
     let rev = p.min_chain_rev.as_deref().unwrap_or_default();
     assert!(is_lower_hex_nonzero(rev, 40), "{rev:?}");
     assert!(p.pending.is_empty(), "{:?}", p.pending);
-    assert_eq!(active_id().unwrap(), R1006);
-    let r = active_ready().expect("the active r1006 is ready");
-    assert_eq!(r.genesis_hash, R1006_GENESIS);
-    assert_eq!(r.node_genesis.name, "r1006");
-    assert_eq!(crate::addresses::genesis_hash(), R1006_GENESIS);
+    // 0.5.3: the r1007 cut retired r1006 (a 0.5.2 data dir on it is named and set aside) and made
+    // r1007 active.
+    assert!(p.retired.as_deref().unwrap_or_default().contains("r1007"), "{:?}", p.retired);
+    assert!(matches!(p.ready(), Err(ProfileError::Retired { .. })));
+    assert_ne!(active_id().unwrap(), R1006);
 }
 
 /// Red first (K6, RC52): until the reroll values are filled, r1006 refuses every wallet
@@ -1001,6 +1004,17 @@ fn profiles_json_with(edit: impl FnOnce(&mut serde_json::Value)) -> String {
     v.to_string()
 }
 
+/// The shipped profiles.json edited, with r1006 not retired (the r1007 cut retired it in 0.5.3):
+/// for the cases that test r1006's own rules on a ready r1006.
+fn profiles_json_with_r1006_live(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    profiles_json_with(|v| {
+        if let Some(o) = v["profiles"]["r1006"].as_object_mut() {
+            o.remove("retired");
+        }
+        edit(v)
+    })
+}
+
 /// Red first (RC52): without `[chain] genesis_profile` the node builds the chain-id default
 /// genesis, which on 40204 is r1005's (0x1dcfc490…), not r1006's. The node config the app
 /// writes must name the genesis profile of the network it targets.
@@ -1045,12 +1059,12 @@ fn a_genesis_profile_the_bundled_node_does_not_build_is_refused() {
             .ok_or_else(|| ProfileError::UnknownProfile("r1006".into()))?
             .ready()
     };
-    let unknown = r1006_of(profiles_json_with(|v| fill(v, "r9999".into())));
+    let unknown = r1006_of(profiles_json_with_r1006_live(|v| fill(v, "r9999".into())));
     assert!(
         matches!(&unknown, Err(ProfileError::Invalid { field: "genesisProfile", .. })),
         "a genesis profile the node does not build must be refused: {unknown:?}"
     );
-    let unset = r1006_of(profiles_json_with(|v| {
+    let unset = r1006_of(profiles_json_with_r1006_live(|v| {
         fill(v, serde_json::Value::Null);
         v["profiles"]["r1006"]["pending"] =
             serde_json::json!({"genesisProfile": "set at the reroll"});
@@ -1060,7 +1074,7 @@ fn a_genesis_profile_the_bundled_node_does_not_build_is_refused() {
             if missing.iter().any(|(k, _)| k == "genesisProfile")),
         "an unset genesis profile is not set: {unset:?}"
     );
-    let known = r1006_of(profiles_json_with(|v| fill(v, "r1006".into())));
+    let known = r1006_of(profiles_json_with_r1006_live(|v| fill(v, "r1006".into())));
     assert!(
         matches!(&known, Ok(r) if r.genesis_hash == R1006_GENESIS),
         "r1006 naming the r1006 genesis profile is ready: {known:?}"
@@ -1126,31 +1140,13 @@ fn r1007() -> &'static NetworkProfile {
     profile(R1007).expect("the r1007 profile exists")
 }
 
-/// CORE-N2: r1007 is in the build so cutting 0.5.3 is a fill, not an edit. Its values known
-/// today are set (chain id 40204 is permanent; the fleet's RPC, explorer and faucet hosts; the
-/// embedded book's path; the member pruning default). Its genesis values are null with a reason,
-/// so the profile is not ready, no node starts on it and nothing is signed against it.
+/// CORE-N2: the r1007 cut (release/network-cut.json, 2026-11-12) is applied: r1007 is the active,
+/// ready profile, with the values the cut wrote and nothing pending.
 #[test]
-fn r1007_is_known_and_pending_until_the_genesis_cut() {
+fn r1007_is_the_active_profile_after_the_genesis_cut() {
     let p = r1007();
-    let missing: Vec<String> = p.missing().into_iter().map(|(k, _)| k).collect();
-    assert_eq!(
-        missing,
-        [
-            "genesisHash",
-            "genesisProfile",
-            "bootnodes",
-            "addressBookSha256",
-            "minChainRev"
-        ],
-        "only the values the r1007 genesis cut produces are unset"
-    );
-    for (field, why) in p.missing() {
-        assert!(
-            why.contains("r1007") && why.contains("network-cut"),
-            "{field}: the reason names the r1007 cut and the tool that fills it: {why:?}"
-        );
-    }
+    assert!(p.missing().is_empty(), "{:?}", p.missing());
+    assert!(p.pending.is_empty(), "{:?}", p.pending);
     assert_eq!(p.chain_id, Some(40204));
     assert_eq!(p.node_network.as_deref(), Some("testnet"));
     assert_eq!(p.rpc_url.as_deref(), Some("https://rpc.citrate.ai"));
@@ -1159,11 +1155,18 @@ fn r1007_is_known_and_pending_until_the_genesis_cut() {
     assert_eq!(p.address_book.as_deref(), Some("addresses/40204.json"));
     assert_eq!(p.member_prune_retain, Some(10_000), "CORE-N5 / CV-7a");
     assert_eq!(p.retired, None);
-    assert!(matches!(p.ready(), Err(ProfileError::NotSet { .. })));
+    assert_eq!(active_id().unwrap(), R1007);
+    let r = active_ready().expect("the active r1007 is ready");
+    assert_eq!(
+        r.genesis_hash,
+        "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631"
+    );
+    assert_eq!(r.node_genesis.name, "r1007");
+    assert_eq!(r.min_chain_rev, "a53bac644665a992bf871831250af7354fd69512");
+    assert_eq!(crate::addresses::genesis_hash(), r.genesis_hash);
     let gate = p.expected_network();
-    assert_eq!((gate.chain_id, gate.genesis_hash), (None, None));
-    // Main keeps a network that is ready until the cut flips `active`.
-    assert_ne!(active_id().unwrap(), R1007);
+    assert_eq!(gate.chain_id, Some(40204));
+    assert_eq!(gate.genesis_hash.as_deref(), Some(r.genesis_hash.as_str()));
 }
 
 /// CORE-N2: a retired profile stays known (a data dir from it can be named and set aside), but
@@ -1411,14 +1414,20 @@ fn a_profile_without_node_checkpoint_keeps_the_template_checkpoint_section() {
         t[start..].to_string()
     };
     for id in ["alpha-r1005", "r1006"] {
-        let p = profile(id).unwrap();
+        let mut p = profile(id).unwrap().clone();
+        // r1006 is retired by the r1007 cut (0.5.3); its render rule is what is tested here.
+        p.retired = None;
         assert_eq!(p.node_checkpoint, None, "{id}");
         let net = p.ready().expect("ready");
         let out = render_node_network(template, &net);
         assert_eq!(section(&out), section(template), "{id}");
         assert!(!out.contains("vote_depth"), "{id}");
     }
-    assert_eq!(r1007().node_checkpoint, None, "set by the cut, not before");
+    assert_eq!(
+        r1007().node_checkpoint,
+        Some(NodeCheckpoint { interval: 50, committee_size: 100, vote_depth: 3 }),
+        "set by the r1007 cut"
+    );
 }
 
 /// `nodeCheckpoint` is checked when it is read (an unknown key is a build defect) and when the
@@ -1426,7 +1435,7 @@ fn a_profile_without_node_checkpoint_keeps_the_template_checkpoint_section() {
 #[test]
 fn a_malformed_node_checkpoint_is_refused() {
     let with = |cp: serde_json::Value| {
-        profiles_json_with(|v| v["profiles"]["r1006"]["nodeCheckpoint"] = cp)
+        profiles_json_with_r1006_live(|v| v["profiles"]["r1006"]["nodeCheckpoint"] = cp)
     };
     let r1006_of = |json: String| -> Result<ReadyNetwork, ProfileError> {
         let (_, ps) = parse(&json)?;

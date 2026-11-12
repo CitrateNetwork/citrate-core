@@ -242,10 +242,16 @@ fn while_r1007_is_not_set_the_r1006_install_is_not_touched() {
     let root = scratch("r1007-unset");
     let app = install_v052_on_r1006(&root);
     let node_kr = MapKeyring::from_fixture("node-r1005.keyring.json");
-    let unset = crate::network_profile::profile("r1007")
+    // The shipped r1007 is set (the cut is applied); this case is an r1007 with block 0 not set.
+    let mut r1007 = crate::network_profile::profile("r1007")
         .unwrap_or_else(|e| panic!("{e:?}"))
-        .ready();
-    assert!(unset.is_err(), "r1007 is not set in this build");
+        .clone();
+    r1007.genesis_hash = None;
+    r1007
+        .pending
+        .insert("genesisHash".into(), "test: not set".into());
+    let unset = r1007.ready();
+    assert!(unset.is_err(), "an r1007 with block 0 unset is not ready");
     let before = tree(&app.join("node"));
     let mgr = manager(&root, &app, &node_kr, unset);
     assert!(matches!(
