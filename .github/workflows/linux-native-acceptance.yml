@@ -1,7 +1,7 @@
 # created: 2026-10-22 | branch: ci/k1l-linux-native-acceptance | author: Larry Klosowski + Claude Opus 5.5 (DGX lane)
 # status: active (K1-L, SCL-S14.6). Packaged Linux acceptance of Citrate Core: the published
 # .deb and AppImage (pinned in scripts/ci/linux-native-acceptance/pins.txt, sha256-checked) run
-# through launch, sidecar restart, quit, crash + orphan reaping and the 0.4.2 -> current manual
+# through launch, sidecar restart, quit, crash + orphan reaping and the 0.4.1 -> current manual
 # update, inside a sealed namespace with a private Xvfb display (scripts/ci/linux-native-acceptance.sh).
 # x86_64 runs on ubuntu-24.04 and aarch64 on ubuntu-24.04-arm. The DGX runs the aarch64 leg
 # natively by hand (docs/LINUX_NATIVE_ACCEPTANCE.md). Not a required check.
