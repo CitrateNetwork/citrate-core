@@ -65,6 +65,10 @@ export function simCluster(_host: SimHost): ClusterDomain {
         note: "The preview has no cluster daemon.",
       };
     },
+    // V60 MESH-4: no daemon to switch.
+    async setMeshEnabled() {
+      throw new Error("The mesh switch needs the Citrate Core desktop app.");
+    },
     // HUP-S8.4: no daemon, no address, so refuse rather than invent one.
     async groupSeed() {
       throw new Error("Group links need the Citrate Core desktop app.");

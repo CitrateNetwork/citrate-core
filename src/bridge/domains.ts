@@ -1267,6 +1267,11 @@ export interface ClusterDomain {
   /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why. */
   meshStatus(): Promise<MeshStatus>;
   /**
+   * V60 MESH-4: the member's on/off switch (`cluster_mesh_set_enabled`). Core refuses it until the
+   * CL-S4 sign-off is recorded; a change applies the next time the cluster starts.
+   */
+  setMeshEnabled(enabled: boolean): Promise<MeshStatus>;
+  /**
    * HUP-S8.4: this machine's link (or QR text) for `groupId`: where another member's machine can
    * reach it. Needs the cross-machine mesh; without it the daemon says so and nothing is invented.
    */
