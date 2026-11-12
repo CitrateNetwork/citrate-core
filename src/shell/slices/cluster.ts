@@ -242,6 +242,20 @@ export async function loadMeshStatus(): Promise<void> {
   }
 }
 
+/**
+ * V60 MESH-4: the member's mesh switch. Core refuses it before the CL-S4 sign-off; the refusal is
+ * shown as the error, and the status is reloaded either way so the screen never claims a change
+ * that did not happen.
+ */
+export async function setMeshEnabled(enabled: boolean): Promise<void> {
+  try {
+    clusterSlice.set({ mesh: await bridge.cluster.setMeshEnabled(enabled), error: null });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+    await loadMeshStatus();
+  }
+}
+
 /** Reload just the status + peers for the current selection. */
 export async function reloadCluster(): Promise<void> {
   const id = clusterSlice.get().selectedId;

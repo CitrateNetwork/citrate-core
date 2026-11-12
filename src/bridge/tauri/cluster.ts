@@ -78,6 +78,9 @@ export const tauriCluster: ClusterDomain = {
   meshStatus(): Promise<MeshStatus> {
     return invoke<MeshStatus>("cluster_mesh_status");
   },
+  setMeshEnabled(enabled): Promise<MeshStatus> {
+    return invoke<MeshStatus>("cluster_mesh_set_enabled", { enabled });
+  },
   // HUP-S8.4: group links (seeds) so members' machines find each other without typing addresses.
   groupSeed(groupId): Promise<ClusterGroupSeed> {
     return invoke<ClusterGroupSeed>("cluster_group_seed", { group: groupId });

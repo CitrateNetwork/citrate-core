@@ -27,6 +27,7 @@ import {
   shareMyDeviceLinks,
   syncPeerDeviceLinks,
   loadMeshStatus,
+  setMeshEnabled,
 } from "../shell/slices/cluster";
 import { FleetWizard } from "../fleet/FleetWizard";
 import { linkStatusOf, tauriFleet, type FleetApi } from "../bridge/tauri/fleet";
@@ -34,6 +35,8 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { bridge } from "../bridge";
 import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevices";
 import { peerStateLabel } from "./clusterReachability";
+import { ClusterMap } from "./ClusterMap";
+import { meshSwitchModel } from "./meshSwitch";
 
 function shortAddr(a: string): string {
   if (!a) return "—";
@@ -304,6 +307,30 @@ export function Cluster({ store, s }: SurfaceProps) {
               <span style={{ fontSize: 20, fontWeight: 540 }}>{st.status?.sharedFiles.length ?? 0}</span>
               <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>shared files</span>
             </div>
+          </div>
+
+          {/* V60 MESH-4: the mesh switch and the cluster map (live daemon state only). */}
+          <div className="surface" data-testid="cluster-mesh-panel" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "10px 16px", fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+              Cross-machine mesh · {st.mesh?.on ? "on" : "off"}
+            </div>
+            {(() => {
+              const sw = meshSwitchModel(st.mesh);
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "0 16px 6px" }}>
+                  <span style={{ flex: 1, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{sw.reason}</span>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    data-testid="cluster-mesh-switch"
+                    disabled={!sw.enabled}
+                    onClick={() => sw.action && void setMeshEnabled(sw.action === "turn-on")}
+                  >
+                    {sw.action === "turn-off" ? "Turn off" : "Turn on"}
+                  </button>
+                </div>
+              );
+            })()}
+            <ClusterMap peers={st.peers} />
           </div>
 
           {/* peers */}
