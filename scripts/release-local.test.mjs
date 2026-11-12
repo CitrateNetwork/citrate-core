@@ -47,6 +47,19 @@ describe("release-local.sh arguments (--check-args)", () => {
     expect(r.out).toMatch(/tag rehearsal-0\.0\.53, draft prerelease/);
   });
 
+  it("--linux-arches x86_64 ships Linux x86_64 only, and the feed does not list linux-aarch64 (owner 2026-11-12)", () => {
+    for (const f of LINUX.filter((f) => f.includes("aarch64"))) fs.rmSync(path.join(dir, "linux", f));
+    const r = run(["--version", conf.version, "--linux-arches", "x86_64", ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("Linux x86_64 only; the feed does not list linux-aarch64 or linux-aarch64-deb");
+  });
+
+  it("without --linux-arches every Linux arch is required (the default is unchanged)", () => {
+    const r = run(["--version", conf.version, ...linux()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("Linux x86_64 aarch64");
+  });
+
   const refusals = [
     ["a version that is not x.y.z", () => ["--version", "0.5.3-rc.1", ...linux()], /x\.y\.z/],
     ["a real release whose version is not the app's", () => ["--version", "9.9.9", ...linux()], /not tauri\.conf\.json/],
@@ -55,6 +68,9 @@ describe("release-local.sh arguments (--check-args)", () => {
     ["a rehearsal without an app", () => ["--rehearsal", "--version", "0.0.53", ...linux()], /--app/],
     ["a rehearsal on the app's own version", () => ["--rehearsal", "--version", conf.version, "--app", path.join(dir, "Citrate Core.app"), ...linux()], /throwaway version/],
     ["a missing Linux update file", () => { fs.rmSync(path.join(dir, "linux", LINUX[3])); return ["--version", conf.version, ...linux()]; }, /no .*linux-aarch64\.deb/],
+    ["an unknown Linux arch", () => ["--version", conf.version, "--linux-arches", "x86_64,riscv64", ...linux()], /--linux-arches.*riscv64/],
+    ["no Linux arch", () => ["--version", conf.version, "--linux-arches", "", ...linux()], /--linux-arches/],
+    ["--linux-arches x86_64 with an x86_64 file missing", () => { fs.rmSync(path.join(dir, "linux", LINUX[1])); return ["--version", conf.version, "--linux-arches", "x86_64", ...linux()]; }, /no .*linux-x86_64\.deb/],
     ["no --out", () => ["--version", conf.version, "--linux-dir", path.join(dir, "linux")], /--out/],
   ];
   for (const [what, args, msg] of refusals) {
@@ -163,6 +179,12 @@ describe("release-local.sh release guards (source)", () => {
     expect(i, s).toBeGreaterThan(-1);
     return i;
   };
+
+  it("checks latest.json names exactly the platforms built (not a fixed five)", () => {
+    expect(src).not.toContain('want = {"darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"}');
+    expect(src).toContain('want = set(sys.argv[4:])');
+    expect(src).toMatch(/"\$OUT\/latest.json" "\$VERSION" "\$BASE_URL" "\$\{PLATFORMS\[@\]\}"/);
+  });
 
   it("checks the version in the app and in the app inside the DMG before notarizing", () => {
     expect(src).toContain("plutil -extract CFBundleShortVersionString raw");
