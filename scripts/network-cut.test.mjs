@@ -60,7 +60,9 @@ const T_BOOTNODES = [
 // The provenance record of each node build: a runtime-deps release asset next to the node bytes,
 // named after them (lead decision on #605), with its sha256 pinned in runtime-deps.sha256.
 const prov = (target, b) => ({ asset: `citrate-${target}-${T_REV.slice(0, 12)}.PROVENANCE.txt`, sha256: b.repeat(32) });
-const filledCut = (cut) => ({
+// A cut that builds every node target (the shipped cut's `notBuilt` is dropped; the notBuilt tests
+// at the end put it back).
+const filledCut = ({ notBuilt, ...cut }) => ({
   ...cut,
   genesisHash: T_GENESIS,
   genesisProfile: CANDIDATE.genesisProfile,
@@ -179,7 +181,6 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
         "genesisHash",
         "genesisProfile",
         "node.aarch64-apple-darwin",
-        "node.aarch64-unknown-linux-gnu",
         "node.x86_64-unknown-linux-gnu",
         "rpcUrl",
       ].sort(),
@@ -238,7 +239,7 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
   it("check --release refuses it and names every pending value", () => {
     const r = py(["check", "--release"]);
     expect(r.code).not.toBe(0);
-    for (const k of ["genesisHash", "bootnodes", "chainRev", "chainParams", "rpcUrl", "consensusFingerprint", "node.aarch64-apple-darwin", "node.x86_64-unknown-linux-gnu", "node.aarch64-unknown-linux-gnu"]) {
+    for (const k of ["genesisHash", "bootnodes", "chainRev", "chainParams", "rpcUrl", "consensusFingerprint", "node.aarch64-apple-darwin", "node.x86_64-unknown-linux-gnu"]) {
       expect(r.err).toContain(k);
     }
   });
@@ -507,8 +508,10 @@ describe("rpcUrl: allowlisted host, verified live by check --release (core#611)"
 // genesis outputs and applies it. `fill --values <file>` writes the values into the cut file and
 // clears them from `pending`; with `--apply` it then applies, all or nothing.
 describe("network-cut.py fill (the one-command cut)", SLOW, () => {
+  // The values a real fill passes: no pin for a target the shipped cut does not build.
   const valuesOf = (cut) => {
     const { profile, retire, pending, _comment, rpcHosts, ...values } = filledCut(cut);
+    for (const t of Object.keys(cut.notBuilt || {})) delete values.node[t];
     return values;
   };
   const writeValues = (v) => {
