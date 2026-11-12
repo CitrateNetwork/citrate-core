@@ -6,7 +6,7 @@
 # The local release of Citrate Core on the release Mac, end to end:
 #
 #   build -> codesign (Developer ID) -> notarize -> staple -> update files -> tauri signer sign
-#   -> latest.json (darwin-aarch64, linux-x86_64(+deb), linux-aarch64(+deb)) -> SHA256SUMS
+#   -> latest.json (darwin-aarch64 and linux-<arch>(+deb) for each --linux-arches) -> SHA256SUMS
 #   -> gh release create
 #
 # Owner decision 2026-11-11: the update files are hosted on the GitHub release itself, and
@@ -30,6 +30,8 @@
 #       PRERELEASE under the tag rehearsal-<x.y.z>, which can never be "latest". --cleanup deletes
 #       that draft afterwards.
 #   --target <commit>   the commit the release points at (default HEAD); GitHub must have it.
+#   --linux-arches <list>   the Linux arches shipped, comma separated (default x86_64,aarch64). An arch
+#                       left out is not in latest.json, so its installs are offered no update.
 #   scripts/release-local.sh --check-args ...   validate the arguments and stop (tests).
 #
 # The Linux update files (Citrate-Core-linux-{x86_64,aarch64}.{AppImage,deb}) are built on their own
@@ -46,8 +48,8 @@ APP_NAME="Citrate Core.app"
 # The updater public key every 0.5.2 install pins (src-tauri/tauri.conf.json at tag v0.5.2). A release
 # signed with any other key is one no installed app can accept, so the tree must still carry it.
 V052_UPDATER_PUBKEY="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQzM4MkREMTA3RjA4QzUKUldURkNIOFEzWUxEanZsN096Vk1WWm9WMllUUE5GNXVUYVFYeGRQNFluRnVlVG5vWVZnV0F6eXAK"
-LINUX_FILES=(Citrate-Core-linux-x86_64.AppImage Citrate-Core-linux-x86_64.deb Citrate-Core-linux-aarch64.AppImage Citrate-Core-linux-aarch64.deb)
-PLATFORMS=(darwin-aarch64 linux-x86_64 linux-x86_64-deb linux-aarch64 linux-aarch64-deb)
+# LINUX_FILES and PLATFORMS are set from --linux-arches (default: both) after the arguments.
+LINUX_ARCHES="x86_64,aarch64"
 # Free space a real release needs on the release Mac (the build, the bundle and ~4 GB of update files).
 REAL_FLOOR_GIB=25
 REHEARSAL_FLOOR_GIB=3
@@ -61,6 +63,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
     --linux-dir) LINUX_DIR="${2:-}"; shift 2 ;;
+    --linux-arches) LINUX_ARCHES="${2-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     --app) APP="${2:-}"; shift 2 ;;
     --target) TARGET="${2:-}"; shift 2 ;;
@@ -103,13 +106,37 @@ else
   TAG="v$VERSION"
   FLOOR=$REAL_FLOOR_GIB
 fi
-[ -n "$LINUX_DIR" ] && [ -d "$LINUX_DIR" ] || die "--linux-dir <dir> with the four Linux update files"
+# The Linux arches this release ships. An arch left out is not in latest.json at all: an install on
+# it finds no platform entry and is offered no update (tauri-plugin-updater 2.10.1 get_urls ->
+# TargetsNotFound), which is honest; a placeholder entry would offer an update it cannot install.
+LINUX_FILES=() PLATFORMS=(darwin-aarch64)
+[ -n "$LINUX_ARCHES" ] || die "--linux-arches needs at least one of x86_64,aarch64"
+IFS=, read -r -a ARCH_LIST <<<"$LINUX_ARCHES"
+SHIPPED=""
+for a in x86_64 aarch64; do
+  for g in "${ARCH_LIST[@]}"; do
+    case "$g" in x86_64|aarch64) ;; *) die "--linux-arches: unknown arch '$g' (x86_64, aarch64)" ;; esac
+    if [ "$g" = "$a" ]; then
+      LINUX_FILES+=("Citrate-Core-linux-$a.AppImage" "Citrate-Core-linux-$a.deb")
+      PLATFORMS+=("linux-$a" "linux-$a-deb")
+      SHIPPED="$SHIPPED $a"
+      break
+    fi
+  done
+done
+SHIPPED="${SHIPPED# }"
+[ -n "$LINUX_DIR" ] && [ -d "$LINUX_DIR" ] || die "--linux-dir <dir> with the Linux update files (${LINUX_FILES[*]})"
 for f in "${LINUX_FILES[@]}"; do
   [ -f "$LINUX_DIR/$f" ] || die "no $LINUX_DIR/$f"
 done
 [ -n "$OUT" ] || die "--out <dir>"
 if [ "$CHECK_ONLY" -eq 1 ]; then
   say "arguments OK (tag $TAG, $([ "$REHEARSAL" -eq 1 ] && echo 'draft prerelease' || echo 'latest release'))"
+  if [ "$SHIPPED" = "x86_64 aarch64" ]; then say "Linux $SHIPPED"
+  else
+    OMITTED=""; for a in x86_64 aarch64; do case " $SHIPPED " in *" $a "*) ;; *) OMITTED="$OMITTED linux-$a or linux-$a-deb" ;; esac; done
+    say "Linux $SHIPPED only; the feed does not list${OMITTED}"
+  fi
   exit 0
 fi
 
@@ -241,11 +268,11 @@ NOTES="${RELEASE_NOTES:-Citrate Core $VERSION}"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 (cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" "$WORK/fragment.json") \
   > "$OUT/latest.json"
-python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" <<'PY'
+python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" "${PLATFORMS[@]}" <<'PY'
 import json, sys
 feed, version, base = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
 assert feed["version"] == version, feed["version"]
-want = {"darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"}
+want = set(sys.argv[4:])
 assert set(feed["platforms"]) == want, sorted(feed["platforms"])
 for p, e in feed["platforms"].items():
     assert e["url"].startswith(base + "/"), (p, e["url"])

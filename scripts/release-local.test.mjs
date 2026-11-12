@@ -116,7 +116,10 @@ describe("release-local.sh source", () => {
     expect(src).toContain('base64.b64decode(sys.argv[1])');
     expect(src).toContain('"$V052_UPDATER_PUBKEY")"');
     expect(src).toContain('BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"');
-    for (const p of ["darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"]) expect(src).toContain(p);
+    // The platform keys are the 0.5.2 feed's: darwin-aarch64, then linux-<arch> and linux-<arch>-deb per shipped arch.
+    expect(src).toContain("PLATFORMS=(darwin-aarch64)");
+    expect(src).toContain('PLATFORMS+=("linux-$a" "linux-$a-deb")');
+    expect(src).toContain('LINUX_FILES+=("Citrate-Core-linux-$a.AppImage" "Citrate-Core-linux-$a.deb")');
   });
 
   it("never runs the built app and keeps the key off argv", () => {
