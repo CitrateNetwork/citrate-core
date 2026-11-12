@@ -246,6 +246,25 @@ mod signoff {
     }
 
     /// The packet that was reviewed, pinned to a commit and a digest of the file at that commit.
+    /// `release/signoffs/signers.json`: exactly one address per role.
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Registry {
+        owner: String,
+        #[serde(rename = "security-lead")]
+        security_lead: String,
+    }
+
+    impl Registry {
+        fn address(&self, role: &str) -> &str {
+            if role == "owner" {
+                &self.owner
+            } else {
+                &self.security_lead
+            }
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Packet {
@@ -292,7 +311,9 @@ mod signoff {
         if hex::encode(Sha256::digest(packet)) != r.packet.sha256.to_ascii_lowercase() {
             return Err("the committed packet does not match the signed sha256".into());
         }
-        let reg: std::collections::BTreeMap<String, String> =
+        // A struct, not a map: serde refuses a repeated key ("duplicate field") and, with
+        // deny_unknown_fields, any role other than the two (review P3 on #631).
+        let reg: Registry =
             serde_json::from_str(registry).map_err(|e| format!("signers registry: {e}"))?;
         let canon = |a: &str| a.trim().trim_start_matches("0x").to_ascii_lowercase();
         let packet_json = serde_json::json!({
@@ -301,10 +322,7 @@ mod signoff {
         });
         let mut seen: Vec<String> = Vec::new();
         for role in ROLES {
-            let want = reg
-                .get(role)
-                .map(|a| canon(a))
-                .ok_or_else(|| format!("no {role} registered in the signers registry"))?;
+            let want = canon(reg.address(role));
             if seen.contains(&want) {
                 return Err("the owner and the security lead must be different keys".into());
             }
@@ -357,6 +375,12 @@ mod signoff {
             return Err("packet.sha256 must be the file's SHA-256".into());
         }
         let mut people: Vec<String> = Vec::new();
+        if r.signers.len() != ROLES.len() {
+            return Err(format!(
+                "the record must have exactly one signature per role ({})",
+                ROLES.join(", ")
+            ));
+        }
         for role in ROLES {
             let s = r
                 .signers
@@ -413,6 +437,33 @@ mod tests {
         }
     }
 
+    /// Review follow-up (#631, BerryManifold): the sign-off files are code-owned by the owner, so a
+    /// PR that changes the signer registry and the record together still needs the owner's review
+    /// (main requires code-owner reviews). GitHub accepts ANY one listed owner per path, so listing
+    /// a second owner here would not require both; the second person is the record's own signature.
+    #[test]
+    fn the_signoff_files_are_code_owned_by_the_owner() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/CODEOWNERS");
+        let text = std::fs::read_to_string(path).expect(".github/CODEOWNERS");
+        // The LAST matching pattern wins in CODEOWNERS, so the rule must come after `*`.
+        let rules: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let star = rules.iter().rposition(|l| l.starts_with("* "));
+        let signoffs = rules
+            .iter()
+            .rposition(|l| l.split_whitespace().next() == Some("/release/signoffs/"))
+            .expect("a /release/signoffs/ rule");
+        assert!(
+            star.is_none_or(|s| s < signoffs),
+            "the rule must come after `*`"
+        );
+        let owners: Vec<&str> = rules[signoffs].split_whitespace().skip(1).collect();
+        assert_eq!(owners, vec!["@SaulBuilds"], "owned by the owner alone");
+    }
+
     /// Review P2 (#631): signatures and the packet digest are checked, not just their format.
     #[test]
     fn a_signoff_record_verifies_only_with_registered_signers_and_the_signed_packet() {
@@ -439,8 +490,8 @@ mod tests {
                 "wp": "CL-S4",
                 "packet": pk,
                 "signers": [
-                    signer("owner", "SaulBuilds", "2026-11-20", owner_sig_key),
-                    signer("security-lead", "kurtatwork", "2026-11-21", sec_sig_key),
+                    signer("owner", "example-owner", "2026-11-20", owner_sig_key),
+                    signer("security-lead", "example-security-lead", "2026-11-21", sec_sig_key),
                 ],
             })
         };
@@ -482,6 +533,36 @@ mod tests {
             "no security-lead registered"
         );
         assert!(signoff::verify(&good, &packet, "not json").is_err());
+        // Review P3 (#631, Matr0xshka): a role listed twice is refused, in the registry (a JSON
+        // object with a repeated key would otherwise keep only the last) and in the record.
+        let dup_registry = format!(
+            r#"{{"owner":"{}","security-lead":"{}","owner":"{}"}}"#,
+            addr(&owner_key),
+            addr(&sec_key),
+            addr(&other_key)
+        );
+        assert!(
+            signoff::verify(&good, &packet, &dup_registry).is_err(),
+            "owner registered twice"
+        );
+        let extra_role = serde_json::json!({
+            "owner": addr(&owner_key), "security-lead": addr(&sec_key), "auditor": addr(&other_key)
+        })
+        .to_string();
+        assert!(
+            signoff::verify(&good, &packet, &extra_role).is_err(),
+            "unknown role in registry"
+        );
+        let mut two_owners: serde_json::Value = serde_json::from_str(&good).expect("json");
+        let first = two_owners["signers"][0].clone();
+        two_owners["signers"]
+            .as_array_mut()
+            .expect("array")
+            .push(first);
+        assert!(
+            signoff::validate(&two_owners.to_string()).is_err(),
+            "two owner entries in the record"
+        );
     }
 
     #[test]
@@ -495,8 +576,8 @@ mod tests {
                 "sha256": "a".repeat(64),
             },
             "signers": [
-                { "role": "owner", "github": "SaulBuilds", "date": "2026-11-20", "sig": format!("0x{}", "ab".repeat(65)) },
-                { "role": "security-lead", "github": "kurtatwork", "date": "2026-11-21", "sig": format!("0x{}", "cd".repeat(65)) },
+                { "role": "owner", "github": "example-owner", "date": "2026-11-20", "sig": format!("0x{}", "ab".repeat(65)) },
+                { "role": "security-lead", "github": "example-security-lead", "date": "2026-11-21", "sig": format!("0x{}", "cd".repeat(65)) },
             ],
         });
         assert!(signoff::validate(&good.to_string()).is_ok());
@@ -524,7 +605,7 @@ mod tests {
             "the owner alone"
         );
         assert!(
-            mutate(&|v| v["signers"][1]["github"] = "SaulBuilds".into()).is_err(),
+            mutate(&|v| v["signers"][1]["github"] = "example-owner".into()).is_err(),
             "one person in both roles"
         );
         assert!(
