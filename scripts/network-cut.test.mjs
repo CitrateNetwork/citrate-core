@@ -581,3 +581,66 @@ describe("network-cut.py fill (the one-command cut)", SLOW, () => {
     expect(snapshot()).toEqual(before);
   });
 });
+
+// Owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64; Linux aarch64 is not built. The cut names a
+// target it does not build in `notBuilt` (with the reason), so nothing pins, stages or waits for it.
+describe("notBuilt: a node target this release does not build (owner 2026-11-12)", SLOW, () => {
+  const A64 = "aarch64-unknown-linux-gnu";
+  const REASON = "owner 2026-11-12: Linux aarch64 is not built for 0.5.3";
+  const withoutA64 = (cut) => {
+    const c = filledCut(cut);
+    c.node = { ...c.node, [A64]: null };
+    c.notBuilt = { [A64]: REASON };
+    return c;
+  };
+
+  it("the shipped cut does not build Linux aarch64, and does not wait for it", () => {
+    const cut = json("release/network-cut.json");
+    expect(cut.notBuilt).toEqual({ [A64]: expect.stringMatching(/owner 2026-11-12/) });
+    expect(cut.node[A64]).toBeNull();
+    expect(Object.keys(cut.pending)).not.toContain(`node.${A64}`);
+    const r = py(["check", "--root", root, "--cut-only"]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).not.toContain(`node.${A64}`);
+  });
+
+  it("a complete cut without Linux aarch64 applies: no aarch64 pin, and citrate-node names it not built", () => {
+    writeJson("release/network-cut.json", withoutA64(json("release/network-cut.json")));
+    expect(py(["check", "--root", root, "--cut-only"]).code).toBe(0);
+    const r = py(["apply", "--root", root]);
+    expect(r.code, r.err).toBe(0);
+    const node = json("release/components.json").components.find((c) => c.id === "citrate-node");
+    expect(node.artifacts[A64]).toBeUndefined();
+    expect(node.pending).toEqual({ [A64]: expect.stringMatching(/not built.*owner 2026-11-12/) });
+    expect(rd("src-tauri/runtime-deps.sha256")).not.toContain(`citrate-${A64}-${T_REV.slice(0, 12)}`);
+    expect(rd("src-tauri/runtime-deps.sha256")).toContain(`citrate-x86_64-unknown-linux-gnu-${T_REV.slice(0, 12)}.PROVENANCE.txt`);
+    const c = py(["check", "--release", "--root", root, "--cut-only"]);
+    expect(c.err.split("\n").filter((l) => l.includes("FAIL:"))).toEqual([expect.stringMatching(/FAIL: Cargo\.lock/)]);
+  });
+
+  const refusals = [
+    ["the macOS node", (c) => ({ ...c, notBuilt: { "aarch64-apple-darwin": REASON } }), /notBuilt.*aarch64-apple-darwin/],
+    ["a target that is also pinned", (c) => ({ ...c, node: filledCut(c).node }), /notBuilt.*pinned/],
+    ["an empty reason", (c) => ({ ...c, notBuilt: { [A64]: " " } }), /notBuilt.*reason/],
+    ["an unknown target", (c) => ({ ...c, notBuilt: { "riscv64-unknown-linux-gnu": REASON } }), /notBuilt.*riscv64/],
+  ];
+  for (const [what, mk, msg] of refusals) {
+    it(`check refuses notBuilt for ${what}`, () => {
+      writeJson("release/network-cut.json", mk(withoutA64(json("release/network-cut.json"))));
+      const r = py(["check", "--root", root, "--cut-only"]);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(msg);
+    });
+  }
+
+  it("fill refuses a pin for a target the cut does not build, and writes nothing", () => {
+    const before = snapshot();
+    const v = { node: { [A64]: filledCut(json("release/network-cut.json")).node[A64] } };
+    const f = path.join(root, "v.json");
+    fs.writeFileSync(f, JSON.stringify(v));
+    const r = py(["fill", "--values", f, "--root", root]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/not built/);
+    expect(snapshot()).toEqual(before);
+  });
+});
