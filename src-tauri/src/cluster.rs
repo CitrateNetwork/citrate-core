@@ -13,15 +13,15 @@
 //! enforces the RBAC boundary. ENV config (never argv — leaks to `ps`): `CITRATE_CLUSTER_SOCKET`,
 //! `CITRATE_CLUSTER_BEARER_FILE` (0600 token file), `CITRATE_CLUSTER_SELF_ADDR` (this member's addr).
 //!
-//! ## Identity — cluster id = comms id (supersedes CL-2's `= wallet` clause)
+//! ## Identity: a non-value device key, never the wallet
 //! The mesh admits by **address ∈ roster**, and the roster (from the comms member-daemon) keys on the
-//! device-sealed **comms** address (Option A, comms.rs) — NOT the custody wallet address. citrate-cluster's
-//! locked decision CL-2 (`WalletAddress = comms id = cluster Noise id`) predates that split and is stale:
-//! comms mints a fresh, non-value per-device key, so wallet ≠ comms. So this node's cluster identity is
-//! its **comms** identity — self_addr = the comms address, and (for libp2p) the Noise seed = the comms
-//! key — which keeps Rule 3 intact (a non-value device key, never the wallet) and makes the address it
-//! announces on the wire match the roster. See `docs/adr/ADR-2026-08-30-cluster-identity-and-transport.md`.
-//! (The comms↔wallet on-chain binding is the deferred `wallet_link` attestation; nothing consumes it yet.)
+//! device-sealed **comms** address (Option A, comms.rs), not the custody wallet address (CL-2's
+//! `wallet = Noise id` is superseded). On the in-process transport, and on libp2p without an active
+//! DeviceLink, this node meshes as its comms identity (self_addr = the comms address, Noise seed =
+//! the comms key). HUP-S8.1: with the cross-machine transport on and an active DeviceLink, it meshes
+//! as this machine's own device key, which the daemon admits through the link
+//! (`device_link::mesh_identity`; ADR-2026-10-01-device-keys-and-devicelink). Either way the key is a
+//! non-value device key (Rule 3). See `docs/adr/ADR-2026-08-30-cluster-identity-and-transport.md`.
 //!
 //! ## Transport — in-process by default, libp2p behind a soak-gated env flip (CL-S3)
 //! In-process transport by default (single node — real admission, no cross-machine fan-out). When
@@ -29,9 +29,9 @@
 //! seed to a 0600 file and forward `CITRATE_CLUSTER_SEED_FILE` + optional `CITRATE_CLUSTER_BOOTSTRAP`, so
 //! the daemon runs the real cross-machine libp2p mesh. This is OFF by default and stays operator-only
 //! until the two-machine soak + the Rule-8 transport sign-off (citrate-cluster Rule 8) — it must not be
-//! flipped on for real partner traffic pre-audit. HUP-S8.4: a cluster-daemon built from citrate-cluster
-//! `hup/n7-cluster-mesh-prereqs` or later serves every group from one process (one swarm per group, each
-//! on its own port derived from the listen address) unless the operator pins it with
+//! flipped on for real partner traffic pre-audit. HUP-S8.4: the bundled cluster-daemon (citrate-cluster
+//! main, pinned in `release/components.json`) serves every group from one process (one swarm per
+//! group, each on its own port derived from the listen address) unless the operator pins it with
 //! `CITRATE_CLUSTER_GROUP`. Machines find each other through group seeds (`cluster_group_seed` /
 //! `cluster_add_seed`, link or QR text) and, only when the operator sets `CITRATE_CLUSTER_MDNS=1`, mDNS
 //! on the local network. Neither admits anyone: the daemon's roster + DeviceLink check still decides.
@@ -63,7 +63,7 @@ const ENV_BEARER_FILE: &str = "CITRATE_CLUSTER_BEARER_FILE";
 const ENV_SELF_ADDR: &str = "CITRATE_CLUSTER_SELF_ADDR";
 // libp2p transport knobs — only set when the operator opts in (CL-S3, soak-gated).
 const ENV_LISTEN: &str = "CITRATE_CLUSTER_LISTEN"; // listen multiaddr; its presence SELECTS libp2p
-const ENV_SEED_FILE: &str = "CITRATE_CLUSTER_SEED_FILE"; // 0600 file: the comms secp256k1 seed (Noise id)
+const ENV_SEED_FILE: &str = "CITRATE_CLUSTER_SEED_FILE"; // 0600 file: the mesh secp256k1 seed (Noise id)
 const ENV_BOOTSTRAP: &str = "CITRATE_CLUSTER_BOOTSTRAP"; // optional comma-sep peer multiaddrs to dial
 /// HUP-S8.4: LAN discovery for every group (`1`), forwarded only when the operator sets it here.
 const ENV_MDNS: &str = "CITRATE_CLUSTER_MDNS";
@@ -117,12 +117,14 @@ pub struct ClusterDaemonManager {
     socket_path: PathBuf,
     bearer_path: PathBuf,
     data_dir: PathBuf,
-    /// This node's member address (hex, its cluster identity = its comms address). Empty until known.
+    /// This node's mesh address (hex): the comms address, or the device address when it meshes as a
+    /// linked device (HUP-S8.1). Empty until known.
     self_addr: String,
     crash_record_path: PathBuf,
     health_interval: Duration,
     /// Real cross-machine libp2p transport config, when the operator has opted in (CL-S3). `None` →
-    /// the single-node in-process transport (the default). Its `seed_hex` is the comms secp256k1 key.
+    /// the single-node in-process transport (the default). Its `seed_hex` is the mesh identity's
+    /// secp256k1 key (the comms key, or this machine's device key when linked).
     libp2p: Option<Libp2pOpts>,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -184,7 +186,7 @@ impl ClusterDaemonManager {
         self
     }
 
-    /// The 0600 file the comms seed is written to at start (libp2p only). The daemon reads the PATH, so
+    /// The 0600 file the mesh seed is written to at start (libp2p only). The daemon reads the PATH, so
     /// the secret never crosses env/argv; derived from `data_dir` (the seed itself lives in the keyring).
     fn seed_path(&self) -> PathBuf {
         self.data_dir.join("cluster.seed")
@@ -281,7 +283,7 @@ impl ClusterDaemonManager {
         std::fs::create_dir_all(&self.data_dir).ok();
         let token = mint_bearer();
         persist_secret_0600(&self.bearer_path, &token)?;
-        // libp2p only: write the comms seed to its 0600 file — the daemon reads the PATH, so the
+        // libp2p only: write the mesh seed to its 0600 file — the daemon reads the PATH, so the
         // secret never crosses env/argv. In-process mode needs no seed and writes nothing.
         if let Some(opts) = &self.libp2p {
             persist_secret_0600(&self.seed_path(), &opts.seed_hex)?;
@@ -311,7 +313,7 @@ impl ClusterDaemonManager {
             drop(sup);
         }
         let _ = std::fs::remove_file(&self.bearer_path);
-        // Don't leave the comms seed on disk after teardown (libp2p only; a no-op otherwise).
+        // Don't leave the mesh seed on disk after teardown (libp2p only; a no-op otherwise).
         let _ = std::fs::remove_file(self.seed_path());
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -431,6 +433,10 @@ struct PeerView {
     /// HUP-S8.1: the member a device peer acts for (absent for a member's own identity).
     #[serde(default)]
     member: Option<String>,
+    /// V60 MESH-4: how an online peer is reached, `direct` or `relayed` (citrate-cluster
+    /// S0-NAT-SPIKE daemons). Absent from an older daemon.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// HUP-S8.1: one device under a member (mirrors cluster-daemon `DeviceViewWire`).
@@ -562,6 +568,27 @@ pub struct ClusterPeerDto {
     /// HUP-S8.1: set when this peer is a linked device; the member it acts for.
     #[serde(skip_serializing_if = "Option::is_none")]
     member: Option<String>,
+    /// V60 MESH-4: `direct` or `relayed` for an online peer when the daemon reports it; absent
+    /// otherwise (the Cluster screen then says only "online").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link: Option<&'static str>,
+}
+
+impl From<PeerView> for ClusterPeerDto {
+    fn from(p: PeerView) -> Self {
+        // Only the two kinds the daemon defines are passed on, and only for an online peer.
+        let link = match (p.online, p.link.as_deref()) {
+            (true, Some("direct")) => Some("direct"),
+            (true, Some("relayed")) => Some("relayed"),
+            _ => None,
+        };
+        ClusterPeerDto {
+            address: p.address,
+            online: p.online,
+            member: p.member,
+            link,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,14 +910,7 @@ pub async fn cluster_peers(
 ) -> std::result::Result<Vec<ClusterPeerDto>, String> {
     feed_roster(&app, &group).await?;
     match route(&app, Request::Peers { group })? {
-        Response::Peers { peers } => Ok(peers
-            .into_iter()
-            .map(|p| ClusterPeerDto {
-                address: p.address,
-                online: p.online,
-                member: p.member,
-            })
-            .collect()),
+        Response::Peers { peers } => Ok(peers.into_iter().map(ClusterPeerDto::from).collect()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }

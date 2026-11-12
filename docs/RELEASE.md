@@ -410,10 +410,43 @@ data. Never run the install tests there either.
    its `.sig`), then write the feed entry: `node scripts/updater-feed.mjs fragment --version <v>
    --base-url https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/v<v> --dir <dir>
    darwin-aarch64`. Merge it with the Linux fragments (`updater-feed.mjs merge`).
-5. Publish only as [053-UPDATER.md](release/053-UPDATER.md) section 3 says: the DMG to the private CDN
+5. (0.5.0 to 0.5.2; for 0.5.3 see [the local release script](#the-local-release-script-053).) Publish only as [053-UPDATER.md](release/053-UPDATER.md) section 3 says: the DMG to the private CDN
    under `downloads/v<v>/`, the update tarball and its `.sig` to the public `downloads/updater/v<v>/`,
    `latest.json` to both feeds, and on the GitHub release only `latest.json`, the checksums and the
    signatures. Never attach the DMG or the update tarball to a GitHub release.
+
+## The local release script (0.5.3)
+
+Owner decision 2026-11-11 ([053-UPDATER.md](release/053-UPDATER.md)): the release Mac builds,
+signs and notarizes, and the update files are assets of the GitHub release that `latest.json`
+points at. `scripts/release-local.sh` does every step after the inputs are staged (step 1 above)
+and the Linux update files are built (docs/RELEASE_LINUX.md):
+
+```sh
+# the four Linux files in one folder: Citrate-Core-linux-{x86_64,aarch64}.{AppImage,deb}
+scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir>            # build and verify, publish nothing
+scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir> --publish  # draft release, verify, then latest
+```
+
+It refuses to start below 25 GiB free, without the Developer ID identity, the `citrate` notary
+profile, the v2 updater key and its keychain passphrase, or when GitHub does not have the release
+commit, or when the updater pubkey in `tauri.conf.json` is not the one 0.5.2 installs pin (the
+script carries that key as `V052_UPDATER_PUBKEY`). It takes the DMG by its exact name
+(`<productName>_<version>_aarch64.dmg`) and refuses if any other DMG is in the bundle folder, and
+before notarizing it checks `CFBundleShortVersionString` of the app and of the app inside the DMG
+(attached read-only) against `--version`. The build makes no updater artifacts and never sees the
+updater key; the key is in the environment only of the signing step. The update tarball is made from
+the stapled app, and every `.sig` is verified with `minisign` against the pinned key. With
+`--publish` it creates the release as a **draft**, checks that every asset's sha256 on GitHub
+matches `SHA256SUMS` (and `SHA256SUMS` itself), and only then publishes it as latest
+(`gh release edit --draft=false --latest`). Then it reads the fallback feed anonymously and fetches
+every URL it names. It never runs the built app.
+
+**Rehearsal** (no release): `--rehearsal --version <throwaway x.y.z> --app <any .app>` codesigns
+and notarizes that app for real, signs with the real key and creates only a **draft prerelease**
+tagged `rehearsal-<x.y.z>`, which never becomes latest; `--cleanup` deletes it. First rehearsal
+2026-11-11: a stub app, stand-in Linux files, notarization Accepted, `source=Notarized Developer ID`,
+13 assets in the draft, `latest` still v0.5.2; the draft deleted afterwards.
 
 ## First-run caveat (honest)
 Every tag run of this workflow so far (v0.4.2 to v0.5.1, and the Windows tags) failed at staging,
