@@ -246,6 +246,25 @@ mod signoff {
     }
 
     /// The packet that was reviewed, pinned to a commit and a digest of the file at that commit.
+    /// `release/signoffs/signers.json`: exactly one address per role.
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Registry {
+        owner: String,
+        #[serde(rename = "security-lead")]
+        security_lead: String,
+    }
+
+    impl Registry {
+        fn address(&self, role: &str) -> &str {
+            if role == "owner" {
+                &self.owner
+            } else {
+                &self.security_lead
+            }
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Packet {
@@ -292,7 +311,9 @@ mod signoff {
         if hex::encode(Sha256::digest(packet)) != r.packet.sha256.to_ascii_lowercase() {
             return Err("the committed packet does not match the signed sha256".into());
         }
-        let reg: std::collections::BTreeMap<String, String> =
+        // A struct, not a map: serde refuses a repeated key ("duplicate field") and, with
+        // deny_unknown_fields, any role other than the two (review P3 on #631).
+        let reg: Registry =
             serde_json::from_str(registry).map_err(|e| format!("signers registry: {e}"))?;
         let canon = |a: &str| a.trim().trim_start_matches("0x").to_ascii_lowercase();
         let packet_json = serde_json::json!({
@@ -301,10 +322,7 @@ mod signoff {
         });
         let mut seen: Vec<String> = Vec::new();
         for role in ROLES {
-            let want = reg
-                .get(role)
-                .map(|a| canon(a))
-                .ok_or_else(|| format!("no {role} registered in the signers registry"))?;
+            let want = canon(reg.address(role));
             if seen.contains(&want) {
                 return Err("the owner and the security lead must be different keys".into());
             }
@@ -357,6 +375,12 @@ mod signoff {
             return Err("packet.sha256 must be the file's SHA-256".into());
         }
         let mut people: Vec<String> = Vec::new();
+        if r.signers.len() != ROLES.len() {
+            return Err(format!(
+                "the record must have exactly one signature per role ({})",
+                ROLES.join(", ")
+            ));
+        }
         for role in ROLES {
             let s = r
                 .signers
@@ -517,15 +541,24 @@ mod tests {
             addr(&sec_key),
             addr(&other_key)
         );
-        assert!(signoff::verify(&good, &packet, &dup_registry).is_err(), "owner registered twice");
+        assert!(
+            signoff::verify(&good, &packet, &dup_registry).is_err(),
+            "owner registered twice"
+        );
         let extra_role = serde_json::json!({
             "owner": addr(&owner_key), "security-lead": addr(&sec_key), "auditor": addr(&other_key)
         })
         .to_string();
-        assert!(signoff::verify(&good, &packet, &extra_role).is_err(), "unknown role in registry");
+        assert!(
+            signoff::verify(&good, &packet, &extra_role).is_err(),
+            "unknown role in registry"
+        );
         let mut two_owners: serde_json::Value = serde_json::from_str(&good).expect("json");
         let first = two_owners["signers"][0].clone();
-        two_owners["signers"].as_array_mut().expect("array").push(first);
+        two_owners["signers"]
+            .as_array_mut()
+            .expect("array")
+            .push(first);
         assert!(
             signoff::validate(&two_owners.to_string()).is_err(),
             "two owner entries in the record"
