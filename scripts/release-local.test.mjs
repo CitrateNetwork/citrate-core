@@ -317,6 +317,11 @@ describe("release-local.sh --publish-target spaces", () => {
     expect(src).not.toMatch(/--secret|aws configure set/);
   });
 
+  it("counts objects in a way Spaces answers (it omits KeyCount on an empty listing: rehearsal 0.0.56)", () => {
+    expect(src).not.toContain("--query KeyCount");
+    expect(src.match(/--query 'length\(Contents \|\| `\[\]`\)'/g)).toHaveLength(2);
+  });
+
   it("a spaces rehearsal cleanup removes only its own prefix", () => {
     expect(src).toContain('s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive');
     expect(src).not.toMatch(/s3 rm "s3:\/\/\$CDN_BUCKET\/downloads\/"/);
