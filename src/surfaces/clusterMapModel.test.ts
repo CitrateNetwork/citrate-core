@@ -1,7 +1,7 @@
 // V60 MESH-4: the cluster map (03 §UX "Mesh"): devices as nodes, an edge per live connection,
 // solid = direct, dashed = relayed. Source: the cluster daemon's `peers` answer (`cluster_peers`).
 import { describe, expect, it } from "vitest";
-import { clusterMapModel } from "./clusterMap";
+import { clusterMapModel } from "./clusterMapModel";
 
 const peer = (address: string, online: boolean, link?: "direct" | "relayed", member?: string) => ({
   address,

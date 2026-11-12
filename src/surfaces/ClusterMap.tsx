@@ -3,7 +3,7 @@
 // did not say how (an older daemon). Offline peers have no edge. Data: `clusterMapModel(peers)`,
 // from the daemon's `peers` answer. Colours are app tokens.
 import type { ClusterPeer } from "../bridge/domains";
-import { clusterMapModel, MAP_SIZE, type EdgeStyle } from "./clusterMap";
+import { clusterMapModel, MAP_SIZE, type EdgeStyle } from "./clusterMapModel";
 
 const DASH: Record<EdgeStyle, string | undefined> = { solid: undefined, dashed: "6 4", unknown: "1 4" };
 
