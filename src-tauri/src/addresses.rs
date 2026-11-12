@@ -67,6 +67,10 @@ struct Addresses {
     agent_sbt: String,
     #[serde(rename = "OrganizationSBT", default)]
     organization_sbt: String,
+    /// 0.6.0 FLM-CORE-1: optional. Absent until the book carries it (the 0.6.0 genesis); the
+    /// offers read model then reports the market as not available in this build.
+    #[serde(rename = "WorkMarket", default)]
+    work_market: String,
 }
 
 fn book() -> &'static Book {
@@ -100,6 +104,7 @@ fn normalized(mut b: Book) -> Book {
     b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
     b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
     b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
+    b.addresses.work_market = b.addresses.work_market.to_ascii_lowercase();
     b.addresses.agent_sbt = b.addresses.agent_sbt.to_ascii_lowercase();
     b.addresses.organization_sbt = b.addresses.organization_sbt.to_ascii_lowercase();
     b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
@@ -183,6 +188,12 @@ pub fn agent_sbt() -> Option<&'static str> {
 #[allow(dead_code)]
 pub fn organization_sbt() -> Option<&'static str> {
     optional(&book().addresses.organization_sbt)
+}
+
+/// `WorkMarket` — the 0.6.0 SALT escrow for federated rounds and agent tasks (FLM-CORE-1). Optional:
+/// `None` while the book has no entry.
+pub fn work_market() -> Option<&'static str> {
+    optional(&book().addresses.work_market)
 }
 
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:

@@ -1262,6 +1262,25 @@ pub(crate) fn poll_claims<R: tauri::Runtime>(
     }
 }
 
+/// The member's groups as `(id, name)` (FLM-CORE-1 reads group offers against them).
+pub(crate) fn list_groups<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    match route(app, Request::ListGroups)? {
+        Response::Groups { groups } => Ok(groups.into_iter().map(|g| (g.id, g.name)).collect()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// `group`'s live `(address, role)` roster (FLM-CORE-1 checks a group offer's poster against it).
+pub(crate) fn roster_of<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: &str,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    roster(app, group.to_string())
+}
+
 /// **groups_roster** — the (address, role) roster.
 #[tauri::command]
 pub async fn groups_roster(

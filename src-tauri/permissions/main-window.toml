@@ -108,6 +108,7 @@ commands.allow = [
   "toolchain_settings_get",
   "toolchain_settings_set",
   "deploy_gate_fork_dry_run",
+  "fl_market_offers",
   "fl_overview",
   "fl_coordinator_set",
   "fl_round_plan",
