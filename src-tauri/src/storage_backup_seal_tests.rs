@@ -391,6 +391,12 @@ fn start_up_sweep_removes_leftover_staging_and_nothing_else() {
     std::fs::create_dir_all(root.join("export-0011223344556677/citrate-backup-x/memory")).unwrap();
     std::fs::write(root.join("export-0011223344556677/citrate-backup-x/memory/a"), b"PLAINTEXT").unwrap();
     std::fs::create_dir_all(root.join("open-8899aabbccddeeff")).unwrap();
+    // The app creates the staging root 0700; a root others can open is refused (see below).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     // Not ours: a differently named dir, a plain file, and a symlink to a dir outside.
     std::fs::create_dir_all(root.join("keep-me")).unwrap();
     std::fs::write(root.join("export-not-a-dir"), b"x").unwrap();

@@ -36,7 +36,6 @@ use std::path::{Path, PathBuf};
 use aes_gcm::aead::stream::{DecryptorBE32, EncryptorBE32};
 use aes_gcm::aead::{KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key};
-use rand::RngCore;
 use zeroize::Zeroizing;
 
 use super::{
@@ -185,10 +184,12 @@ fn parse_header(raw: &[u8]) -> Result<Header, BackupError> {
     {
         return Err(not_a_backup());
     }
-    let mut salt = [0u8; SALT_LEN];
-    salt.copy_from_slice(&raw[salt_at..aead_at]);
-    let mut nonce_prefix = [0u8; NONCE_PREFIX_LEN];
-    nonce_prefix.copy_from_slice(&raw[prefix_at..chunk_at]);
+    let salt: [u8; SALT_LEN] = raw[salt_at..aead_at]
+        .try_into()
+        .map_err(|_| not_a_backup())?;
+    let nonce_prefix: [u8; NONCE_PREFIX_LEN] = raw[prefix_at..chunk_at]
+        .try_into()
+        .map_err(|_| not_a_backup())?;
     Ok(Header {
         raw: raw[..HEADER_LEN].to_vec(),
         salt,
@@ -428,11 +429,9 @@ pub(crate) fn seal_folder(
             "the staged backup holds an unexpected entry",
         ));
     }
-    let mut salt = [0u8; SALT_LEN];
-    let mut prefix = [0u8; NONCE_PREFIX_LEN];
-    let mut rng = rand::thread_rng();
-    rng.fill_bytes(&mut salt);
-    rng.fill_bytes(&mut prefix);
+    // A fresh random salt and nonce prefix for every file.
+    let salt: [u8; SALT_LEN] = rand::random();
+    let prefix: [u8; NONCE_PREFIX_LEN] = rand::random();
     let out = create_private_file(file).map_err(|e| io_err("create the backup file", e))?;
     let w = SealWriter::start(std::io::BufWriter::new(out), passphrase, salt, prefix)?;
     let w = write_records(folder, &walked, w)?;
@@ -595,10 +594,59 @@ pub(crate) fn open_into(file: &Path, passphrase: &[u8], into: &Path) -> Result<(
 
 /// A new, unused staging folder path under `staging_root` (created owner-only).
 pub(crate) fn staging_dir(staging_root: &Path, tag: &str) -> Result<PathBuf, BackupError> {
-    create_private_dir_all(staging_root)?;
-    let mut rnd = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut rnd);
+    ensure_staging_root(staging_root)?;
+    let rnd: [u8; 8] = rand::random();
     Ok(staging_root.join(format!("{tag}-{}", hex::encode(rnd))))
+}
+
+fn unsafe_staging_root(why: &str) -> BackupError {
+    BackupError::InvalidFolder(format!(
+        "the backup staging folder is not safe to use ({why}); nothing was read or written"
+    ))
+}
+
+/// The staging root must be a real directory (checked with lstat, never through a link),
+/// owned by this user and mode 0700, because decrypted backup data is written under it
+/// and the start-up sweep deletes under it. Created owner-only when absent. Refused
+/// otherwise, before anything is read or written (#629 review P1).
+pub(crate) fn ensure_staging_root(staging_root: &Path) -> Result<(), BackupError> {
+    match std::fs::symlink_metadata(staging_root) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = staging_root.parent() {
+                create_private_dir_all(parent)?;
+            }
+            create_private_dir(staging_root)
+                .map_err(|e| io_err("create the backup staging folder", e))?;
+        }
+        Err(e) => return Err(io_err("check the backup staging folder", e)),
+    }
+    check_staging_root(staging_root)
+}
+
+/// The lstat check alone (no creation): a real directory, ours, mode 0700.
+pub(crate) fn check_staging_root(staging_root: &Path) -> Result<(), BackupError> {
+    let m = std::fs::symlink_metadata(staging_root)
+        .map_err(|e| io_err("check the backup staging folder", e))?;
+    if m.file_type().is_symlink() {
+        return Err(unsafe_staging_root("it is a link"));
+    }
+    if !m.is_dir() {
+        return Err(unsafe_staging_root("it is not a folder"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if m.uid() != me {
+            return Err(unsafe_staging_root("another user owns it"));
+        }
+        if m.permissions().mode() & 0o777 != 0o700 {
+            return Err(unsafe_staging_root("other users can open it"));
+        }
+    }
+    Ok(())
 }
 
 /// Removes a staging folder when dropped (success or error).

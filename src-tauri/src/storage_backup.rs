@@ -1436,11 +1436,14 @@ pub(crate) const STAGING_DIR_NAME: &str = "backup-staging";
 /// were removed.
 pub(crate) fn sweep_staging(app_data: &Path) -> Result<usize, BackupError> {
     let root = app_data.join(STAGING_DIR_NAME);
-    let rd = match std::fs::read_dir(&root) {
-        Ok(rd) => rd,
+    match std::fs::symlink_metadata(&root) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(io_err("list the backup staging folder", e)),
-    };
+        Err(e) => return Err(io_err("check the backup staging folder", e)),
+        Ok(_) => {}
+    }
+    // Never through a link, and only a folder that is ours and private (#629 review P1).
+    seal::check_staging_root(&root)?;
+    let rd = std::fs::read_dir(&root).map_err(|e| io_err("list the backup staging folder", e))?;
     let mut removed = 0;
     for entry in rd {
         let entry = entry.map_err(|e| io_err("list the backup staging folder", e))?;
