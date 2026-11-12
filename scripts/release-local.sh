@@ -6,7 +6,7 @@
 # The local release of Citrate Core on the release Mac, end to end:
 #
 #   build -> codesign (Developer ID) -> notarize -> staple -> update files -> tauri signer sign
-#   -> latest.json (darwin-aarch64, linux-x86_64(+deb), linux-aarch64(+deb)) -> SHA256SUMS
+#   -> latest.json (darwin-aarch64 and linux-<arch>(+deb) for each --linux-arches) -> SHA256SUMS
 #   -> gh release create
 #
 # Owner decision 2026-11-11: the update files are hosted on the GitHub release itself, and
@@ -30,6 +30,8 @@
 #       PRERELEASE under the tag rehearsal-<x.y.z>, which can never be "latest". --cleanup deletes
 #       that draft afterwards.
 #   --target <commit>   the commit the release points at (default HEAD); GitHub must have it.
+#   --linux-arches <list>   the Linux arches shipped, comma separated (default x86_64,aarch64). An arch
+#                       left out is not in latest.json, so its installs are offered no update.
 #   scripts/release-local.sh --check-args ...   validate the arguments and stop (tests).
 #
 # The Linux update files (Citrate-Core-linux-{x86_64,aarch64}.{AppImage,deb}) are built on their own
@@ -46,8 +48,19 @@ APP_NAME="Citrate Core.app"
 # The updater public key every 0.5.2 install pins (src-tauri/tauri.conf.json at tag v0.5.2). A release
 # signed with any other key is one no installed app can accept, so the tree must still carry it.
 V052_UPDATER_PUBKEY="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQzM4MkREMTA3RjA4QzUKUldURkNIOFEzWUxEanZsN096Vk1WWm9WMllUUE5GNXVUYVFYeGRQNFluRnVlVG5vWVZnV0F6eXAK"
-LINUX_FILES=(Citrate-Core-linux-x86_64.AppImage Citrate-Core-linux-x86_64.deb Citrate-Core-linux-aarch64.AppImage Citrate-Core-linux-aarch64.deb)
-PLATFORMS=(darwin-aarch64 linux-x86_64 linux-x86_64-deb linux-aarch64 linux-aarch64-deb)
+# --publish-target spaces (owner 2026-11-12, 0.5.3 is private): the bucket the 0.5.2 updater's first
+# endpoint reads, https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/latest.json.
+CDN_BUCKET="citrate-cdn"
+CDN_REGION="nyc3"
+S3_ENDPOINT="https://$CDN_REGION.digitaloceanspaces.com"
+CDN_ORIGIN="https://$CDN_BUCKET.$CDN_REGION.digitaloceanspaces.com"
+CDN_PUBLIC="https://$CDN_BUCKET.$CDN_REGION.cdn.digitaloceanspaces.com"
+# A Spaces key limited to citrate-cdn: the keychain item's account is the access key id, its password
+# the secret. Neither is printed or put on argv; both live only in the environment of one aws call.
+SPACES_KEY_ITEM="${SPACES_KEY_ITEM:-citrate-cdn-release}"
+PUBLISH_TARGET="github"
+# LINUX_FILES and PLATFORMS are set from --linux-arches (default: both) after the arguments.
+LINUX_ARCHES="x86_64,aarch64"
 # Free space a real release needs on the release Mac (the build, the bundle and ~4 GB of update files).
 REAL_FLOOR_GIB=25
 REHEARSAL_FLOOR_GIB=3
@@ -61,11 +74,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
     --linux-dir) LINUX_DIR="${2:-}"; shift 2 ;;
+    --linux-arches) LINUX_ARCHES="${2-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
     --app) APP="${2:-}"; shift 2 ;;
     --target) TARGET="${2:-}"; shift 2 ;;
     --rehearsal) REHEARSAL=1; shift ;;
     --publish) PUBLISH=1; shift ;;
+    --publish-target) PUBLISH_TARGET="${2-}"; shift 2 ;;
     --cleanup) CLEANUP=1; shift ;;
     --check-args) CHECK_ONLY=1; shift ;;
     --select-dmg) SELECT_DMG="${2:-}"; shift 2 ;;
@@ -103,13 +118,52 @@ else
   TAG="v$VERSION"
   FLOOR=$REAL_FLOOR_GIB
 fi
-[ -n "$LINUX_DIR" ] && [ -d "$LINUX_DIR" ] || die "--linux-dir <dir> with the four Linux update files"
+case "$PUBLISH_TARGET" in
+  github) ;;
+  spaces)
+    if [ "$REHEARSAL" -eq 1 ]; then
+      UPD_PREFIX="downloads/rehearsal-$VERSION/updater" INST_PREFIX="downloads/rehearsal-$VERSION"
+    else
+      UPD_PREFIX="downloads/updater" INST_PREFIX="downloads"
+    fi ;;
+  *) die "--publish-target must be github or spaces (got '$PUBLISH_TARGET')" ;;
+esac
+# The Linux arches this release ships. An arch left out is not in latest.json at all: an install on
+# it finds no platform entry and is offered no update (tauri-plugin-updater 2.10.1 get_urls ->
+# TargetsNotFound), which is honest; a placeholder entry would offer an update it cannot install.
+LINUX_FILES=() PLATFORMS=(darwin-aarch64)
+[ -n "$LINUX_ARCHES" ] || die "--linux-arches needs at least one of x86_64,aarch64"
+IFS=, read -r -a ARCH_LIST <<<"$LINUX_ARCHES"
+SHIPPED=""
+for a in x86_64 aarch64; do
+  for g in "${ARCH_LIST[@]}"; do
+    case "$g" in x86_64|aarch64) ;; *) die "--linux-arches: unknown arch '$g' (x86_64, aarch64)" ;; esac
+    if [ "$g" = "$a" ]; then
+      LINUX_FILES+=("Citrate-Core-linux-$a.AppImage" "Citrate-Core-linux-$a.deb")
+      PLATFORMS+=("linux-$a" "linux-$a-deb")
+      SHIPPED="$SHIPPED $a"
+      break
+    fi
+  done
+done
+SHIPPED="${SHIPPED# }"
+[ -n "$LINUX_DIR" ] && [ -d "$LINUX_DIR" ] || die "--linux-dir <dir> with the Linux update files (${LINUX_FILES[*]})"
 for f in "${LINUX_FILES[@]}"; do
   [ -f "$LINUX_DIR/$f" ] || die "no $LINUX_DIR/$f"
 done
 [ -n "$OUT" ] || die "--out <dir>"
 if [ "$CHECK_ONLY" -eq 1 ]; then
   say "arguments OK (tag $TAG, $([ "$REHEARSAL" -eq 1 ] && echo 'draft prerelease' || echo 'latest release'))"
+  if [ "$PUBLISH_TARGET" = "spaces" ]; then
+    say "publish target spaces: updater files public-read under s3://$CDN_BUCKET/$UPD_PREFIX/, installers and SHA256SUMS private under s3://$CDN_BUCKET/$INST_PREFIX/; no GitHub release"
+  else
+    say "publish target github"
+  fi
+  if [ "$SHIPPED" = "x86_64 aarch64" ]; then say "Linux $SHIPPED"
+  else
+    OMITTED=""; for a in x86_64 aarch64; do case " $SHIPPED " in *" $a "*) ;; *) OMITTED="$OMITTED linux-$a or linux-$a-deb" ;; esac; done
+    say "Linux $SHIPPED only; the feed does not list${OMITTED}"
+  fi
   exit 0
 fi
 
@@ -125,7 +179,23 @@ CONF_PUBKEY="$(python3 -c "import json;print(json.load(open('$ROOT/src-tauri/tau
 security find-generic-password -s "$KEY_ITEM" -a citrate-updater >/dev/null 2>&1 || die "no updater key passphrase in the keychain ($KEY_ITEM)"
 command -v minisign >/dev/null || die "minisign is needed to verify each signature against the pinned key (brew install minisign)"
 gh auth status >/dev/null 2>&1 || die "gh is not signed in"
-if gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then die "a release $TAG already exists"; fi
+# One aws call with the Spaces key in its environment only.
+s3() {
+  (
+    AWS_ACCESS_KEY_ID="$(security find-generic-password -s "$SPACES_KEY_ITEM" 2>/dev/null | sed -n 's/^ *"acct"<blob>="\(.*\)"$/\1/p')"
+    AWS_SECRET_ACCESS_KEY="$(security find-generic-password -s "$SPACES_KEY_ITEM" -w)"
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+    aws --endpoint-url "$S3_ENDPOINT" --region us-east-1 --no-cli-pager "$@"
+  )
+}
+if [ "$PUBLISH_TARGET" = "spaces" ]; then
+  command -v aws >/dev/null || die "the aws CLI is needed for Spaces (brew install awscli)"
+  security find-generic-password -s "$SPACES_KEY_ITEM" >/dev/null 2>&1 ||
+    die "no Spaces key in the keychain ($SPACES_KEY_ITEM: account = access key id, password = secret)"
+  s3 s3api head-bucket --bucket "$CDN_BUCKET" >/dev/null 2>&1 || die "the Spaces key cannot reach s3://$CDN_BUCKET"
+  n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "$UPD_PREFIX/v$VERSION/" --query 'length(Contents || `[]`)' --output text)"
+  [ "$n" = "0" ] || die "s3://$CDN_BUCKET/$UPD_PREFIX/v$VERSION/ already holds objects"
+elif gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then die "a release $TAG already exists"; fi
 # The release points at a commit GitHub has (the pushed release commit); checked before any signing.
 TARGET_SHA="$(git -C "$ROOT" rev-parse "${TARGET:-HEAD}")"
 gh api "repos/$REPO_SLUG/commits/$TARGET_SHA" >/dev/null 2>&1 ||
@@ -234,18 +304,22 @@ done
 
 # ---- 5. latest.json, pointing at this release's assets -----------------------------------------
 say "5/7 latest.json"
-BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"
+if [ "$PUBLISH_TARGET" = "spaces" ]; then
+  BASE_URL="$CDN_PUBLIC/$UPD_PREFIX/v$VERSION"
+else
+  BASE_URL="https://github.com/$REPO_SLUG/releases/download/$TAG"
+fi
 (cd "$ROOT" && node scripts/updater-feed.mjs fragment --version "$VERSION" --base-url "$BASE_URL" --dir "$OUT" \
   "${PLATFORMS[@]}") > "$WORK/fragment.json"
 NOTES="${RELEASE_NOTES:-Citrate Core $VERSION}"
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 (cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" "$WORK/fragment.json") \
   > "$OUT/latest.json"
-python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" <<'PY'
+python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" "${PLATFORMS[@]}" <<'PY'
 import json, sys
 feed, version, base = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
 assert feed["version"] == version, feed["version"]
-want = {"darwin-aarch64", "linux-x86_64", "linux-x86_64-deb", "linux-aarch64", "linux-aarch64-deb"}
+want = set(sys.argv[4:])
 assert set(feed["platforms"]) == want, sorted(feed["platforms"])
 for p, e in feed["platforms"].items():
     assert e["url"].startswith(base + "/"), (p, e["url"])
@@ -255,6 +329,10 @@ PY
 # ---- 6. checksums ----------------------------------------------------------------------------
 say "6/7 SHA256SUMS"
 (cd "$OUT" && shasum -a 256 Citrate-Core_"${VERSION}"_aarch64.dmg Citrate-Core.app.tar.gz "${LINUX_FILES[@]}" latest.json > SHA256SUMS)
+if [ "$PUBLISH_TARGET" = "spaces" ]; then
+  # The invite gate serves the DMG as Citrate-Core-macos-arm64.dmg; SHA256SUMS names it that way too.
+  awk -v v="$VERSION" '$2 == "Citrate-Core_" v "_aarch64.dmg" {print $1 "  Citrate-Core-macos-arm64.dmg"}' "$OUT/SHA256SUMS" >> "$OUT/SHA256SUMS"
+fi
 ASSETS=("$OUT"/Citrate-Core_"${VERSION}"_aarch64.dmg "$OUT/Citrate-Core.app.tar.gz" "$OUT/Citrate-Core.app.tar.gz.sig")
 for f in "${LINUX_FILES[@]}"; do ASSETS+=("$OUT/$f" "$OUT/$f.sig"); done
 ASSETS+=("$OUT/latest.json" "$OUT/SHA256SUMS")
@@ -265,7 +343,83 @@ if [ "$PUBLISH" -eq 0 ]; then
   exit 0
 fi
 
-# ---- 7. publish ------------------------------------------------------------------------------
+# ---- 7a. publish to Spaces (private release) --------------------------------------------------
+if [ "$PUBLISH_TARGET" = "spaces" ]; then
+  sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+  put_object() { # key file acl
+    local ct="application/octet-stream"
+    case "$1" in *.json) ct="application/json" ;; *SHA256SUMS|*.sig) ct="text/plain" ;; esac
+    s3 s3api put-object --bucket "$CDN_BUCKET" --key "$1" --body "$2" --acl "$3" --content-type "$ct" \
+      --metadata "sha256=$(sha_of "$2")" >/dev/null || die "upload of s3://$CDN_BUCKET/$1 failed"
+  }
+  gate_name() { # the installer's object name (citrate-landing src/lib/download.ts)
+    case "$1" in
+      Citrate-Core_"$VERSION"_aarch64.dmg) echo "Citrate-Core-macos-arm64.dmg" ;;
+      *) echo "$1" ;;
+    esac
+  }
+  anon_code() { curl -s -o /dev/null -w '%{http_code}' -r 0-0 "$1"; }
+  anon_sha() { curl -sf "$1" | shasum -a 256 | awk '{print $1}'; }
+  is_public() { # key: the object grants READ to AllUsers and nothing else to anyone but the owner
+    s3 s3api get-object-acl --bucket "$CDN_BUCKET" --key "$1" --output json | python3 -c '
+import json, sys
+g = json.load(sys.stdin)["Grants"]
+pub = [x for x in g if x["Grantee"].get("URI", "").endswith("/AllUsers")]
+sys.exit(0 if len(pub) == 1 and pub[0]["Permission"] == "READ" else 1)'
+  }
+  UPDATER_FILES=(Citrate-Core.app.tar.gz Citrate-Core.app.tar.gz.sig)
+  for f in "${LINUX_FILES[@]}"; do UPDATER_FILES+=("$f" "$f.sig"); done
+  INSTALLERS=("Citrate-Core_${VERSION}_aarch64.dmg" "${LINUX_FILES[@]}")
+
+  say "7/7 uploading the updater files public-read to s3://$CDN_BUCKET/$UPD_PREFIX/v$VERSION/"
+  for n in "${UPDATER_FILES[@]}"; do f="$OUT/$n"; put_object "$UPD_PREFIX/v$VERSION/$n" "$f" public-read; done
+  say "7/7 uploading the installers and SHA256SUMS PRIVATE to s3://$CDN_BUCKET/$INST_PREFIX/"
+  for n in "${INSTALLERS[@]}"; do f="$OUT/$n"; put_object "$INST_PREFIX/$(gate_name "$n")" "$f" private; done
+  put_object "$INST_PREFIX/SHA256SUMS" "$OUT/SHA256SUMS" private
+
+  # Verify before the feed exists: each updater object is public-read and answers anonymously at the
+  # origin; each installer and SHA256SUMS is private (refused anonymously) and holds our bytes.
+  for n in "${UPDATER_FILES[@]}"; do
+    is_public "$UPD_PREFIX/v$VERSION/$n" || die "$UPD_PREFIX/v$VERSION/$n is not public-read only"
+    c="$(anon_code "$CDN_ORIGIN/$UPD_PREFIX/v$VERSION/$n")"
+    case "$c" in 200|206) ;; *) die "$CDN_ORIGIN/$UPD_PREFIX/v$VERSION/$n answers $c" ;; esac
+  done
+  for n in "${INSTALLERS[@]}" SHA256SUMS; do
+    if [ "$n" = SHA256SUMS ]; then f="$OUT/SHA256SUMS"; else f="$OUT/$n"; fi
+    key="$INST_PREFIX/$(gate_name "$n")"
+    ! is_public "$key" || die "$key is public; installers must be private"
+    c="$(anon_code "$CDN_ORIGIN/$INST_PREFIX/$(gate_name "$n")")"
+    [ "$c" = "403" ] || die "$key answers $c anonymously; installers must be private"
+    meta="$(s3 s3api head-object --bucket "$CDN_BUCKET" --key "$key" --query '[ContentLength, Metadata.sha256]' --output text)"
+    [ "$meta" = "$(stat -f %z "$f")	$(sha_of "$f")" ] || die "$key does not hold our bytes ($meta)"
+  done
+  say "every updater object is public-read and every installer is private"
+
+  # Now, and only now, the feed a 0.5.2 install reads.
+  put_object "$UPD_PREFIX/latest.json" "$OUT/latest.json" public-read
+  CDN_ID="$(doctl compute cdn list --format ID,Origin --no-header 2>/dev/null | awk -v o="$CDN_BUCKET.$CDN_REGION.digitaloceanspaces.com" '$2 == o {print $1}')"
+  if [ -n "$CDN_ID" ]; then doctl compute cdn flush "$CDN_ID" --files "$UPD_PREFIX/latest.json" >/dev/null || say "CDN flush failed; the check below reads through the CDN anyway"; fi
+  is_public "$UPD_PREFIX/latest.json" || die "$UPD_PREFIX/latest.json is not public-read only"
+  [ "$(anon_sha "$CDN_PUBLIC/$UPD_PREFIX/latest.json")" = "$(sha_of "$OUT/latest.json")" ] ||
+    die "the feed at $CDN_PUBLIC/$UPD_PREFIX/latest.json is not this latest.json"
+  python3 -c "import json;[print(e['url']) for e in json.load(open('$OUT/latest.json'))['platforms'].values()]" | sort -u |
+    while read -r u; do
+      n="$(basename "$u")"
+      c="$(anon_code "$u")"; case "$c" in 200|206) ;; *) die "$u answers $c" ;; esac
+      [ "$(anon_sha "$u")" = "$(sha_of "$OUT/$n")" ] || die "$u is not our $n"
+      [ "$(anon_sha "$u.sig")" = "$(sha_of "$OUT/$n.sig")" ] || die "$u.sig is not our $n.sig"
+    done
+  say "the feed and every URL in it answer 200 anonymously at their sha256 ($CDN_PUBLIC/$UPD_PREFIX/latest.json)"
+  if [ "$REHEARSAL" -eq 1 ] && [ "$CLEANUP" -eq 1 ]; then
+    s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive >/dev/null
+    n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "downloads/rehearsal-$VERSION/" --query 'length(Contents || `[]`)' --output text)"
+    [ "$n" = "0" ] || die "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/ still holds $n objects"
+    say "rehearsal objects under downloads/rehearsal-$VERSION/ deleted"
+  fi
+  exit 0
+fi
+
+# ---- 7b. publish to GitHub -------------------------------------------------------------------
 if [ "$REHEARSAL" -eq 1 ]; then
   say "7/7 creating the DRAFT PRERELEASE $TAG (never latest)"
   gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO_SLUG" --draft --prerelease --latest=false \

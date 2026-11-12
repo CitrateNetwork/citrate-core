@@ -428,6 +428,19 @@ scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty di
 scripts/release-local.sh --version 0.5.3 --linux-dir <linux dir> --out <empty dir> --publish  # draft release, verify, then latest
 ```
 
+`--publish-target spaces` is the private release (owner 2026-11-12, and the 0.5.3 path). It creates no
+GitHub release. The updater files go public-read to `s3://citrate-cdn/downloads/updater/`, and the
+installers and SHA256SUMS go private to `downloads/` for the invite gate
+([053-UPDATER.md](release/053-UPDATER.md#owner-decision-2026-11-12-a-private-release-the-update-files-on-the-cdn)).
+It needs the aws CLI and a Spaces key limited to `citrate-cdn`, kept in keychain item `citrate-cdn-release`
+(account = access key id, password = secret). A rehearsal stays under `downloads/rehearsal-<v>/`, and
+`--cleanup` removes only that prefix. The default `--publish-target github` is unchanged.
+
+`--linux-arches x86_64` ships Linux x86_64 only (owner 2026-11-12, for 0.5.3: Linux aarch64 is not
+built). The feed then has no `linux-aarch64`/`linux-aarch64-deb` entry, so an aarch64 Linux install is
+offered no update (tauri-plugin-updater 2.10.1 finds no platform entry and reports
+`TargetsNotFound`), rather than an update that cannot install. The default is both arches.
+
 It refuses to start below 25 GiB free, without the Developer ID identity, the `citrate` notary
 profile, the v2 updater key and its keychain passphrase, or when GitHub does not have the release
 commit, or when the updater pubkey in `tauri.conf.json` is not the one 0.5.2 installs pin (the
