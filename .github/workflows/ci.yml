@@ -38,9 +38,12 @@ jobs:
           git config --global \
             url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
             "https://github.com/"
+      # Pinned (2026-11-12): floating `stable` moved to 1.100, whose new clippy lint and build-dir
+      # layout broke every PR at once. Bump this version only in a reviewed PR that runs fmt,
+      # clippy and the tests on the new toolchain.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99.1"
           components: rustfmt, clippy
       - name: Install Tauri Linux system deps
         run: |

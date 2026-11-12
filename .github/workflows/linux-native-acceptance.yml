@@ -168,7 +168,7 @@ jobs:
             "https://github.com/"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99.1" # pinned 2026-11-12; bump only in a reviewed PR (see ci.yml)
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
