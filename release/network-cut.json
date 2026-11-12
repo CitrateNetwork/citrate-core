@@ -4,33 +4,59 @@
   "retire": {
     "r1006": "replaced by r1007 in 0.5.3; a 0.5.2 node data dir on r1006 is set aside as chain.r1006.bak"
   },
-  "genesisHash": null,
-  "genesisProfile": null,
-  "compiledActivations": null,
-  "chainParams": null,
-  "rpcUrl": null,
-  "rpcHosts": ["rpc.citrate.ai"],
-  "bootnodes": null,
-  "addressBookSha256": null,
-  "chainRev": null,
-  "consensusFingerprint": null,
+  "genesisHash": "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
+  "genesisProfile": "r1007",
+  "compiledActivations": true,
+  "chainParams": {
+    "slot_duration_secs": 1,
+    "max_future_drift_secs": 15,
+    "pruning_depth": 10000,
+    "undo_window": 10000,
+    "ghostdag_k": 18,
+    "max_parents": 10,
+    "merge_depth": 100,
+    "checkpoint_interval": 50,
+    "committee_size": 100,
+    "checkpoint_vote_depth": 3,
+    "include_gas_limit": 30000000,
+    "accept_gas_limit": 60000000,
+    "validator_activation_height": 1000
+  },
+  "rpcUrl": "https://rpc.citrate.ai",
+  "rpcHosts": [
+    "rpc.citrate.ai"
+  ],
+  "bootnodes": [
+    "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+    "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+    "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+    "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
+  ],
+  "addressBookSha256": "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
+  "chainRev": "a53bac644665a992bf871831250af7354fd69512",
+  "consensusFingerprint": "0x5d26c4ab5b0be144d26916b9070a70a4",
   "node": {
-    "aarch64-apple-darwin": null,
-    "x86_64-unknown-linux-gnu": null,
+    "aarch64-apple-darwin": {
+      "runtime_deps_asset": "citrate-aarch64-apple-darwin-a53bac644665",
+      "sha256": "cde4ea6123b8b93eae9f7c47b2fc7804d38f5db37e86816ddc86659f9b24e29c",
+      "evidence": "the release Mac (macOS 15.6.1, arm64), 2026-11-12: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain a53bac644665 (r1007/genesis, tag r1007-genesis), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-a53bac644665; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the live fleet",
+      "provenance": {
+        "asset": "citrate-aarch64-apple-darwin-a53bac644665.PROVENANCE.txt",
+        "sha256": "03f44cddc1460eec56d29e65a5149f960ebb238d86911e5d339b042c1efc0cb9"
+      }
+    },
+    "x86_64-unknown-linux-gnu": {
+      "sha256": "99cdaa48e11b0137304461f4fb2c981e8ee66212ba8662cd9d4a852b02c93673",
+      "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-12: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain a53bac644665 (public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-a53bac644665; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the macOS build and the live fleet",
+      "provenance": {
+        "asset": "citrate-x86_64-unknown-linux-gnu-a53bac644665.PROVENANCE.txt",
+        "sha256": "991ef84d93abded7eb601aacb2d96ebd536e71e2f279dcb8cc2d3046d8eeeb29"
+      }
+    },
     "aarch64-unknown-linux-gnu": null
   },
-  "pending": {
-    "genesisHash": "block 0 of the r1007 genesis commit, read from the first producer after S4-1 (planset 05 S4-1) and agreed by every fleet node",
-    "genesisProfile": "the [chain] genesis_profile name the r1007 node compiles for that block 0 (citrate-chain node/src/genesis.rs at chainRev)",
-    "compiledActivations": "whether the r1007 genesis compiles its ValidatorRegistry and activation height (citrate-chain genesis::resolve_validator_registry at chainRev); true means the app passes no CITRATE_VALIDATOR_* override",
-    "chainParams": "the chain parameters the citrate-chain node at chainRev compiles for the r1007 block 0 (core/consensus/src/genesis_params.rs, the r1007 entry of GENESIS_CHAIN_PARAMS; the node logs them at start-up as `Genesis chain parameters: ...`), all 13 by the node's field names: slot_duration_secs, max_future_drift_secs, pruning_depth, undo_window, ghostdag_k, max_parents, merge_depth, checkpoint_interval, committee_size, checkpoint_vote_depth, include_gas_limit, accept_gas_limit, validator_activation_height. Recorded by the chain lead from the integrated genesis commit (S4-1). The node refuses to start when the node config's [checkpoint] interval, committee_size or vote_depth differ from checkpoint_interval, committee_size and checkpoint_vote_depth, so apply writes those three into the profile's nodeCheckpoint (rendered into node.toml); undo_window must not exceed the profile's memberPruneRetain",
-    "rpcUrl": "the public JSON-RPC of the r1007 fleet (S4-2, the chain/devops lead), on a host in rpcHosts (rpc.citrate.ai, the host the fleet keeps across networks, plus any r1007 fleet host S4-2 names, added there first). `check --release` asks it for eth_chainId (40204) and eth_getBlockByNumber 0x0 (genesisHash) and fails closed; the app checks both again before any signature. apply writes it into the r1007 profile",
-    "bootnodes": "the Noise static keys of boot1.citrate.ai, boot2.citrate.ai, boot3.citrate.ai and rpc.citrate.ai on the r1007 fleet (S4-2), each @<host>:30303",
-    "addressBookSha256": "sha256 of the canonical address book exported after the r1007 genesis contract deploy (S4-3), the file scripts/sync-addresses.py keeps as src-tauri/addresses/40204.canonical.json",
-    "chainRev": "the citrate-chain r1007 genesis commit (40 hex), tagged and signed at S4-1; becomes MIN_CHAIN_REV, the citrate-node source rev and the app's citrate-chain crate rev, and must be on public citrate-chain for the app's git dependencies",
-    "consensusFingerprint": "`citrate --config <the rendered r1007 node.toml> consensus --json` fingerprint of the node built at chainRev (0x + 32 hex); the cold-sync acceptance (N6) checks the running node reports it in citrate_nodeIdentity",
-    "node.aarch64-apple-darwin": "the release Mac: scripts/build-sidecar.sh --print-digest at chainRev, uploaded to the runtime-deps prerelease as citrate-aarch64-apple-darwin-<chainRev 12>; {runtime_deps_asset, sha256, evidence, provenance: {asset: citrate-aarch64-apple-darwin-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes",
-    "node.x86_64-unknown-linux-gnu": "citrate-core-linux-build: the fixed-asset recipe in docs/RELEASE_LINUX.md at chainRev (reproducible per core#586 once merged); {sha256, evidence, provenance: {asset: citrate-x86_64-unknown-linux-gnu-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes",
-    "node.aarch64-unknown-linux-gnu": "an aarch64 Linux builder (an open owner question: the DGX is sold; this is a documented input of the cut; release.yml's release-linux-aarch64 dry run on ubuntu-24.04-arm is one candidate): the fixed-asset recipe in docs/RELEASE_LINUX.md at chainRev, uploaded to the runtime-deps prerelease as citrate-aarch64-unknown-linux-gnu-<chainRev 12> (release.yml stages it from there); {runtime_deps_asset, sha256, evidence, provenance: {asset: citrate-aarch64-unknown-linux-gnu-<chainRev 12>.PROVENANCE.txt, sha256}}; the PROVENANCE record is uploaded to runtime-deps next to the node bytes"
-  }
+  "notBuilt": {
+    "aarch64-unknown-linux-gnu": "owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
+  },
+  "pending": {}
 }

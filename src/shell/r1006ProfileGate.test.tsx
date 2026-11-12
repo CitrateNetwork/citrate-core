@@ -19,11 +19,14 @@ import { PROFILES, gateGenesis, isReady, type NetworkProfile } from "../network/
 
 const FIXTURE_GENESIS = "0x" + "6a".repeat(32);
 // The r1006 profile as shipped before the RC52 fill: the three reroll values unset, with reasons.
+// (The r1007 cut has since retired r1006; `retired` is dropped here so these cases keep testing the
+// gate on the profile as it was. A retired profile is refused: src/network/profile.test.ts.)
 const r1006 = (): NetworkProfile => {
   const p = PROFILES.find((x) => x.id === "r1006");
   if (!p) throw new Error("no r1006 profile");
+  const { retired: _retired, ...rest } = p;
   return {
-    ...p,
+    ...rest,
     genesisHash: null,
     addressBookSha256: null,
     minChainRev: null,

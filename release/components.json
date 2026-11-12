@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "56cc2bc80439c350dd9eca8817f173c1986096e6"
+        "rev": "a53bac644665a992bf871831250af7354fd69512"
       },
       "federation": {
-        "rev": "56cc2bc80439c350dd9eca8817f173c1986096e6",
+        "rev": "a53bac644665a992bf871831250af7354fd69512",
         "status": "match",
-        "note": "The node rev is 56cc2bc8, chain main with the split-healing and restart-safe reorg fix, chain main 56cc2bc8 on top of ad11ed9d (fed#331); genesis 0xa3651a27 unchanged; a descendant of ad11ed9d, 9a32147e and c384fc98 (the node 0.5.1 shipped). The federation manifest PR (recut-052) moves [repos.citrate-chain] and the citrate-core externalBin:citrate, citrate-wallet-core (src-tauri and kit) and citrate-commd [[drift]] rows to it from ad11ed9d (Rule 12)."
+        "note": "Set by scripts/network-cut.py apply from release/network-cut.json (r1007 genesis commit a53bac644665). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md)."
       },
       "build": {
         "kind": "cargo",
@@ -37,17 +37,16 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-56cc2bc80439",
-          "evidence": "release Mac build with scripts/build-sidecar.sh --print-digest, 2026-10-29 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); uploaded to runtime-deps 2026-10-30 (RC52 recut), download-back sha256 matches the pin. `citrate --config <r1006 node.toml> consensus --json`: fingerprint 0x3e6b113eacd2808593e3a3bf298acc16 (no config: 0x2c3d93ac9f214cb7a946f398e0b4c28c), git_dirty false; every input except git_sha identical to the ad11ed9d build. A clean rebuild is not expected to reproduce these bytes: stage the uploaded asset, as release.yml does."
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-a53bac644665",
+          "evidence": "the release Mac (macOS 15.6.1, arm64), 2026-11-12: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain a53bac644665 (r1007/genesis, tag r1007-genesis), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-a53bac644665; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the live fleet"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "7dcd5899eccd7abca41658bf7d8893a5f6e3cf4f21df69cca9af865e85ac317f",
-          "evidence": "DGX lane fixed asset, built on citrate-core-linux-build 2026-10-30: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at 56cc2bc8 (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6511916347; consensus --json fingerprint with no config 0x2c3d93ac9f214cb7a946f398e0b4c28c on the macOS build of the same rev"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "runtime_deps_asset": "citrate-aarch64-unknown-linux-gnu-56cc2bc80439",
-          "evidence": "DGX lane fixed asset, built on the DGX 2026-10-30: `CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release --locked -p citrate-node --bin citrate` from citrate-chain origin/main at 56cc2bc8 (git_dirty=false), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); posted on fed#331 c.6511916347; consensus --json fingerprint with no config 0x2c3d93ac9f214cb7a946f398e0b4c28c on the macOS build of the same rev"
+          "sha256": "99cdaa48e11b0137304461f4fb2c981e8ee66212ba8662cd9d4a852b02c93673",
+          "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-12: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain a53bac644665 (public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-a53bac644665; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the macOS build and the live fleet"
         }
+      },
+      "pending": {
+        "aarch64-unknown-linux-gnu": "not built for this release (release/network-cut.json notBuilt): owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
       }
     },
     {

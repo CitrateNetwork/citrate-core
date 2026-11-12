@@ -13,4 +13,4 @@ paths = ['''^fixtures/upgrade-v0\.5\.1/''']
 
 [[allowlists]]
 description = "The canonical citrate-chain address book kept byte for byte next to the embedded book (scripts/sync-addresses.py; the release profile check recomputes its sha256). Public contract addresses only; names such as ModelAccessControl next to a 40-hex address match the generic-api-key rule"
-paths = ['''^src-tauri/addresses/40204\.canonical\.json$''']
+paths = ['''^src-tauri/addresses/40204\.canonical\.json$''', '''^fixtures/network-cut/pre-cut/src-tauri/addresses/40204\.canonical\.json$''']
