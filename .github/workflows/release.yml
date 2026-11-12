@@ -268,7 +268,7 @@ jobs:
           SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
           if [ "$DRY_RUN" != true ]; then
             ASSETS+=(
-              citrate-aarch64-apple-darwin-56cc2bc80439
+              citrate-aarch64-apple-darwin-a53bac644665
               node-agent-aarch64-apple-darwin-1d8cb8e4e24a
               mem-mcp-aarch64-apple-darwin-5aeda3172369
               comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
@@ -499,6 +499,18 @@ jobs:
 
       # Tauri's Linux deps (as linux-native-acceptance's update-e2e job on this runner), plus what
       # the dry run's sidecar and llama.cpp builds need (bindgen/rocksdb: clang; cmake).
+      # A release whose network cut does not build the Linux aarch64 node (release/network-cut.json
+      # notBuilt; 0.5.3, owner 2026-11-12) has no aarch64 package: the node pin is pending, so this
+      # job stops here instead of shipping a bundle without its node.
+      - name: Linux aarch64 is built for this release
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          set -euo pipefail
+          if node scripts/component-pins.mjs pending | awk -F'\t' '$1 == "citrate-node" && $2 == "aarch64-unknown-linux-gnu"' | grep -q .; then
+            echo "::error::citrate-node is not built for aarch64-unknown-linux-gnu in this release (release/network-cut.json notBuilt); no Linux aarch64 package"
+            exit 1
+          fi
+
       - name: Install the Linux build deps
         run: |
           sudo apt-get update
@@ -612,7 +624,6 @@ jobs:
           SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
           if [ "$DRY_RUN" != true ]; then
             ASSETS+=(
-              citrate-aarch64-unknown-linux-gnu-56cc2bc80439
               node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
               mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
               comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c

@@ -90,3 +90,7 @@ ea95d49d2a01e1ff8f4d161413bca7746712dac36aa99f79b85ebc3ee9561cb0  skills-bundle.
 # clean checkouts (sources and commits in its manifest.json and in SCL-S0 EVIDENCE.md, A9).
 cea05ebe680cf315e41c965caec9d8e009dd9085b622d4cb9c62fe4faf026c3b  bge-base-en-v1.5.tar.gz
 91de29274251aa0e7d0934ebb2e2c8b3ebf3d010804ed6a798eef8c4655acd9b  knowledge-corpus.tar.gz
+# r1007 network cut (scripts/network-cut.py): citrate is citrate-chain a53bac644665 (the r1007 genesis commit, MIN_CHAIN_REV); each node build's PROVENANCE record ships next to its bytes.
+cde4ea6123b8b93eae9f7c47b2fc7804d38f5db37e86816ddc86659f9b24e29c  citrate-aarch64-apple-darwin-a53bac644665
+03f44cddc1460eec56d29e65a5149f960ebb238d86911e5d339b042c1efc0cb9  citrate-aarch64-apple-darwin-a53bac644665.PROVENANCE.txt
+991ef84d93abded7eb601aacb2d96ebd536e71e2f279dcb8cc2d3046d8eeeb29  citrate-x86_64-unknown-linux-gnu-a53bac644665.PROVENANCE.txt

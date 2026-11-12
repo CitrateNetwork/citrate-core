@@ -151,11 +151,24 @@ const json = (rel) => JSON.parse(rd(rel));
 const writeJson = (rel, v) => fs.writeFileSync(path.join(root, rel), JSON.stringify(v, null, 2) + "\n");
 const snapshot = () => Object.fromEntries(CUT_FILES.map((f) => [f, rd(f)]));
 
+// The repo now carries the APPLIED r1007 cut (2026-11-12). The apply/fill tests run on a copy of the
+// tree as it was before the cut: the four files the cut rewrites come from fixtures/network-cut/pre-cut
+// (their bytes at the commit before the fill), and the files where the cut only moved the chain rev
+// get the pre-cut rev back.
+const PRE_CUT_DIR = path.join(repo, "fixtures/network-cut/pre-cut");
+const PRE_CUT_FILES = ["release/network-cut.json", "release/components.json", "src-tauri/network/profiles.json", "src-tauri/runtime-deps.sha256"];
+const PRE_CUT_REV = JSON.parse(fs.readFileSync(path.join(PRE_CUT_DIR, "release/components.json"), "utf8")).components.find((c) => c.id === "citrate-node").source.rev;
+const SHIPPED = JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8"));
+const preCut = (f) => {
+  if (PRE_CUT_FILES.includes(f)) return fs.readFileSync(path.join(PRE_CUT_DIR, f), "utf8");
+  const text = fs.readFileSync(path.join(repo, f), "utf8");
+  return text.split(SHIPPED.chainRev).join(PRE_CUT_REV).split(`#${SHIPPED.chainRev.slice(0, 8)}`).join(`#${PRE_CUT_REV.slice(0, 8)}`);
+};
 beforeEach(() => {
   root = fs.mkdtempSync("/tmp/core053-cut-");
   for (const f of CUT_FILES) {
     fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
-    fs.copyFileSync(path.join(repo, f), path.join(root, f));
+    fs.writeFileSync(path.join(root, f), preCut(f));
   }
 });
 afterEach(() => {
@@ -164,11 +177,48 @@ afterEach(() => {
   probe = undefined;
 });
 
-describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
-  it("targets r1007, retires r1006, and is well formed with a reason for every pending value", () => {
-    const cut = JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8"));
+// The values the r1007 cut was filled with on 2026-11-12, each checked against its source: block 0,
+// the bootnodes and the fingerprint against the live fleet (rpc.citrate.ai citrate_nodeIdentity and
+// each host's own node), the chain rev against public citrate-chain (tag r1007-genesis), the book
+// digest against the address lane's r1007 root book.
+const R1007_CUT = {
+  genesisHash: "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
+  genesisProfile: "r1007",
+  compiledActivations: true,
+  rpcUrl: "https://rpc.citrate.ai",
+  chainRev: "a53bac644665a992bf871831250af7354fd69512",
+  consensusFingerprint: "0x5d26c4ab5b0be144d26916b9070a70a4",
+  addressBookSha256: "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
+  bootnodes: [
+    "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+    "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+    "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+    "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303",
+  ],
+};
+
+describe("the shipped cut (release/network-cut.json, applied 2026-11-12)", SLOW, () => {
+  it("is the complete r1007 cut, applied: nothing pending, Linux aarch64 not built, r1007 active", () => {
+    expect(SHIPPED.profile).toBe("r1007");
+    expect(Object.keys(SHIPPED.retire)).toEqual(["r1006"]);
+    expect(SHIPPED).toMatchObject(R1007_CUT);
+    expect(SHIPPED.pending).toEqual({});
+    expect(Object.keys(SHIPPED.notBuilt)).toEqual(["aarch64-unknown-linux-gnu"]);
+    expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-a53bac644665");
+    expect(SHIPPED.node["x86_64-unknown-linux-gnu"].sha256).toMatch(/^[0-9a-f]{64}$/);
+    const prof = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri/network/profiles.json"), "utf8"));
+    expect(prof.active).toBe("r1007");
+    expect(prof.profiles.r1007).toMatchObject({ genesisHash: R1007_CUT.genesisHash, minChainRev: R1007_CUT.chainRev, bootnodes: R1007_CUT.bootnodes, pending: {} });
+    expect(prof.profiles.r1006.retired).toMatch(/r1007/);
+    // The shipped tree passes the release check of the cut (the stand-in RPC answers as the fleet does).
+    setAnswers({ eth_chainId: "0x9d0c", eth_getBlockByNumber: { number: "0x0", hash: R1007_CUT.genesisHash } });
+    const r = py(["check", "--release", "--root", repo, "--cut-only"]);
+    expect(r.code, r.err).toBe(0);
+  });
+
+  it("before the fill (fixtures/network-cut/pre-cut), every value was pending with a reason", () => {
+    const cut = json("release/network-cut.json");
     expect(cut.profile).toBe("r1007");
-    expect(Object.keys(cut.retire)).toEqual(["r1006"]);
     const pending = Object.keys(cut.pending).sort();
     expect(pending).toEqual(
       [
@@ -186,7 +236,7 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
       ].sort(),
     );
     for (const [k, why] of Object.entries(cut.pending)) expect(why.trim().length, k).toBeGreaterThan(20);
-    const r = py(["check"]);
+    const r = py(["check", "--root", root, "--cut-only"]);
     expect(r.code, r.err).toBe(0);
     expect(r.out).toMatch(/pending/);
   });
@@ -236,8 +286,8 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
     expect(Object.keys(after.pending ?? {})).not.toContain("rpcUrl");
   });
 
-  it("check --release refuses it and names every pending value", () => {
-    const r = py(["check", "--release"]);
+  it("check --release refuses the pre-cut file and names every pending value", () => {
+    const r = py(["check", "--release", "--root", root, "--cut-only"]);
     expect(r.code).not.toBe(0);
     for (const k of ["genesisHash", "bootnodes", "chainRev", "chainParams", "rpcUrl", "consensusFingerprint", "node.aarch64-apple-darwin", "node.x86_64-unknown-linux-gnu"]) {
       expect(r.err).toContain(k);
@@ -254,13 +304,20 @@ describe("the shipped cut file (release/network-cut.json)", SLOW, () => {
 });
 
 describe("check-network-profile.sh against r1007", SLOW, () => {
-  it("--release --require-active r1007 fails on this build", () => {
+  it("--release --require-active r1007 passes on this build (the cut is applied)", () => {
+    setAnswers({ eth_chainId: "0x9d0c", eth_getBlockByNumber: { number: "0x0", hash: R1007_CUT.genesisHash } });
     const r = sh(checkSh, ["--release", "--require-active", "r1007"]);
-    expect(r.code).not.toBe(0);
-    expect(r.err).toMatch(/r1007/);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toMatch(/active r1007, release/);
   });
 
-  it("a build with active flipped to r1007 by hand fails the release check, naming the unset values and the cut", () => {
+  it("--release --require-active r1006 fails on this build: r1006 is retired", () => {
+    const r = sh(checkSh, ["--release", "--require-active", "r1006"]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toMatch(/r1006/);
+  });
+
+  it("a pre-cut build with active flipped to r1007 by hand fails the release check, naming the unset values and the cut", () => {
     const p = json("src-tauri/network/profiles.json");
     p.active = "r1007";
     writeJson("src-tauri/network/profiles.json", p);
