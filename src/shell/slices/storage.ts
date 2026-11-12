@@ -16,6 +16,7 @@ import type {
   BackupExportReport,
   BackupPart,
   BackupProgress,
+  BackupProtection,
   BackupRestoreReport,
   BackupVerifyReport,
   PinParams,
@@ -170,36 +171,38 @@ export async function refreshPinParams(): Promise<void> {
 
 const onBackupProgress = (p: BackupProgress) => storageSlice.set({ backupProgress: p });
 
-/** K4 — export the chosen parts into a new verified backup folder inside `dest`. */
-export async function exportBackup(dest: string, parts: BackupPart[]): Promise<void> {
+/** K4 + STO-2 — export the chosen parts into `dest`: sealed under a passphrase, or a plain folder
+ *  only when the member chose it. */
+export async function exportBackup(dest: string, parts: BackupPart[], protection: BackupProtection): Promise<void> {
   if (storageSlice.get().backupOp) return;
   storageSlice.set({ backupOp: "export", backupProgress: null, backupError: null, lastExport: null });
   try {
-    const lastExport = await bridge.storage.backupExport(dest, parts, onBackupProgress);
+    const lastExport = await bridge.storage.backupExport(dest, parts, protection, onBackupProgress);
     storageSlice.set({ backupOp: null, lastExport });
   } catch (e) {
     storageSlice.set({ backupOp: null, backupError: message(e) });
   }
 }
 
-/** K4 — check a chosen backup folder against its manifest before anything is restored. */
-export async function checkBackup(folder: string): Promise<void> {
+/** K4 — check a chosen backup against its manifest before anything is restored (a sealed file is
+ *  opened with its passphrase first). */
+export async function checkBackup(folder: string, passphrase?: string): Promise<void> {
   if (storageSlice.get().backupOp) return;
   storageSlice.set({ backupOp: "verify", backupError: null, restoreCheck: null, lastRestore: null, backupProgress: null });
   try {
-    const restoreCheck = await bridge.storage.backupVerify(folder);
+    const restoreCheck = await bridge.storage.backupVerify(folder, passphrase);
     storageSlice.set({ backupOp: null, restoreCheck });
   } catch (e) {
     storageSlice.set({ backupOp: null, backupError: message(e) });
   }
 }
 
-/** K4 — restore from the checked folder. Rust re-verifies and refuses on any mismatch. */
-export async function restoreBackup(folder: string, parts: BackupPart[]): Promise<void> {
+/** K4 — restore from the checked backup. Rust re-verifies and refuses on any mismatch. */
+export async function restoreBackup(folder: string, parts: BackupPart[], passphrase?: string): Promise<void> {
   if (storageSlice.get().backupOp) return;
   storageSlice.set({ backupOp: "restore", backupProgress: null, backupError: null, lastRestore: null });
   try {
-    const lastRestore = await bridge.storage.backupRestore(folder, parts, onBackupProgress);
+    const lastRestore = await bridge.storage.backupRestore(folder, parts, passphrase, onBackupProgress);
     storageSlice.set({ backupOp: null, lastRestore });
     if (parts.includes("files")) await refreshPins();
   } catch (e) {

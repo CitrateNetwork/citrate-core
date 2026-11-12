@@ -1265,8 +1265,8 @@ fn restore_path_applies_modes_only_through_the_mask() {
 }
 
 /// Docs truth: the manifest digest is unkeyed (anyone who edits the manifest can recompute it), so
-/// the docs must not claim an edited manifest is detected, and must say the Memory part is not
-/// encrypted.
+/// the docs must not claim an edited manifest is detected, and must say that an unencrypted
+/// backup's Memory part is a plain copy (STO-2: encryption is the default, plaintext a choice).
 #[test]
 fn storage_docs_do_not_overclaim_manifest_integrity_or_encryption() {
     let doc = include_str!("../../docs/STORAGE_K4.md");
@@ -1279,7 +1279,9 @@ fn storage_docs_do_not_overclaim_manifest_integrity_or_encryption() {
         );
     }
     let flat = doc.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(flat.contains("The Memory part of an export is not encrypted"));
+    assert!(flat.contains("An unencrypted backup is an explicit choice"));
+    assert!(flat.contains("Its Memory part is a plain copy of the memory store"));
+    assert!(flat.contains("Encrypted by default"));
     assert!(flat.contains("not signed"), "the doc says the manifest is not signed");
     assert!(!module.contains("docs/storage/K4_STORAGE.md"), "N3: stale doc path");
 }

@@ -6,7 +6,7 @@
 // "Local pin · no bond" (the design's wording; flagged for chain-team approval in the K4 PR). The
 // V3 BOND / REWARD / ROUNDS reads are parameters only (§2), and unknown is never shown as 0.
 // =====================================================================
-import type { BackupMismatch, BackupProgress, PinRow } from "../bridge/domains";
+import type { BackupMismatch, BackupProgress, BackupProtection, PinRow } from "../bridge/domains";
 
 /** The required wording until V3 is funded at genesis (truth contract §1). */
 export const PIN_BONDS_NOT_LIVE = "Pin bonds not live yet";
@@ -87,4 +87,23 @@ export function progressText(p: BackupProgress | null): string {
     case "done":
       return "Done";
   }
+}
+
+// STO-2 — the encrypted-backup choice.
+
+/** Mirrors `storage_backup::seal::FILE_EXT` and `MIN_PASSPHRASE_CHARS` in Rust. */
+export const SEALED_EXT = "citrate-backup";
+export const MIN_BACKUP_PASSPHRASE = 12;
+
+/** The export choice from the form, or why it can't go yet (null reason = ready). */
+export function exportProtection(
+  pass: string,
+  confirm: string,
+  plaintext: boolean,
+): { protection: BackupProtection | null; reason: string | null } {
+  if (plaintext) return { protection: { plaintext: true }, reason: null };
+  if ([...pass].length < MIN_BACKUP_PASSPHRASE)
+    return { protection: null, reason: `Use a passphrase of at least ${MIN_BACKUP_PASSPHRASE} characters.` };
+  if (pass !== confirm) return { protection: null, reason: "The two passphrases don't match." };
+  return { protection: { passphrase: pass }, reason: null };
 }
