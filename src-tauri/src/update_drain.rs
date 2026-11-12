@@ -125,6 +125,34 @@ pub(crate) fn drain_with(
     }
 }
 
+/// Fold the background service's drain into the report: an install is allowed only when the
+/// service's children are gone too, and a service that could not be asked blocks it.
+pub(crate) fn with_service_drain(
+    mut report: DrainReport,
+    svc: Option<Result<crate::svc::SvcDrain, String>>,
+) -> DrainReport {
+    match svc {
+        None => {}
+        Some(Ok(d)) => {
+            if !d.still_exiting.is_empty() {
+                report.all_stopped = false;
+                report.still_exiting.extend(
+                    d.still_exiting
+                        .into_iter()
+                        .map(|n| format!("background service: {n}")),
+                );
+            }
+        }
+        Some(Err(e)) => {
+            report.all_stopped = false;
+            report
+                .still_exiting
+                .push(format!("background service: not drained ({e})"));
+        }
+    }
+    report
+}
+
 /// **update_prepare** — before the update is installed: hold every new sidecar start, stop every
 /// sidecar through its owner, and report what each was before and after. Data sources: each
 /// sidecar's kit supervisor, read through `services_snapshot`, and the owners' stop paths
@@ -134,13 +162,16 @@ pub(crate) fn drain_with(
 pub async fn update_prepare(app_h: tauri::AppHandle) -> std::result::Result<DrainReport, String> {
     crate::blocking::off_main(move || {
         let t0 = std::time::Instant::now();
-        Ok(drain_with(
+        // V60 SVC-1: the background service drains its node and kubo the same way, first.
+        let svc = crate::svc::attached_client(&app_h).map(|c| c.drain());
+        let report = drain_with(
             &SpawnGate::global(),
             || crate::services::services_snapshot_sync(&app_h),
             || crate::shutdown_all_sidecars(&app_h),
             || SpawnGate::global().wait_until_no_children(EXIT_WAIT),
             || t0.elapsed().as_millis() as u64,
-        ))
+        );
+        Ok(with_service_drain(report, svc))
     })
     .await
 }
@@ -210,6 +241,7 @@ pub async fn update_install_begin() -> std::result::Result<(), String> {
 /// Data source: the app-wide spawn gate and the knowledge-import registry.
 #[tauri::command]
 pub async fn update_prepare_cancel(
+    app_h: tauri::AppHandle,
     install_failed: Option<bool>,
 ) -> std::result::Result<(), String> {
     cancel_with(
@@ -217,7 +249,12 @@ pub async fn update_prepare_cancel(
         &crate::knowledge_import::ImportRegistry::global(),
         &INSTALL_BEGUN,
         install_failed.unwrap_or(false),
-    )
+    )?;
+    // V60 SVC-1: the service's drain is released too (it also releases itself after 15 min).
+    if let Some(client) = crate::svc::attached_client(&app_h) {
+        client.call(crate::svc::SvcOp::Resume)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

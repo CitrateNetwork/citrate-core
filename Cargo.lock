@@ -892,6 +892,7 @@ dependencies = [
  "citrate-core-kit",
  "citrate-templates",
  "citrate-wallet-core",
+ "dirs",
  "ed25519-dalek",
  "hex",
  "hmac",
