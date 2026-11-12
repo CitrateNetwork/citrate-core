@@ -13,7 +13,6 @@
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
 import type { Group, GroupMember, GroupMessage, GroupRole } from "../../bridge/domains";
-import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "../../surfaces/groupRoles";
 
 export interface GroupsState {
   /** The groups you are in. */
@@ -209,15 +208,11 @@ async function reloadRosterIfSelected(groupId: string): Promise<void> {
   if (groupsSlice.get().selectedId === groupId) groupsSlice.set({ roster });
 }
 
-/** Change a member's role in `groupId`. Not available until role grants are signed (#495): refuses
- *  with the reason and sends nothing. The member actions take the group they were started for, never
- *  the selected group (#389). */
+/** Change a member's role in `groupId` (#495, GC-2): the daemon signs the grant with this
+ *  device's comms key and sends it to the group; its refusal is shown as is. The member actions
+ *  take the group they were started for, never the selected group (#389). */
 export async function assignRole(groupId: string, address: string, role: GroupRole): Promise<void> {
   if (!groupId) return;
-  if (!ROLE_CHANGES_AVAILABLE) {
-    groupsSlice.set({ error: ROLE_CHANGES_NOT_AVAILABLE });
-    return;
-  }
   groupsSlice.set({ busyMember: address, error: null });
   try {
     await bridge.groups.assignRole(groupId, address, role);
