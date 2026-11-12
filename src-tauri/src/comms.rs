@@ -1316,6 +1316,25 @@ pub(crate) fn role_grants_available() -> std::result::Result<(), RoleGrantError>
     Err(RoleGrantError::NotAvailable)
 }
 
+/// GC-2 (#495): what an older comms-member-daemon's refusal of `grantRole` means, in plain words.
+/// The UI shows the same words (`src/surfaces/groupRoles.ts`).
+pub(crate) const ROLE_GRANTS_NEED_NEWER_DAEMON: &str = "";
+
+/// RED: the `grantRole` request for a role change (not implemented yet).
+fn grant_role_request(
+    group: String,
+    member: String,
+    role: &str,
+) -> std::result::Result<Request, String> {
+    let _ = (group, member, role);
+    Err(String::new())
+}
+
+/// RED: map a daemon refusal for the member (not implemented yet).
+fn role_grant_error(message: String) -> String {
+    message
+}
+
 /// **groups_assign_role** — change a member's role. Not available in this build (#495): the pinned
 /// daemon's `assignRole` requires a signed role assertion and nothing here signs one, so this
 /// returns [`RoleGrantError::NotAvailable`] without contacting the daemon. The bridge's

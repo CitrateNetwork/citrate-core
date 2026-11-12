@@ -12,3 +12,11 @@ export const ROLE_CHANGES_AVAILABLE: boolean = false;
 
 /** The member-facing reason, word for word the Rust `ROLE_GRANTS_NOT_AVAILABLE`. */
 export const ROLE_CHANGES_NOT_AVAILABLE = "Role changes aren't available yet: signed role grants aren't built.";
+
+/** RED (GC-2): the member-facing reason an older daemon can't change roles. */
+export const ROLE_CHANGES_NEED_NEWER_DAEMON = "";
+
+/** RED (GC-2): whether this member may use the role control. */
+export function canChangeRoles(_myRole: string): boolean {
+  return false;
+}
