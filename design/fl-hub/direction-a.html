@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FL hub · direction A · Instrument</title>
+<!-- V60 UX-0 design mock. Not part of the app build (scripts/design-fl-hub.test.mjs). -->
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-sans/400.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-sans/500.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-sans/600.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-mono/400.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-mono/500.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/space-grotesk/400.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/space-grotesk/500.css">
+<link rel="stylesheet" href="../../src/styles/foundation.css">
+<link rel="stylesheet" href="../../src/styles/tokens.css">
+<link rel="stylesheet" href="./hub.css">
+<style>
+
+.a-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 28px; }
+.a-live { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 28px; align-items: start; }
+.a-side { display: flex; flex-direction: column; gap: 22px; }
+.a-row2 { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 28px; margin-top: 28px; }
+.panel { border: 1px solid var(--line-1); background: var(--srf-1); border-radius: var(--r-2); padding: 18px 20px; }
+
+</style>
+</head>
+<body data-register="instrument">
+<div class="mockbar" data-design-mock>
+  <b>Design mock</b><span>Direction A: Instrument</span>
+  <span>Every figure is fixture data drawn for layout. Nothing here is read from a network, and this page is not part of the app build.</span>
+  <a href="./index.html">All directions</a>
+</div>
+
+<div class="frame">
+<nav class="rail" aria-label="Places" data-register="instrument">
+  <img src="../../src/assets/brand/citrate_marquee_white.svg" alt="Citrate">
+  <div class="item">Hermes</div>
+  <div class="item">Groups</div>
+  <div class="item on">Work<small>Rounds</small></div>
+  <div class="item">Wallet</div>
+  <div class="item">Node</div>
+  <div class="item">Store</div>
+  <div class="item">Settings</div>
+  <div class="foot">Citrate testnet<br>chain 40204</div>
+</nav>
+
+<main class="content">
+<header class="band">
+  <img class="marquee" src="../../src/assets/brand/citrate_marquee_white.svg" alt="Citrate">
+  <div class="eyebrow-m">Work · Rounds · live</div>
+  <h1>The round, as it runs</h1>
+  <div class="meta">
+    <span><b>Network</b>Citrate testnet · chain 40204</span>
+    <span><b>Wallet</b>1,240 SALT</span>
+    <span><b>Your node</b>training round 14 (lease 3)</span>
+    <span><b>Your floor</b>250 SALT / lease</span>
+    <span><b>Data</b><span class="fixture-tag">fixture</span></span>
+  </div>
+</header>
+<div class="pad">
+  <p class="muted small" style="max-width:760px;margin:0 0 20px">Dark instrument register end to end. The live round is the hero; matches sit beside it. A visual element moves only when a real event moved it.</p>
+  <div class="a-grid">
+    <section class="panel" aria-label="Live round">
+      <h2 class="h-section">Live round · Citrate NAT pool · round 14</h2>
+      <div class="a-live">
+        <div><div class="ring " data-part="round-ring">
+<svg viewBox="-170 -150 340 300" role="img" aria-label="Round 14: verifying, 6 of 8 leases verified, 1 submitted, 1 rejected; challenge window ends in 3 h 10 min">
+<circle class="seg done" r="88" cx="0" cy="0" stroke-dasharray="104.58 448.34" stroke-dashoffset="-0.00" transform="rotate(-90)"><title>Open</title></circle><circle class="seg done" r="88" cx="0" cy="0" stroke-dasharray="104.58 448.34" stroke-dashoffset="-110.58" transform="rotate(-90)"><title>Running</title></circle><circle class="seg current" r="88" cx="0" cy="0" stroke-dasharray="104.58 448.34" stroke-dashoffset="-221.17" transform="rotate(-90)"><title>Verifying</title></circle><circle class="seg " r="88" cx="0" cy="0" stroke-dasharray="104.58 448.34" stroke-dashoffset="-331.75" transform="rotate(-90)"><title>Payout</title></circle><circle class="seg " r="88" cx="0" cy="0" stroke-dasharray="104.58 448.34" stroke-dashoffset="-442.34" transform="rotate(-90)"><title>Closed</title></circle>
+<text class="lbl" x="71.7" y="-94.7" text-anchor="start">Open</text><text class="lbl" x="116.0" y="41.7" text-anchor="start">Running</text><text class="lbl current" x="0.0" y="126.0" text-anchor="middle">Verifying</text><text class="lbl" x="-116.0" y="41.7" text-anchor="end">Payout</text><text class="lbl" x="-71.7" y="-94.7" text-anchor="end">Closed</text>
+<g data-part="lease-dots"><circle class="inner" r="62"/><circle class="dot verified" cx="0.0" cy="-62.0" r="6"><title>lease 1: verified</title></circle><path class="tick" d="M-3.0 -62.0 l2 2.4 l4 -4.6"/><circle class="dot verified" cx="43.8" cy="-43.8" r="6"><title>lease 2: verified</title></circle><path class="tick" d="M40.8 -43.8 l2 2.4 l4 -4.6"/><circle class="dot verified" cx="62.0" cy="0.0" r="6"><title>lease 3: verified</title></circle><path class="tick" d="M59.0 0.0 l2 2.4 l4 -4.6"/><circle class="dot verified" cx="43.8" cy="43.8" r="6"><title>lease 4: verified</title></circle><path class="tick" d="M40.8 43.8 l2 2.4 l4 -4.6"/><circle class="dot verified" cx="0.0" cy="62.0" r="6"><title>lease 5: verified</title></circle><path class="tick" d="M-3.0 62.0 l2 2.4 l4 -4.6"/><circle class="dot verified" cx="-43.8" cy="43.8" r="6"><title>lease 6: verified</title></circle><path class="tick" d="M-46.8 43.8 l2 2.4 l4 -4.6"/><circle class="dot submitted" cx="-62.0" cy="0.0" r="6"><title>lease 7: submitted</title></circle><circle class="dot rejected" cx="-43.8" cy="-43.8" r="6"><title>lease 8: rejected</title></circle><line class="strike" x1="-51.8" y1="-35.8" x2="-35.8" y2="-51.8"/></g>
+<text class="c1" x="0" y="-14" text-anchor="middle">Round 14</text>
+<text class="c2" x="0" y="12" text-anchor="middle">Verifying</text>
+<text class="c3" x="0" y="30" text-anchor="middle">6 of 8 verified</text>
+</svg>
+</div><div class="legend" aria-hidden="true">
+  <span><svg viewBox="-8 -8 16 16"><circle class="dot leased" r="5"/></svg>leased</span>
+  <span><svg viewBox="-8 -8 16 16"><circle class="dot submitted" r="5"/></svg>submitted</span>
+  <span><svg viewBox="-8 -8 16 16"><circle class="dot verified" r="5"/><path class="tick" d="M-3 0 l2 2.4 l4 -4.6"/></svg>verified by the coordinator</span>
+  <span><svg viewBox="-8 -8 16 16"><circle class="dot rejected" r="5"/><line class="strike" x1="-7" y1="7" x2="7" y2="-7"/></svg>rejected (hover for the reason)</span>
+</div><div class="source"><b>SOURCE</b> ring: WorkMarket events. Dots: coordinator /v1/status, labelled coordinator-reported until on chain.</div></div>
+        <div class="a-side"><div class="clock" data-part="challenge-clock">
+  <div class="eyebrow-m">Challenge window</div>
+  <div class="big num">3 h 10 min left</div>
+  <div class="bar" role="img" aria-label="Challenge window 74 percent elapsed, ends in 3 h 10 min"><i style="width:74%"></i></div>
+  <div class="row"><span>committed at block 602,118</span><span>ends at block 607,818</span></div>
+  <div class="source"><b>SOURCE</b> FederatedRoundLedger round status and challenge window end. "Accepted on chain at block N" with a CitrateScan link replaces this once final.</div>
+</div><div data-part="belnap">
+  <div class="eyebrow-m" style="margin-bottom:6px">Aggregation (Belnap)</div>
+  <div class="belnap">
+    <div><b>true</b><span class="num">6</span></div>
+    <div><b>false</b><span class="num">1</span></div>
+    <div><b>both</b><span class="num">0</span></div>
+    <div><b>neither</b><span class="num">1</span></div>
+  </div>
+  <div class="source"><b>SOURCE</b> FederatedRoundLedger belnapAggregate in the round commit.</div>
+</div><div class="escrow" data-part="escrow-bar">
+  <div class="eyebrow-m" style="margin-bottom:6px">Escrow · budget <span class="num">4,000 SALT</span></div>
+  <div class="bar" role="img" aria-label="Escrow: 0 SALT paid, 1,800 SALT reserved for 6 accepted leases, 2,200 SALT refundable to the poster after the dispute window">
+    <span class="paid" style="width:0%"></span><span class="reserved" style="width:45%"></span><span class="refundable" style="width:55%"></span>
+  </div>
+  <div class="keys">
+    <span><i class="key-sw paid"></i>paid <span class="num">0 SALT</span></span>
+    <span><i class="key-sw reserved"></i>reserved for 6 accepted leases <span class="num">1,800 SALT</span></span>
+    <span><i class="key-sw refundable"></i>refundable to the poster after the dispute window <span class="num">2,200 SALT</span></span>
+  </div>
+  <div class="source"><b>SOURCE</b> WorkMarket.offers(14): budget, paid, reserved. SALT only.</div>
+</div></div>
+      </div>
+      <div style="margin-top:24px"><div data-part="my-timeline">
+  <div class="eyebrow-m" style="margin-bottom:8px">Your contribution · lease 3</div>
+  <ol class="timeline">
+    <li class="done"><b>Data</b>public corpus shard 7, nothing of yours<span class="num">0x5e1f…c2a9</span></li>
+    <li class="done"><b>Trained</b>2 h 14 min on this machine<span class="num">01:27 to 03:41</span></li>
+    <li class="done"><b>Uploaded</b>model update, 38 MB, signed<span class="num">delta 0x8d4c…19f0</span></li>
+    <li class="done"><b>Verified</b>by the coordinator<span class="num">03:44 · coordinator-reported</span></li>
+    <li class="current"><b>On chain</b>waiting for the challenge window<span class="num">FederatedRoundLedger</span></li>
+  </ol>
+  <div class="source"><b>SOURCE</b> local worker log (lease id, delta hash) and the coordinator receipt.</div>
+</div></div>
+    </section>
+    <section aria-label="Matches for you">
+      <h2 class="h-section">Matches for you</h2>
+      <article class="match" data-part="match-card">
+  <div class="top"><h3>Citrate NAT pool · round 15</h3><span class="price">320 SALT / lease</span></div>
+  <dl class="facts"><dt>Poster</dt><dd>Citrate NAT pool (protocol funded)</dd><dt>Time</dt><dd>about 2 h 30 min on this machine</dd><dt>Data</dt><dd>public corpus shard; nothing from you</dd><dt>Uploads</dt><dd>a model update of about 38 MB</dd><dt>Deadline</dt><dd>in 18 h</dd></dl>
+  <div class="why"><b>Why this match</b>320 is above your 250 floor; needs 16 GB VRAM and this machine has 24 GB; fits your 23:00 to 07:00 hours on power.</div>
+  <button class="btn btn-primary btn-sm">Join</button> <button class="btn btn-ghost btn-sm">Ask Hermes</button>
+</article>
+<article class="match" data-part="match-card">
+  <div class="top"><h3>Harbor Lab · support model tune v4</h3><span class="price">280 SALT / lease</span></div>
+  <dl class="facts"><dt>Poster</dt><dd>Harbor Lab (group admin in the live roster)</dd><dt>Time</dt><dd>about 1 h 10 min on this machine</dd><dt>Data</dt><dd>your local "support tickets" dataset v3, stays on this device</dd><dt>Uploads</dt><dd>a model update of about 22 MB</dd><dt>Deadline</dt><dd>in 2 days</dd></dl>
+  <div class="why"><b>Why this match</b>you are a member of Harbor Lab; your policy allows the text: support data class; 280 is above your floor.</div>
+  <button class="btn btn-primary btn-sm">Join</button> <button class="btn btn-ghost btn-sm">Ask Hermes</button>
+</article>
+<article class="match" data-part="match-card">
+  <div class="top"><h3>North Field · evaluation, 400 prompts</h3><span class="price">260 SALT / lease</span></div>
+  <dl class="facts"><dt>Poster</dt><dd>North Field (group admin in the live roster)</dd><dt>Time</dt><dd>about 25 min on this machine</dd><dt>Data</dt><dd>none from you</dd><dt>Uploads</dt><dd>scores, under 1 MB</dd><dt>Deadline</dt><dd>in 6 h</dd></dl>
+  <div class="why"><b>Why this match</b>evaluation jobs are on in your policy; 260 is above your floor.</div>
+  <button class="btn btn-primary btn-sm">Join</button> <button class="btn btn-ghost btn-sm">Ask Hermes</button>
+</article>
+      <div class="source"><b>SOURCE</b> WorkMarket OfferOpened events, the requirements CID, the live MLS roster, and your Hermes worker policy (floor, data classes, hours). 2 offers hidden: see Advanced.</div>
+    </section>
+  </div>
+  <div class="a-row2">
+    <section><h2 class="h-section">Payouts</h2><div data-part="payout-receipt">
+<table class="rcpt">
+  <thead><tr><th>Round</th><th class="num">Leases × price</th><th class="num">Amount</th><th>Transaction</th><th class="num">Block</th><th>Claim</th></tr></thead>
+  <tbody>
+    <tr><td>NAT pool · round 12</td><td class="num">1 × 300</td><td class="num">300 SALT</td><td><a href="#">0x9c1e…a04b</a></td><td class="num">581,204</td><td><span class="chip ok">claimed</span></td></tr>
+    <tr><td>Harbor Lab · round 3</td><td class="num">2 × 280</td><td class="num">560 SALT</td><td><a href="#">0x47aa…0d13</a></td><td class="num">590,877</td><td><button class="btn btn-ghost btn-sm">Claim</button></td></tr>
+  </tbody>
+</table>
+<div class="source"><b>SOURCE</b> WorkMarket.settled(offer, worker) and the transaction receipt.</div>
+</div></section>
+    <section><h2 class="h-section">Join sheet (drawn open for Harbor Lab)</h2><section class="sheet" data-part="join-sheet" aria-label="Join sheet">
+  <header><b>Join · signature ceremony</b><span class="chip">shown before you sign</span></header>
+  <dl>
+    <dt>Offer</dt><dd class="num">Harbor Lab · offer 7 · round 4</dd>
+    <dt>Price</dt><dd><span class="num">280 SALT</span> per accepted lease; your floor is <span class="num">250 SALT</span></dd>
+    <dt>Reads</dt><dd>your local "support tickets" dataset v3. It is never uploaded.</dd>
+    <dt>Uploads</dt><dd>a model update of about 22 MB, signed by this device</dd>
+    <dt>Max time</dt><dd>1 h 30 min, on power, between 23:00 and 07:00</dd>
+    <dt>Payout to</dt><dd class="num">0x6181…46b9 (your wallet)</dd>
+    <dt>Signs</dt><dd class="num">WorkMarket.join(7, leases: 1)</dd>
+  </dl>
+  <footer><span class="note">One tap. Inside your envelope? No envelope set.</span><button class="btn btn-ghost btn-sm">Cancel</button><button class="btn btn-primary btn-sm">Sign and join</button></footer>
+</section></section>
+  </div>
+  <div style="margin-top:28px"><details class="adv" data-part="advanced">
+  <summary>Advanced · all offers, ids, raw JSON, export</summary>
+  <div class="body">
+    <table class="rcpt">
+      <thead><tr><th>Offer</th><th>Shown</th><th>Why not</th></tr></thead>
+      <tbody>
+        <tr><td>Delta Works · round 9</td><td>hidden</td><td>120 SALT is below your 250 floor</td></tr>
+        <tr><td>NAT pool · round 16</td><td>hidden</td><td>needs 48 GB VRAM; this machine has 24 GB</td></tr>
+      </tbody>
+    </table>
+    <p class="small muted">Requirements CID <span class="num">bafy…q4re</span> · coordinator <span class="num">coord.harbor.lab:7401</span> · FRL cluster id <span class="num">0x2b07…e1d4</span></p>
+<pre>{ "offer": 7, "kind": "fl", "pricePerLease": "280", "budget": "2240",
+  "maxWorkers": 8, "deadline": 1763856000, "groupHash": "0x51c0…9a7e" }</pre>
+    <button class="btn btn-ghost btn-sm">Export as CSV</button>
+  </div>
+</details></div>
+  <div style="margin-top:28px"><section aria-label="Empty and error states">
+  <h2 class="h-section">States this screen handles</h2>
+  <div class="states">
+    <div class="state"><span class="eyebrow-m">empty</span><b>No open rounds right now</b><p>Hermes will tell you when a round matches your policy. Your floor is 250 SALT per lease.</p></div>
+    <div class="state"><span class="eyebrow-m">error</span><b>Coordinator not answering (last seen 4 min ago)</b><p>Lease dots are coordinator-reported and freeze until it answers. On-chain state below still updates.</p></div>
+    <div class="state"><span class="eyebrow-m">unavailable</span><b>Not available yet: contract not deployed on this network</b><p>WorkMarket has no address in this network's profile, so nothing here can be signed.</p></div>
+  </div>
+</section></div>
+  <p class="notice">Token economics are to be determined (docs.citrate.ai/chain/economics). Amounts are SALT the contract holds in escrow and pays out, not a forecast. Private data stays on this device; only model updates leave it.</p>
+</div>
+</main>
+</div>
+</body>
+</html>
