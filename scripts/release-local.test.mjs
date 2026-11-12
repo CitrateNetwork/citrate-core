@@ -310,7 +310,7 @@ describe("release-local.sh --publish-target spaces", () => {
   });
 
   it("never creates a GitHub release on the spaces path, and keeps the secret off argv and output", () => {
-    const spaces = src.slice(at('if [ "$PUBLISH_TARGET" = "spaces" ]; then'), at("# ---- 7b. publish to GitHub"));
+    const spaces = src.slice(at('sha_of() {'), at("say \"7/7 creating the DRAFT PRERELEASE $TAG (never latest)\""));
     expect(spaces).not.toContain("gh release");
     expect(src).toContain('AWS_SECRET_ACCESS_KEY="$(security find-generic-password -s "$SPACES_KEY_ITEM" -w)"');
     expect(src).not.toMatch(/echo[^\n]*AWS_SECRET/);
