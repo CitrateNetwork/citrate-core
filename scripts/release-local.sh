@@ -193,7 +193,7 @@ if [ "$PUBLISH_TARGET" = "spaces" ]; then
   security find-generic-password -s "$SPACES_KEY_ITEM" >/dev/null 2>&1 ||
     die "no Spaces key in the keychain ($SPACES_KEY_ITEM: account = access key id, password = secret)"
   s3 s3api head-bucket --bucket "$CDN_BUCKET" >/dev/null 2>&1 || die "the Spaces key cannot reach s3://$CDN_BUCKET"
-  n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "$UPD_PREFIX/v$VERSION/" --max-keys 1 --query KeyCount --output text)"
+  n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "$UPD_PREFIX/v$VERSION/" --query 'length(Contents || `[]`)' --output text)"
   [ "$n" = "0" ] || die "s3://$CDN_BUCKET/$UPD_PREFIX/v$VERSION/ already holds objects"
 elif gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then die "a release $TAG already exists"; fi
 # The release points at a commit GitHub has (the pushed release commit); checked before any signing.
@@ -412,7 +412,7 @@ sys.exit(0 if len(pub) == 1 and pub[0]["Permission"] == "READ" else 1)'
   say "the feed and every URL in it answer 200 anonymously at their sha256 ($CDN_PUBLIC/$UPD_PREFIX/latest.json)"
   if [ "$REHEARSAL" -eq 1 ] && [ "$CLEANUP" -eq 1 ]; then
     s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive >/dev/null
-    n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "downloads/rehearsal-$VERSION/" --query KeyCount --output text)"
+    n="$(s3 s3api list-objects-v2 --bucket "$CDN_BUCKET" --prefix "downloads/rehearsal-$VERSION/" --query 'length(Contents || `[]`)' --output text)"
     [ "$n" = "0" ] || die "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/ still holds $n objects"
     say "rehearsal objects under downloads/rehearsal-$VERSION/ deleted"
   fi
