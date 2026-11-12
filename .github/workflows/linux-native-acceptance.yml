@@ -68,6 +68,11 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           unshare --user --map-root-user --pid --fork --mount-proc --net true
+      - name: Every pinned package is an asset of its GitHub release, at the pinned sha256
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/linux-native-acceptance.sh --check-pins
       - name: Self-test
         shell: bash
         run: scripts/ci/linux-native-acceptance.sh --self-test --log-dir "$GITHUB_WORKSPACE/k1l-self-test"
@@ -113,11 +118,15 @@ jobs:
           unshare --user --map-root-user --pid --fork --mount-proc --net true
       - name: Fetch the pinned packages (sha256-checked)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/k1l-cache"
           scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" --fetch-only
       - name: Run the S14.6 scenarios on the packaged .deb and AppImage
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" \
             --work "$RUNNER_TEMP/k1l-work" --log-dir "$GITHUB_WORKSPACE/k1l-logs"
@@ -182,6 +191,8 @@ jobs:
           unshare --user --map-root-user --pid --fork --mount-proc --net true
       - name: Fetch the pinned release packages (their sidecars go into the test builds)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/k1l-cache"
           scripts/ci/linux-native-acceptance.sh --fetch "${{ matrix.arch }}" --cache "$RUNNER_TEMP/k1l-cache" --fetch-only
