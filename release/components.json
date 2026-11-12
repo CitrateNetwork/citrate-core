@@ -140,12 +140,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-comms",
         "checkout": "citrate-comms",
-        "rev": "9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12"
+        "rev": "f1753e81fc089088e0441e6f6263237330e9cd41"
       },
       "federation": {
         "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
         "status": "drift",
-        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-comms commit. Shipped in 0.5.0 and 0.5.1: 9cd12c41 (Windows used bc0f92a5, a Windows-only owner override, 2026-10-12; no Windows pin here yet)."
+        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-comms commit. Shipped in 0.5.0 and 0.5.1: 9cd12c41 (Windows used bc0f92a5, a Windows-only owner override, 2026-10-12; no Windows pin here yet). 0.6.0: f1753e81 (comms main with GC-1 #48, GC-2 #49, #52, #53)."
       },
       "build": {
         "kind": "cargo",
@@ -156,19 +156,27 @@
         "strip": false,
         "script": "scripts/build-comms-daemon.sh"
       },
-      "artifacts": {
-        "aarch64-apple-darwin": {
-          "runtime_deps_asset": "comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c",
-          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+      "requires": [
+        {
+          "rev": "4f3400351311658b44b2e5c3a87db9a63879694c",
+          "marker": "grantRole",
+          "why": "citrate-core's Groups › Assign role sends {op: grantRole} to the daemon (core #637, comms #49); an older daemon refuses it as an unknown variant"
         },
-        "x86_64-unknown-linux-gnu": {
-          "sha256": "96a63e587d4946cac017bfa207a4f4da9f3b281deafbef144b065d7cec96e435",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "runtime_deps_asset": "comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
+        {
+          "rev": "bbccb5fb4cdff71f5ae79bc5aa5ff700aaebd94c",
+          "marker": "only the owner demotes an Admin",
+          "why": "the role control is owner-only on the premise that the daemon refuses an admin demoting an admin (comms #53)"
         }
+      ],
+      "artifacts": {
+        "x86_64-unknown-linux-gnu": {
+          "sha256": "365685cb2653f2c78c6bd92828aa612c658ff533e060d9155cc330329d2b58a6",
+          "evidence": "build-comms-daemon.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-11-12; same bytes from a second clean build in a different build root (/root/v060-gcsto/pin/root2); verify-bytes finds both requires markers"
+        }
+      },
+      "pending": {
+        "aarch64-apple-darwin": "the release lane records it on the release Mac during the next release build: scripts/build-comms-daemon.sh --target aarch64-apple-darwin --print-digest at the default build root, then pin runtime_deps_asset comms-member-daemon-aarch64-apple-darwin-f1753e81fc08 and its digest in src-tauri/runtime-deps.sha256 (see core PR for the exact steps)",
+        "aarch64-unknown-linux-gnu": "no aarch64 Linux builder since the DGX lane ended: a native aarch64 Linux host runs scripts/build-comms-daemon.sh --target aarch64-unknown-linux-gnu --print-digest at the default build root, twice in different build roots, then pins runtime_deps_asset comms-member-daemon-aarch64-unknown-linux-gnu-f1753e81fc08 and its digest in src-tauri/runtime-deps.sha256"
       }
     },
     {
