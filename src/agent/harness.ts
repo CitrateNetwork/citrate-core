@@ -21,6 +21,7 @@ import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
 import { ChatPlan } from "./chatPlan.ts";
+import { labelFor as liveLabelFor, noticeFor, type SidecarDownReason } from "./sidecarLiveness.ts";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
@@ -1050,8 +1051,8 @@ export function createAgentProvider(
 /// HUP-S1.1 (US-1.1 AC1): the agent loop for the local model runs in the Hermes sidecar, and the
 /// webview has no tool loop for it. When the sidecar is down, chat on the local model is a plain
 /// reply with NO tools, and says so first. Nothing is run, approved or signed on this path.
-export const SIDECAR_DOWN_NOTICE =
-  "Hermes is not running right now, so this reply comes straight from the local model with no tools: it cannot read your node, wallet, memory or files, or change anything.";
+// 0.5.4: the notice now comes from a fresh status read and names its case (sidecarLiveness.ts).
+export { SIDECAR_DOWN_NOTICE } from "./sidecarLiveness.ts";
 
 /**
  * SCL-S7.5a (D-16 extended) — the provider while the local model is configured but its server is
@@ -1075,13 +1076,17 @@ export function createLocalStoppedProvider(label: string = LOCAL_STOPPED_LABEL):
   };
 }
 
-export function createSidecarDownProvider(getContext: () => AgentContext, inferLocal: InferLocalFn): ChatProvider {
+export function createSidecarDownProvider(
+  getContext: () => AgentContext,
+  inferLocal: InferLocalFn,
+  reason: SidecarDownReason = { why: "stopped" },
+): ChatProvider {
   const inner = createLocalProvider(getContext, inferLocal);
   return {
     kind: "local",
-    label: "local model · llama-server · Hermes offline (no tools)",
+    label: liveLabelFor(reason),
     async send(opts) {
-      opts.callbacks.onActivity?.({ kind: "notice", text: SIDECAR_DOWN_NOTICE });
+      opts.callbacks.onActivity?.({ kind: "notice", text: noticeFor(reason) });
       return inner.send(opts);
     },
   };

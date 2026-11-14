@@ -44,7 +44,7 @@ import type { DaemonRunEntry } from "../daemons/api";
 import type { ChatConsent, ChatRoute, FlRoundPlan, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
-import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
+import { activeRouterId, canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { runContractView } from "../agent/contractView";
@@ -85,6 +85,7 @@ import { parseClaimLink } from "../onboarding/claimLink";
 import { isInviteLink } from "../surfaces/inviteLink";
 import { isAccessLink } from "../onboarding/accessLink";
 import { groupsSlice } from "./slices/groups";
+import { runHermesSelfCheck, setupNotice } from "./slices/hermesSetup";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -106,6 +107,8 @@ import {
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
+import { agentSlice } from "./slices/agent";
+import { downReason, onHermesFlip, readSidecar, sameReason, type SidecarDownReason } from "../agent/sidecarLiveness";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
@@ -824,7 +827,7 @@ export class Store {
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
-  chatInputEl: HTMLInputElement | null = null;
+  chatInputEl: HTMLTextAreaElement | null = null;
   jChatScrollEl: HTMLElement | null = null;
   jChatInputEl: HTMLInputElement | null = null;
 
@@ -859,6 +862,13 @@ export class Store {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => this.tick(), 600);
+    // 0.5.4: the Hermes setup self-check at launch; a missing required item is said, not logged.
+    if (BRIDGE_MODE === "tauri") {
+      void runHermesSelfCheck().then((r) => {
+        const n = setupNotice(r);
+        if (n) this.toast(n);
+      });
+    }
     // CORE-A2 — pull the real custody lock state into the Keys-&-security
     // section. In a Tauri build this reads the live vault (custody_status); in
     // web-dev it is the sim shim. Failures leave the field "unknown" (honest).
@@ -879,6 +889,9 @@ export class Store {
     // while the local model is not running waits (bounded) instead of asking.
     if (BRIDGE_MODE === "tauri") this.launchLocalStartPending = true;
     void this.rebuildProvider();
+    // 0.5.4: Hermes starts and stops after launch (Agent › Start, Node › Services); chat follows it,
+    // so it never keeps a "Hermes is not running" route built before Hermes came up.
+    if (BRIDGE_MODE === "tauri") this.followHermes();
     // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
     // syncPct/state) from the supervisor + local RPC every 2s and fold them into
     // AppState, so the Node surface + Sidebar render live numbers instead of the
@@ -1229,13 +1242,13 @@ export class Store {
       // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
       // under Local model only (core refuses it there too); it needs the sidecar loop.
       const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
-      const sidecarUp =
+      // 0.5.4: one fresh read; a failed read is "unreadable", never "not running" (sidecarLiveness.ts).
+      const sidecarReading =
         (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
-          ? await bridge.agentHarness
-              .status()
-              .then((st) => st.running)
-              .catch(() => false)
-          : false;
+          ? await readSidecar(() => bridge.agentHarness.status())
+          : null;
+      const sidecarUp = sidecarReading?.up === true;
+      this.sidecarDown = null;
       if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint,
@@ -1314,7 +1327,9 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC1): the local model's agent loop runs only in the Hermes sidecar. With
         // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
         // and it says so: the webview runs no tool loop for the local model.
-        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx));
+        // 0.5.4: the notice names the real case: loop switched off, not running, or status unknown.
+        this.sidecarDown = downReason(this.state.hermesSidecarLoop, sidecarReading);
+        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx), this.sidecarDown);
         this.reflectProvider();
         return;
       }
@@ -3055,6 +3070,18 @@ export class Store {
     this.save();
   }
 
+  /** 0.5.4 — collapse the sidebar to its icons, or expand it (remembered across launches). */
+  toggleSidebar(collapsed: boolean = !this.state.sidebarCollapsed): void {
+    this.setState({ sidebarCollapsed: collapsed });
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the Hermes chat's right column, or expand it (remembered across launches). */
+  toggleHermesRail(collapsed: boolean = !this.state.hermesRailCollapsed): void {
+    this.setState({ hermesRailCollapsed: collapsed });
+    this.save();
+  }
+
   // ---------- HUP-S10.4 (US-10.4 AC1) — the daily journal summary ----------
 
   /**
@@ -3332,6 +3359,34 @@ export class Store {
 
   /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
   private sidecarReattachTried = false;
+
+  private hermesFlipUnsub: (() => void) | null = null;
+
+  /** 0.5.4 — rebuild the chat provider each time the Agent slice sees Hermes start or stop. */
+  followHermes(): void {
+    if (this.hermesFlipUnsub) return;
+    this.hermesFlipUnsub = onHermesFlip(agentSlice.subscribe, agentSlice.get, () => {
+      if (this.state.hermesSidecarLoop) void this.rebuildProvider();
+    });
+  }
+
+  /** 0.5.4 — why chat is on the no-tools fallback (null = it is not). */
+  private sidecarDown: SidecarDownReason | null = null;
+
+  /**
+   * 0.5.4 — before a message goes out on the no-tools fallback, read Hermes again. Hermes may have
+   * come up (or its status become readable) since the provider was built: then the provider is
+   * rebuilt, so the message goes to Hermes and no stale "not running" notice is shown. With the
+   * loop switched off nothing is read. Returns the provider to send with.
+   */
+  private async recheckSidecarBeforeSend(provider: ChatProvider): Promise<ChatProvider> {
+    const down = this.sidecarDown;
+    if (!down || down.why === "loop_off" || provider !== this.provider || BRIDGE_MODE !== "tauri") return provider;
+    const now = await readSidecar(() => bridge.agentHarness.status());
+    if (!now.up && sameReason(down, downReason(true, now))) return provider;
+    await this.rebuildProvider();
+    return this.provider ?? provider;
+  }
 
   /**
    * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
@@ -3639,6 +3694,8 @@ export class Store {
     const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
+    // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
+    if (this.sidecarDown) provider = await this.recheckSidecarBeforeSend(provider);
     // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
     // Hold this message: wait for the app's own startup start, or ask the member. Nothing is sent
     // to the gateway unless the member chooses that for this message.
@@ -4863,10 +4920,32 @@ export class Store {
    * switches the SERVED local model for a local pick (modelsSlice.selectModel restarts
    * llama-server); the gateway is the always-ready default, so picking it needs no restart.
    */
-  selectModel(id: string, choices: ModelChoice[]): void {
-    if (!canSelect(id, choices)) return; // phantom id — never persist a non-choice
+  /**
+   * D-11 — a cloud choice (a model of a provider connected in Settings › Models) is stored in core
+   * as the preferred model (`providers_preferred_set`, which checks the provider can take calls),
+   * and the provider is rebuilt so the next Hermes turn runs on it through the core model proxy.
+   * A local or gateway choice clears a stored cloud model, so the pick in the chat is what answers.
+   * Returns core's refusal (nothing changes then), or null.
+   */
+  async selectModel(id: string, choices: ModelChoice[]): Promise<string | null> {
+    if (!canSelect(id, choices)) return null; // phantom id — never persist a non-choice
+    const chosen = choices.find((c) => c.id === id);
+    if (chosen?.source === "cloud" && chosen.cloud) {
+      const err = await this.setHermesCloudModel(chosen.cloud);
+      if (err) return err;
+      this.setState({ activeModelId: id });
+      this.save();
+      return null;
+    }
     this.setState({ activeModelId: id });
     this.save();
+    if (this.state.hermesCloudModel) return this.setHermesCloudModel(null);
+    return null;
+  }
+
+  /** The router id shown as selected: the stored cloud model while one is set, else the stored id. */
+  routerActiveId(): string | null {
+    return activeRouterId(this.state.activeModelId, this.state.hermesCloudModel);
   }
 
   /**
@@ -4875,7 +4954,7 @@ export class Store {
    * chat never routes to a not-ready (still-downloading / not-pulled) model.
    */
   routerActive(choices: ModelChoice[]): ModelChoice {
-    return resolveActive(this.state.activeModelId, choices);
+    return resolveActive(this.routerActiveId(), choices);
   }
 
   /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
