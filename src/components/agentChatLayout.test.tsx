@@ -86,7 +86,8 @@ describe("AgentChat in a 600 px window", () => {
     expect(composer.parentElement).toBe(pane);
     expect(pane.lastElementChild).toBe(composer);
     expect(composer.style.flexShrink).toBe("0");
-    expect(composer.querySelector("input")).toBeTruthy();
+    // 0.5.4: the composer's field is a growing text area (agentChatComposer.test.tsx).
+    expect(composer.querySelector("textarea")).toBeTruthy();
   });
 
   it("only the message list scrolls (flex: 1, min-height: 0, overflow: auto); the pane clips", () => {
@@ -125,7 +126,8 @@ describe("AgentChat in a 600 px window", () => {
 describe("the Dashboard and Agent surfaces do not stretch or box the chat", () => {
   it("Dashboard grid aligns items to the start (the right rail scrolls with the page)", () => {
     const src = readFileSync(join(__dirname, "../surfaces/Dashboard.tsx"), "utf8");
-    expect(src).toMatch(/gridTemplateColumns: "minmax\(0,1fr\) 316px"[^}]*alignItems: "start"/);
+    // 0.5.4: the right column may be collapsed to a strip; open, it is still 316 px.
+    expect(src).toMatch(/gridTemplateColumns: railCollapsed \? [^}]*"minmax\(0,1fr\) 316px"[^}]*alignItems: "start"/);
   });
   it("the Agent surface no longer pins the chat in a fixed 460 px box", () => {
     const src = readFileSync(join(__dirname, "../surfaces/Agent.tsx"), "utf8");

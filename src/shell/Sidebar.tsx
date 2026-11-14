@@ -5,6 +5,7 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { agentSlice } from "./slices/agent";
 import { PLACES, ROUTABLE, locate } from "./places";
 import { SYNC_SOURCE, syncLine } from "./syncProgress";
+import { shortcutLabel } from "./layoutShortcuts";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -30,8 +31,23 @@ const nodeColors: Record<string, string> = {
   error: "#dd7259",
 };
 
+/** 0.5.4: the sidebar's width, open and collapsed to its icons (App.tsx sizes the grid column). */
+export const SIDEBAR_WIDTH = 226;
+export const SIDEBAR_COLLAPSED_WIDTH = 60;
+
+/** The chevron glyph for a collapse toggle (points the way the column will move). */
+export function ChevronGlyph({ dir }: { dir: "left" | "right" }) {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <path d={dir === "left" ? "M15 6 L9 12 L15 18" : "M9 6 L15 12 L9 18"}></path>
+    </svg>
+  );
+}
+
 export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const P = store.identity();
+  const collapsed = s.sidebarCollapsed;
+  const toggleTip = (collapsed ? "Expand the sidebar" : "Collapse the sidebar") + " (" + shortcutLabel("sidebar") + ")";
   // The Hermes item carries a live count of approvals awaiting the human, so a pending
   // action is never something the owner has to go hunting for (AGENT-US-4).
   const agentPending = agentSlice.use().approvals.length;
@@ -44,14 +60,34 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const sideNodeText = s.node === "off" ? "node off" : s.node === "syncing" ? syncLine(s.syncProgress) : nodeLabel(s.node) + " · " + (s.height > 0 ? fmtI(s.height) : "—"); // 0 = not read (C1-V V10)
 
   return (
-    <aside style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: "18px 12px 12px", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 8px 20px" }}>
-        <img src={marqueeWhite} alt="Citrate" style={{ height: 24 }} />
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 9, letterSpacing: ".1em", color: "rgba(205,231,214,.45)" }}>
-          CORE
-        </span>
+    <aside
+      id="app-sidebar"
+      data-testid="app-sidebar"
+      data-collapsed={collapsed ? "true" : "false"}
+      style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: collapsed ? "18px 8px 12px" : "18px 12px 12px", minHeight: 0, minWidth: 0, overflow: "hidden" }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: collapsed ? "2px 0 20px" : "2px 8px 20px", flexDirection: collapsed ? "column" : "row" }}>
+        {!collapsed && <img src={marqueeWhite} alt="Citrate" style={{ height: 24 }} />}
+        {!collapsed && (
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 9, letterSpacing: ".1em", color: "rgba(205,231,214,.45)" }}>
+            CORE
+          </span>
+        )}
+        {/* 0.5.4: collapse to icons (remembered; ⌘B / Ctrl+B). */}
+        <button
+          type="button"
+          data-testid="sidebar-toggle"
+          aria-expanded={!collapsed}
+          aria-controls="app-sidebar-nav"
+          aria-label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+          title={toggleTip}
+          onClick={() => store.toggleSidebar()}
+          style={{ width: 26, height: 26, borderRadius: "var(--r-1)", border: "1px solid rgba(205,231,214,.18)", background: "transparent", color: "rgba(205,231,214,.75)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 0 }}
+        >
+          <ChevronGlyph dir={collapsed ? "right" : "left"} />
+        </button>
       </div>
-      <nav style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+      <nav id="app-sidebar-nav" aria-label="Places" style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
         {[PLACES.filter((p) => p.id !== "settings"), PLACES.filter((p) => p.id === "settings")].map((group, gi) => (
           <ul key={gi} style={{ listStyle: "none", padding: 0, margin: gi ? "auto 0 0" : 0, display: "flex", flexDirection: "column", gap: 2 }}>
             {group.map((place) => {
@@ -67,6 +103,8 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                   <a
                     href={"#/" + href}
                     aria-current={active ? "page" : undefined}
+                    aria-label={collapsed ? place.label + (badge > 0 ? " (" + badge + " awaiting your review)" : "") : undefined}
+                    title={collapsed ? place.label : undefined}
                     onClick={(e) => {
                       e.preventDefault();
                       store.go(href);
@@ -75,7 +113,9 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                       display: "flex",
                       alignItems: "center",
                       gap: 12,
-                      padding: "9px 12px",
+                      padding: collapsed ? "9px 0" : "9px 12px",
+                      justifyContent: collapsed ? "center" : undefined,
+                      position: "relative",
                       borderRadius: "var(--r-1)",
                       fontSize: 13,
                       fontWeight: active ? 500 : 400,
@@ -89,13 +129,16 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                       <path d={iconA}></path>
                       <path d={iconB}></path>
                     </svg>
-                    <span style={{ flex: 1 }}>{place.label}</span>
-                    {badge > 0 && (
+                    {!collapsed && <span style={{ flex: 1 }}>{place.label}</span>}
+                    {collapsed && (badge > 0 || dot) && (
+                      <span aria-hidden style={{ position: "absolute", top: 5, right: 9, width: 7, height: 7, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>
+                    )}
+                    {!collapsed && badge > 0 && (
                       <span aria-label={badge + " awaiting your review"} className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
                         {badge}
                       </span>
                     )}
-                    {dot && badge === 0 && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
+                    {!collapsed && dot && badge === 0 && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
                   </a>
                 </li>
               );
@@ -103,12 +146,12 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
           </ul>
         ))}
       </nav>
-      <div style={{ borderTop: "1px solid rgba(205,231,214,.12)", padding: "12px 8px 4px", display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ borderTop: "1px solid rgba(205,231,214,.12)", padding: collapsed ? "12px 0 4px" : "12px 8px 4px", display: "flex", flexDirection: "column", gap: 10, alignItems: collapsed ? "center" : undefined }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }} title={collapsed ? sideNodeText : undefined}>
           <span style={{ width: 7, height: 7, borderRadius: 999, background: sideDotColor, animation: sideDotAnim, flexShrink: 0 }}></span>
-          <span className="mono tabular" title={s.node === "syncing" ? SYNC_SOURCE : undefined} style={{ fontSize: 10.5, letterSpacing: ".06em", color: "rgba(205,231,214,.75)" }}>
+          {!collapsed && <span className="mono tabular" title={s.node === "syncing" ? SYNC_SOURCE : undefined} style={{ fontSize: 10.5, letterSpacing: ".06em", color: "rgba(205,231,214,.75)" }}>
             {sideNodeText}
-          </span>
+          </span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {s.hasSbt && s.walletAddr ? (
@@ -122,16 +165,16 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
               {P.initials}
             </span>
           )}
-          <span style={{ flex: 1, minWidth: 0 }}>
+          {!collapsed && <span style={{ flex: 1, minWidth: 0 }}>
             <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "#f4f1ea", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{P.name}</span>
             <span className="mono" style={{ display: "block", fontSize: 9, letterSpacing: ".1em", textTransform: "uppercase", color: tierColor }}>
               {tierText}
             </span>
-          </span>
+          </span>}
           {/* Build version — dim + unobtrusive, tucked beside the profile so it never crowds. */}
-          <span className="mono tabular" title="App version" style={{ fontSize: 9, letterSpacing: ".04em", color: "rgba(205,231,214,.4)", flexShrink: 0, alignSelf: "flex-end" }}>
+          {!collapsed && <span className="mono tabular" title="App version" style={{ fontSize: 9, letterSpacing: ".04em", color: "rgba(205,231,214,.4)", flexShrink: 0, alignSelf: "flex-end" }}>
             v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0"}
-          </span>
+          </span>}
         </div>
       </div>
     </aside>

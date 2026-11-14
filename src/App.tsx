@@ -11,7 +11,8 @@ import { AccessPassGate } from "./onboarding/AccessPassGate";
 import { accessPassStatus } from "./onboarding/accessPass";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
-import { Sidebar, ROUTES } from "./shell/Sidebar";
+import { Sidebar, ROUTES, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH } from "./shell/Sidebar";
+import { useLayoutShortcut } from "./shell/layoutShortcuts";
 import { PlaceView } from "./shell/PlaceView";
 import { registerFor } from "./shell/places";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
@@ -25,8 +26,13 @@ import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
 
+const toggleSidebar = () => store.toggleSidebar();
+
 function Shell({ s }: { s: AppState }) {
   const reg = registerFor(s.route);
+  // 0.5.4: the sidebar collapses to its icons (⌘B / Ctrl+B, or its toggle); the choice is persisted.
+  useLayoutShortcut("sidebar", toggleSidebar);
+  const sideW = s.sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
 
   // banner (entitlement): copy + tone are a pure, tested function (entitlementBanner.ts).
   const banner = entitlementBanner(s);
@@ -36,7 +42,7 @@ function Shell({ s }: { s: AppState }) {
   const bannerCta = banner.cta;
 
   return (
-    <div style={{ height: "100vh", display: "grid", gridTemplateColumns: "226px 1fr", overflow: "hidden" }}>
+    <div style={{ height: "100vh", display: "grid", gridTemplateColumns: sideW + "px 1fr", overflow: "hidden", transition: "grid-template-columns var(--dur-fast) var(--ease-standard)" }}>
       <Sidebar store={store} s={s} />
       <main style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", background: "var(--srf-0)", color: "var(--tx-1)" }} data-register={reg}>
         {bannerShow && (
