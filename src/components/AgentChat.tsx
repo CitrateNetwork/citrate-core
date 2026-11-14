@@ -19,8 +19,8 @@ import { openDiff, openPopout } from "../popout/appHost";
 import { BrowserControls } from "./BrowserControls";
 import { tauriBrowserApi } from "../popout/browserApi";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
-import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
+import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels, refreshCloudModels } from "../shell/slices/models";
+import { routerChoicesFor } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
@@ -67,9 +67,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying";
   const modelPct = s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 100)) : 0;
 
-  // WP0.4 — the ModelRouter picker over the LIVE sources (local verified models + the on-chain
-  // registry + the always-ready gateway). The chat + the Models section share one source of truth.
-  const routerChoices = choicesFromSources(models.local, registryModelsToChoiceInput(models.registry));
+  // WP0.4 — the ModelRouter picker over the LIVE sources (local verified models + every model of
+  // the providers connected in Settings › Models (D-11) + the on-chain registry + the always-ready
+  // gateway). The chat + the Models section share one source of truth.
+  const routerChoices = routerChoicesFor(models, s.chatRoute);
   const activeModel = store.routerActive(routerChoices);
   const [pickerOpen, setPickerOpen] = useState(false);
   // 0.5.4: prior conversations and projects (list, search, reopen) — ChatHistoryPanel.
@@ -78,16 +79,24 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   useEffect(() => {
     void loadChatHistory();
   }, []);
+  const [pickError, setPickError] = useState<string | null>(null);
   const onPickModel = (id: string) => {
-    store.selectModel(id, routerChoices);
     const chosen = routerChoices.find((c) => c.id === id);
+    setPickError(null);
+    // D-11: a cloud pick is stored in core and the next turn runs on it through the core proxy.
+    void store.selectModel(id, routerChoices).then((err) => setPickError(err));
     if (chosen?.source === "local") void sliceSelectModel(id); // switch the SERVED local model
     setPickerOpen(false);
   };
   useEffect(() => {
     void refreshLocalModels();
     void refreshRegistryModels();
+    void refreshCloudModels();
   }, []);
+  // A provider connected (or removed) in Settings › Models shows up when the picker opens.
+  useEffect(() => {
+    if (pickerOpen) void refreshCloudModels();
+  }, [pickerOpen]);
 
   // HUP-S1.4 — "Plan it first": the interview card (track → questions → editable brief). `planGoal`
   // is the goal the card opened with (null = closed). A build-style ask highlights the button; it
@@ -241,8 +250,18 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       )}
       {pickerOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
-          <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
+          <ModelPicker choices={routerChoices} activeId={store.routerActiveId()} onSelect={onPickModel} />
+          {!routerChoices.some((c) => c.source === "cloud") && (
+            <span data-testid="model-picker-cloud-hint" style={{ display: "block", marginTop: 8, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+              No cloud model is connected. Connect your own key for a vendor in Hermes › Controls › Details › Models and its models are listed here.
+            </span>
+          )}
         </div>
+      )}
+      {pickError && (
+        <span role="alert" data-testid="model-pick-error" style={{ display: "block", padding: "8px 16px", fontSize: 12, color: "var(--warn)", flexShrink: 0 }}>
+          That model was not chosen: {pickError}
+        </span>
       )}
       <div
         ref={(el) => { store.chatScrollEl = el; }}

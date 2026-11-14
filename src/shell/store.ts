@@ -45,7 +45,7 @@ import type { DaemonRunEntry } from "../daemons/api";
 import type { ChatConsent, ChatRoute, FlRoundPlan, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
-import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
+import { activeRouterId, canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { runContractView } from "../agent/contractView";
@@ -4973,10 +4973,32 @@ export class Store {
    * switches the SERVED local model for a local pick (modelsSlice.selectModel restarts
    * llama-server); the gateway is the always-ready default, so picking it needs no restart.
    */
-  selectModel(id: string, choices: ModelChoice[]): void {
-    if (!canSelect(id, choices)) return; // phantom id — never persist a non-choice
+  /**
+   * D-11 — a cloud choice (a model of a provider connected in Settings › Models) is stored in core
+   * as the preferred model (`providers_preferred_set`, which checks the provider can take calls),
+   * and the provider is rebuilt so the next Hermes turn runs on it through the core model proxy.
+   * A local or gateway choice clears a stored cloud model, so the pick in the chat is what answers.
+   * Returns core's refusal (nothing changes then), or null.
+   */
+  async selectModel(id: string, choices: ModelChoice[]): Promise<string | null> {
+    if (!canSelect(id, choices)) return null; // phantom id — never persist a non-choice
+    const chosen = choices.find((c) => c.id === id);
+    if (chosen?.source === "cloud" && chosen.cloud) {
+      const err = await this.setHermesCloudModel(chosen.cloud);
+      if (err) return err;
+      this.setState({ activeModelId: id });
+      this.save();
+      return null;
+    }
     this.setState({ activeModelId: id });
     this.save();
+    if (this.state.hermesCloudModel) return this.setHermesCloudModel(null);
+    return null;
+  }
+
+  /** The router id shown as selected: the stored cloud model while one is set, else the stored id. */
+  routerActiveId(): string | null {
+    return activeRouterId(this.state.activeModelId, this.state.hermesCloudModel);
   }
 
   /**
@@ -4985,7 +5007,7 @@ export class Store {
    * chat never routes to a not-ready (still-downloading / not-pulled) model.
    */
   routerActive(choices: ModelChoice[]): ModelChoice {
-    return resolveActive(this.state.activeModelId, choices);
+    return resolveActive(this.routerActiveId(), choices);
   }
 
   /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
