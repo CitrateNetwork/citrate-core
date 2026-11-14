@@ -8,6 +8,7 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
+import { chatHistory, forgetAllThreads, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -854,6 +855,103 @@ export class Store {
     this.state = { ...this.state, ...patch };
     this.snap = this.state;
     this.subs.forEach((cb) => cb());
+    // 0.5.4: a changed thread (or a turn that just finished) is kept in the chat history.
+    if ("chatMsgs" in patch || "chatStatus" in patch) this.scheduleChatArchive();
+  }
+
+  // ---------- 0.5.4 — Hermes chat history (slices/chatHistory.ts) ----------
+  private _archiveT: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleChatArchive(): void {
+    if (this._archiveT) clearTimeout(this._archiveT);
+    this._archiveT = setTimeout(() => {
+      this._archiveT = null;
+      this.archiveChat();
+    }, 500);
+  }
+
+  /** Keep the current thread in the history, once no turn is running (a streaming reply is kept
+   *  when it has finished). A greeting-only thread is not kept. */
+  archiveChat(): void {
+    const s = this.state;
+    if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
+    recordThread(s.chatThreadId, s.chatMsgs);
+  }
+
+  /** Why the thread can't be switched right now, or null. A running turn writes into the current
+   *  thread, so it is never swapped from under it. */
+  private chatSwitchBlocked(): string | null {
+    if (this.state.chatStatus !== "ready" || this.state.chatRouteHold) return "Finish or stop the current reply first";
+    return null;
+  }
+
+  /** Start a new conversation. The current one stays in the history. Hermes's agent session is
+   *  rebuilt, so the new conversation does not carry the previous one's context. */
+  newChat(): boolean {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Reopen a conversation from the history. Its messages come back as they were kept; ids are
+   *  re-keyed so they never collide with new messages. Hermes's agent session is rebuilt (the
+   *  sidecar session has no record of this thread). */
+  openChat(threadId: string): boolean {
+    if (threadId === this.state.chatThreadId) return true;
+    const thread = chatHistory.get().threads.find((t) => t.id === threadId);
+    if (!thread) {
+      this.toast("That conversation is no longer in this device's history");
+      return false;
+    }
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
+    // changed means nothing moves in the list.
+    recordThread(thread.id, msgs, thread.updatedAt);
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Erase a conversation from this device's history: core removes its sealed file and rotates the
+   *  history key, so no copy of it opens again. The current thread cannot be erased from under the
+   *  member. */
+  forgetChat(threadId: string): Promise<void> {
+    if (threadId === this.state.chatThreadId) return Promise.resolve();
+    return forgetThread(threadId);
+  }
+
+  /** Erase every conversation, the current one included, and the history key. The chat starts
+   *  over (a fresh thread and agent session), so nothing erased is sealed again. */
+  async forgetAllChats(): Promise<boolean> {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    if (this._archiveT) {
+      clearTimeout(this._archiveT);
+      this._archiveT = null;
+    }
+    const ok = await forgetAllThreads();
+    if (!ok) return false;
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
   }
 
   start(): void {

@@ -25,6 +25,8 @@ import { appendFinal, createDictation, type Dictation } from "../agent/dictation
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { LocalModelAsk } from "./LocalModelAsk";
+import { ChatHistoryPanel } from "./ChatHistoryPanel";
+import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 
 const SUGGESTIONS = ["What is my staking position?", "Show my validator rewards", "Journal: node held through the night", "Network status"];
@@ -70,6 +72,12 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const routerChoices = choicesFromSources(models.local, registryModelsToChoiceInput(models.registry));
   const activeModel = store.routerActive(routerChoices);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // 0.5.4: prior conversations and projects (list, search, reopen) — ChatHistoryPanel.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // The sealed history opens once per session (and moves any old plaintext entry into it).
+  useEffect(() => {
+    void loadChatHistory();
+  }, []);
   const onPickModel = (id: string) => {
     store.selectModel(id, routerChoices);
     const chosen = routerChoices.find((c) => c.id === id);
@@ -153,7 +161,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       data-testid="agent-chat"
       style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", flex: "none", height: paneHeight }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, rowGap: 6, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
         <span style={{ flex: 1 }}></span>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -166,6 +174,35 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
           </span>
         )}
+        {/* 0.5.4: the way back to earlier conversations and projects, and a fresh conversation. */}
+        <button
+          type="button"
+          className="mono"
+          data-testid="open-chat-history"
+          aria-expanded={historyOpen}
+          aria-controls="chat-history"
+          onClick={() => {
+            setHistoryOpen((v) => !v);
+            setPickerOpen(false);
+          }}
+          title="Earlier conversations and projects on this device"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: historyOpen ? "var(--srf-2)" : "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          History
+        </button>
+        <button
+          type="button"
+          className="mono"
+          data-testid="new-chat"
+          disabled={chatBusy}
+          onClick={() => {
+            if (store.newChat()) setHistoryOpen(false);
+          }}
+          title="Start a new conversation (this one stays in History)"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: chatBusy ? "not-allowed" : "pointer" }}
+        >
+          New chat
+        </button>
         {/* HUP-S7.6: the Activity monitor pop-out ("why am I waiting", Stop). */}
         <button
           className="mono"
@@ -180,7 +217,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           className="mono"
           data-testid="model-chip"
           aria-expanded={pickerOpen}
-          onClick={() => setPickerOpen((v) => !v)}
+          onClick={() => {
+            setPickerOpen((v) => !v);
+            setHistoryOpen(false);
+          }}
           style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "var(--srf-2)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
         >
           <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} aria-hidden></span>
@@ -192,6 +232,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       {BRIDGE_MODE === "tauri" && (
         <div style={{ flexShrink: 0 }}>
           <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />
+        </div>
+      )}
+      {historyOpen && (
+        <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
+          <ChatHistoryPanel store={store} currentId={s.chatThreadId} busy={chatBusy} onOpened={() => setHistoryOpen(false)} />
         </div>
       )}
       {pickerOpen && (

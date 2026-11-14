@@ -302,7 +302,7 @@ pub(crate) fn load_or_mint_device_seed(
     keyring
         .set(DEVICE_KEY_ACCOUNT, raw.as_ref())
         .map_err(|e| format!("device key keyring error: {e}"))?;
-    Ok(Zeroizing::new(hex::encode(raw.as_ref())))
+    Ok(Zeroizing::new(hex::encode(&raw[..])))
 }
 
 /// A fresh random secp256k1 secret from the OS RNG (retries the ~2^-128 invalid-scalar case).

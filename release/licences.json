@@ -21,8 +21,8 @@
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
       "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
-      "packages": 508,
-      "lock": "sha256:92750a064e74fb51fecec7947a6bb1624795db474c4643439016d2d4580a4c3d"
+      "packages": 511,
+      "lock": "sha256:08464c732b36914555aca080f7ef94e4c0c3936618e78ea49b1fc5b777cd9f24"
     }
   },
   "components": [
