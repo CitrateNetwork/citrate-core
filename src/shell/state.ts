@@ -681,6 +681,11 @@ export interface AppState {
   /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
    *  Off by default. Persisted. */
   hermesReadAloud: boolean;
+  /** 0.5.4 — the member collapsed the sidebar to its icons. Off by default. Persisted. */
+  sidebarCollapsed: boolean;
+  /** 0.5.4 — the member collapsed the Hermes chat's right column (widgets, daemons, transactions,
+   *  tutorials). Off by default. Persisted. */
+  hermesRailCollapsed: boolean;
   /** HUP-S10.4 (US-10.4 AC1) — write today's Hermes summary into the journal automatically once a
    *  day. Off by default; the member turns it on in the Journal. Persisted. */
   journalAutoSummary: boolean;
@@ -1002,6 +1007,8 @@ export function freshState(pid: string): AppState {
     hermesPersona: null,
     customPersonas: [],
     hermesReadAloud: false,
+    sidebarCollapsed: false,
+    hermesRailCollapsed: false,
     journalAutoSummary: false,
     journalAutoSummaryDay: null,
     aiEdit: null,
@@ -1148,6 +1155,8 @@ export const PERSIST_SCOPE = {
   pins: D, userSkills: D, jPages: D, jSel: D, connections: D, aiDefault: D, hermesSidecarLoop: D,
   hermesSidecarLoopDefaultApplied: D, hermesTerminal: D, hermesTerminalDefaultApplied: D, hermesBrief: D,
   hermesPersona: D, customPersonas: D, hermesReadAloud: D, journalAutoSummary: D, journalAutoSummaryDay: D,
+  // 0.5.4: the member's layout choices (collapsed sidebar, collapsed Hermes right column).
+  sidebarCollapsed: D, hermesRailCollapsed: D,
   sponsorUnits: N, blocksProposed: N,
   // The reads still owed on this network after a switch, and the switch notice (kept until dismissed).
   netUnread: N, networkNotice: D,

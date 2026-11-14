@@ -31,6 +31,7 @@ const SCOPES: Record<string, "network" | "device"> = {
   hermesTerminal: "device", hermesTerminalDefaultApplied: "device", hermesBrief: "device",
   hermesPersona: "device", customPersonas: "device", hermesReadAloud: "device",
   journalAutoSummary: "device", journalAutoSummaryDay: "device",
+  sidebarCollapsed: "device", hermesRailCollapsed: "device",
   sponsorUnits: "network", blocksProposed: "network",
   netUnread: "network", networkNotice: "device",
 };

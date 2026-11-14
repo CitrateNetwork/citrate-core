@@ -11,34 +11,13 @@
 // =====================================================================
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
-import type { ChatRoute, ProviderStatus } from "../bridge/domains";
+import type { ChatRoute } from "../bridge/domains";
+import { cloudModelOptions, type CloudModelOption } from "../agent/modelRouterSources";
 
 export type CloudModelChoice = { providerId: string; model: string } | null;
 
-/** One selectable cloud model. */
-export interface CloudModelOption {
-  providerId: string;
-  providerName: string;
-  model: string;
-  /** A custom endpoint the member added (never a governed vendor). */
-  unverified: boolean;
-}
-
-/** Most models listed per provider (a vendor's list can run to hundreds). */
-export const MAX_MODELS_PER_PROVIDER = 60;
-
-/** The models Hermes can run on: providers with a stored key, an adapter in this build, no halt,
- *  and (custom endpoints) the member's confirmation. Cognition is a delegate, never a chat model. */
-export function cloudModelOptions(statuses: readonly ProviderStatus[]): CloudModelOption[] {
-  const out: CloudModelOption[] = [];
-  for (const p of statuses) {
-    if (!p.keyConfigured || !p.adapter || p.halt || p.kind === "delegate" || p.kind === "gateway") continue;
-    if (p.kind === "custom" && !p.confirmed) continue;
-    const models = [...new Set([...p.approvedModels, ...p.listedModels])].slice(0, MAX_MODELS_PER_PROVIDER);
-    for (const model of models) out.push({ providerId: p.id, providerName: p.name, model, unverified: p.kind === "custom" });
-  }
-  return out;
-}
+// The option list is the model router's (one source of truth with the chat picker).
+export { cloudModelOptions, MAX_MODELS_PER_PROVIDER, type CloudModelOption } from "../agent/modelRouterSources";
 
 const key = (c: { providerId: string; model: string }) => `${c.providerId}::${c.model}`;
 

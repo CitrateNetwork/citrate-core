@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
 import { CONSENSUS_SET_UNAVAILABLE, PRODUCER_SAMPLE_BLOCKS, producerShortfall, producerWindowLabel, readStakeSalt, STAKE_NOT_READ, validatorDash } from "../shell/chainTruth";
 import book from "../../src-tauri/addresses/40204.json";
@@ -12,6 +12,12 @@ import { WidgetsPanel } from "../widgets/WidgetsPanel";
 import { DaemonsPanel } from "../daemons/DaemonsPanel";
 import { appWidgetSources } from "../widgets/appSources";
 import { rpcHost } from "../network/profile";
+import { shortcutLabel, useLayoutShortcut } from "../shell/layoutShortcuts";
+import { ChevronGlyph } from "../shell/Sidebar";
+
+/** 0.5.4: the right column's width, open and collapsed to its toggle strip. */
+export const RAIL_WIDTH = 316;
+export const RAIL_COLLAPSED_WIDTH = 36;
 
 /** The public RPC host this build reads (network profile, K6). */
 const PUBLIC_RPC = rpcHost() ?? "public RPC not set";
@@ -179,6 +185,27 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // The agent chat (transcript + model picker + voice + auto-scroll) now lives in the shared
   // <AgentChat> component, mounted here and on the Agent surface (#62).
 
+  // 0.5.4: the right column (widgets, daemons, transactions, tutorials) collapses to a strip, so the
+  // chat takes the width. Toggle, ⌥⌘B / Ctrl+Alt+B; the choice is persisted (hermesRailCollapsed).
+  const railCollapsed = s.hermesRailCollapsed;
+  const toggleRail = useCallback(() => store.toggleHermesRail(), [store]);
+  useLayoutShortcut("rail", toggleRail);
+  const railTip = (railCollapsed ? "Show widgets and tutorials" : "Hide widgets and tutorials") + " (" + shortcutLabel("rail") + ")";
+  const railToggle = (
+    <button
+      type="button"
+      data-testid="rail-toggle"
+      aria-expanded={!railCollapsed}
+      aria-controls="hermes-rail"
+      aria-label={railCollapsed ? "Show widgets and tutorials" : "Hide widgets and tutorials"}
+      title={railTip}
+      onClick={toggleRail}
+      style={{ width: 28, height: 28, borderRadius: "var(--r-1)", border: "1px solid var(--line-1)", background: "var(--srf-1)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 0 }}
+    >
+      <ChevronGlyph dir={railCollapsed ? "left" : "right"} />
+    </button>
+  );
+
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
       {/* vitals strip */}
@@ -200,12 +227,18 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
 
       {/* rc.5 FIX 4: items align to the start, so the chat sizes itself to the window instead of
           stretching to the right rail's height (which pushed the composer below the fold). */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: railCollapsed ? "minmax(0,1fr) " + RAIL_COLLAPSED_WIDTH + "px" : "minmax(0,1fr) 316px", gap: 16, alignItems: "start" }}>
         {/* chat pane — shared component, also mounted on the Agent surface (#62) */}
         <AgentChat store={store} s={s} />
 
-        {/* right rail */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, overflow: "auto" }}>
+        {/* right rail (collapsible, 0.5.4) */}
+        {railCollapsed ? (
+          <div data-testid="hermes-rail-strip" style={{ display: "flex", justifyContent: "center" }}>
+            {railToggle}
+          </div>
+        ) : (
+        <div id="hermes-rail" data-testid="hermes-rail" style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, overflow: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -8 }}>{railToggle}</div>
           {/* HUP-S10.3 — widgets (sandboxed tiles) and daemons (scheduled tasks inside a budget) */}
           <WidgetsPanel sources={appWidgetSources} />
           <DaemonsPanel />
@@ -275,6 +308,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
             ))}
           </div>
         </div>
+        )}
       </div>
     </div>
   );
