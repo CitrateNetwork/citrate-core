@@ -1,7 +1,7 @@
 // 0.5.4: the Hermes setup self-check. Core's report plus the app's own rows; a missing required
 // item is counted and said, a failed read is an error row (never a pass).
 import { describe, it, expect } from "vitest";
-import { appItems, hermesSetupSlice, runHermesSelfCheck, setupNotice, type CoreSetupReport, type SelfCheckDeps } from "./hermesSetup";
+import { appItems, hermesSetupSlice, offerNodeTools, offerRepair, runHermesSelfCheck, setupNotice, setupSummary, type CoreSetupReport, type SelfCheckDeps } from "./hermesSetup";
 import { annotatedAgentTools } from "../../agent/toolAnnotations";
 import { AGENT_SYSTEM_PROMPT } from "../../agent/harness";
 
@@ -40,7 +40,7 @@ describe("the app's own rows", () => {
   });
 
   it("skills are checked only while Hermes runs; a running Hermes with none is missing", async () => {
-    expect((await appItems(deps({ status: async () => ({ running: false, skills: 0 }) }))).find((r) => r.id === "skills-loaded")?.state).toBe("off");
+    expect((await appItems(deps({ status: async () => ({ running: false, skills: 0 }) }))).find((r) => r.id === "skills-loaded")?.state).toBe("unchecked");
     expect((await appItems(deps({ status: async () => ({ running: true, skills: 0 }) }))).find((r) => r.id === "skills-loaded")?.state).toBe("missing");
     const failed = (await appItems(deps({ status: async () => Promise.reject(new Error("timed out")) }))).find((r) => r.id === "skills-loaded");
     expect(failed).toMatchObject({ state: "missing" });
@@ -70,5 +70,39 @@ describe("runHermesSelfCheck", () => {
     expect(r.error).toContain("not found");
     expect(r.missingRequired).toBeGreaterThan(0);
     expect(setupNotice(r)).toContain("could not be checked");
+  });
+});
+
+describe("complete only when Hermes runs, and the setup actions offered", () => {
+  it("nothing missing but Hermes stopped is not complete", async () => {
+    const stopped = await runHermesSelfCheck(deps({ status: async () => ({ running: false, skills: 0 }) }));
+    expect(stopped.missingRequired).toBe(0);
+    expect(stopped.complete).toBe(false);
+    expect(setupSummary(stopped)).toBe("not fully checked: Hermes is not running");
+    const running = await runHermesSelfCheck(deps());
+    expect(running.complete).toBe(true);
+    expect(setupSummary(running)).toBe("complete");
+  });
+
+  it("an upgraded install with node tools off is offered 'Turn on node tools'", async () => {
+    const r = await runHermesSelfCheck(
+      deps({
+        core: async () => ({
+          items: [{ id: "node-mcp", label: "Node MCP tools", need: "required", state: "off", detail: "turned off for Hermes" }],
+          missingRequired: 0,
+          firstRunDefaults: [],
+          install: "upgrade",
+        }),
+      }),
+    );
+    expect(r.install).toBe("upgrade");
+    expect(offerNodeTools(r)).toBe(true);
+    expect(offerRepair(r)).toBe(false);
+    expect(offerNodeTools(await runHermesSelfCheck(deps()))).toBe(false);
+  });
+
+  it("missing folders or capsules offer the explicit repair (the check itself repairs nothing)", () => {
+    expect(offerRepair({ items: [{ id: "starter-capsules", label: "x", need: "required", state: "missing", detail: "" }] })).toBe(true);
+    expect(offerRepair({ items: [{ id: "first-party-skills", label: "x", need: "required", state: "missing", detail: "" }] })).toBe(false);
   });
 });

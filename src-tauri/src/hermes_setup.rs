@@ -3,24 +3,29 @@
 //!
 //! Two halves.
 //!
-//! **Provision** ([`provision`], run once at every launch from `lib.rs` setup, before the node
-//! MCP server's state is built). Deterministic and idempotent: running it again changes nothing.
+//! **Provision** ([`provision`], run at every launch from `lib.rs` setup, before the node MCP
+//! server's state is built). Deterministic and idempotent: running it again changes nothing.
 //! - the Hermes data folders under `<app_local_data>/hermes` ([`DATA_SUBDIRS`]): created up
 //!   front, so the first start never depends on the sidecar creating them;
 //! - the pinned starter capsules (`capsule_pins::seed_verified`): copied, kept, or repaired to the
 //!   pinned bytes; the member's own capsules are never touched;
-//! - first-run defaults, written only when the file does not exist yet, so a member's later choice
-//!   always wins: Hermes is offered the node's MCP server (`hermes/mcp-settings.json`
-//!   `node: true`, read tools only: [`crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS`] stays false),
-//!   and the node's loopback MCP server at 127.0.0.1:47204 is on (`node-mcp/config.json`). The
-//!   memory and CitrateScan entries stay off as before.
+//! - **owner 2026-11-14: on for new installs only.** On a real first run (no app data at all when
+//!   setup began, and no marker yet) Hermes is offered the node's MCP read tools
+//!   (`hermes/mcp-settings.json` `node: true`; [`crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS`]
+//!   stays false) and the node's loopback MCP server at 127.0.0.1:47204 is on
+//!   (`node-mcp/config.json`). An upgraded install (data already there) keeps both off; its Setup
+//!   card offers "Turn on node tools" (`hermes_setup_enable_node_tools`). Which case applied is
+//!   written once, in [`MARKER_FILE`], so it is decided exactly once per install. Every default
+//!   file is created without ever replacing one ([`write_new_file`]): a member's save that lands
+//!   first always wins. The memory and CitrateScan entries stay off as before.
 //!
-//! **Self-check** ([`check`], the `hermes_setup_check` command). Provisions the folders and
-//! capsules again, then reports every item Hermes needs, each `ok`, `missing` (with why) or `off`
-//! (the member turned it off). Nothing is hidden in a log: the app shows the report on the Agent
-//! page and says at launch when a required item is missing. What only the running sidecar can
-//! prove (skills it loaded) and what lives in the webview (the tool list, the system prompt) is
-//! added by the app (`src/shell/slices/hermesSetup.ts`).
+//! **Self-check** ([`check`], the `hermes_setup_check` command). Read only: it repairs nothing.
+//! It reports every item Hermes needs, each `ok`, `missing` (with why) or `off` (the member turned
+//! it off). Repair is the explicit setup path ([`repair`], `hermes_setup_repair`: folders and
+//! capsules). Nothing is hidden in a log: the app shows the report on the Agent page and says at
+//! launch when a required item is missing. What only the running sidecar can prove (skills it
+//! loaded) and what lives in the webview (the tool list, the system prompt) is added by the app
+//! (`src/shell/slices/hermesSetup.ts`).
 
 use crate::capsule_pins::{SeedReport, BUNDLED_CAPSULES};
 use crate::hermes_mcp::McpSettings;
@@ -38,6 +43,127 @@ pub const DATA_SUBDIRS: &[&str] = &[
     "records",
     "anchor",
 ];
+
+/// Citrate's own SKILL.md skills every build ships (resource `skills/<name>/SKILL.md`). Each one is
+/// checked by name; a test keeps this list equal to `src-tauri/skills/`.
+pub const FIRST_PARTY_SKILLS: &[&str] = &[
+    "citrate-belnap-aggregate",
+    "citrate-paraconsensus",
+    "citrate-precompiles",
+    "citrate-sidecar-consensus",
+];
+
+/// Written once per install, under `<app_local_data>/hermes`: which first-run case applied.
+pub const MARKER_FILE: &str = ".provisioned-v1";
+
+/// What kind of install this launch found, decided once and kept in [`MARKER_FILE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallKind {
+    /// A real first run: the first-run defaults were applied.
+    New,
+    /// Data from an earlier version was there: nothing was turned on.
+    Upgrade,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct Marker {
+    install: InstallKind,
+}
+
+/// Whether app data from an earlier run exists: any entry in any of `dirs`. Read FIRST in setup,
+/// before this launch writes anything. Errs towards "existing" (an unreadable folder counts), so a
+/// doubtful case keeps the defaults off.
+pub fn had_existing_data(dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|d| match std::fs::read_dir(d) {
+        Ok(mut rd) => rd.next().is_some(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    })
+}
+
+/// Create `path` with `bytes` (0600), never replacing a file already there, even one created a
+/// moment ago by a member's save: the bytes go to a private temp file, which is hard-linked into
+/// place (the link fails when `path` exists) and then removed. `Ok(false)`: `path` already existed.
+pub fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!(
+        "new-{}-{}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let res = opts
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    match res {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// The install kind kept in the marker, or `None` when there is no readable marker.
+pub fn read_marker(hermes_dir: &Path) -> Option<InstallKind> {
+    let t = std::fs::read_to_string(hermes_dir.join(MARKER_FILE)).ok()?;
+    serde_json::from_str::<Marker>(&t).ok().map(|m| m.install)
+}
+
+/// Decide the install kind exactly once. With a marker, it is what the marker says. Without one:
+/// `New` only when `had_existing_data` is false, then the first-run defaults are written; the
+/// marker is written either way (without replacing one another launch wrote first). Returns the
+/// kind and what was written.
+pub fn first_run(
+    hermes_dir: &Path,
+    node_mcp_dir: Option<&Path>,
+    had_existing_data: bool,
+) -> (InstallKind, Vec<String>) {
+    if let Some(k) = read_marker(hermes_dir) {
+        return (k, Vec::new());
+    }
+    // A marker that exists but does not parse is not rewritten (and counts as an upgrade).
+    if hermes_dir.join(MARKER_FILE).exists() {
+        return (InstallKind::Upgrade, Vec::new());
+    }
+    let kind = if had_existing_data {
+        InstallKind::Upgrade
+    } else {
+        InstallKind::New
+    };
+    let body = serde_json::to_vec(&Marker { install: kind }).unwrap_or_default();
+    match write_new_file(&hermes_dir.join(MARKER_FILE), &body) {
+        Ok(true) => {}
+        // Another launch decided first: follow it.
+        Ok(false) => {
+            return (
+                read_marker(hermes_dir).unwrap_or(InstallKind::Upgrade),
+                Vec::new(),
+            )
+        }
+        Err(e) => {
+            eprintln!(
+                "hermes setup: the install marker was not written ({e}); nothing is turned on"
+            );
+            return (InstallKind::Upgrade, Vec::new());
+        }
+    }
+    let wrote = if kind == InstallKind::New {
+        provision_defaults(hermes_dir, node_mcp_dir)
+    } else {
+        Vec::new()
+    };
+    (kind, wrote)
+}
 
 /// Whether Hermes cannot do its job without an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -91,6 +217,12 @@ pub struct SetupFacts {
     pub node_mcp: Option<NodeMcpFacts>,
     /// Folders that could not be created, with why.
     pub dir_errors: Vec<(String, String)>,
+    /// `hermes/mcp-settings.json` exists but does not parse (it then counts as all off).
+    pub mcp_settings_error: Option<String>,
+    /// `node-mcp/config.json` exists but does not parse (the server then counts as off).
+    pub node_config_error: Option<String>,
+    /// The install kind from the marker (`None` when there is none yet).
+    pub install: Option<InstallKind>,
 }
 
 /// The whole report.
@@ -102,6 +234,8 @@ pub struct SetupReport {
     pub missing_required: usize,
     /// What launch provisioning wrote as first-run defaults this session.
     pub first_run_defaults: Vec<String>,
+    /// The install kind from the marker (`None` when there is none yet).
+    pub install: Option<InstallKind>,
 }
 
 /// Create every data folder. Returns the ones that could not be made.
@@ -115,36 +249,31 @@ pub fn provision_dirs(hermes_dir: &Path) -> Vec<(String, String)> {
     errs
 }
 
-/// The first-run defaults: each written only when its file does not exist. Returns what was written.
+/// The first-run defaults (new installs only, from [`first_run`]): each file is created only when
+/// it does not exist, atomically, never replacing one. Returns what was written.
 pub fn provision_defaults(hermes_dir: &Path, node_mcp_dir: Option<&Path>) -> Vec<String> {
     let mut wrote = Vec::new();
-    if !crate::hermes_mcp::settings_path(hermes_dir).exists() {
-        let s = McpSettings {
-            node: true,
-            ..McpSettings::default()
-        };
-        match crate::hermes_mcp::save_settings(hermes_dir, &s) {
-            Ok(()) => wrote.push("Hermes is offered the node's MCP read tools".to_string()),
-            Err(e) => eprintln!("hermes setup: the MCP default was not written: {e}"),
-        }
+    let s = McpSettings {
+        node: true,
+        ..McpSettings::default()
+    };
+    let body = serde_json::to_vec_pretty(&s).unwrap_or_default();
+    match write_new_file(&crate::hermes_mcp::settings_path(hermes_dir), &body) {
+        Ok(true) => wrote.push("Hermes is offered the node's MCP read tools".to_string()),
+        Ok(false) => {}
+        Err(e) => eprintln!("hermes setup: the MCP default was not written: {e}"),
     }
     if let Some(dir) = node_mcp_dir {
-        let cfg = dir.join("config.json");
-        if !cfg.exists() {
-            let body = serde_json::to_vec_pretty(&crate::node_mcp::NodeMcpConfig {
-                enabled: true,
-                port: None,
-            });
-            let written = std::fs::create_dir_all(dir)
-                .map_err(|e| e.to_string())
-                .and_then(|()| body.map_err(|e| e.to_string()))
-                .and_then(|b| crate::node_mcp_token::write_private(&cfg, &b));
-            match written {
-                Ok(()) => wrote.push(
-                    "the node's MCP server is on (127.0.0.1 only, token required)".to_string(),
-                ),
-                Err(e) => eprintln!("hermes setup: the node MCP default was not written: {e}"),
-            }
+        let body = serde_json::to_vec_pretty(&crate::node_mcp::NodeMcpConfig {
+            enabled: true,
+            port: None,
+        })
+        .unwrap_or_default();
+        match write_new_file(&dir.join("config.json"), &body) {
+            Ok(true) => wrote
+                .push("the node's MCP server is on (127.0.0.1 only, token required)".to_string()),
+            Ok(false) => {}
+            Err(e) => eprintln!("hermes setup: the node MCP default was not written: {e}"),
         }
     }
     wrote
@@ -159,15 +288,25 @@ pub fn provision_capsules(hermes_dir: &Path, resources: Option<&Path>) -> Option
     ))
 }
 
-/// Count `<dir>/<skill>/SKILL.md`.
-fn skill_md_count(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| e.path().join("SKILL.md").is_file())
-                .count()
-        })
-        .unwrap_or(0)
+/// Check the installed starter capsules against this build's pins, writing nothing.
+pub fn verify_capsules(hermes_dir: &Path) -> SeedReport {
+    let mut r = SeedReport::default();
+    for (name, pin) in BUNDLED_CAPSULES {
+        match crate::capsule_pins::verify_cps(&hermes_dir.join("capsules").join(name), name, pin) {
+            Ok(()) => r.kept.push(name.to_string()),
+            Err(e) => r.refused.push((name.to_string(), e)),
+        }
+    }
+    r.present = r.kept.len();
+    r
+}
+
+/// Why a JSON file that exists does not parse as `T` (`None`: absent or fine).
+fn parse_error<T: serde::de::DeserializeOwned>(path: &Path) -> Option<String> {
+    let t = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<T>(&t)
+        .err()
+        .map(|e| format!("{} does not parse ({e})", path.display()))
 }
 
 fn item(
@@ -276,26 +415,38 @@ pub fn items(f: &SetupFacts) -> Vec<SetupItem> {
     });
 
     let first_party = f.resources.as_ref().map(|r| r.join("skills"));
-    let n = first_party.as_deref().map(skill_md_count).unwrap_or(0);
-    out.push(if n > 0 {
-        item(
-            "first-party-skills",
-            "Citrate skills (SKILL.md)",
-            Required,
-            ItemState::Ok,
-            format!("{n} bundled"),
-        )
-    } else {
-        item(
+    out.push(match &first_party {
+        None => item(
             "first-party-skills",
             "Citrate skills (SKILL.md)",
             Required,
             Missing,
-            match &first_party {
-                Some(p) => format!("no SKILL.md found under {}", p.display()),
-                None => "the app's resource folder could not be read".to_string(),
-            },
-        )
+            "the app's resource folder could not be read",
+        ),
+        Some(dir) => {
+            let gone: Vec<&str> = FIRST_PARTY_SKILLS
+                .iter()
+                .copied()
+                .filter(|n| !dir.join(n).join("SKILL.md").is_file())
+                .collect();
+            if gone.is_empty() {
+                item(
+                    "first-party-skills",
+                    "Citrate skills (SKILL.md)",
+                    Required,
+                    ItemState::Ok,
+                    format!("all {} bundled", FIRST_PARTY_SKILLS.len()),
+                )
+            } else {
+                item(
+                    "first-party-skills",
+                    "Citrate skills (SKILL.md)",
+                    Required,
+                    Missing,
+                    format!("not found under {}: {}", dir.display(), gone.join(", ")),
+                )
+            }
+        }
     });
 
     let third = f.resources.as_ref().map(|r| r.join("skills-bundle"));
@@ -346,7 +497,25 @@ pub fn items(f: &SetupFacts) -> Vec<SetupItem> {
         )
     });
 
+    let corrupt: Vec<&String> = [&f.mcp_settings_error, &f.node_config_error]
+        .into_iter()
+        .flatten()
+        .collect();
     out.push(match &f.node_mcp {
+        _ if !corrupt.is_empty() => item(
+            "node-mcp",
+            "Node MCP tools",
+            Required,
+            Missing,
+            format!(
+                "{}; it counts as off. Turn node tools on again to rewrite it",
+                corrupt
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        ),
         None => item(
             "node-mcp",
             "Node MCP tools",
@@ -393,7 +562,11 @@ pub fn items(f: &SetupFacts) -> Vec<SetupItem> {
 }
 
 /// The report for `items` plus what launch provisioning wrote.
-pub fn report(items: Vec<SetupItem>, first_run_defaults: Vec<String>) -> SetupReport {
+pub fn report(
+    items: Vec<SetupItem>,
+    first_run_defaults: Vec<String>,
+    install: Option<InstallKind>,
+) -> SetupReport {
     let missing_required = items
         .iter()
         .filter(|i| i.need == Need::Required && i.state == ItemState::Missing)
@@ -402,6 +575,7 @@ pub fn report(items: Vec<SetupItem>, first_run_defaults: Vec<String>) -> SetupRe
         items,
         missing_required,
         first_run_defaults,
+        install,
     }
 }
 
@@ -417,34 +591,53 @@ fn node_mcp_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf>
     app.path().app_data_dir().ok().map(|d| d.join("node-mcp"))
 }
 
-/// Launch provisioning (see the module doc). Never fails the launch: what could not be done is
-/// reported by the self-check.
-pub fn provision<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+/// Folders and capsules (the repair half of provisioning). Never fails: what could not be done
+/// is reported by the self-check.
+fn provision_files<R: tauri::Runtime>(app: &tauri::AppHandle<R>, dir: &Path) {
     use tauri::Manager;
-    let Ok(dir) = hermes_dir(app) else {
-        eprintln!("hermes setup: no app data folder; the self-check will say so");
-        return;
-    };
-    for (d, e) in provision_dirs(&dir) {
+    for (d, e) in provision_dirs(dir) {
         eprintln!("hermes setup: folder {d} not created: {e}");
     }
     let resources = app.path().resource_dir().ok();
-    if let Some(r) = provision_capsules(&dir, resources.as_deref()) {
+    if let Some(r) = provision_capsules(dir, resources.as_deref()) {
         for (name, why) in &r.refused {
             eprintln!("hermes setup: starter capsule {name} not installed: {why}");
         }
     }
-    let wrote = provision_defaults(&dir, node_mcp_dir(app).as_deref());
+}
+
+/// Launch provisioning (see the module doc). `had_existing_data` is [`had_existing_data`] read at
+/// the very start of setup. Never fails the launch.
+pub fn provision<R: tauri::Runtime>(app: &tauri::AppHandle<R>, had_existing_data: bool) {
+    let Ok(dir) = hermes_dir(app) else {
+        eprintln!("hermes setup: no app data folder; the self-check will say so");
+        return;
+    };
+    provision_files(app, &dir);
+    let (_, wrote) = first_run(&dir, node_mcp_dir(app).as_deref(), had_existing_data);
     *LAUNCH_DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = wrote;
 }
 
-/// Gather the facts (provisioning folders and capsules again first) and build the report.
+/// The folders `had_existing_data` reads at launch (app data and app local data).
+pub fn data_roots<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<PathBuf> {
+    use tauri::Manager;
+    let mut v: Vec<PathBuf> = [
+        app.path().app_data_dir().ok(),
+        app.path().app_local_data_dir().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    v.dedup();
+    v
+}
+
+/// Gather the facts and build the report. Read only.
 pub fn check<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<SetupReport, String> {
     use tauri::Manager;
     let dir = hermes_dir(app)?;
-    let dir_errors = provision_dirs(&dir);
     let resources = app.path().resource_dir().ok();
-    let seed = provision_capsules(&dir, resources.as_deref());
+    let seed = resources.as_ref().map(|_| verify_capsules(&dir));
     let node_mcp = app.try_state::<crate::node_mcp::NodeMcpState>().map(|s| {
         let st = s.status();
         NodeMcpFacts {
@@ -454,28 +647,72 @@ pub fn check<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<SetupReport
             last_error: st.last_error,
         }
     });
+    let node_config_error = node_mcp_dir(app)
+        .and_then(|d| parse_error::<crate::node_mcp::NodeMcpConfig>(&d.join("config.json")));
     let facts = SetupFacts {
         hermes_bin: crate::hermes::resolve_hermes_bin(app),
         embed_model: crate::embed_serve::resolve_model(resources.as_deref()),
         llama_bin: crate::serve::resolve_llama_bin(app).ok(),
         mcp_settings: crate::hermes_mcp::load_settings(&dir),
+        mcp_settings_error: parse_error::<McpSettings>(&crate::hermes_mcp::settings_path(&dir)),
+        node_config_error,
+        install: read_marker(&dir),
         hermes_dir: dir,
         resources,
         seed,
         node_mcp,
-        dir_errors,
+        dir_errors: Vec::new(),
     };
     let defaults = LAUNCH_DEFAULTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    Ok(report(items(&facts), defaults))
+    let install = facts.install;
+    Ok(report(items(&facts), defaults, install))
 }
 
-/// `hermes_setup_check` — the Hermes self-check (provisions folders and capsules again first).
+/// The explicit repair: create the folders and reinstall the pinned capsules, then check.
+pub fn repair<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<SetupReport, String> {
+    let dir = hermes_dir(app)?;
+    provision_files(app, &dir);
+    check(app)
+}
+
+/// The member's "Turn on node tools": the node's MCP server on, and Hermes offered its read tools
+/// (the member's other MCP choices kept). Applies at Hermes's next start.
+pub fn enable_node_tools(app: &tauri::AppHandle) -> Result<SetupReport, String> {
+    use tauri::Manager;
+    let node = app
+        .try_state::<crate::node_mcp::NodeMcpState>()
+        .ok_or_else(|| "the node MCP server is not set up in this app".to_string())?;
+    node.set_enabled(true)?;
+    let dir = hermes_dir(app)?;
+    let s = McpSettings {
+        node: true,
+        ..crate::hermes_mcp::load_settings(&dir)
+    };
+    crate::hermes_mcp::hermes_mcp_set_sync(app.clone(), s)?;
+    check(app)
+}
+
+/// `hermes_setup_check` — the Hermes self-check (read only).
 #[tauri::command]
 pub async fn hermes_setup_check(app_h: tauri::AppHandle) -> Result<SetupReport, String> {
     crate::blocking::off_main(move || check(&app_h)).await
+}
+
+/// `hermes_setup_repair` — recreate the folders and reinstall the pinned capsules, then check.
+#[tauri::command]
+pub async fn hermes_setup_repair(app_h: tauri::AppHandle) -> Result<SetupReport, String> {
+    crate::blocking::off_main(move || repair(&app_h)).await
+}
+
+/// `hermes_setup_enable_node_tools` — the member turns the node tools on (upgraded installs).
+#[tauri::command]
+pub async fn hermes_setup_enable_node_tools(
+    app_h: tauri::AppHandle,
+) -> Result<SetupReport, String> {
+    crate::blocking::off_main(move || enable_node_tools(&app_h)).await
 }
 
 #[cfg(test)]

@@ -26,9 +26,11 @@
 //! result taints the session and every effectful call after it also needs the member's decision on
 //! the sidecar's MCP approval card first.
 //!
-//! PENDING OWNER SIGN-OFF: every server defaults to OFF ([`McpSettings::default`]), so members see
-//! no change until they (or a later default) turn them on. Turning them on by default, and whether
-//! Hermes may be offered the node server's write tools, is the owner's call.
+//! Every server defaults to OFF ([`McpSettings::default`]). Owner 2026-11-14: on for new installs
+//! only. A real first run writes `node: true` (read tools only) through `hermes_setup`; an
+//! upgraded install keeps everything off until the member turns it on ("Turn on node tools" on
+//! the Agent page's Setup card, or Hermes › Controls). `mem` and `scan` stay off for everyone.
+//! Whether Hermes may be offered the node server's write tools is still PENDING OWNER SIGN-OFF.
 //!
 //! Keyless (Rule 3): nothing here holds a key or signs.
 
@@ -47,7 +49,7 @@ pub const SCAN_MCP_URL: &str = "https://explorer.citrate.ai/api/mcp";
 /// Per-call deadline handed to the host for both servers (ms).
 const CALL_TIMEOUT_MS: u64 = 30_000;
 
-/// The member's choices. PENDING OWNER SIGN-OFF on the defaults: both off.
+/// The member's choices. All off by default; owner 2026-11-14: `node` on for new installs only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpSettings {

@@ -18,7 +18,8 @@ import { AGENT_SYSTEM_PROMPT } from "../../agent/harness";
 import { annotatedAgentTools } from "../../agent/toolAnnotations";
 
 export type SetupNeed = "required" | "optional";
-export type SetupState = "ok" | "missing" | "off";
+/** `unchecked`: can only be checked while Hermes runs (never counts as complete). */
+export type SetupState = "ok" | "missing" | "off" | "unchecked";
 
 export interface SetupItem {
   id: string;
@@ -33,6 +34,8 @@ export interface CoreSetupReport {
   items: SetupItem[];
   missingRequired: number;
   firstRunDefaults: string[];
+  /** owner 2026-11-14: node tools on for new installs only. null = not decided yet. */
+  install?: "new" | "upgrade" | null;
 }
 
 export interface HermesSetupState {
@@ -40,12 +43,15 @@ export interface HermesSetupState {
   items: SetupItem[] | null;
   missingRequired: number;
   firstRunDefaults: string[];
+  install: "new" | "upgrade" | null;
+  /** Every required item verified, Hermes's loaded skills included (so only while it runs). */
+  complete: boolean;
   /** The core report could not be read (the rows above are then only the app's own). */
   error: string | null;
   checkedAt: number | null;
 }
 
-export const hermesSetupSlice = createSlice<HermesSetupState>({ items: null, missingRequired: 0, firstRunDefaults: [], error: null, checkedAt: null });
+export const hermesSetupSlice = createSlice<HermesSetupState>({ items: null, missingRequired: 0, firstRunDefaults: [], install: null, complete: false, error: null, checkedAt: null });
 
 export interface SelfCheckDeps {
   core: () => Promise<CoreSetupReport>;
@@ -91,7 +97,7 @@ export async function appItems(deps: Pick<SelfCheckDeps, "status" | "tools" | "p
     const st = await deps.status();
     out.push(
       !st.running
-        ? { id: "skills-loaded", label: "Skills loaded by Hermes", need: "required", state: "off", detail: "checked when Hermes runs (start it from the Agent page)" }
+        ? { id: "skills-loaded", label: "Skills loaded by Hermes", need: "required", state: "unchecked", detail: "not checked: Hermes is not running (start it from the Agent page)" }
         : st.skills > 0
           ? { id: "skills-loaded", label: "Skills loaded by Hermes", need: "required", state: "ok", detail: `Hermes reports ${st.skills} skill${st.skills === 1 ? "" : "s"}` }
           : { id: "skills-loaded", label: "Skills loaded by Hermes", need: "required", state: "missing", detail: "Hermes is running but reports no skills" },
@@ -114,9 +120,48 @@ export async function runHermesSelfCheck(deps: SelfCheckDeps = defaultDeps): Pro
   const own = await appItems(deps);
   const items = [...(core?.items ?? []), ...own];
   const missingRequired = items.filter((i) => i.need === "required" && i.state === "missing").length + (error ? 1 : 0);
-  const next: HermesSetupState = { items, missingRequired, firstRunDefaults: core?.firstRunDefaults ?? [], error, checkedAt: deps.now() };
+  const complete = !error && missingRequired === 0 && items.every((i) => i.need !== "required" || i.state !== "unchecked");
+  const next: HermesSetupState = {
+    items,
+    missingRequired,
+    firstRunDefaults: core?.firstRunDefaults ?? [],
+    install: core?.install ?? null,
+    complete,
+    error,
+    checkedAt: deps.now(),
+  };
   hermesSetupSlice.set(next);
   return next;
+}
+
+/** The card's header word: complete only when every required item was verified. */
+export function setupSummary(s: Pick<HermesSetupState, "items" | "missingRequired" | "complete" | "error">): string {
+  if (s.items === null) return "checking";
+  if (s.error) return "not checked";
+  if (s.missingRequired > 0) return `${s.missingRequired} missing`;
+  return s.complete ? "complete" : "not fully checked: Hermes is not running";
+}
+
+/** Whether to offer "Turn on node tools" (the node row is off, e.g. an upgraded install). */
+export function offerNodeTools(s: Pick<HermesSetupState, "items">): boolean {
+  return (s.items ?? []).some((i) => i.id === "node-mcp" && i.state === "off");
+}
+
+/** Whether to offer the explicit repair (folders or capsules missing). */
+export function offerRepair(s: Pick<HermesSetupState, "items">): boolean {
+  return (s.items ?? []).some((i) => (i.id === "data-folders" || i.id === "starter-capsules") && i.state === "missing");
+}
+
+/** Run a core setup action (repair, turn on node tools), then the whole check. Returns its error. */
+export async function runSetupAction(cmd: "hermes_setup_repair" | "hermes_setup_enable_node_tools", deps: SelfCheckDeps = defaultDeps): Promise<string | null> {
+  try {
+    if (BRIDGE_MODE !== "tauri") throw new Error("setup actions run in the desktop app");
+    await invoke<CoreSetupReport>(cmd);
+  } catch (e) {
+    return msg(e);
+  }
+  await runHermesSelfCheck(deps);
+  return null;
 }
 
 /** The launch notice when something Hermes needs is missing (null = nothing to say). */
