@@ -824,7 +824,7 @@ export class Store {
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
-  chatInputEl: HTMLInputElement | null = null;
+  chatInputEl: HTMLTextAreaElement | null = null;
   jChatScrollEl: HTMLElement | null = null;
   jChatInputEl: HTMLInputElement | null = null;
 
@@ -3052,6 +3052,18 @@ export class Store {
   setHermesReadAloud(on: boolean): void {
     this.setState({ hermesReadAloud: on });
     if (!on) this.speech?.cancel();
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the sidebar to its icons, or expand it (remembered across launches). */
+  toggleSidebar(collapsed: boolean = !this.state.sidebarCollapsed): void {
+    this.setState({ sidebarCollapsed: collapsed });
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the Hermes chat's right column, or expand it (remembered across launches). */
+  toggleHermesRail(collapsed: boolean = !this.state.hermesRailCollapsed): void {
+    this.setState({ hermesRailCollapsed: collapsed });
     this.save();
   }
 
