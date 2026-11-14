@@ -2,6 +2,10 @@
 // before the feature existed. The snapshots in __snapshots__/ were written from the code BEFORE the
 // round cards were added (the commit that adds this file changes no surface), so a later diff in
 // these strings means flag OFF changed behaviour.
+//
+// #653 (0.5.4): the Rounds snapshot was re-taken once on purpose. The book now pins both ledgers, so
+// Train's "Group rounds not live yet" card names the deployed state (UI truth contract §1). Only
+// that paragraph and its source line changed; the flag did not.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WagmiProvider } from "wagmi";
