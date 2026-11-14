@@ -72,7 +72,10 @@ For members whose updater cannot install, the screen also offers a manual way ou
 - **Support:** support@citrate.ai as selectable text, with a Copy button.
 - **What went wrong:** the update error text, when there is one.
 
-The wallet is not reachable while the app is gated, read-only or otherwise. Nothing on the screen loops: it checks again once every 5 minutes (one timer), and the automatic download starts only when an update is offered, never on its own after an error. Anything unverified gates nothing: it fails open, and the reason is logged.
+While gated, the app itself is not rendered at all: the window holds only the update dialog
+(focus trapped inside it, the update card drawn within it), so no wallet, send or sign control
+exists to focus or click, and app keyboard shortcuts are blocked. The wallet is not reachable,
+read-only or otherwise. Links open in the system browser through core's `open_external`. Nothing on the screen loops: it checks again once every 5 minutes (one timer), and the automatic download starts only when an update is offered, never on its own after an error. Anything unverified gates nothing: it fails open, and the reason is logged.
 
 ## Release steps (once per release that raises the minimum)
 

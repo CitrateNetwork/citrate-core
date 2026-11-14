@@ -6,12 +6,50 @@
 // Renders nothing at all unless there is genuinely something to show, so in
 // sim/web (and when up to date) it is invisible.
 //
-// 0.5.4 exception: below a VERIFIED minimum version (updater.ts `required`), a blocking screen sits
-// under this card (z 59, the card stays on top and clickable), the card cannot be dismissed, and
-// the update downloads by itself. Only a minimum signed with the updater key does this.
+// 0.5.4 exception: below a VERIFIED minimum version (updater.ts `required`), App renders only
+// UpdateGate: a modal dialog (focus trapped, app shortcuts blocked) holding this card inline, so
+// nothing of the app is focusable or clickable. The card cannot be dismissed, and the update
+// downloads by itself. Only a minimum signed with the updater key does this.
 // =====================================================================
-import { useState } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { useAppUpdate, formatBytes, progressFraction, type UpdateState } from "./updater";
+import { ModalDialog } from "./ModalDialog";
+import { bridge } from "../bridge";
+
+/** #678 review: an external link opens in the system browser through core's `open_external`
+ *  (a plain target=_blank anchor does not reliably leave the Tauri webview). The URL stays visible
+ *  as the link text, so it can be typed by hand if opening fails. */
+export function ExternalLink({ url, children }: { url: string; children?: string }) {
+  const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    void bridge.shell.openExternal(url).catch(() => undefined);
+  };
+  return (
+    <a href={url} onClick={onClick} rel="noreferrer">
+      {children ?? url.replace(/^https:\/\//, "")}
+    </a>
+  );
+}
+
+/** Keys that stay usable while gated: copy and select-all (for the support address). */
+const GATE_ALLOWED_MOD_KEYS = new Set(["c", "a"]);
+
+/**
+ * #678 review (P1): while an update is required no app shortcut may fire. A capture-phase listener
+ * on window runs before every other keydown listener (window, document or element), so a
+ * modifier shortcut such as Cmd/Ctrl+B is stopped there. Plain keys (Tab, Enter, Space) still reach
+ * the dialog. Returns the unsubscribe.
+ */
+export function blockShortcutsWhileGated(target: Window = window): () => void {
+  const onKey = (e: KeyboardEvent) => {
+    if (!(e.metaKey || e.ctrlKey || e.altKey)) return;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && GATE_ALLOWED_MOD_KEYS.has(e.key.toLowerCase())) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  target.addEventListener("keydown", onKey, true);
+  return () => target.removeEventListener("keydown", onKey, true);
+}
 
 /** #678 review: where a gated member can get the update by hand. Installers are behind the invite
  *  gate, so this is the download page (not an installer URL); support sends a fresh invite link. */
@@ -63,9 +101,7 @@ export function UpdateRequiredHelp({
         <span style={{ display: "block", fontSize: 13, fontWeight: 600 }}>Download manually</span>
         <p style={{ margin: "4px 0 0", fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)" }}>
           If the update will not install here, quit Citrate Core and install the new version from{" "}
-          <a href={MANUAL_DOWNLOAD_URL} target="_blank" rel="noreferrer">
-            {MANUAL_DOWNLOAD_URL.replace("https://", "")}
-          </a>
+          <ExternalLink url={MANUAL_DOWNLOAD_URL} />
           . Downloads need an invite link; if yours no longer works, ask support for a fresh one. Installing over this version keeps your wallet, keys and data.
         </p>
       </div>
@@ -94,33 +130,30 @@ export function UpdateRequiredScreen({
   onRetry,
   onQuit,
   onCopy,
+  install,
+  restart,
 }: {
   state: UpdateState;
   onRetry: () => void;
   onQuit?: () => void;
   onCopy?: (text: string) => Promise<boolean>;
+  /** The update card's actions; the card is drawn inside the dialog (#678 review P1). */
+  install?: () => Promise<void> | void;
+  restart?: () => Promise<void> | void;
 }) {
+  // No app shortcut fires while this screen is up.
+  useEffect(() => (state.required ? blockShortcutsWhileGated() : undefined), [state.required]);
   if (!state.required) return null;
   const noUpdate = state.status === "uptodate" || state.status === "idle" || state.status === "checking";
   return (
-    <div
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="update-required-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 59,
-        background: "var(--bg-0, rgba(10,10,10,.94))",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        overflowY: "auto",
-        color: "var(--tx-1)",
-      }}
+    <ModalDialog
+      labelledBy="update-required-title"
+      focusKey="update-required"
+      register="charter"
+      zIndex={59}
+      panelStyle={{ maxWidth: 480, width: "100%", maxHeight: "100%", overflowY: "auto", background: "var(--srf-0)", color: "var(--tx-1)", borderRadius: 12, padding: 20 }}
     >
-      <div style={{ maxWidth: 460, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div data-update-gate="" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <span id="update-required-title" style={{ fontSize: 18, fontWeight: 600 }}>
           Update required{state.minimumVersion ? `: Citrate Core ${state.minimumVersion} or later` : ""}
         </span>
@@ -148,20 +181,34 @@ export function UpdateRequiredScreen({
             </button>
           </div>
         )}
+        <UpdateCard state={state} install={install ?? (() => undefined)} restart={restart ?? (() => undefined)} dismiss={() => undefined} inline />
         <UpdateRequiredHelp error={state.error} onQuit={onQuit} onCopy={onCopy} />
       </div>
-    </div>
+    </ModalDialog>
   );
 }
 
-export function UpdateBanner() {
-  const { state, check, install, restart, dismiss } = useAppUpdate();
-  return (
-    <>
-      <UpdateRequiredScreen state={state} onRetry={() => void check()} />
-      <UpdateCard state={state} install={install} restart={restart} dismiss={dismiss} />
-    </>
-  );
+export type AppUpdate = ReturnType<typeof useAppUpdate>;
+
+/** The corner card (not gated). While an update is required App renders `UpdateGate` instead of
+ *  the whole app, so this renders nothing then. */
+export function UpdateBanner({ update }: { update: AppUpdate }) {
+  const { state, install, restart, dismiss } = update;
+  if (state.required) return null;
+  return <UpdateCard state={state} install={install} restart={restart} dismiss={dismiss} />;
+}
+
+/** #678 review P1: the app (`children`) or, while an update is required, only the gate. The app is
+ *  not rendered at all then: no control of it exists to focus or click. */
+export function GateOrApp({ update, children }: { update: AppUpdate; children: ReactNode }) {
+  return update.state.required ? <UpdateGate update={update} /> : <>{children}</>;
+}
+
+/** #678 review P1: the whole window while an update is required (App renders nothing else, so no
+ *  control of the app is focusable or clickable behind it). */
+export function UpdateGate({ update }: { update: AppUpdate }) {
+  const { state, check, install, restart } = update;
+  return <UpdateRequiredScreen state={state} onRetry={() => void check()} install={install} restart={restart} />;
 }
 
 /** The card itself (state from useAppUpdate). */
@@ -170,11 +217,14 @@ export function UpdateCard({
   install,
   restart,
   dismiss,
+  inline = false,
 }: {
   state: UpdateState;
   install: () => Promise<void> | void;
   restart: () => Promise<void> | void;
   dismiss: () => void;
+  /** Drawn in the flow (inside the gate) instead of fixed in the corner. */
+  inline?: boolean;
 }) {
   const visible =
     !state.dismissed &&
@@ -194,11 +244,7 @@ export function UpdateCard({
       role="status"
       aria-live="polite"
       style={{
-        position: "fixed",
-        right: 20,
-        bottom: 20,
-        width: 340,
-        zIndex: 60,
+        ...(inline ? {} : { position: "fixed" as const, right: 20, bottom: 20, width: 340, zIndex: 60 }),
         background: "var(--srf-1)",
         border: "1px solid var(--bd-1)",
         borderLeft: `3px solid ${accent}`,

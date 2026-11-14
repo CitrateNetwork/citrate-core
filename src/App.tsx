@@ -15,7 +15,8 @@ import { Sidebar, ROUTES } from "./shell/Sidebar";
 import { PlaceView } from "./shell/PlaceView";
 import { registerFor } from "./shell/places";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
-import { UpdateBanner } from "./shell/UpdateBanner";
+import { GateOrApp, UpdateBanner } from "./shell/UpdateBanner";
+import { useAppUpdate } from "./shell/updater";
 import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { useNetworkLabel } from "./shell/networkCompat";
 import { SignedForYou } from "./budgets/SignedForYou";
@@ -132,6 +133,8 @@ function AuthGate() {
 
 function Root() {
   const s = useStore();
+  // W2.4 + 0.5.4: one updater per app (its checks run here, gated or not).
+  const update = useAppUpdate();
 
   // Download gate: an install whose saved state shows a finished onboarding is recorded as
   // `existing` the first time the check runs, so it is never asked for a code later (a build
@@ -203,35 +206,40 @@ function Root() {
 
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--tx-1)", height: "100vh", overflow: "hidden", background: "var(--srf-0)" }} data-register="charter">
-      {body}
-      <SignatureCeremony store={store} s={s} />
-      <WalletReviewModal store={store} s={s} />
-      <Coach store={store} s={s} />
-      <DemoPanel store={store} s={s} />
-      <Toast s={s} />
-      {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
-      <JoinStepsNote
-        telemetry={s.telemetry}
-        consentVersion={s.telemetryConsentVersion}
-        onAcknowledge={() => {
-          store.setState(setTelemetryConsent(true));
-          store.save();
-        }}
-        onTurnOff={() => {
-          const c = setTelemetryConsent(false); // forgets unsent steps, drops prepared reports
-          store.setState(c);
-          bridge.config.write({ telemetry: c.telemetry }).catch(() => {
-            /* honest no-op: on the Tauri path a failed persist surfaces on next read */
-          });
-          store.save();
-        }}
-      />
-      {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
-      <SignedForYou />
-      {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
-      <NetworkCompatGate />
-      {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
-      <UpdateBanner />
+      {/* 0.5.4 (#678 review P1): below a verified minimum version none of the app is rendered,
+          only the update gate, so nothing behind it can be focused, clicked or reached by a
+          shortcut. */}
+      <GateOrApp update={update}>
+        {body}
+        <SignatureCeremony store={store} s={s} />
+        <WalletReviewModal store={store} s={s} />
+        <Coach store={store} s={s} />
+        <DemoPanel store={store} s={s} />
+        <Toast s={s} />
+        {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
+        <JoinStepsNote
+          telemetry={s.telemetry}
+          consentVersion={s.telemetryConsentVersion}
+          onAcknowledge={() => {
+            store.setState(setTelemetryConsent(true));
+            store.save();
+          }}
+          onTurnOff={() => {
+            const c = setTelemetryConsent(false); // forgets unsent steps, drops prepared reports
+            store.setState(c);
+            bridge.config.write({ telemetry: c.telemetry }).catch(() => {
+              /* honest no-op: on the Tauri path a failed persist surfaces on next read */
+            });
+            store.save();
+          }}
+        />
+        {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
+        <SignedForYou />
+        {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
+        <NetworkCompatGate />
+        {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
+        <UpdateBanner update={update} />
+      </GateOrApp>
     </div>
   );
 }

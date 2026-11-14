@@ -66,7 +66,8 @@ describe("the gate on screen", () => {
 
   it("the blocking screen names the minimum and the reason", () => {
     const html = renderToStaticMarkup(<UpdateRequiredScreen state={gated({ status: "downloading" })} onRetry={noop} />);
-    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
     expect(html).toContain("Citrate Core 0.5.4 or later");
     expect(html).toContain("0.5.4 fixes Hermes");
     expect(html).toContain("The update is downloading.");
