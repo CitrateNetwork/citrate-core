@@ -8,7 +8,7 @@
 //   V2  heartbeat "last ack 4s ago" stuck at its seed value, sold as slashing protection
 //   V3  pin projections (bonded x 0.0075 "per month") and "challenges passed" (pins x 9 + 4)
 //   V10 seeded height 131,204 and persisted node state shown before the first poll
-//   V11 Train reads PatronageLedger; FederatedRoundLedger is not in the 40204 (r1006) address book
+//   V11 Train: "Group rounds not live yet" in both ledger states (absent, or deployed and unable to run)
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
@@ -33,7 +33,7 @@ vi.mock("../daemons/DaemonsPanel", () => ({ DaemonsPanel: () => null }));
 
 import { Dashboard } from "./Dashboard";
 import { renderRewards, renderStatus } from "./node/nodePage.fixture";
-import { Train, groupRoundsLive } from "./Train";
+import { Train, groupRoundsLive, missingRoundLedgers, ROUND_SETTLEMENT_WIRED } from "./Train";
 import { COACH_STEPS, NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, type AgentContext, type ToolCall } from "../agent/harness";
 import { freshState, loadState, PERSIST_KEYS, STORAGE_KEY, type AppState } from "../shell/state";
@@ -160,12 +160,14 @@ describe("V10 — no seeded height or persisted node state before the first poll
 });
 
 describe("V11 — group rounds are not live on 40204", () => {
-  it("the shipped address book has no FederatedRoundLedger, so rounds read as not live", () => {
-    // r1006 pins PatronageLedger (block 0) but not FederatedRoundLedger: still not live.
-    expect((book.addresses as Record<string, string>).FederatedRoundLedger).toBeUndefined();
+  it("the shipped book pins both ledgers (#653), and rounds still read as not live", () => {
+    // r1007 block 0: both ledgers deployed and in the book. No account holds SETTLER_ROLE, so no
+    // round can be recorded: still not live (truth contract §1, both ledger states).
+    expect(missingRoundLedgers(book.addresses)).toEqual([]);
+    expect(ROUND_SETTLEMENT_WIRED).toBe(false);
     expect(groupRoundsLive(book.addresses)).toBe(false);
-    expect(groupRoundsLive({ PatronageLedger: "0x" + "0".repeat(40) })).toBe(false);
-    expect(groupRoundsLive({ PatronageLedger: "0x00000000000000000000000000000000000000AB", FederatedRoundLedger: "0x00000000000000000000000000000000000000CD" })).toBe(true);
+    expect(missingRoundLedgers({ PatronageLedger: "0x" + "0".repeat(40) })).toEqual(["PatronageLedger", "FederatedRoundLedger"]);
+    expect(groupRoundsLive({ PatronageLedger: "0x00000000000000000000000000000000000000AB", FederatedRoundLedger: "0x00000000000000000000000000000000000000CD" })).toBe(false);
   });
 
   it("Train shows 'Group rounds not live yet' and never reads the ledger", async () => {
@@ -181,6 +183,9 @@ describe("V11 — group rounds are not live on 40204", () => {
       await Promise.resolve();
     });
     expect(el.textContent).toContain("Group rounds not live yet");
+    expect(el.textContent).toContain("are deployed on 40204, but no round can be recorded on them yet");
+    expect(el.textContent).toContain("both ledgers pinned");
+    expect(el.textContent).not.toContain("no PatronageLedger entry");
     expect(el.textContent).not.toContain("read live from 40204 (PatronageLedger)");
     expect(status).not.toHaveBeenCalled();
     act(() => root.unmount());

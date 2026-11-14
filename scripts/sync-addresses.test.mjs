@@ -211,3 +211,58 @@ describe("fails closed", () => {
     await refused(["--rpc", rpcUrl], /genesis/);
   });
 });
+
+// #653 (0.5.4): group rounds need PatronageLedger, FederatedRoundLedger and LoRAFactory. All three
+// are deployed on r1007 and recorded in chain main's root book; the app's book must carry them.
+describe("group-round pins (#653)", () => {
+  const ROUND = {
+    PatronageLedger: addr("b1"),
+    FederatedRoundLedger: addr("b2"),
+    LoRAFactory: addr("b3"),
+  };
+
+  it("emits PatronageLedger, FederatedRoundLedger and LoRAFactory when the book has them", async () => {
+    writeBook(book({ ...REQUIRED, ...ROUND }));
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    for (const [name, a] of Object.entries(ROUND)) expect(out.addresses[name]).toBe(a);
+  });
+
+  it("fails closed when a group-round pin has no code on the chain", async () => {
+    writeBook(book({ ...REQUIRED, ...ROUND }));
+    chain.noCode.add(ROUND.FederatedRoundLedger);
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("FederatedRoundLedger");
+    expect(fs.existsSync(outPath)).toBe(false);
+  });
+
+  // The shipped book, against the canonical book it was generated from (40204.canonical.json is a
+  // byte-for-byte copy of citrate-chain main's contracts/addresses/40204.json).
+  const shipped = JSON.parse(fs.readFileSync(path.join(here, "../src-tauri/addresses/40204.json"), "utf8"));
+  const canonicalPath = path.join(here, "../src-tauri/addresses/40204.canonical.json");
+  const canonical = JSON.parse(fs.readFileSync(canonicalPath, "utf8"));
+  // r1007 (genesis 0xcf686345…), chain main's root book.
+  const R1007 = {
+    PatronageLedger: "0x41f68b9e710585b064459a0ec706148fbf503659",
+    FederatedRoundLedger: "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5",
+    LoRAFactory: "0x62e9aabec26288e60db2503f518eacf9cdcc8890",
+  };
+
+  it("the shipped book carries all three at the chain-main (r1007) addresses", () => {
+    expect(shipped.genesisHash).toBe("0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631");
+    for (const [name, a] of Object.entries(R1007)) {
+      expect(canonical.contracts[name].toLowerCase()).toBe(a);
+      expect((shipped.addresses[name] ?? "").toLowerCase()).toBe(a);
+    }
+  });
+
+  it("the shipped book is exactly what the sync generates from its canonical copy", async () => {
+    const r = await run(["--book", canonicalPath, "--genesis", shipped.genesisHash, "--out", outPath]);
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(outPath, "utf8")).toBe(
+      fs.readFileSync(path.join(here, "../src-tauri/addresses/40204.json"), "utf8"),
+    );
+  });
+});
