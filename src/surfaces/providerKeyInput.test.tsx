@@ -64,7 +64,7 @@ const button = (text: string) => Array.from(host.querySelectorAll("button")).fin
 describe("Providers & keys: the key field keeps what is typed", () => {
   it("every character survives the store's poll re-renders", async () => {
     await mount("openai");
-    const key = "sk-proj-AbC123xyz789";
+    const key = "test-key-not-real-AbC-1";
     for (let i = 0; i < key.length; i++) {
       const input = q(KEY);
       expect(input, "the key field is on the page").toBeInstanceOf(HTMLInputElement);
@@ -84,14 +84,14 @@ describe("Providers & keys: the key field keeps what is typed", () => {
       setter?.call(model, "gpt-4o");
       model.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    for (const ch of "sk-test-0123456789") await typeChar(q(KEY) as HTMLInputElement, ch);
+    for (const ch of "test-key-not-real-0123") await typeChar(q(KEY) as HTMLInputElement, ch);
     await render(stateFor("openai", 50));
     await render(stateFor("openai", 51));
     expect(q(MODEL)?.value).toBe("gpt-4o");
     await act(async () => {
       button("Save key")?.click();
     });
-    expect(aiSetProvider).toHaveBeenCalledWith("openai", "https://api.openai.com/v1", "gpt-4o", "sk-test-0123456789");
+    expect(aiSetProvider).toHaveBeenCalledWith("openai", "https://api.openai.com/v1", "gpt-4o", "test-key-not-real-0123");
   });
 
   it("the custom endpoint's base URL survives re-renders", async () => {
@@ -106,10 +106,10 @@ describe("Providers & keys: the key field keeps what is typed", () => {
 
   it("closing the editor drops the typed key: reopening starts empty", async () => {
     await mount("openai");
-    for (const ch of "sk-secret-value-42") await typeChar(q(KEY) as HTMLInputElement, ch);
+    for (const ch of "test-key-not-real-closed") await typeChar(q(KEY) as HTMLInputElement, ch);
     await render(stateFor(null, 9)); // the edit ends (saved or cancelled)
     expect(q(KEY)).toBeNull();
-    expect(host.innerHTML).not.toContain("sk-secret-value-42");
+    expect(host.innerHTML).not.toContain("test-key-not-real-closed");
     await render(stateFor("openai", 10));
     expect(q(KEY)?.value).toBe("");
   });
