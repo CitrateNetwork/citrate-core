@@ -384,7 +384,7 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
             </span>
           )}
           <span className="mono" data-testid="model-choice-note" style={small}>
-            Choosing which of these models Hermes uses is not available yet. A call for a model not on this list pauses the provider and asks you.
+            Choose one of these models for Hermes in the model picker above the chat. A call for a model not on this list pauses the provider and asks you.
           </span>
           <span className="mono" style={small}>
             A price you enter is used instead of a published one. Your vendor's bill is what counts.

@@ -27,6 +27,7 @@ import { useEffect, useState } from "react";
 import { createPublicClient } from "viem";
 import { Store } from "../shell/store";
 import { HermesModelPicker } from "./HermesModelPicker";
+import { AiProviderEditor } from "./AiProviderEditor";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { GRANT_DISCLAIMER } from "../data/grantCopy";
 import { PricingLink } from "../components/PricingLink";
@@ -117,15 +118,6 @@ export function fmtExpiresAt(raw: string | null | undefined): string {
   if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return v; // non-empty but unparseable — honest verbatim, no guessing
 }
-
-// Imperative element refs for the AI-provider editor. The KEY input value is
-// handed to Rust once (sealed in the OS keyring) and never stored in AppState —
-// so the ref lives only as long as an editor is open (module-scoped, like the
-// design's `this.aiInputEl`). `aiBaseUrlEl`/`aiModelEl` back the generic
-// OpenAI-compatible preset's baseURL + model fields (AI1).
-let aiInputEl: HTMLInputElement | null = null;
-let aiBaseUrlEl: HTMLInputElement | null = null;
-let aiModelEl: HTMLInputElement | null = null;
 
 const CONN: [string, string, string][] = [
   ["gcal", "Google Calendar", "events · read + add events you confirm"],
@@ -369,17 +361,18 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
       edit: () => store.setState({ aiEdit: p.id }),
       cancel: () => store.setState({ aiEdit: null }),
       remove: () => void store.aiClearProvider(p.id),
-      save: () => {
-        const key = aiInputEl ? aiInputEl.value.trim() : "";
+      // The editor (AiProviderEditor) owns the typed values, so a re-render never resets them.
+      save: (v: { key: string; baseUrl: string; model: string }) => {
+        const key = v.key;
         if (key.length < 8) return store.toast("That does not look like a key");
         // The baseURL is the preset's fixed https endpoint, or (for the generic
         // "custom" preset) the user-supplied one — validated as https in Rust.
-        const baseURL = p.fixedBaseUrl ?? (aiBaseUrlEl ? aiBaseUrlEl.value.trim() : "");
+        const baseURL = p.fixedBaseUrl ?? v.baseUrl;
         if (!baseURL) return store.toast("Enter the provider's https /v1 base URL");
-        const model = aiModelEl && aiModelEl.value.trim() ? aiModelEl.value.trim() : p.defaultModel;
+        const model = v.model || p.defaultModel;
         if (!model) return store.toast("Enter the model name");
         // Hand the key to Rust ONCE (sealed in the OS keyring); never store it in
-        // AppState/localStorage. aiInputEl is cleared on the next render (edit ends).
+        // AppState/localStorage. The editor (and the typed key) closes when the save ends the edit.
         void store.aiSetProvider(p.id, baseURL, model, key);
       },
     };
@@ -735,50 +728,15 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                     </span>
                   </span>
                   {ai.editing && (
-                    <>
-                      {ai.fixedBaseUrl === null && (
-                        <input
-                          ref={(el) => {
-                            aiBaseUrlEl = el;
-                          }}
-                          className="input mono"
-                          placeholder="https://…/v1"
-                          style={{ width: 220, height: 30, fontSize: 12 }}
-                        />
-                      )}
-                      <input
-                        ref={(el) => {
-                          aiModelEl = el;
-                          if (el && ai.defaultModel) el.value = ai.defaultModel;
-                        }}
-                        className="input mono"
-                        placeholder="model (e.g. gpt-4o-mini)"
-                        style={{ width: 180, height: 30, fontSize: 12 }}
-                      />
-                      <input
-                        ref={(el) => {
-                          aiInputEl = el;
-                          if (el) {
-                            el.value = "";
-                            try {
-                              el.focus();
-                            } catch {
-                              /* ignore */
-                            }
-                          }
-                        }}
-                        className="input mono"
-                        type="password"
-                        placeholder={ai.placeholder}
-                        style={{ width: 220, height: 30, fontSize: 12 }}
-                      />
-                      <button className="btn btn-secondary btn-sm" onClick={ai.save}>
-                        Save key
-                      </button>
-                      <button className="btn btn-ghost btn-sm" onClick={ai.cancel}>
-                        Cancel
-                      </button>
-                    </>
+                    <AiProviderEditor
+                      key={ai.id}
+                      name={ai.name}
+                      fixedBaseUrl={ai.fixedBaseUrl}
+                      defaultModel={ai.defaultModel}
+                      keyPlaceholder={ai.placeholder}
+                      onSave={ai.save}
+                      onCancel={ai.cancel}
+                    />
                   )}
                   {ai.idle && ai.configured && (
                     <>
