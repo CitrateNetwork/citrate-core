@@ -85,6 +85,7 @@ import { parseClaimLink } from "../onboarding/claimLink";
 import { isInviteLink } from "../surfaces/inviteLink";
 import { isAccessLink } from "../onboarding/accessLink";
 import { groupsSlice } from "./slices/groups";
+import { runHermesSelfCheck, setupNotice } from "./slices/hermesSetup";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -859,6 +860,13 @@ export class Store {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => this.tick(), 600);
+    // 0.5.4: the Hermes setup self-check at launch; a missing required item is said, not logged.
+    if (BRIDGE_MODE === "tauri") {
+      void runHermesSelfCheck().then((r) => {
+        const n = setupNotice(r);
+        if (n) this.toast(n);
+      });
+    }
     // CORE-A2 — pull the real custody lock state into the Keys-&-security
     // section. In a Tauri build this reads the live vault (custody_status); in
     // web-dev it is the sim shim. Failures leave the field "unknown" (honest).

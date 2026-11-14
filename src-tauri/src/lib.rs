@@ -196,6 +196,8 @@ mod cluster_mesh;
 mod comms;
 mod embed_serve;
 mod hermes;
+// 0.5.4: Hermes provisioning at launch + the setup self-check.
+mod hermes_setup;
 // SCL-S0.3: the managed browser does not outlive the Hermes sidecar.
 mod hermes_headless;
 mod hermes_learn;
@@ -581,6 +583,10 @@ pub fn run() {
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
             // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
             // Settings; loopback only; every request needs a connect token; writes need approval.
+            // 0.5.4: provision Hermes (data folders, pinned starter capsules, first-run defaults:
+            // Hermes is offered the node MCP read tools and the server is on) BEFORE the node MCP
+            // state is built, so a first-run default applies at this launch.
+            hermes_setup::provision(app.handle());
             app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
             // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
             // watching (turns from the node MCP server or the CLI), instead of leaving them to the
@@ -881,6 +887,8 @@ pub fn run() {
             training::training_claim,
             hermes::hermes_start,
             hermes::hermes_status,
+            // 0.5.4: the Hermes setup self-check.
+            hermes_setup::hermes_setup_check,
             hermes::hermes_skills,
             hermes::hermes_run_skill,
             hermes::hermes_pending_approvals,
