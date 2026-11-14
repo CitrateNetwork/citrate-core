@@ -1,0 +1,20 @@
+# V60 SVC-1: the Citrate background service, a systemd --user unit. Rendered by
+# src-tauri/src/svc_units.rs ({{EXE}} is quoted and escaped there) and written to
+# ~/.config/systemd/user/citrate-svc.service. With lingering on it also runs while the member is
+# logged out. Restart=on-failure restarts a crash but not a requested stop (exit 0);
+# TimeoutStopSec is above the 30 s drain; KillMode=mixed lets the service stop its own children
+# in order. Spike: docs/spikes/svc-2026-11-10/.
+[Unit]
+Description=Citrate background node service
+
+[Service]
+Type=simple
+ExecStart={{EXE}} --svc
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=40
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=default.target

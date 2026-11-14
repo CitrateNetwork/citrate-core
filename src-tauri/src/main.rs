@@ -5,6 +5,12 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 fn main() {
+    // V60 SVC-1: `citrate-core --svc` is the background service (LaunchAgent / systemd user unit):
+    // the node and kubo headless, no window and no plugins.
+    #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some(citrate_core_lib::SVC_FLAG) {
+        std::process::exit(citrate_core_lib::svc_main());
+    }
     // HUP-S4.3: when Hermes's MCP host starts this executable as the read-only memory bridge,
     // relay stdio to the mem-mcp socket and exit before any app start-up.
     if let Some(code) = citrate_core_lib::mem_mcp_bridge::maybe_run_from_args() {

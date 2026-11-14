@@ -88,7 +88,7 @@ const NODE_HEALTHY_AFTER: Duration = Duration::from_secs(90);
 /// config: `[rpc] listen_addr = "0.0.0.0:8545"`, reachable on loopback). Kept
 /// distinct from the remote `rpc.citrate.ai` used by the wallet ceremony — this
 /// one points at OUR local node's status surface.
-const NODE_LOCAL_RPC_URL: &str = "http://127.0.0.1:8545";
+pub(crate) const NODE_LOCAL_RPC_URL: &str = "http://127.0.0.1:8545";
 
 /// The env var naming the owner-only file the node reads its 32-byte storage key
 /// from (hex). Matches the node-side `at_rest_encryption_from_env` (citrate-chain
@@ -347,7 +347,11 @@ pub struct NodeStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<NodeBlocker>,
     /// Whether the block producer is armed (omitted while it is not).
-    #[serde(rename = "miningArmed", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        rename = "miningArmed",
+        skip_serializing_if = "std::ops::Not::not",
+        default
+    )]
     pub mining_armed: bool,
     /// Why block production is held, from the last mining-gate check (see
     /// [`crate::mining_gate`]). Omitted when production is armed or was never requested.
@@ -1641,6 +1645,16 @@ pub fn build_node_state<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<N
 pub async fn node_status(app_h: tauri::AppHandle) -> std::result::Result<NodeStatus, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
+        // V60 SVC-1: while the background service runs the node, its status is the service's.
+        if let Some(client) = crate::svc::attached_client(&app_h) {
+            match client.status() {
+                Ok(s) => return Ok(s.node),
+                Err(e) => {
+                    eprintln!("[node] background service status failed: {e}");
+                    crate::svc::invalidate_link(&app_h);
+                }
+            }
+        }
         let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         node_status_sync(st0)
@@ -1655,12 +1669,31 @@ pub fn node_status_sync(state: State<'_, NodeState>) -> std::result::Result<Node
 
 #[tauri::command]
 pub async fn node_start(
+    app_h: tauri::AppHandle,
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<(), String> {
+    let coinbase = resolve_coinbase(&custody.0);
+    // V60 SVC-1: while the background service runs, it starts the node; the app hands it the
+    // coinbase (a public address) and never starts a second node beside it.
+    if let Some(client) = crate::svc::attached_client(&app_h) {
+        if let Some(cb) = coinbase {
+            client.call(crate::svc::SvcOp::SetCoinbase { coinbase: cb })?;
+        }
+        client.call(crate::svc::SvcOp::NodeStart)?;
+        return Ok(());
+    }
+    if let Some(cb) = coinbase {
+        state.0.set_coinbase(cb);
+    }
+    state.0.start().map_err(|e| e.to_string())
+}
+
+/// W1.5: the coinbase to mine to, when the vault is unlocked; `None` starts a plain follower.
+fn resolve_coinbase(custody: &crate::custody::CustodyVault) -> Option<String> {
     // W1.5 — arm the producer with a coinbase when the vault is unlocked.
     // Best-effort: a locked or absent wallet just starts a plain follower.
-    if let Ok(info) = crate::wallet::address_auto_unlocked(&custody.0) {
+    if let Ok(info) = crate::wallet::address_auto_unlocked(custody) {
         // THE COINBASE MUST BE THE REGISTRY'S STAKER, NOT THE MEMBER'S EOA.
         //
         // Under the bond-clone model (#114/#127) the member's MemberBond CLONE is
@@ -1683,9 +1716,9 @@ pub async fn node_start(
             Ok(g) if g.bond_deployed && !g.bond_address.is_empty() => g.bond_address,
             _ => info.address,
         };
-        state.0.set_coinbase(coinbase);
+        return Some(coinbase);
     }
-    state.0.start().map_err(|e| e.to_string())
+    None
 }
 
 /// W1.1 (WP-11) — the node's on-chain proposer identity: the `coinbase` (the
@@ -1947,7 +1980,15 @@ pub(crate) fn bond_activation_intent<T: crate::rpc::RpcTransport>(
 /// activate. Idempotent + honest: returns `true` iff it armed on THIS call (already
 /// armed, no coinbase, or not-yet-synced all return `false`, never a fabricated arm).
 #[tauri::command]
-pub async fn node_arm_mining(state: State<'_, NodeState>) -> std::result::Result<bool, String> {
+pub async fn node_arm_mining(
+    app_h: tauri::AppHandle,
+    state: State<'_, NodeState>,
+) -> std::result::Result<bool, String> {
+    // V60 SVC-1: the service's node is armed by the service (it also runs the gate every 30 s).
+    if let Some(client) = crate::svc::attached_client(&app_h) {
+        let armed = client.call(crate::svc::SvcOp::ArmMining)?;
+        return Ok(armed.and_then(|v| v.as_bool()).unwrap_or(false));
+    }
     // `Result` is required for an async command that borrows `State<'_>`; the
     // arm itself is infallible (a not-synced / no-coinbase node returns false).
     Ok(state.0.arm_mining_if_synced())
@@ -1957,6 +1998,11 @@ pub async fn node_arm_mining(state: State<'_, NodeState>) -> std::result::Result
 pub async fn node_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
+        // V60 SVC-1: a member Stop reaches the service's node (and is kept there until a Start).
+        if let Some(client) = crate::svc::attached_client(&app_h) {
+            client.call(crate::svc::SvcOp::NodeStop)?;
+            return Ok(());
+        }
         let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         node_stop_sync(st0)
