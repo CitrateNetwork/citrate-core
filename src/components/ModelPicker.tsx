@@ -1,5 +1,8 @@
 // Hermes ModelRouter — the model picker (P0 / WP0.3).
 //
+// D-11: a cloud choice is a model of a provider the member connected in Settings › Models (their
+// own key, kept in core); picking it runs Hermes on it through the core model proxy.
+//
 // Presentational + source-of-truth-agnostic: it renders the router's ModelChoice[] and
 // reports selections via onSelect. The mounting surface feeds it the LIVE choices (the
 // Models section's local models + gateway + registry, via modelRouterSources) and the
@@ -12,6 +15,7 @@ import type { ModelChoice } from "../agent/modelRouter";
 
 const sourceLabel: Record<ModelChoice["source"], string> = {
   local: "on-device",
+  cloud: "your key",
   registry: "registry",
   gateway: "gateway",
 };
@@ -50,7 +54,7 @@ export function ModelPicker({
         const selected = isSelectedChoice(c, activeId);
         // A local/registry choice that isn't ready yet — selecting it starts the real work.
         const notReady = !c.ready && c.source !== "gateway";
-        const hint = notReady ? (c.source === "registry" ? "pull to use" : "download to use") : sourceLabel[c.source];
+        const hint = notReady ? (c.note ?? (c.source === "registry" ? "pull to use" : c.source === "cloud" ? "not available now" : "download to use")) : sourceLabel[c.source];
         return (
           <button
             key={c.id}

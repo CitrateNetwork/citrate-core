@@ -63,3 +63,24 @@ describe("ModelPicker — selection", () => {
     host.remove();
   });
 });
+
+// D-11 (owner report 0.5.3): BYOK cloud models are rows in the same picker, marked as the member's
+// own key, selected while core holds them as the preferred model; under Local model only they say why.
+describe("ModelPicker — cloud (BYOK) rows", () => {
+  const cloud: ModelChoice[] = [
+    { id: "loc1", label: "gemma.gguf", source: "local", ready: true },
+    { id: "cloud:openai::gpt-4o", label: "OpenAI · gpt-4o", source: "cloud", ready: true, cloud: { providerId: "openai", model: "gpt-4o" } },
+    { id: "cloud:xai::grok-4", label: "xAI · grok-4", source: "cloud", ready: false, cloud: { providerId: "xai", model: "grok-4" }, note: "Local model only is on" },
+    { id: "gateway", label: "Citrate gateway", source: "gateway", ready: true },
+  ];
+  it("renders a connected cloud model as selectable and selected when active", () => {
+    const html = renderToStaticMarkup(<ModelPicker choices={cloud} activeId="cloud:openai::gpt-4o" onSelect={() => {}} />);
+    expect(html).toContain("OpenAI · gpt-4o");
+    expect(html).toContain("your key");
+    expect(html).toMatch(/aria-selected="true"[^>]*data-source="cloud"/);
+  });
+  it("a not-ready cloud model shows why", () => {
+    const html = renderToStaticMarkup(<ModelPicker choices={cloud} activeId={null} onSelect={() => {}} />);
+    expect(html).toContain("Local model only is on");
+  });
+});

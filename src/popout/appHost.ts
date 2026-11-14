@@ -17,8 +17,8 @@ import { refreshTier, tierSlice } from "../shell/slices/tier";
 import { modelsSlice } from "../shell/slices/models";
 import { agentUndo, refreshUndoPanel, undoChange, undoSession } from "../shell/slices/agentUndo";
 import { bridge } from "../bridge";
-import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
-import { resolveActive } from "../agent/modelRouter";
+import { routerChoicesFor } from "../agent/modelRouterSources";
+import { activeRouterId, resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import { focusContractReader, startContractHost } from "./contractHost";
@@ -47,7 +47,7 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
       inputs: () => {
         const s = store.state;
         const models = modelsSlice.get();
-        const active = resolveActive(s.activeModelId, choicesFromSources(models.local, registryModelsToChoiceInput(models.registry)));
+        const active = resolveActive(activeRouterId(s.activeModelId, s.hermesCloudModel), routerChoicesFor(models, s.chatRoute));
         return {
           activity: turnActivity.get(),
           providerKind: store.activeProviderKind(),
