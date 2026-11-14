@@ -31,6 +31,7 @@ const SCOPES: Record<string, "network" | "device"> = {
   hermesTerminal: "device", hermesTerminalDefaultApplied: "device", hermesBrief: "device",
   hermesPersona: "device", customPersonas: "device", hermesReadAloud: "device",
   journalAutoSummary: "device", journalAutoSummaryDay: "device",
+  sidebarCollapsed: "device", hermesRailCollapsed: "device",
   sponsorUnits: "network", blocksProposed: "network",
   netUnread: "network", networkNotice: "device",
 };
@@ -103,6 +104,7 @@ const STORAGE_ENTRIES: Record<string, string> = {
   "src/privacy/joinFunnel.ts JOIN_FUNNEL_STORAGE_KEY": "device: this install's join steps",
   "src/shell/slices/groups.ts HISTORY_KEY": "device: group chat history drained from the member's daemon",
   "src/agent/sidecarProvider.ts key": "device: the Hermes sidecar session",
+  "src/shell/slices/chatHistory.ts CHAT_HISTORY_KEY": "device: this device's Hermes conversations (0.5.4 History)",
   "src/shell/netScope.ts NET_ARCHIVE_KEY": "network, keyed by genesis: the previous networks' archive",
   "src/shell/netScope.ts `${NET_ARCHIVE_KEY}.damaged-${entry.archivedAt}`": "a damaged archive set aside",
 };

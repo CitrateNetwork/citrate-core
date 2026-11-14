@@ -66,3 +66,38 @@ export function useFitToViewport(ref: RefObject<HTMLElement | null>): number {
   }, [ref]);
   return h;
 }
+
+// 0.5.4 — the composer grows with its content (a large paste shows), up to a cap, then scrolls.
+
+/** One line of the composer (the old single-line input's height). */
+export const COMPOSER_MIN_HEIGHT = 36;
+/** The tallest the composer grows before it scrolls inside itself. */
+export const COMPOSER_MAX_HEIGHT = 240;
+/** The composer never takes more than this share of the pane, so the transcript stays visible. */
+export const COMPOSER_MAX_PANE_SHARE = 0.4;
+
+/** The composer's cap for a pane of `paneHeight` px. */
+export function composerMax(paneHeight: number): number {
+  const share = Math.floor(paneHeight * COMPOSER_MAX_PANE_SHARE);
+  return Math.max(COMPOSER_MIN_HEIGHT, Math.min(COMPOSER_MAX_HEIGHT, Number.isFinite(share) ? share : COMPOSER_MAX_HEIGHT));
+}
+
+/** The composer's height for content `scrollHeight` px tall, and whether it scrolls inside. */
+export function composerHeight(scrollHeight: number, max: number = COMPOSER_MAX_HEIGHT, min: number = COMPOSER_MIN_HEIGHT): { height: number; scroll: boolean } {
+  const content = Number.isFinite(scrollHeight) ? Math.ceil(scrollHeight) : 0;
+  if (content > max) return { height: max, scroll: true };
+  return { height: Math.max(min, content), scroll: false };
+}
+
+/** Size a composer text area to its content (call after every change to its value). */
+export function fitComposer(el: HTMLTextAreaElement | null, max: number = COMPOSER_MAX_HEIGHT): void {
+  if (!el) return;
+  // Collapse first so scrollHeight measures the content, not the previous height.
+  el.style.height = "auto";
+  // scrollHeight leaves out the borders; a border-box height has to include them.
+  const cs = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+  const borders = cs ? (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0) : 0;
+  const { height, scroll } = composerHeight(el.scrollHeight + borders, max);
+  el.style.height = height + "px";
+  el.style.overflowY = scroll ? "auto" : "hidden";
+}

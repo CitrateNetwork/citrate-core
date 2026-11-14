@@ -25,7 +25,8 @@ import { appendFinal, createDictation, type Dictation } from "../agent/dictation
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { LocalModelAsk } from "./LocalModelAsk";
-import { shouldFollow, useFitToViewport } from "./chatLayout";
+import { ChatHistoryPanel } from "./ChatHistoryPanel";
+import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 
 const SUGGESTIONS = ["What is my staking position?", "Show my validator rewards", "Journal: node held through the night", "Network status"];
 
@@ -33,6 +34,24 @@ const SUGGESTIONS = ["What is my staking position?", "Show my validator rewards"
 // backend answers (local llama-server or the gateway), amber for the built-in demo. The label text
 // comes straight from the active provider — honest about what actually replies (Rule 1).
 const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a", demo: "#ffbd10" };
+
+/** 0.5.4: the composer's compact icon glyphs (16 px, currentColor). */
+function MicGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+      <path d="M5 11 A7 7 0 0 0 19 11 M12 18 V21 M9 21 H15"></path>
+    </svg>
+  );
+}
+function PlanGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <rect x="5" y="4" width="14" height="17" rx="2"></rect>
+      <path d="M9 4 V3 H15 V4 M8.5 10 L10 11.5 L12.5 9 M14 10.5 H16 M8.5 15.5 L10 17 L12.5 14.5 M14 16 H16"></path>
+    </svg>
+  );
+}
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
@@ -52,6 +71,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const routerChoices = choicesFromSources(models.local, registryModelsToChoiceInput(models.registry));
   const activeModel = store.routerActive(routerChoices);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // 0.5.4: prior conversations and projects (list, search, reopen) — ChatHistoryPanel.
+  const [historyOpen, setHistoryOpen] = useState(false);
   const onPickModel = (id: string) => {
     store.selectModel(id, routerChoices);
     const chosen = routerChoices.find((c) => c.id === id);
@@ -73,6 +94,9 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   // rc.5 FIX 4: the pane fits the window (composer always visible); only the list scrolls.
   const paneRef = useRef<HTMLDivElement | null>(null);
   const paneHeight = useFitToViewport(paneRef);
+  // 0.5.4: the composer grows with what is typed or pasted, up to its cap, then scrolls inside.
+  const inputMax = composerMax(paneHeight);
+  const fitInput = useCallback(() => fitComposer(store.chatInputEl, inputMax), [store, inputMax]);
   // Follow new messages unless the member scrolled up; sending always jumps back to the latest.
   const follow = useRef(true);
   const send = (text: string) => {
@@ -96,6 +120,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         onFinal: (frag) => {
           const el = store.chatInputEl;
           if (el) el.value = appendFinal(el.value, frag);
+          fitComposer(el, inputMax);
           setMicInterim("");
         },
         onInterim: (t) => setMicInterim(t),
@@ -119,6 +144,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     if (!el || !follow.current) return;
     el.scrollTop = el.scrollHeight;
   }, [s.chatMsgs, store]);
+  // A send (or an accepted brief) clears the composer through the store; shrink it back to fit.
+  useEffect(() => {
+    fitInput();
+  }, [s.chatMsgs.length, fitInput]);
 
   return (
     <div
@@ -127,7 +156,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       data-testid="agent-chat"
       style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", flex: "none", height: paneHeight }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, rowGap: 6, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
         <span style={{ flex: 1 }}></span>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -140,6 +169,35 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
           </span>
         )}
+        {/* 0.5.4: the way back to earlier conversations and projects, and a fresh conversation. */}
+        <button
+          type="button"
+          className="mono"
+          data-testid="open-chat-history"
+          aria-expanded={historyOpen}
+          aria-controls="chat-history"
+          onClick={() => {
+            setHistoryOpen((v) => !v);
+            setPickerOpen(false);
+          }}
+          title="Earlier conversations and projects on this device"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: historyOpen ? "var(--srf-2)" : "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          History
+        </button>
+        <button
+          type="button"
+          className="mono"
+          data-testid="new-chat"
+          disabled={chatBusy}
+          onClick={() => {
+            if (store.newChat()) setHistoryOpen(false);
+          }}
+          title="Start a new conversation (this one stays in History)"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: chatBusy ? "not-allowed" : "pointer" }}
+        >
+          New chat
+        </button>
         {/* HUP-S7.6: the Activity monitor pop-out ("why am I waiting", Stop). */}
         <button
           className="mono"
@@ -154,7 +212,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           className="mono"
           data-testid="model-chip"
           aria-expanded={pickerOpen}
-          onClick={() => setPickerOpen((v) => !v)}
+          onClick={() => {
+            setPickerOpen((v) => !v);
+            setHistoryOpen(false);
+          }}
           style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "var(--srf-2)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
         >
           <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} aria-hidden></span>
@@ -166,6 +227,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       {BRIDGE_MODE === "tauri" && (
         <div style={{ flexShrink: 0 }}>
           <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />
+        </div>
+      )}
+      {historyOpen && (
+        <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
+          <ChatHistoryPanel store={store} currentId={s.chatThreadId} busy={chatBusy} onOpened={() => setHistoryOpen(false)} />
         </div>
       )}
       {pickerOpen && (
@@ -289,50 +355,71 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               setPlanGoal(null);
               setBuildAsk(false);
               if (store.chatInputEl) store.chatInputEl.value = "";
+              fitInput();
             }}
             onCancel={() => setPlanGoal(null)}
           />
         </div>
       )}
       </div>
-      <div data-testid="chat-composer" style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center", flexShrink: 0 }}>
-        <span style={{ flex: 1, position: "relative", display: "flex" }}>
-          <input
+      {/* 0.5.4: the text area spans the composer's full width on its own row, and grows with its
+          content; the compact icon actions and Send sit on the row below, so they never narrow it. */}
+      <div data-testid="chat-composer" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--line-1)", flexShrink: 0 }}>
+        <div data-testid="chat-input-row" style={{ display: "flex", width: "100%" }}>
+          <textarea
             ref={(el) => { store.chatInputEl = el; }}
+            data-testid="chat-input"
             className="input"
+            rows={1}
+            aria-label="Message Hermes"
             placeholder={micOn ? (micInterim || "Listening…") : "Ask about your node, wallet, or memory…"}
-            onChange={(e) => setBuildAsk(looksLikeBuildAsk(e.target.value))}
+            onChange={(e) => {
+              setBuildAsk(looksLikeBuildAsk(e.target.value));
+              fitInput();
+            }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              // Enter sends; Shift+Enter starts a new line (and an IME composition is never sent).
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 setBuildAsk(false);
-                void send((e.target as HTMLInputElement).value);
+                void send((e.target as HTMLTextAreaElement).value);
               }
             }}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 0, width: "100%", minHeight: 36, maxHeight: inputMax, overflowY: "hidden" }}
           />
-        </span>
-        <button
-          className={"btn " + (micOn ? "btn-secondary" : "btn-ghost")}
-          onClick={toggleMic}
-          title={micOn ? "Stop dictation" : "Dictate (on-device)"}
-          aria-pressed={micOn}
-          style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
-        >
-          {micOn ? "● Mic" : "Mic"}
-        </button>
-        <button
-          className={"btn " + (buildAsk ? "btn-secondary" : "btn-ghost")}
-          data-testid="plan-it-first"
-          onClick={openPlan}
-          aria-expanded={planGoal !== null}
-          title="Answer a few questions and edit a brief before Hermes builds anything"
-        >
-          Plan it first
-        </button>
-        <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
-          Send
-        </button>
+        </div>
+        <div data-testid="chat-composer-actions" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            type="button"
+            className={"btn btn-icon " + (micOn ? "btn-secondary" : "btn-ghost")}
+            data-testid="chat-mic"
+            onClick={toggleMic}
+            aria-label={micOn ? "Stop dictation" : "Dictate (on-device)"}
+            data-tip={micOn ? "Stop dictation" : "Dictate (on-device)"}
+            aria-pressed={micOn}
+            style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
+          >
+            <MicGlyph />
+          </button>
+          <button
+            type="button"
+            className={"btn btn-icon " + (buildAsk ? "btn-secondary" : "btn-ghost")}
+            data-testid="plan-it-first"
+            onClick={openPlan}
+            aria-expanded={planGoal !== null}
+            aria-label="Plan it first"
+            data-tip="Plan it first: answer a few questions and edit a brief before Hermes builds anything"
+          >
+            <PlanGlyph />
+          </button>
+          <span style={{ flex: 1 }}></span>
+          <span className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".06em", color: "var(--tx-3)", whiteSpace: "nowrap" }}>
+            Shift+Enter for a new line
+          </span>
+          <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );

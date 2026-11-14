@@ -8,6 +8,7 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
+import { chatHistory, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -824,7 +825,7 @@ export class Store {
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
-  chatInputEl: HTMLInputElement | null = null;
+  chatInputEl: HTMLTextAreaElement | null = null;
   jChatScrollEl: HTMLElement | null = null;
   jChatInputEl: HTMLInputElement | null = null;
 
@@ -854,6 +855,81 @@ export class Store {
     this.state = { ...this.state, ...patch };
     this.snap = this.state;
     this.subs.forEach((cb) => cb());
+    // 0.5.4: a changed thread (or a turn that just finished) is kept in the chat history.
+    if ("chatMsgs" in patch || "chatStatus" in patch) this.scheduleChatArchive();
+  }
+
+  // ---------- 0.5.4 — Hermes chat history (slices/chatHistory.ts) ----------
+  private _archiveT: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleChatArchive(): void {
+    if (this._archiveT) clearTimeout(this._archiveT);
+    this._archiveT = setTimeout(() => {
+      this._archiveT = null;
+      this.archiveChat();
+    }, 500);
+  }
+
+  /** Keep the current thread in the history, once no turn is running (a streaming reply is kept
+   *  when it has finished). A greeting-only thread is not kept. */
+  archiveChat(): void {
+    const s = this.state;
+    if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
+    recordThread(s.chatThreadId, s.chatMsgs);
+  }
+
+  /** Why the thread can't be switched right now, or null. A running turn writes into the current
+   *  thread, so it is never swapped from under it. */
+  private chatSwitchBlocked(): string | null {
+    if (this.state.chatStatus !== "ready" || this.state.chatRouteHold) return "Finish or stop the current reply first";
+    return null;
+  }
+
+  /** Start a new conversation. The current one stays in the history. Hermes's agent session is
+   *  rebuilt, so the new conversation does not carry the previous one's context. */
+  newChat(): boolean {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Reopen a conversation from the history. Its messages come back as they were kept; ids are
+   *  re-keyed so they never collide with new messages. Hermes's agent session is rebuilt (the
+   *  sidecar session has no record of this thread). */
+  openChat(threadId: string): boolean {
+    if (threadId === this.state.chatThreadId) return true;
+    const thread = chatHistory.get().threads.find((t) => t.id === threadId);
+    if (!thread) {
+      this.toast("That conversation is no longer in this device's history");
+      return false;
+    }
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
+    // changed means nothing moves in the list.
+    recordThread(thread.id, msgs, thread.updatedAt);
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Remove a conversation from this device's history (the current thread cannot be forgotten). */
+  forgetChat(threadId: string): void {
+    if (threadId === this.state.chatThreadId) return;
+    forgetThread(threadId);
   }
 
   start(): void {
@@ -3052,6 +3128,18 @@ export class Store {
   setHermesReadAloud(on: boolean): void {
     this.setState({ hermesReadAloud: on });
     if (!on) this.speech?.cancel();
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the sidebar to its icons, or expand it (remembered across launches). */
+  toggleSidebar(collapsed: boolean = !this.state.sidebarCollapsed): void {
+    this.setState({ sidebarCollapsed: collapsed });
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the Hermes chat's right column, or expand it (remembered across launches). */
+  toggleHermesRail(collapsed: boolean = !this.state.hermesRailCollapsed): void {
+    this.setState({ hermesRailCollapsed: collapsed });
     this.save();
   }
 
