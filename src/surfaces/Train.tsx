@@ -8,9 +8,11 @@
 // never fabricate a round, balance, or reward (Rule 1). A future claim is ceremony-gated (D-23): the
 // unsigned claimDividend intent stops at the Signature Ceremony.
 //
-// C1-V V11 (UI truth contract §1, §4): PatronageLedger and FederatedRoundLedger are NOT deployed on
-// 40204, so the shipped address book has no entry for them. Until both are in the book the surface
-// says "Group rounds not live yet" and makes no ledger read at all (an empty address is not a source).
+// C1-V V11 (UI truth contract §1, §4): "Group rounds not live yet" is the required wording while
+// rounds can't run, in BOTH ledger states: a ledger absent from the book, or both deployed with no
+// round able to run. #653 (0.5.4): the book now pins both (r1007 block 0), so the card names the
+// deployed state. Rounds still can't run (ROUND_SETTLEMENT_WIRED below), so the surface makes no
+// ledger read at all.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -23,12 +25,31 @@ import { CHAIN_ID_TEXT } from "../network/profile";
 const ZERO_ADDRESS = /^0x0{40}$/i;
 const isDeployed = (a: string | undefined): boolean => !!a && /^0x[0-9a-fA-F]{40}$/.test(a) && !ZERO_ADDRESS.test(a);
 
-/** Group rounds are live only when BOTH round contracts are in the bundled address book. */
-export function groupRoundsLive(addresses: Record<string, string | undefined>): boolean {
-  return isDeployed(addresses.PatronageLedger) && isDeployed(addresses.FederatedRoundLedger);
+const ROUND_LEDGER_NAMES = ["PatronageLedger", "FederatedRoundLedger"] as const;
+
+/** The round ledgers the bundled address book does not pin (empty when it pins both). */
+export function missingRoundLedgers(addresses: Record<string, string | undefined>): string[] {
+  return ROUND_LEDGER_NAMES.filter((n) => !isDeployed(addresses[n]));
 }
 
-const ROUNDS_LIVE = groupRoundsLive(book.addresses as Record<string, string | undefined>);
+/**
+ * Whether a group round can be recorded on 40204. PatronageLedger.commitRound and
+ * recordContribution are SETTLER_ROLE-only, and on r1007 no account holds SETTLER_ROLE, COOP_ROLE
+ * or LEDGER_YEAR_KEEPER_ROLE (the governance timelock is only DEFAULT_ADMIN). The grant is a
+ * governance batch through the 48 h timelock (0.6.0 planset 06 §1). Until a release ships with that
+ * grant made and the truth contract's sign-off, rounds can't run, so this stays false.
+ */
+export const ROUND_SETTLEMENT_WIRED = false;
+
+/** Group rounds are live only when BOTH round contracts are in the bundled address book AND
+ *  settlement can record a round on them (ROUND_SETTLEMENT_WIRED). */
+export function groupRoundsLive(addresses: Record<string, string | undefined>): boolean {
+  return ROUND_SETTLEMENT_WIRED && missingRoundLedgers(addresses).length === 0;
+}
+
+const BOOK_ADDRESSES = book.addresses as Record<string, string | undefined>;
+const ROUNDS_LIVE = groupRoundsLive(BOOK_ADDRESSES);
+const MISSING_LEDGERS = missingRoundLedgers(BOOK_ADDRESSES);
 
 // The round lifecycle as a person reads it, mapped from the domain's RoundPhase.
 const PHASE_UI: Record<RoundPhase, { label: string; tone: string; blurb: string }> = {
@@ -145,11 +166,20 @@ export function Train({ store }: SurfaceProps) {
       {!ROUNDS_LIVE ? (
         <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 500 }}>Group rounds not live yet</span>
-          <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
-            Group training rounds need two contracts, PatronageLedger and FederatedRoundLedger, and neither is deployed on betanet yet. Rounds, contributions and
-            claims appear here once they are. Nothing on this card is read from a round in the meantime.
-          </p>
-          <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>source · address book {CHAIN_ID_TEXT} (no PatronageLedger entry)</span>
+          {MISSING_LEDGERS.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
+              Both ledgers group rounds need, PatronageLedger and FederatedRoundLedger, are deployed on {CHAIN_ID_TEXT}, but no round can be recorded on them yet.
+              Rounds, contributions and claims appear here once they can. Nothing on this card is read from a round in the meantime.
+            </p>
+          ) : (
+            <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
+              Group training rounds need two contracts, PatronageLedger and FederatedRoundLedger, and this build's address book does not pin {MISSING_LEDGERS.join(" or ")}.
+              Rounds, contributions and claims appear here once it does. Nothing on this card is read from a round in the meantime.
+            </p>
+          )}
+          <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+            source · address book {CHAIN_ID_TEXT} ({MISSING_LEDGERS.length === 0 ? "both ledgers pinned" : "no " + MISSING_LEDGERS.join(" or ") + " entry"})
+          </span>
         </div>
       ) : (
       <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
