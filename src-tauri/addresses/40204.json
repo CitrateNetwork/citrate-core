@@ -13,6 +13,8 @@
     "ModelRegistry": "0x4c367f7742059b5bf39f6fbe5837ce6164afd33f",
     "SkillRegistry": "0xbedad7a474785ecb27fc0aa02ca583bdb3761a49",
     "PatronageLedger": "0x41f68b9e710585b064459a0ec706148fbf503659",
+    "FederatedRoundLedger": "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5",
+    "LoRAFactory": "0x62e9aabec26288e60db2503f518eacf9cdcc8890",
     "AgentSBT": "0xa087094ffaaf774c22d594520b39e3b1a66e32f2",
     "OrganizationSBT": "0x960bc81a48f29cf1912ac29b2b15203ebd35dda6",
     "AnchorRegistry": "0xab87534ef027b52bb6233e889f758767127bf47a",

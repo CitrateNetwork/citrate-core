@@ -122,9 +122,9 @@ describe("Settings › Models: the vendor cards", () => {
     expect(c).not.toContain("key-hygiene");
   });
 
-  it("model choice for Hermes is honestly not available yet", () => {
+  it("says where to choose one of these models for Hermes (the chat's model picker)", () => {
     const html = render({ statuses: [vendor({ keyConfigured: true, listedModels: ["gpt-a"] })] });
-    expect(card(html, "openai")).toContain("Choosing which of these models Hermes uses is not available yet");
+    expect(card(html, "openai")).toContain("Choose one of these models for Hermes in the model picker above the chat");
   });
 
   it("an old key gets a rotation reminder", () => {

@@ -55,11 +55,10 @@ describe("the flag", () => {
 });
 
 describe("address book pins", () => {
-  it("today's book (r1006) pins PatronageLedger but not FederatedRoundLedger", () => {
-    // r1006 deploys PatronageLedger in block 0 (canonical book, citrate-chain a857443e);
-    // FederatedRoundLedger is not in the book, so rounds stay not live.
+  it("today's book (r1007) pins both ledgers at their block-0 addresses (#653)", () => {
+    // r1007 block 0 carries both (citrate-chain main's root book); the app's sync now emits both.
     expect(roundLedgerPins(realBook)).toEqual([
-      { name: "FederatedRoundLedger", address: null },
+      { name: "FederatedRoundLedger", address: "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5" },
       { name: "PatronageLedger", address: "0x41f68b9e710585b064459a0ec706148fbf503659" },
     ]);
   });
@@ -80,11 +79,11 @@ describe("readGroupRounds", () => {
     expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger", "PatronageLedger"] });
     expect(codeSize).not.toHaveBeenCalled();
   });
-  it("today's book (one ledger pinned): not live, and nothing is read from the chain", async () => {
-    const codeSize = vi.fn();
+  it("today's book (both pinned): code is read at the book addresses", async () => {
+    const codeSize = vi.fn(async () => 1);
     const r = await readGroupRounds(realBook, codeSize);
-    expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger"] });
-    expect(codeSize).not.toHaveBeenCalled();
+    expect(r.kind).toBe("dormant");
+    expect(codeSize.mock.calls.map((c) => c[0])).toEqual(["0x25fc02fbfad9589d0dde84f858d0962bfa0253c5", "0x41f68b9e710585b064459a0ec706148fbf503659"]);
   });
   it("one ledger pinned is still not live, and still no read", async () => {
     const codeSize = vi.fn();
@@ -200,7 +199,8 @@ describe("flag ON in the app", () => {
   it("Groups › Rounds shows the card, not the PatronageLedger read (V11)", () => {
     const h = rounds();
     expect(h).toContain('data-testid="group-rounds-card"');
-    expect(h).toContain("Group rounds not live yet");
+    // Today's book pins both ledgers (#653), so the first render is the code read, not "not live".
+    expect(h).toContain('data-reading="loading"');
     expect(h).not.toContain("Train together");
     expect(h).not.toContain("reads live");
   });
@@ -211,17 +211,26 @@ describe("flag ON in the app", () => {
     groupsSlice.set({ groups: [GROUP], selectedId: GROUP.id, roster: [], messages: [] });
     const h = renderToStaticMarkup(<Groups store={stubStore} s={freshState("p1")} />);
     expect(h).toContain('data-testid="group-rounds-card"');
-    expect(h).toContain("Group rounds not live yet");
+    expect(h).toContain('data-reading="loading"');
     expect(h.indexOf('data-testid="group-rounds-card"')).toBeLessThan(h.indexOf("Nothing here yet"));
   });
 
-  it("mounted with today's book, the card never calls the chain", async () => {
+  it("mounted with a book missing a ledger, the card never calls the chain", async () => {
+    const codeSize = vi.fn(async () => 1);
+    const el = document.createElement("div");
+    const root = createRoot(el);
+    await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} book={bookWith({ PatronageLedger: PL })} />));
+    expect(el.textContent).toContain("Group rounds not live yet");
+    expect(codeSize).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("mounted with today's book (both pinned), the card reads code at the r1007 addresses", async () => {
     const codeSize = vi.fn(async () => 1);
     const el = document.createElement("div");
     const root = createRoot(el);
     await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} />));
-    expect(el.textContent).toContain("Group rounds not live yet");
-    expect(codeSize).not.toHaveBeenCalled();
+    expect(codeSize.mock.calls.map((c) => c[0])).toEqual(["0x25fc02fbfad9589d0dde84f858d0962bfa0253c5", "0x41f68b9e710585b064459a0ec706148fbf503659"]);
     act(() => root.unmount());
   });
 
