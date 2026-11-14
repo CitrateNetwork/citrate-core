@@ -381,6 +381,8 @@ commands.allow = [
   "update_prepare",
   "update_prepare_cancel",
   "update_install_begin",
+  "update_policy_apply",
+  "update_policy_status",
   "diagnostics_logs_export",
   "store_catalog",
   "store_stage",

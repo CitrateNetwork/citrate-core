@@ -5,12 +5,89 @@
 // update and drives download → restart. Never modal, never blocks the app.
 // Renders nothing at all unless there is genuinely something to show, so in
 // sim/web (and when up to date) it is invisible.
+//
+// 0.5.4 exception: below a VERIFIED minimum version (updater.ts `required`), a blocking screen sits
+// under this card (z 59, the card stays on top and clickable), the card cannot be dismissed, and
+// the update downloads by itself. Only a minimum signed with the updater key does this.
 // =====================================================================
-import { useAppUpdate, formatBytes, progressFraction } from "./updater";
+import { useAppUpdate, formatBytes, progressFraction, type UpdateState } from "./updater";
+
+/** 0.5.4: the blocking screen while this version is below the verified minimum. */
+export function UpdateRequiredScreen({ state, onRetry }: { state: UpdateState; onRetry: () => void }) {
+  if (!state.required) return null;
+  const noUpdate = state.status === "uptodate" || state.status === "idle" || state.status === "checking";
+  return (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="update-required-title"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 59,
+        background: "var(--bg-0, rgba(10,10,10,.94))",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        color: "var(--tx-1)",
+      }}
+    >
+      <div style={{ maxWidth: 460, display: "flex", flexDirection: "column", gap: 12 }}>
+        <span id="update-required-title" style={{ fontSize: 18, fontWeight: 600 }}>
+          Update required{state.minimumVersion ? `: Citrate Core ${state.minimumVersion} or later` : ""}
+        </span>
+        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: "var(--tx-2)" }}>
+          This version can no longer be used. {state.requiredReason ? `${state.requiredReason}. ` : ""}
+          {state.status === "ready"
+            ? "The update is downloaded: restart to install it."
+            : state.status === "downloading"
+              ? "The update is downloading."
+              : state.status === "installing"
+                ? "Installing the update."
+                : state.status === "error"
+                  ? "The update could not be downloaded."
+                  : noUpdate
+                    ? "No update could be found right now. Check your connection; the app looks again every few minutes."
+                    : "The update downloads by itself."}
+        </p>
+        <p style={{ margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+          Your wallet, keys and data stay on this device and are kept by the update.
+        </p>
+        {(noUpdate || state.status === "error") && (
+          <div>
+            <button className="btn btn-primary btn-sm" onClick={onRetry}>
+              Check for the update
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function UpdateBanner() {
-  const { state, install, restart, dismiss } = useAppUpdate();
+  const { state, check, install, restart, dismiss } = useAppUpdate();
+  return (
+    <>
+      <UpdateRequiredScreen state={state} onRetry={() => void check()} />
+      <UpdateCard state={state} install={install} restart={restart} dismiss={dismiss} />
+    </>
+  );
+}
 
+/** The card itself (state from useAppUpdate). */
+export function UpdateCard({
+  state,
+  install,
+  restart,
+  dismiss,
+}: {
+  state: UpdateState;
+  install: () => Promise<void> | void;
+  restart: () => Promise<void> | void;
+  dismiss: () => void;
+}) {
   const visible =
     !state.dismissed &&
     (state.status === "available" ||
@@ -21,7 +98,7 @@ export function UpdateBanner() {
       state.status === "error");
   if (!visible) return null;
 
-  const accent = state.critical ? "var(--danger)" : "var(--acc-1, var(--tx-1))";
+  const accent = state.critical || state.required ? "var(--danger)" : "var(--acc-1, var(--tx-1))";
   const frac = progressFraction(state);
 
   return (
@@ -58,7 +135,9 @@ export function UpdateBanner() {
               ? "Downloading update…"
               : state.status === "error"
                 ? "Update failed"
-                : state.critical
+                : state.required
+                  ? "Required update"
+                  : state.critical
                   ? "Critical update available"
                   : "Update available"}
         </span>
@@ -102,7 +181,7 @@ export function UpdateBanner() {
       )}
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        {state.status !== "downloading" && state.status !== "installing" && (
+        {state.status !== "downloading" && state.status !== "installing" && !state.required && (
           <button className="btn btn-ghost btn-sm" onClick={dismiss}>
             {state.status === "ready" ? "Later" : "Dismiss"}
           </button>

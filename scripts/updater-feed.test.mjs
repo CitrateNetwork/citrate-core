@@ -136,3 +136,50 @@ describe("CLI", () => {
     expect(err).toMatch(/Citrate-Core-linux-aarch64.AppImage.sig/);
   });
 });
+
+// 0.5.4: the signed update policy (minimum version) the feed carries for apps from 0.5.4 on.
+import { POLICY_DOMAIN, policyBytes, policyEntry } from "./updater-feed.mjs";
+
+describe("update policy", () => {
+  it("writes exactly the document the app verifies", () => {
+    const b = policyBytes({ min: "0.5.4", reason: "0.5.4 fixes Hermes", issuedAt: "1794000000" });
+    expect(JSON.parse(b.toString())).toEqual({ domain: POLICY_DOMAIN, minimumVersion: "0.5.4", issuedAt: 1794000000, reason: "0.5.4 fixes Hermes" });
+    expect(POLICY_DOMAIN).toBe("citrate-core-update-policy/v1");
+    expect(() => policyBytes({ min: "0.5", issuedAt: 1 })).toThrow(/--min/);
+    expect(() => policyBytes({ min: "0.5.4", issuedAt: "soon" })).toThrow(/--issued-at/);
+  });
+
+  it("merge carries the signed policy as citrate.updatePolicy", () => {
+    const d = dirWith(LINUX_ARM);
+    const pol = path.join(d, "update-policy.json");
+    fs.writeFileSync(pol, policyBytes({ min: "0.5.4", issuedAt: 1 }));
+    fs.writeFileSync(`${pol}.sig`, sigFor("update-policy.json"));
+    const f = fragment({ version: "0.5.4", baseUrl: BASE, dir: d, platforms: ["linux-aarch64"] });
+    const feed = merge({ fragments: [f], notes: "n", pubDate: "2026-11-20T00:00:00Z", policy: pol });
+    expect(feed.citrate.updatePolicy).toEqual({ policy: fs.readFileSync(pol).toString("base64"), signature: sigFor("update-policy.json") });
+    // Without --policy the feed is exactly the 0.5.3 shape.
+    expect(merge({ fragments: [f], notes: "n", pubDate: "2026-11-20T00:00:00Z" }).citrate).toBeUndefined();
+  });
+
+  it("refuses a policy above the feed's version, an unsigned one, or a file that is not a policy", () => {
+    const d = dirWith([]);
+    const pol = path.join(d, "p.json");
+    fs.writeFileSync(pol, policyBytes({ min: "0.5.5", issuedAt: 1 }));
+    fs.writeFileSync(`${pol}.sig`, sigFor("p.json"));
+    expect(() => policyEntry(pol, "0.5.4")).toThrow(/nothing to update to/);
+    const unsigned = path.join(d, "u.json");
+    fs.writeFileSync(unsigned, policyBytes({ min: "0.5.4", issuedAt: 1 }));
+    expect(() => policyEntry(unsigned, "0.5.4")).toThrow(/no signature/);
+    const other = path.join(d, "o.json");
+    fs.writeFileSync(other, JSON.stringify({ minimumVersion: "0.5.4" }));
+    fs.writeFileSync(`${other}.sig`, sigFor("o.json"));
+    expect(() => policyEntry(other, "0.5.4")).toThrow(/not a citrate-core-update-policy/);
+  });
+
+  it("the policy CLI writes the file to sign", () => {
+    const d = dirWith([]);
+    const out = path.join(d, "update-policy.json");
+    execFileSync("node", [SCRIPT, "policy", "--min", "0.5.4", "--issued-at", "1794000000", "--out", out]);
+    expect(JSON.parse(fs.readFileSync(out, "utf8")).minimumVersion).toBe("0.5.4");
+  });
+});

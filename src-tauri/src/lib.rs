@@ -180,6 +180,8 @@ mod skills_local;
 mod telemetry;
 // CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod update_drain;
+// 0.5.4: the signed minimum version (forced update).
+mod update_policy;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -1123,6 +1125,9 @@ pub fn run() {
             update_drain::update_prepare,
             update_drain::update_prepare_cancel,
             update_drain::update_install_begin,
+            // 0.5.4: the signed minimum version the update gate reads.
+            update_policy::update_policy_apply,
+            update_policy::update_policy_status,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call

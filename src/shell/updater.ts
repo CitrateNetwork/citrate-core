@@ -10,6 +10,12 @@
 //   - The app is never yanked out from under the user: the download stages the
 //     update, and the RESTART is always an explicit click (even for a
 //     critical patch, which only auto-*downloads*).
+//   - 0.5.4: a REQUIRED update. The feed may carry a signed update policy (latest.json
+//     `citrate.updatePolicy`, see src-tauri/src/update_policy.rs). Rust verifies it against the
+//     pinned updater key and keeps the highest verified minimum; below it, the app is gated
+//     (UpdateBanner's blocking screen), the update downloads by itself, and only Restart is left.
+//     An unsigned or wrongly signed minimum gates nothing (a tampered feed cannot lock members
+//     out). Clients older than 0.5.4 do not read the policy at all.
 //   - CORE-D6 (0.5.3): the update is installed only after the sidecars are
 //     drained. On the restart click: `update_prepare` (Rust update_drain.rs)
 //     holds every new sidecar start, stops every sidecar through its owner and
@@ -53,6 +59,12 @@ export interface UpdateState {
   error: string | null;
   /** Dismissed by the user for this session (banner hidden until next find). */
   dismissed: boolean;
+  /** 0.5.4: this version is below a VERIFIED minimum: the app is gated until it updates. */
+  required: boolean;
+  /** The verified minimum version, when a policy is kept. */
+  minimumVersion: string | null;
+  /** The policy's reason, shown on the gate. */
+  requiredReason: string | null;
 }
 
 export const INITIAL_UPDATE_STATE: UpdateState = {
@@ -64,7 +76,41 @@ export const INITIAL_UPDATE_STATE: UpdateState = {
   totalBytes: null,
   error: null,
   dismissed: false,
+  required: false,
+  minimumVersion: null,
+  requiredReason: null,
 };
+
+/** Mirrors Rust `update_policy::PolicyVerdict`. */
+export interface PolicyVerdict {
+  currentVersion: string;
+  minimumVersion: string | null;
+  updateRequired: boolean;
+  reason: string | null;
+  /** Why an offered or kept policy was not used (it gates nothing), or null. */
+  refused: string | null;
+}
+
+/** The signed policy a feed carries (`latest.json` `citrate.updatePolicy`), or null. Only strings
+ *  are taken; anything else is no policy. Nothing here is trusted: Rust verifies it. */
+export function feedPolicy(raw: unknown): { policy: string; signature: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const c = (raw as Record<string, unknown>).citrate;
+  if (!c || typeof c !== "object") return null;
+  const p = (c as Record<string, unknown>).updatePolicy;
+  if (!p || typeof p !== "object") return null;
+  const { policy, signature } = p as Record<string, unknown>;
+  return typeof policy === "string" && typeof signature === "string" && policy && signature ? { policy, signature } : null;
+}
+
+/** The state after a verdict. A verdict never lifts a gate already set this session. */
+export function withVerdict(s: UpdateState, v: PolicyVerdict): UpdateState {
+  if (!v.updateRequired) return s.required ? s : { ...s, minimumVersion: v.minimumVersion ?? s.minimumVersion };
+  return { ...s, required: true, minimumVersion: v.minimumVersion, requiredReason: v.reason, dismissed: false };
+}
+
+/** While gated with no update in hand, how often to look again (5 min). */
+export const REQUIRED_RECHECK_MS = 5 * 60 * 1000;
 
 /** A release is "critical" when its notes carry an explicit marker. Kept simple
  *  and case-insensitive so the CI/release author opts in per-release. */
@@ -99,6 +145,8 @@ export function progressFraction(s: Pick<UpdateState, "downloadedBytes" | "total
 type PluginUpdate = {
   version: string;
   body?: string | null;
+  /** The whole latest.json as the plugin read it (the plugin ignores fields it does not know). */
+  rawJson?: Record<string, unknown>;
   download: (
     onEvent: (e: { event: "Started" | "Progress" | "Finished"; data?: { contentLength?: number; chunkLength?: number } }) => void,
   ) => Promise<void>;
@@ -235,6 +283,18 @@ export function useAppUpdate() {
         return;
       }
       pending.current = update;
+      // 0.5.4: a signed minimum in the feed. Rust verifies it; a refusal gates nothing.
+      const policy = feedPolicy(update.rawJson);
+      if (policy) {
+        try {
+          const { invoke } = await import("../bridge/tauri/invoke");
+          const v = await invoke<PolicyVerdict>("update_policy_apply", { policy: policy.policy, signature: policy.signature, feedVersion: update.version });
+          if (v.refused) console.warn(`update policy: ${v.refused}`);
+          setState((s) => withVerdict(s, v));
+        } catch (e) {
+          console.warn(`update policy not checked: ${msgOf(e)}`);
+        }
+      }
       const critical = isCriticalNotes(update.body);
       setState((s) => ({
         ...s,
@@ -300,7 +360,25 @@ export function useAppUpdate() {
     if (!r.ok) patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
   }, [patch]);
 
-  const dismiss = useCallback(() => patch({ dismissed: true }), [patch]);
+  // 0.5.4: a required update cannot be dismissed.
+  const dismiss = useCallback(() => setState((s) => (s.required ? s : { ...s, dismissed: true })), []);
+
+  // 0.5.4: the kept, verified minimum applies from launch, network or not.
+  useEffect(() => {
+    if (BRIDGE_MODE !== "tauri") return;
+    void import("../bridge/tauri/invoke")
+      .then(({ invoke }) => invoke<PolicyVerdict>("update_policy_status", {}))
+      .then((v) => setState((s) => withVerdict(s, v)))
+      .catch(() => undefined);
+  }, []);
+
+  // 0.5.4: gated with no update in hand (feed unreachable): look again every few minutes.
+  useEffect(() => {
+    if (BRIDGE_MODE !== "tauri" || !state.required) return;
+    if (state.status !== "uptodate" && state.status !== "error" && state.status !== "idle") return;
+    const id = window.setTimeout(() => void check(), REQUIRED_RECHECK_MS);
+    return () => window.clearTimeout(id);
+  }, [state.required, state.status, check]);
 
   // A fresh page has no install in flight: release a hold an earlier page left (it reloaded
   // between the drain and the install or cancel). Nothing is restarted.
@@ -325,10 +403,10 @@ export function useAppUpdate() {
     return () => window.clearInterval(id);
   }, [check]);
 
-  // A critical update auto-starts the DOWNLOAD (never the restart).
+  // A critical or required update auto-starts the DOWNLOAD (never the restart).
   useEffect(() => {
-    if (state.status === "available" && state.critical) void install();
-  }, [state.status, state.critical, install]);
+    if (state.status === "available" && (state.critical || state.required)) void install();
+  }, [state.status, state.critical, state.required, install]);
 
   return { state, check, install, restart, dismiss };
 }
