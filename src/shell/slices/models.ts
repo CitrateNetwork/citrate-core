@@ -10,7 +10,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ModelDeleted, ModelDeleteState, ModelDescriptor, PartialDownload, RegistryModel } from "../../bridge/domains";
+import type { ModelDeleted, ModelDeleteState, ModelDescriptor, PartialDownload, ProviderStatus, RegistryModel } from "../../bridge/domains";
 import { refreshTier } from "./tier";
 
 export type ModelSourceId = "hf" | "github";
@@ -24,6 +24,9 @@ export interface ModelsState {
   results: ModelDescriptor[];
   /** Models registered on-chain in the ModelRegistry (Hermes WP0.2b). Not-yet-local. */
   registry: RegistryModel[];
+  /** D-11: the cloud providers core reports (`providers_status`): the router lists the models of
+   *  each connected one. Empty in the web preview or when the status cannot be read. */
+  cloud: ProviderStatus[];
   /** The id of the active local model, or null if unknown/none selected. */
   activeId: string | null;
   /** A search is in flight. */
@@ -50,6 +53,7 @@ const initial: ModelsState = {
   partials: [],
   results: [],
   registry: [],
+  cloud: [],
   activeId: null,
   searching: false,
   downloadingId: null,
@@ -74,6 +78,16 @@ export async function refreshRegistryModels(): Promise<void> {
     modelsSlice.set({ registry });
   } catch {
     modelsSlice.set({ registry: [] }); // unwired/failed read → honest empty, not a fake list
+  }
+}
+
+/** D-11: load the cloud providers (Settings › Models) so the router lists every connected
+ *  provider's models. An unreadable status (the web preview has no keychain) lists none. */
+export async function refreshCloudModels(): Promise<void> {
+  try {
+    modelsSlice.set({ cloud: await bridge.providers.status() });
+  } catch {
+    modelsSlice.set({ cloud: [] });
   }
 }
 
