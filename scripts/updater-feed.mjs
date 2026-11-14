@@ -78,10 +78,16 @@ export function fragment({ version, baseUrl, dir, platforms }) {
 }
 
 /** The exact policy bytes: what `tauri signer sign` signs and the app verifies. */
-export function policyBytes({ min, reason, issuedAt }) {
+/** How far ahead of now a policy may be dated (the app refuses more: update_policy.rs MAX_ISSUED_AHEAD_S). */
+export const MAX_ISSUED_AHEAD_S = 24 * 60 * 60;
+
+export function policyBytes({ min, reason, issuedAt, now = Math.floor(Date.now() / 1000) }) {
   if (min !== "none" && !VERSION.test(min || "")) throw new Error(`--min must be x.y.z or none (got '${min}')`);
   const at = Number(issuedAt);
   if (!Number.isSafeInteger(at) || at <= 0) throw new Error(`--issued-at must be unix seconds (got '${issuedAt}')`);
+  if (at > now + MAX_ISSUED_AHEAD_S) {
+    throw new Error(`--issued-at ${at} is more than 24 h ahead of this machine's clock (${now}); apps refuse it. Use $(date +%s)`);
+  }
   const doc = { domain: POLICY_DOMAIN, minimumVersion: min === "none" ? null : min, issuedAt: at };
   if (reason) doc.reason = String(reason);
   return Buffer.from(JSON.stringify(doc));

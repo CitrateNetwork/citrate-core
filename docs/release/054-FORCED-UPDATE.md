@@ -52,6 +52,9 @@ Policies are ordered by their signed `issuedAt` alone. A verified policy replace
 when its `issuedAt` is **strictly later**, whatever its minimum: it may raise, lower or rescind it.
 A replayed older policy, or a different policy with the same `issuedAt`, is refused and the kept one
 stays (the refusal is logged).
+A policy whose `issuedAt` is more than 24 h ahead of the client's clock is refused too, and
+`updater-feed.mjs policy` refuses to write one. Otherwise a mis-set signing clock would date a
+policy that outranks every correction signed before that date.
 
 Below the minimum, the app shows a blocking screen (`src/shell/UpdateBanner.tsx`). The update downloads by itself, the card cannot be dismissed, and Restart now is the only way forward. Anything unverified gates nothing: it fails open, and the reason is logged.
 

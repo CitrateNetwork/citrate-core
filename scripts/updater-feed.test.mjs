@@ -138,7 +138,7 @@ describe("CLI", () => {
 });
 
 // 0.5.4: the signed update policy (minimum version) the feed carries for apps from 0.5.4 on.
-import { POLICY_DOMAIN, policyBytes, policyEntry } from "./updater-feed.mjs";
+import { MAX_ISSUED_AHEAD_S, POLICY_DOMAIN, policyBytes, policyEntry } from "./updater-feed.mjs";
 
 describe("update policy", () => {
   it("writes exactly the document the app verifies", () => {
@@ -183,6 +183,18 @@ describe("update policy", () => {
     fs.writeFileSync(pol, policyBytes({ min: "none", issuedAt: 2 }));
     fs.writeFileSync(`${pol}.sig`, sigFor("r.json"));
     expect(policyEntry(pol, "0.5.3").policy).toBe(fs.readFileSync(pol).toString("base64"));
+  });
+
+  it("refuses an issuedAt more than 24 h ahead of the clock, as the app does", () => {
+    const now = 1_800_000_000;
+    expect(MAX_ISSUED_AHEAD_S).toBe(86_400);
+    expect(() => policyBytes({ min: "0.5.4", issuedAt: now + MAX_ISSUED_AHEAD_S, now })).not.toThrow();
+    expect(() => policyBytes({ min: "0.5.4", issuedAt: now + MAX_ISSUED_AHEAD_S + 1, now })).toThrow(/24 h ahead/);
+    // The CLI uses the real clock.
+    const d = dirWith([]);
+    expect(() =>
+      execFileSync("node", [SCRIPT, "policy", "--min", "0.5.4", "--issued-at", String(Math.floor(Date.now() / 1000) + 2 * 86_400), "--out", path.join(d, "p.json")], { stdio: "pipe" }),
+    ).toThrow();
   });
 
   it("the policy CLI writes the file to sign", () => {

@@ -286,6 +286,29 @@ fn a_pulled_release_feed_at_the_current_version_can_still_rescind_the_gate() {
 }
 
 #[test]
+fn a_policy_dated_more_than_a_day_ahead_of_the_clock_is_refused() {
+    let k = TestKey::generate();
+    let path = tmp("ahead-clock");
+    let now = 1_800_000_000;
+    // Within the allowance (clock skew): accepted.
+    let v = apply_at(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", now + MAX_ISSUED_AHEAD_S), "0.5.4", now);
+    assert!(v.update_required && v.refused.is_none(), "{v:?}");
+    // One second past it: refused, and the kept policy stays in force.
+    let far = k.policy_json("null", now + MAX_ISSUED_AHEAD_S + 1 + 10);
+    let v = apply_at(&path, &k.conf_pubkey(), "0.5.3", &far, "0.5.3", now);
+    assert!(v.update_required, "{v:?}");
+    assert!(v.refused.as_deref().unwrap_or("").contains("ahead of this device's clock"), "{v:?}");
+    // With nothing kept, a far-future policy gates nothing and is not kept.
+    let fresh = tmp("ahead-fresh");
+    let v = apply_at(&fresh, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", now + 2 * MAX_ISSUED_AHEAD_S), "0.5.4", now);
+    assert!(!v.update_required && v.refused.is_some(), "{v:?}");
+    assert!(!fresh.exists());
+    // Once the clock reaches it, the same policy is accepted.
+    let v = apply_at(&fresh, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", now + 2 * MAX_ISSUED_AHEAD_S), "0.5.4", now + MAX_ISSUED_AHEAD_S);
+    assert!(v.update_required, "{v:?}");
+}
+
+#[test]
 fn update_policy_commands_are_registered_and_allowed_for_the_main_window() {
     let lib = include_str!("lib.rs");
     let acl = include_str!("../permissions/main-window.toml");

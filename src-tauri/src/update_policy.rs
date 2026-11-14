@@ -29,7 +29,8 @@
 //! one only when its `issuedAt` is strictly later, whatever its minimum. So a minimum signed by
 //! mistake, or one whose release was pulled, is lowered or rescinded by signing a newer policy
 //! with a lower `minimumVersion`, or with `"minimumVersion": null` (no minimum). A replayed older
-//! policy, or a different one with the same `issuedAt`, is refused and the kept one stays.
+//! policy, or a different one with the same `issuedAt`, is refused and the kept one stays. A policy
+//! dated more than 24 h ahead of the client's clock is refused ([`MAX_ISSUED_AHEAD_S`]).
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -237,6 +238,30 @@ pub fn apply(
     offered: &StoredPolicy,
     feed_version: &str,
 ) -> PolicyVerdict {
+    apply_at(path, pubkey, current, offered, feed_version, now_unix())
+}
+
+/// How far ahead of this client's clock a policy's `issuedAt` may be (#678 review P3). A policy
+/// dated further ahead would outrank every policy signed until then (ordering is by `issuedAt`),
+/// so a mis-set signing clock could block the lower-or-rescind path for a long time.
+pub const MAX_ISSUED_AHEAD_S: u64 = 24 * 60 * 60;
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// [`apply`] with this client's clock as `now` (unix seconds).
+pub fn apply_at(
+    path: &Path,
+    pubkey: &str,
+    current: &str,
+    offered: &StoredPolicy,
+    feed_version: &str,
+    now: u64,
+) -> PolicyVerdict {
     let (kept, load_note) = load(path, pubkey);
     let mut refused = load_note;
     let mut effective = kept.as_ref().map(|(_, d)| d.clone());
@@ -252,7 +277,12 @@ pub fn apply(
                 },
             };
             let same_as_kept = kept.as_ref().is_some_and(|(k, _)| k == offered);
-            if !consistent {
+            if doc.issued_at > now.saturating_add(MAX_ISSUED_AHEAD_S) {
+                refused = Some(format!(
+                    "the feed's update policy was not used: it is dated {} s ahead of this device's clock (at most {MAX_ISSUED_AHEAD_S} s is accepted)",
+                    doc.issued_at - now
+                ));
+            } else if !consistent {
                 refused = Some(format!(
                     "the feed's update policy was not used: it requires {} but the feed offers {feed_version}",
                     doc.minimum_version.as_deref().unwrap_or("none")
