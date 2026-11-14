@@ -58,6 +58,9 @@ export interface ChatHistoryState {
   /** Ids of sealed files that did not open (tampered, moved, or under a key no longer here). */
   unreadable: string[];
   retentionDays: number | null;
+  /** The sealed retention setting does not open. Nothing is erased by age, `retentionDays` keeps
+   *  the last value this session knew (null if none), and choosing a setting replaces it. */
+  retentionUnreadable: boolean;
   /** The last error from the sealed store, for the panel (null = fine). */
   error: string | null;
 }
@@ -67,6 +70,7 @@ interface HistoryListView {
   threads: ChatThread[];
   unreadable: string[];
   retentionDays: number | null;
+  retentionUnreadable?: boolean;
   purged: number;
 }
 
@@ -167,7 +171,7 @@ const isThread = (t: unknown): t is ChatThread => {
   return !!o && typeof o.id === "string" && typeof o.title === "string" && typeof o.updatedAt === "number" && Array.isArray(o.msgs);
 };
 
-const initial: ChatHistoryState = { threads: [], loaded: false, persisted: false, unreadable: [], retentionDays: null, error: null };
+const initial: ChatHistoryState = { threads: [], loaded: false, persisted: false, unreadable: [], retentionDays: null, retentionUnreadable: false, error: null };
 export const chatHistory = createSlice<ChatHistoryState>({ ...initial });
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -191,7 +195,9 @@ async function sealThread(t: ChatThread): Promise<void> {
 }
 
 /** Move a plaintext history left by an earlier development build into the sealed store, then
- *  remove it. It is removed even if the move fails: plaintext chat text must not stay on disk. */
+ *  remove it. It is removed only once every conversation in it is sealed (a failed seal keeps
+ *  it, and the next launch tries again), or when it does not parse (nothing in it can be kept).
+ *  The web preview has no sealed store, so it leaves the entry for the desktop app. */
 async function retireLegacyPlaintext(h: HistoryIo): Promise<void> {
   let raw: string | null = null;
   try {
@@ -200,21 +206,29 @@ async function retireLegacyPlaintext(h: HistoryIo): Promise<void> {
     raw = null;
   }
   if (raw === null) return;
-  try {
-    if (h.mode === "tauri") {
-      const parsed = JSON.parse(raw) as { threads?: unknown[] } | null;
-      const threads = Array.isArray(parsed?.threads) ? parsed.threads.filter(isThread).slice(0, MAX_THREADS) : [];
-      for (const t of threads) await h.invoke("hermes_history_save", { thread: toDoc({ ...t, msgs: archivable(t.msgs) }) });
-    }
-  } catch {
-    /* the move is best effort; the removal below is not */
-  } finally {
+  const drop = () => {
     try {
       localStorage.removeItem(LEGACY_PLAINTEXT_KEY);
     } catch {
-      /* storage unavailable: nothing can be removed, and nothing was read */
+      /* storage unavailable: nothing can be removed */
     }
+  };
+  let threads: ChatThread[];
+  try {
+    const parsed = JSON.parse(raw) as { threads?: unknown[] } | null;
+    threads = Array.isArray(parsed?.threads) ? parsed.threads.filter(isThread).slice(0, MAX_THREADS) : [];
+  } catch {
+    drop();
+    return;
   }
+  if (h.mode !== "tauri") return;
+  try {
+    for (const t of threads) await h.invoke("hermes_history_save", { thread: toDoc({ ...t, msgs: archivable(t.msgs) }) });
+  } catch (e) {
+    chatHistory.set({ error: "An older, unencrypted copy of your history could not be sealed yet (it is kept and retried next launch): " + message(e) });
+    return;
+  }
+  drop();
 }
 
 let loading: Promise<void> | null = null;
@@ -240,13 +254,16 @@ export function loadChatHistory(force = false): Promise<void> {
           const prev = merged.get(t.id);
           if (!prev || prev.updatedAt < t.updatedAt) merged.set(t.id, t);
         }
+        const retentionUnreadable = view?.retentionUnreadable === true;
         return {
           threads: [...merged.values()].sort(byRecency).slice(0, MAX_THREADS),
           unreadable: view?.unreadable ?? [],
-          retentionDays: view?.retentionDays ?? null,
+          // An unreadable setting is unknown, not "until deleted": keep the last known value.
+          retentionDays: retentionUnreadable ? s.retentionDays : view?.retentionDays ?? null,
+          retentionUnreadable,
           loaded: true,
           persisted: true,
-          error: null,
+          error: s.error && s.error.startsWith("An older, unencrypted copy") ? s.error : null,
         };
       });
     } catch (e) {
@@ -309,7 +326,8 @@ export async function setHistoryRetention(days: number | null): Promise<boolean>
     return false;
   }
   try {
-    await h.invoke("hermes_history_set_retention", { days });
+    // The member choosing a setting is the reset of an unreadable one (the panel said so).
+    await h.invoke("hermes_history_set_retention", { days, replaceUnreadable: chatHistory.get().retentionUnreadable });
   } catch (e) {
     chatHistory.set({ error: "The retention setting could not be saved: " + message(e) });
     return false;

@@ -160,7 +160,7 @@ fn nothing_the_member_wrote_is_on_disk_in_plaintext() {
     let kr = MemKeyring::default();
     let s = HistoryStore::new(d.path(), &kr);
     s.save_thread(doc("a1", 1, SECRET)).unwrap();
-    s.set_retention_days(Some(30)).unwrap();
+    s.set_retention_days(Some(30), false).unwrap();
     let disk = all_bytes(d.path());
     assert!(!disk.is_empty());
     for needle in [SECRET, "validator bond", "title of a1", "reply to", "\"who\"", "retentionDays"] {
@@ -255,7 +255,7 @@ fn a_missing_key_with_history_present_fails_closed_and_never_mints_over_it() {
     let e = s.list_threads(2).unwrap_err();
     assert!(e.contains("key is not in the keychain"), "{e}");
     assert!(s.save_thread(doc("b2", 2, "new")).is_err());
-    assert!(s.set_retention_days(Some(5)).is_err());
+    assert!(s.set_retention_days(Some(5), false).is_err());
     assert!(kr.raw().is_none(), "no new key was minted over the old history");
     assert!(sealed_path(d.path(), "a1").exists(), "nothing was removed");
     // Delete all is the way out, and the history starts over cleanly.
@@ -271,7 +271,7 @@ fn an_unreachable_or_malformed_keyring_refuses_every_operation() {
     let s = HistoryStore::new(d.path(), &DeadKeyring);
     assert!(s.list_threads(1).is_err());
     assert!(s.save_thread(doc("a1", 1, "x")).is_err());
-    assert!(s.set_retention_days(None).is_err());
+    assert!(s.set_retention_days(None, false).is_err());
     assert!(!sealed_path(d.path(), "a1").exists());
 
     let kr = MemKeyring::default();
@@ -320,7 +320,8 @@ fn an_erase_interrupted_at_each_step_is_finished_at_the_next_open() {
     s.save_thread(doc("a1", 1, SECRET)).unwrap();
     s.save_thread(doc("b2", 2, "keep")).unwrap();
     let survived = std::fs::read(sealed_path(d.path(), "a1")).unwrap();
-    std::fs::write(d.path().join(PENDING_FILE), b"").unwrap();
+    let keys = KeySet::decode(&kr.raw().unwrap()).unwrap();
+    s.write_erase_marker(&keys, &["t-a1".to_string()]).unwrap();
     std::fs::remove_file(sealed_path(d.path(), "a1")).unwrap();
     let old_key = kr.raw().unwrap();
     assert_eq!(ids(&s.list_threads(3).unwrap()), vec!["b2"]);
@@ -360,7 +361,7 @@ fn delete_all_removes_every_file_and_the_key() {
     let s = HistoryStore::new(d.path(), &kr);
     s.save_thread(doc("a1", 1, SECRET)).unwrap();
     s.save_thread(doc("b2", 2, "x")).unwrap();
-    s.set_retention_days(Some(7)).unwrap();
+    s.set_retention_days(Some(7), false).unwrap();
     s.erase_all().unwrap();
     assert!(kr.raw().is_none());
     assert!(all_bytes(d.path()).is_empty());
@@ -398,15 +399,15 @@ fn retention_erases_only_conversations_past_the_setting() {
     let l = s.list_threads(now).unwrap();
     assert_eq!(l.retention_days, None);
     assert_eq!(l.threads.len(), 2);
-    s.set_retention_days(Some(7)).unwrap();
+    s.set_retention_days(Some(7), false).unwrap();
     let l = s.list_threads(now).unwrap();
     assert_eq!(l.retention_days, Some(7));
     assert_eq!(l.purged, 1);
     assert_eq!(ids(&l), vec!["new"]);
     assert!(!sealed_path(d.path(), "old").exists());
-    assert!(s.set_retention_days(Some(0)).is_err());
-    assert!(s.set_retention_days(Some(MAX_RETENTION_DAYS + 1)).is_err());
-    s.set_retention_days(None).unwrap();
+    assert!(s.set_retention_days(Some(0), false).is_err());
+    assert!(s.set_retention_days(Some(MAX_RETENTION_DAYS + 1), false).is_err());
+    s.set_retention_days(None, false).unwrap();
     assert_eq!(s.list_threads(now).unwrap().retention_days, None);
 }
 
@@ -460,4 +461,189 @@ fn the_history_key_is_device_sealed_not_in_the_recovery_kit_and_listed_for_local
     assert!(!kit.contains(KEY_ACCOUNT), "the history key must not follow a recovery phrase");
     let local = include_str!("local_data.rs");
     assert!(local.contains(KEY_ACCOUNT), "delete my local data must list the history key");
+}
+
+/// Turns the crash injection off again even when the test fails.
+struct CrashAfterMarker;
+impl CrashAfterMarker {
+    fn on() -> Self {
+        CRASH_AFTER_MARKER.with(|c| c.set(true));
+        CrashAfterMarker
+    }
+}
+impl Drop for CrashAfterMarker {
+    fn drop(&mut self) {
+        CRASH_AFTER_MARKER.with(|c| c.set(false));
+    }
+}
+
+#[test]
+fn a_crash_after_the_marker_but_before_the_file_is_removed_never_brings_the_conversation_back() {
+    // BerryManifold P2 on #679: step 1 done, step 2 not. Recovery must remove the named file
+    // before resealing the rest, or the deleted conversation comes back under the new key.
+    let d = TestDir::new("crash1");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    s.save_thread(doc("a1", 1, SECRET)).unwrap();
+    s.save_thread(doc("b2", 2, "keep")).unwrap();
+    let survived = std::fs::read(sealed_path(d.path(), "a1")).unwrap();
+    let old_key = kr.raw().unwrap();
+    {
+        let _crash = CrashAfterMarker::on();
+        assert!(s.erase_thread("a1").unwrap_err().contains("injected crash"));
+    }
+    // The crash left exactly that state: the marker, the file still there, the old key.
+    assert!(d.path().join(PENDING_FILE).exists());
+    assert!(sealed_path(d.path(), "a1").exists());
+    assert_eq!(kr.raw().unwrap(), old_key);
+
+    // The next open finishes the erase: a1 stays gone, b2 is resealed, the key is rotated.
+    let l = s.list_threads(3).unwrap();
+    assert_eq!(ids(&l), vec!["b2"]);
+    assert!(l.unreadable.is_empty());
+    assert!(!sealed_path(d.path(), "a1").exists());
+    assert!(!d.path().join(PENDING_FILE).exists());
+    assert_ne!(kr.raw().unwrap(), old_key);
+    // And the copy that survived elsewhere opens under no key on the device.
+    std::fs::write(sealed_path(d.path(), "a1"), &survived).unwrap();
+    let l = s.list_threads(3).unwrap();
+    assert_eq!(ids(&l), vec!["b2"]);
+    assert_eq!(l.unreadable, vec!["a1"]);
+}
+
+#[test]
+fn the_erase_marker_is_sealed_and_names_no_conversation_in_plaintext() {
+    let d = TestDir::new("marker");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    let id = "distinctive-thread-id-0123456789";
+    s.save_thread(doc(id, 1, SECRET)).unwrap();
+    {
+        let _crash = CrashAfterMarker::on();
+        assert!(s.erase_thread(id).is_err());
+    }
+    let marker = std::fs::read(d.path().join(PENDING_FILE)).unwrap();
+    assert_eq!(&marker[..8], MAGIC, "a sealed history file");
+    assert!(!contains(&marker, id.as_bytes()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(d.path().join(PENDING_FILE)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    assert!(s.list_threads(2).unwrap().threads.is_empty());
+}
+
+#[test]
+fn a_marker_that_does_not_open_fails_closed_and_reseals_nothing() {
+    let d = TestDir::new("badmarker");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    s.save_thread(doc("a1", 1, SECRET)).unwrap();
+    s.save_thread(doc("b2", 2, "keep")).unwrap();
+    let keys = KeySet::decode(&kr.raw().unwrap()).unwrap();
+    // An empty marker (what an earlier build of this branch wrote), a flipped byte, and a marker
+    // naming something that is not a conversation all refuse.
+    let mut flipped = {
+        s.write_erase_marker(&keys, &["t-a1".to_string()]).unwrap();
+        std::fs::read(d.path().join(PENDING_FILE)).unwrap()
+    };
+    let last = flipped.len() - 1;
+    flipped[last] ^= 1;
+    let not_a_thread = {
+        s.write_erase_marker(&keys, &["settings".to_string()]).unwrap();
+        std::fs::read(d.path().join(PENDING_FILE)).unwrap()
+    };
+    let a1 = std::fs::read(sealed_path(d.path(), "a1")).unwrap();
+    let b2 = std::fs::read(sealed_path(d.path(), "b2")).unwrap();
+    let key = kr.raw().unwrap();
+    for bad in [Vec::new(), flipped, not_a_thread] {
+        std::fs::write(d.path().join(PENDING_FILE), &bad).unwrap();
+        let e = s.list_threads(3).unwrap_err();
+        assert!(e.contains("does not open"), "{e}");
+        assert!(s.save_thread(doc("c3", 3, "x")).is_err());
+        assert_eq!(std::fs::read(sealed_path(d.path(), "a1")).unwrap(), a1);
+        assert_eq!(std::fs::read(sealed_path(d.path(), "b2")).unwrap(), b2);
+        assert_eq!(kr.raw().unwrap(), key, "no rotation on a marker that does not open");
+    }
+    // Delete all still works.
+    s.erase_all().unwrap();
+    assert!(s.list_threads(4).unwrap().threads.is_empty());
+}
+
+#[test]
+fn an_unreadable_retention_setting_fails_closed_and_is_not_overwritten_silently() {
+    // Matr0xshka P2 on #679: a tampered settings file must not become "keep forever".
+    let d = TestDir::new("badsettings");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    let day = MS_PER_DAY;
+    let now = 100 * day;
+    s.save_thread(doc("old", now - 10 * day, SECRET)).unwrap();
+    s.set_retention_days(Some(7), false).unwrap();
+    let path = d.path().join("settings.sealed");
+    let mut bad = std::fs::read(&path).unwrap();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    std::fs::write(&path, &bad).unwrap();
+
+    let l = s.list_threads(now).unwrap();
+    assert!(l.retention_unreadable, "reported, not hidden");
+    assert_eq!(l.retention_days, None);
+    assert_eq!(l.purged, 0, "nothing is erased by an unknown setting");
+    assert_eq!(ids(&l), vec!["old"]);
+    // Neither a conversation save nor a plain settings write replaces it.
+    s.save_thread(doc("new", now, "x")).unwrap();
+    assert!(s.set_retention_days(None, false).unwrap_err().contains("does not open"));
+    assert_eq!(std::fs::read(&path).unwrap(), bad);
+    // The member chooses again: replaced, and it applies.
+    s.set_retention_days(Some(7), true).unwrap();
+    let l = s.list_threads(now).unwrap();
+    assert!(!l.retention_unreadable);
+    assert_eq!(l.retention_days, Some(7));
+    assert_eq!(l.purged, 1);
+    assert_eq!(ids(&l), vec!["new"]);
+}
+
+/// A keyring that records, when the key is deleted, whether history files were still present.
+struct OrderKeyring {
+    inner: MemKeyring,
+    dir: std::path::PathBuf,
+    files_at_key_delete: StdMutex<Option<usize>>,
+}
+
+impl Keyring for OrderKeyring {
+    fn get(&self, a: &str) -> std::result::Result<Option<Vec<u8>>, CustodyError> {
+        self.inner.get(a)
+    }
+    fn set(&self, a: &str, s: &[u8]) -> std::result::Result<(), CustodyError> {
+        self.inner.set(a, s)
+    }
+    fn delete(&self, a: &str) -> std::result::Result<(), CustodyError> {
+        let n = std::fs::read_dir(&self.dir).map(|e| e.count()).unwrap_or(0);
+        *self.files_at_key_delete.lock().unwrap() = Some(n);
+        self.inner.delete(a)
+    }
+}
+
+#[test]
+fn delete_all_drops_the_key_before_the_files() {
+    let d = TestDir::new("allorder");
+    let kr = OrderKeyring {
+        inner: MemKeyring::default(),
+        dir: d.path().to_path_buf(),
+        files_at_key_delete: StdMutex::new(None),
+    };
+    let s = HistoryStore::new(d.path(), &kr);
+    s.save_thread(doc("a1", 1, SECRET)).unwrap();
+    s.save_thread(doc("b2", 2, "x")).unwrap();
+    s.erase_all().unwrap();
+    assert_eq!(*kr.files_at_key_delete.lock().unwrap(), Some(2), "the key went first");
+    assert!(all_bytes(d.path()).is_empty());
+    // An unreachable keyring refuses before any file is touched.
+    let d2 = TestDir::new("alldead");
+    let kr2 = MemKeyring::default();
+    HistoryStore::new(d2.path(), &kr2).save_thread(doc("a1", 1, "x")).unwrap();
+    assert!(HistoryStore::new(d2.path(), &DeadKeyring).erase_all().is_err());
+    assert!(sealed_path(d2.path(), "a1").exists());
 }

@@ -38,7 +38,7 @@ const when = (ts: number, now: number = Date.now()) => {
 type Tab = "chats" | "projects";
 
 export function ChatHistoryPanel({ store, currentId, busy, onOpened }: { store: Store; currentId: string; busy: boolean; onOpened: () => void }) {
-  const { threads, persisted, loaded, unreadable, retentionDays, error } = chatHistory.use();
+  const { threads, persisted, loaded, unreadable, retentionDays, retentionUnreadable, error } = chatHistory.use();
   const [tab, setTab] = useState<Tab>("chats");
   const [query, setQuery] = useState("");
   const [manage, setManage] = useState(false);
@@ -137,6 +137,11 @@ export function ChatHistoryPanel({ store, currentId, busy, onOpened }: { store: 
       )}
       {manage && (
         <div id="chat-history-manage-panel" data-testid="chat-history-manage-panel" style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)" }}>
+          {retentionUnreadable && (
+            <p role="alert" data-testid="chat-history-retention-unreadable" style={{ fontSize: 12, color: "var(--danger)", margin: 0 }}>
+              The saved retention setting does not open (it was changed or damaged), so nothing is erased by age. Choose a setting to replace it.
+            </p>
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
             <span style={{ flex: 1 }}>Keep conversations</span>
             <select
@@ -168,7 +173,7 @@ export function ChatHistoryPanel({ store, currentId, busy, onOpened }: { store: 
             </button>
           ) : (
             <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "var(--danger)", flex: 1 }}>Erase every conversation, the current one too, and the key that opens them? This cannot be undone.</span>
+              <span style={{ fontSize: 12, color: "var(--danger)", flex: 1 }}>Erase every conversation, the current one too, and the key that opens them? This cannot be undone. Deletes are device-only: an OS backup made earlier (such as Time Machine, which includes the keychain) may still hold the old key and files, and restoring it may reopen deleted conversations.</span>
               <button type="button" className="btn btn-sm btn-danger" data-testid="chat-history-erase-all-confirm" onClick={() => void eraseAll()}>
                 Erase
               </button>
@@ -254,6 +259,9 @@ export function ChatHistoryPanel({ store, currentId, busy, onOpened }: { store: 
             </button>
           ))}
       </div>
+      <p data-testid="chat-history-erase-scope" style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+        Deletes are device-only. Erasing a conversation makes it unreadable on this device, but an OS backup made earlier (such as Time Machine, which includes the keychain) may still hold the old key and file, and restoring that backup may reopen it.
+      </p>
       <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
         Reopening shows the conversation as it was kept. Hermes starts a fresh agent session for it, so with the agent loop on it does not
         see the earlier turns unless you restate them.

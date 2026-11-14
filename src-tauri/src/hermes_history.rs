@@ -32,7 +32,8 @@
 //! <app data>/hermes-history/
 //!   t-<thread id>.sealed   one conversation
 //!   settings.sealed        the retention setting
-//!   rotate.pending         present only while an erase is in progress (empty)
+//!   rotate.pending         present only while an erase is in progress: the names of the
+//!                          files being erased, sealed like a conversation
 //! file = MAGIC "CITRHHS\0" | version (1) | key generation (u32-be) | envelope
 //! AAD  = MAGIC | version | generation | "|" | file name stem
 //! ```
@@ -45,15 +46,27 @@
 //! removed and the history key is ROTATED: every remaining file is resealed under a new key pair
 //! and the old seed is removed from the keyring. Old copies of a deleted thread no longer open with
 //! any key on the device. The steps are crash-safe:
-//! 1. write `rotate.pending`;
+//! 1. write `rotate.pending` (atomically, sealed under the current key), naming the files to erase;
 //! 2. remove the deleted files;
 //! 3. keyring = {new, prev: old};
 //! 4. reseal every file under the new key;
 //! 5. keyring = {new};
 //! 6. remove `rotate.pending`.
 //!
-//! Any command that finds `rotate.pending`, or a `prev` key, finishes the erase first. "Delete
-//! everything" removes every file and the key itself.
+//! Any command that finds `rotate.pending`, or a `prev` key, finishes the erase first: it removes
+//! every file the marker names BEFORE resealing anything, so a crash between steps 1 and 2 can
+//! never bring a deleted conversation back under the new key. A marker that does not open fails
+//! closed (nothing is resealed; "Delete all history" is the way out). "Delete everything" removes
+//! every file and the key itself.
+//!
+//! **Scope of an erase: this device only.** The rotation makes every copy ON THIS DEVICE unopenable.
+//! An OS backup taken earlier (Time Machine, Windows File History, a cloud or disk image) can hold
+//! both an old history file and the old keychain item. On macOS the login keychain is in Time
+//! Machine backups, so restoring such a backup can reopen conversations deleted since. The seed
+//! cannot be kept out of backups here: the `keyring` crate writes the legacy file-based login
+//! keychain, which has no `kSecAttrAccessible…ThisDeviceOnly` class (that exists only in the
+//! data-protection keychain, which needs a keychain-access-groups entitlement in the signed app).
+//! The delete confirmation says so.
 //!
 //! **Fail closed.**
 //! - A file that does not open (tamper, a wrong name, a key generation this device no longer has)
@@ -97,6 +110,8 @@ const EXT: &str = "sealed";
 const THREAD_PREFIX: &str = "t-";
 const SETTINGS_STEM: &str = "settings";
 const PENDING_FILE: &str = "rotate.pending";
+/// The AAD name the erase marker is sealed under (not a file stem, so it can't pose as one).
+const PENDING_STEM: &str = "rotate.pending";
 const MAGIC: &[u8; 8] = b"CITRHHS\0";
 const FORMAT_VERSION: u8 = 1;
 const HEADER_LEN: usize = 8 + 1 + 4;
@@ -139,7 +154,12 @@ pub struct HistoryList {
     /// longer has). They are never shown and never overwritten.
     pub unreadable: Vec<String>,
     /// Keep conversations this many days after their last update; `None` = until deleted.
+    /// Always `None` while `retention_unreadable` (the setting is unknown, not "keep forever").
     pub retention_days: Option<u32>,
+    /// The sealed retention setting exists but does not open (tampered or damaged). Nothing is
+    /// erased by age while it is unreadable, and it is not overwritten until the member chooses a
+    /// setting again (`hermes_history_set_retention` with `replaceUnreadable`).
+    pub retention_unreadable: bool,
     /// How many conversations the retention setting erased during this call.
     pub purged: usize,
 }
@@ -363,6 +383,12 @@ fn open_sealed(keys: &KeySet, stem: &str, bytes: &[u8]) -> Option<Zeroizing<Vec<
 
 // ------------------------------------------------------------------------------ the store
 
+#[cfg(test)]
+thread_local! {
+    /// Crash injection (tests only): stop an erase right after step 1, before any file is removed.
+    static CRASH_AFTER_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A conversation id the webview may use: 1 to 64 of `[A-Za-z0-9_-]`.
 pub fn valid_thread_id(id: &str) -> bool {
     !id.is_empty()
@@ -497,9 +523,50 @@ impl<'a> HistoryStore<'a> {
         };
         let keys = KeySet::decode(&raw)?;
         if keys.prev.is_some() || self.pending_path().exists() {
+            // An interrupted erase: the files it named go first, before anything is resealed.
+            let named = self.read_erase_marker(&keys)?;
+            for stem in &named {
+                self.unlink_stem(stem)?;
+            }
             return self.finish_erase(keys).map(Some);
         }
         Ok(Some(keys))
+    }
+
+    /// Step 1: record, sealed under the current key and written atomically, which files this erase
+    /// removes.
+    fn write_erase_marker(&self, keys: &KeySet, stems: &[String]) -> Result<(), String> {
+        let plain = Zeroizing::new(serde_json::to_vec(stems).map_err(|e| e.to_string())?);
+        let sealed = seal_file(&keys.cur, PENDING_STEM, &plain)?;
+        let staged = crate::atomic_file::stage_secret(&self.pending_path(), &sealed)
+            .map_err(|e| format!("the chat history could not be erased: {}", e.kind()))?;
+        crate::atomic_file::commit_staged(&staged, &self.pending_path())
+            .map_err(|e| format!("the chat history could not be erased: {}", e.kind()))
+    }
+
+    /// The files an interrupted erase named ([] when there is no marker). A marker that does not
+    /// open, or names anything but a conversation, fails closed: resealing without knowing what
+    /// was being erased could bring a deleted conversation back.
+    fn read_erase_marker(&self, keys: &KeySet) -> Result<Vec<String>, String> {
+        let bytes = match std::fs::read(self.pending_path()) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("the chat history cannot be read: {}", e.kind())),
+        };
+        let damaged = || {
+            "an interrupted delete left a record that does not open; the chat history stays \
+             closed (Delete all history starts over)"
+                .to_string()
+        };
+        let plain = open_sealed(keys, PENDING_STEM, &bytes).ok_or_else(damaged)?;
+        let stems: Vec<String> = serde_json::from_slice(&plain).map_err(|_| damaged())?;
+        let ok = stems
+            .iter()
+            .all(|s| s.strip_prefix(THREAD_PREFIX).is_some_and(valid_thread_id));
+        if !ok {
+            return Err(damaged());
+        }
+        Ok(stems)
     }
 
     /// Erase steps 3 to 6: reseal every file under a key the erased files never had, then forget
@@ -554,24 +621,24 @@ impl<'a> HistoryStore<'a> {
         if stems.is_empty() {
             return Ok(keys);
         }
-        citrate_core_kit::fsutil::ensure_private_dir(&self.dir)
-            .map_err(|e| format!("the chat history folder cannot be prepared: {}", e.kind()))?;
-        let staged = crate::atomic_file::stage_secret(&self.pending_path(), b"")
-            .map_err(|e| format!("the chat history could not be erased: {}", e.kind()))?;
-        crate::atomic_file::commit_staged(&staged, &self.pending_path())
-            .map_err(|e| format!("the chat history could not be erased: {}", e.kind()))?;
+        self.write_erase_marker(&keys, stems)?;
+        #[cfg(test)]
+        if CRASH_AFTER_MARKER.with(|c| c.get()) {
+            return Err("injected crash after the erase marker".to_string());
+        }
         for stem in stems {
             self.unlink_stem(stem)?;
         }
         self.finish_erase(keys)
     }
 
-    fn read_settings(&self, keys: &KeySet) -> Settings {
-        match self.read_stem(SETTINGS_STEM) {
-            Ok(Some(bytes)) => open_sealed(keys, SETTINGS_STEM, &bytes)
-                .and_then(|p| serde_json::from_slice(&p).ok())
-                .unwrap_or_default(),
-            _ => Settings::default(),
+    /// The retention setting: `Ok(None)` when it does not open. Never defaults an unreadable
+    /// setting to "keep until deleted" (that would fail open).
+    fn read_settings(&self, keys: &KeySet) -> Result<Option<Settings>, String> {
+        match self.read_stem(SETTINGS_STEM)? {
+            None => Ok(Some(Settings::default())),
+            Some(bytes) => Ok(open_sealed(keys, SETTINGS_STEM, &bytes)
+                .and_then(|p| serde_json::from_slice(&p).ok())),
         }
     }
 
@@ -584,13 +651,16 @@ impl<'a> HistoryStore<'a> {
                 threads: Vec::new(),
                 unreadable: Vec::new(),
                 retention_days: None,
+                retention_unreadable: false,
                 purged: 0,
             });
         };
-        let settings = self.read_settings(&keys);
+        let settings = self.read_settings(&keys)?;
+        let retention_unreadable = settings.is_none();
+        let retention_days = settings.and_then(|s| s.retention_days);
         let (mut threads, unreadable) = self.open_threads(&keys)?;
         let mut purged = 0;
-        if let Some(days) = settings.retention_days {
+        if let Some(days) = retention_days {
             let cutoff = now_ms.saturating_sub(u64::from(days) * MS_PER_DAY);
             let old: Vec<String> = threads
                 .iter()
@@ -606,7 +676,8 @@ impl<'a> HistoryStore<'a> {
         Ok(HistoryList {
             threads,
             unreadable,
-            retention_days: settings.retention_days,
+            retention_days,
+            retention_unreadable,
             purged,
         })
     }
@@ -691,8 +762,13 @@ impl<'a> HistoryStore<'a> {
 
     /// Erase everything: every file, then the key. Works without a key (the way out of a history
     /// whose key is gone).
+    /// The key goes FIRST: a crash part way leaves files no key opens (refused at the next open,
+    /// and "Delete all" again finishes), never a key with some of the files.
     pub fn erase_all(&self) -> Result<(), String> {
         let _g = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.keyring
+            .delete(KEY_ACCOUNT)
+            .map_err(|_| Self::unreachable())?;
         for stem in self.sealed_stems()? {
             self.unlink_stem(&stem)?;
         }
@@ -706,13 +782,17 @@ impl<'a> HistoryStore<'a> {
                 ))
             }
         }
-        self.keyring
-            .delete(KEY_ACCOUNT)
-            .map_err(|_| Self::unreachable())
+        Ok(())
     }
 
-    /// Keep conversations `days` after their last update, or until deleted (`None`).
-    pub fn set_retention_days(&self, days: Option<u32>) -> Result<(), String> {
+    /// Keep conversations `days` after their last update, or until deleted (`None`). A sealed
+    /// setting that does not open is replaced only when `replace_unreadable` (the member chose a
+    /// setting again after being told it is unreadable).
+    pub fn set_retention_days(
+        &self,
+        days: Option<u32>,
+        replace_unreadable: bool,
+    ) -> Result<(), String> {
         if let Some(d) = days {
             if !(MIN_RETENTION_DAYS..=MAX_RETENTION_DAYS).contains(&d) {
                 return Err(format!(
@@ -722,6 +802,12 @@ impl<'a> HistoryStore<'a> {
         }
         let _g = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let keys = self.history_keys(true)?.ok_or_else(Self::unreachable)?;
+        if self.read_settings(&keys)?.is_none() && !replace_unreadable {
+            return Err(
+                "the saved retention setting does not open; choose a setting again to replace it"
+                    .to_string(),
+            );
+        }
         let plain = Zeroizing::new(
             serde_json::to_vec(&Settings {
                 retention_days: days,
@@ -781,7 +867,7 @@ pub async fn hermes_history_save(
 }
 
 /// **hermes_history_delete** — erase one conversation: its file is removed and the history key
-/// rotated, so no copy of it opens again.
+/// rotated, so no copy of it on this device opens again (an earlier OS backup is out of reach).
 #[tauri::command]
 pub async fn hermes_history_delete(app_h: tauri::AppHandle, id: String) -> Result<(), String> {
     with_store(app_h, move |s| s.erase_thread(&id)).await
@@ -799,8 +885,12 @@ pub async fn hermes_history_delete_all(app_h: tauri::AppHandle) -> Result<(), St
 pub async fn hermes_history_set_retention(
     app_h: tauri::AppHandle,
     days: Option<u32>,
+    replace_unreadable: Option<bool>,
 ) -> Result<(), String> {
-    with_store(app_h, move |s| s.set_retention_days(days)).await
+    with_store(app_h, move |s| {
+        s.set_retention_days(days, replace_unreadable.unwrap_or(false))
+    })
+    .await
 }
 
 #[cfg(test)]

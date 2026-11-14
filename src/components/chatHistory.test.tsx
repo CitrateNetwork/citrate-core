@@ -45,6 +45,7 @@ const SECRET = "my validator bond unlocks at block 991234";
 function sealedStoreDouble(mode: "tauri" | "sim" = "tauri") {
   const files = new Map<string, ChatThread>();
   let retentionDays: number | null = null;
+  const state = { settingsUnreadable: false, failSaves: false };
   const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
   const io: HistoryIo = {
     mode,
@@ -53,9 +54,10 @@ function sealedStoreDouble(mode: "tauri" | "sim" = "tauri") {
       switch (cmd) {
         case "hermes_history_list": {
           const threads = [...files.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-          return { threads, unreadable: [], retentionDays, purged: 0 } as T;
+          return { threads, unreadable: [], retentionDays: state.settingsUnreadable ? null : retentionDays, retentionUnreadable: state.settingsUnreadable, purged: 0 } as T;
         }
         case "hermes_history_save": {
+          if (state.failSaves) throw new Error("the keychain is not reachable; the chat history stays closed");
           const t = (args as { thread: ChatThread }).thread;
           expect(Object.keys(t).sort()).toEqual(["createdAt", "id", "msgs", "title", "updatedAt"]);
           files.set(t.id, structuredClone(t));
@@ -71,15 +73,19 @@ function sealedStoreDouble(mode: "tauri" | "sim" = "tauri") {
           files.clear();
           retentionDays = null;
           return undefined as T;
-        case "hermes_history_set_retention":
-          retentionDays = (args as { days: number | null }).days;
+        case "hermes_history_set_retention": {
+          const a = args as { days: number | null; replaceUnreadable?: boolean };
+          if (state.settingsUnreadable && !a.replaceUnreadable) throw new Error("the saved retention setting does not open");
+          state.settingsUnreadable = false;
+          retentionDays = a.days;
           return undefined as T;
+        }
         default:
           throw new Error("unexpected command " + cmd);
       }
     },
   };
-  return { io, files, calls };
+  return { io, files, calls, state };
 }
 
 /** Every value in localStorage, joined. */
@@ -305,6 +311,10 @@ describe("History in the Hermes chat, through the sealed store", () => {
     await click(q("chat-history-manage"));
     await click(q("chat-history-erase-all"));
     expect(sealed.files.size).toBe(3);
+    // The confirmation says what an erase cannot reach (P3).
+    expect(host.textContent).toContain("Deletes are device-only");
+    expect(host.textContent).toContain("Time Machine, which includes the keychain");
+    expect(q("chat-history-erase-scope").textContent).toContain("restoring that backup may reopen it");
     await click(q("chat-history-erase-all-confirm"));
     expect(sealed.calls.some((c) => c.cmd === "hermes_history_delete_all")).toBe(true);
     expect(sealed.files.size).toBe(0);
@@ -316,7 +326,7 @@ describe("History in the Hermes chat, through the sealed store", () => {
   it("the retention setting goes to hermes_history_set_retention and is read back from the list", async () => {
     await seed();
     expect(await setHistoryRetention(30)).toBe(true);
-    expect(sealed.calls.find((c) => c.cmd === "hermes_history_set_retention")?.args).toEqual({ days: 30 });
+    expect(sealed.calls.find((c) => c.cmd === "hermes_history_set_retention")?.args).toEqual({ days: 30, replaceUnreadable: false });
     expect(chatHistory.get().retentionDays).toBe(30);
     expect(await setHistoryRetention(0)).toBe(false);
     expect(await setHistoryRetention(null)).toBe(true);
@@ -355,5 +365,39 @@ describe("History in the Hermes chat, through the sealed store", () => {
     await render();
     await click(q("open-chat-history"));
     expect(q("chat-history-error").textContent).toContain("keychain is not reachable");
+  });
+
+  it("a plaintext copy is kept (and retried) when sealing it fails", async () => {
+    const old: ChatThread = { id: "t-legacy", title: "old", createdAt: 1, updatedAt: 2, msgs: [msg("x", "You", SECRET)] };
+    localStorage.setItem(LEGACY_PLAINTEXT_KEY, JSON.stringify({ v: 1, threads: [old] }));
+    sealed.state.failSaves = true;
+    await loadChatHistory();
+    expect(localStorage.getItem(LEGACY_PLAINTEXT_KEY)).not.toBeNull();
+    expect(chatHistory.get().error).toContain("could not be sealed yet");
+    // The next launch, with the store working: sealed, then removed.
+    sealed.state.failSaves = false;
+    resetChatHistoryForTests();
+    await loadChatHistory();
+    expect(sealed.files.has("t-legacy")).toBe(true);
+    expect(localStorage.getItem(LEGACY_PLAINTEXT_KEY)).toBeNull();
+  });
+
+  it("an unreadable retention setting is reported, keeps the last known value, and is replaced only by a new choice", async () => {
+    await seed();
+    expect(await setHistoryRetention(30)).toBe(true);
+    sealed.state.settingsUnreadable = true;
+    await loadChatHistory(true);
+    expect(chatHistory.get().retentionUnreadable).toBe(true);
+    expect(chatHistory.get().retentionDays).toBe(30);
+    await render();
+    await click(q("open-chat-history"));
+    await click(q("chat-history-manage"));
+    expect(q("chat-history-retention-unreadable").textContent).toContain("nothing is erased by age");
+    // Choosing a setting is the reset.
+    expect(await setHistoryRetention(90)).toBe(true);
+    const last = sealed.calls.filter((c) => c.cmd === "hermes_history_set_retention").pop();
+    expect(last?.args).toEqual({ days: 90, replaceUnreadable: true });
+    expect(chatHistory.get().retentionUnreadable).toBe(false);
+    expect(chatHistory.get().retentionDays).toBe(90);
   });
 });
