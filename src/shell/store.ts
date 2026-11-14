@@ -106,6 +106,8 @@ import {
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
+import { agentSlice } from "./slices/agent";
+import { downReason, onHermesFlip, readSidecar, sameReason, type SidecarDownReason } from "../agent/sidecarLiveness";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
@@ -879,6 +881,9 @@ export class Store {
     // while the local model is not running waits (bounded) instead of asking.
     if (BRIDGE_MODE === "tauri") this.launchLocalStartPending = true;
     void this.rebuildProvider();
+    // 0.5.4: Hermes starts and stops after launch (Agent › Start, Node › Services); chat follows it,
+    // so it never keeps a "Hermes is not running" route built before Hermes came up.
+    if (BRIDGE_MODE === "tauri") this.followHermes();
     // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
     // syncPct/state) from the supervisor + local RPC every 2s and fold them into
     // AppState, so the Node surface + Sidebar render live numbers instead of the
@@ -1229,13 +1234,13 @@ export class Store {
       // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
       // under Local model only (core refuses it there too); it needs the sidecar loop.
       const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
-      const sidecarUp =
+      // 0.5.4: one fresh read; a failed read is "unreadable", never "not running" (sidecarLiveness.ts).
+      const sidecarReading =
         (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
-          ? await bridge.agentHarness
-              .status()
-              .then((st) => st.running)
-              .catch(() => false)
-          : false;
+          ? await readSidecar(() => bridge.agentHarness.status())
+          : null;
+      const sidecarUp = sidecarReading?.up === true;
+      this.sidecarDown = null;
       if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint,
@@ -1314,7 +1319,9 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC1): the local model's agent loop runs only in the Hermes sidecar. With
         // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
         // and it says so: the webview runs no tool loop for the local model.
-        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx));
+        // 0.5.4: the notice names the real case: loop switched off, not running, or status unknown.
+        this.sidecarDown = downReason(this.state.hermesSidecarLoop, sidecarReading);
+        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx), this.sidecarDown);
         this.reflectProvider();
         return;
       }
@@ -3345,6 +3352,34 @@ export class Store {
   /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
   private sidecarReattachTried = false;
 
+  private hermesFlipUnsub: (() => void) | null = null;
+
+  /** 0.5.4 — rebuild the chat provider each time the Agent slice sees Hermes start or stop. */
+  followHermes(): void {
+    if (this.hermesFlipUnsub) return;
+    this.hermesFlipUnsub = onHermesFlip(agentSlice.subscribe, agentSlice.get, () => {
+      if (this.state.hermesSidecarLoop) void this.rebuildProvider();
+    });
+  }
+
+  /** 0.5.4 — why chat is on the no-tools fallback (null = it is not). */
+  private sidecarDown: SidecarDownReason | null = null;
+
+  /**
+   * 0.5.4 — before a message goes out on the no-tools fallback, read Hermes again. Hermes may have
+   * come up (or its status become readable) since the provider was built: then the provider is
+   * rebuilt, so the message goes to Hermes and no stale "not running" notice is shown. With the
+   * loop switched off nothing is read. Returns the provider to send with.
+   */
+  private async recheckSidecarBeforeSend(provider: ChatProvider): Promise<ChatProvider> {
+    const down = this.sidecarDown;
+    if (!down || down.why === "loop_off" || provider !== this.provider || BRIDGE_MODE !== "tauri") return provider;
+    const now = await readSidecar(() => bridge.agentHarness.status());
+    if (!now.up && sameReason(down, downReason(true, now))) return provider;
+    await this.rebuildProvider();
+    return this.provider ?? provider;
+  }
+
   /**
    * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
    * running (or finished while the view was gone) is shown to its end, core calls the loop asks for
@@ -3651,6 +3686,8 @@ export class Store {
     const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
+    // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
+    if (this.sidecarDown) provider = await this.recheckSidecarBeforeSend(provider);
     // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
     // Hold this message: wait for the app's own startup start, or ask the member. Nothing is sent
     // to the gateway unless the member chooses that for this message.
