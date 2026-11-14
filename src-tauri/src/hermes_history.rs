@@ -50,8 +50,8 @@
 //! 2. remove the deleted files;
 //! 3. keyring = {new, prev: old};
 //! 4. reseal every file under the new key;
-//! 5. keyring = {new};
-//! 6. remove `rotate.pending`.
+//! 5. remove `rotate.pending` (while the key it is sealed under is still in the keyring);
+//! 6. keyring = {new}.
 //!
 //! Any command that finds `rotate.pending`, or a `prev` key, finishes the erase first: it removes
 //! every file the marker names BEFORE resealing anything, so a crash between steps 1 and 2 can
@@ -385,8 +385,49 @@ fn open_sealed(keys: &KeySet, stem: &str, bytes: &[u8]) -> Option<Zeroizing<Vec<
 
 #[cfg(test)]
 thread_local! {
-    /// Crash injection (tests only): stop an erase right after step 1, before any file is removed.
-    static CRASH_AFTER_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Crash injection (tests only): stop an erase at the numbered point ([`CrashPoint`]); 0 = off.
+    static CRASH_AT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// The points an erase can stop at, in order. Every one must leave a state the next open
+/// recovers from (hermes_history_tests: `every_crash_point_in_an_erase_is_recoverable`).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum CrashPoint {
+    /// Step 1 done: the marker is written; no file is removed.
+    MarkerWritten = 1,
+    /// Step 2 done: the erased files are removed; the key is not rotated.
+    FilesRemoved = 2,
+    /// Step 3 done: the keyring holds {new, prev}; nothing is resealed.
+    NewKeyStored = 3,
+    /// Part of step 4: one remaining file is resealed under the new key, the rest are not.
+    FirstResealed = 4,
+    /// Step 4 done: every file is resealed; the marker is still there.
+    AllResealed = 5,
+    /// Step 5 done: the marker is removed; the keyring still holds the previous key.
+    MarkerRemoved = 6,
+}
+
+#[cfg(test)]
+impl CrashPoint {
+    pub(crate) const ALL: [CrashPoint; 6] = [
+        CrashPoint::MarkerWritten,
+        CrashPoint::FilesRemoved,
+        CrashPoint::NewKeyStored,
+        CrashPoint::FirstResealed,
+        CrashPoint::AllResealed,
+        CrashPoint::MarkerRemoved,
+    ];
+}
+
+/// Tests only: fail here when the injected crash point is `at`.
+#[cfg(test)]
+fn crash_point(at: CrashPoint) -> Result<(), String> {
+    if CRASH_AT.with(|c| c.get()) == at as u8 {
+        return Err(format!("injected crash: {at:?}"));
+    }
+    Ok(())
 }
 
 /// A conversation id the webview may use: 1 to 64 of `[A-Za-z0-9_-]`.
@@ -581,9 +622,13 @@ impl<'a> HistoryStore<'a> {
                 prev: Some(keys.cur),
             };
             self.store_history_keys(&next)?;
+            #[cfg(test)]
+            crash_point(CrashPoint::NewKeyStored)?;
             next
         };
         // Step 4.
+        #[cfg(test)]
+        let mut resealed = 0usize;
         for stem in self.sealed_stems()? {
             let Some(bytes) = self.read_stem(&stem)? else {
                 continue;
@@ -594,15 +639,20 @@ impl<'a> HistoryStore<'a> {
             if let Some(plain) = open_sealed(&keys, &stem, &bytes) {
                 let sealed = seal_file(&keys.cur, &stem, &plain)?;
                 self.write_stem(&stem, &sealed)?;
+                #[cfg(test)]
+                {
+                    resealed += 1;
+                    if resealed == 1 {
+                        crash_point(CrashPoint::FirstResealed)?;
+                    }
+                }
             }
         }
-        // Step 5: the previous seed leaves the keyring.
-        let done = KeySet {
-            cur: keys.cur,
-            prev: None,
-        };
-        self.store_history_keys(&done)?;
-        // Step 6.
+        #[cfg(test)]
+        crash_point(CrashPoint::AllResealed)?;
+        // Step 5: the marker goes while the key it is sealed under is still in the keyring, so a
+        // crash before step 6 never leaves a marker no key opens. Every file it named was removed
+        // in step 2 (or by the recovery, before anything was resealed), so nothing needs it now.
         match std::fs::remove_file(self.pending_path()) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -613,6 +663,14 @@ impl<'a> HistoryStore<'a> {
                 ))
             }
         }
+        #[cfg(test)]
+        crash_point(CrashPoint::MarkerRemoved)?;
+        // Step 6: the previous seed leaves the keyring.
+        let done = KeySet {
+            cur: keys.cur,
+            prev: None,
+        };
+        self.store_history_keys(&done)?;
         Ok(done)
     }
 
@@ -623,12 +681,12 @@ impl<'a> HistoryStore<'a> {
         }
         self.write_erase_marker(&keys, stems)?;
         #[cfg(test)]
-        if CRASH_AFTER_MARKER.with(|c| c.get()) {
-            return Err("injected crash after the erase marker".to_string());
-        }
+        crash_point(CrashPoint::MarkerWritten)?;
         for stem in stems {
             self.unlink_stem(stem)?;
         }
+        #[cfg(test)]
+        crash_point(CrashPoint::FilesRemoved)?;
         self.finish_erase(keys)
     }
 

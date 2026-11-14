@@ -464,16 +464,16 @@ fn the_history_key_is_device_sealed_not_in_the_recovery_kit_and_listed_for_local
 }
 
 /// Turns the crash injection off again even when the test fails.
-struct CrashAfterMarker;
-impl CrashAfterMarker {
-    fn on() -> Self {
-        CRASH_AFTER_MARKER.with(|c| c.set(true));
-        CrashAfterMarker
+struct Crash;
+impl Crash {
+    fn at(p: CrashPoint) -> Self {
+        CRASH_AT.with(|c| c.set(p as u8));
+        Crash
     }
 }
-impl Drop for CrashAfterMarker {
+impl Drop for Crash {
     fn drop(&mut self) {
-        CRASH_AFTER_MARKER.with(|c| c.set(false));
+        CRASH_AT.with(|c| c.set(0));
     }
 }
 
@@ -489,8 +489,8 @@ fn a_crash_after_the_marker_but_before_the_file_is_removed_never_brings_the_conv
     let survived = std::fs::read(sealed_path(d.path(), "a1")).unwrap();
     let old_key = kr.raw().unwrap();
     {
-        let _crash = CrashAfterMarker::on();
-        assert!(s.erase_thread("a1").unwrap_err().contains("injected crash"));
+        let _crash = Crash::at(CrashPoint::MarkerWritten);
+        assert!(s.erase_thread("a1").unwrap_err().contains("injected crash: MarkerWritten"));
     }
     // The crash left exactly that state: the marker, the file still there, the old key.
     assert!(d.path().join(PENDING_FILE).exists());
@@ -519,7 +519,7 @@ fn the_erase_marker_is_sealed_and_names_no_conversation_in_plaintext() {
     let id = "distinctive-thread-id-0123456789";
     s.save_thread(doc(id, 1, SECRET)).unwrap();
     {
-        let _crash = CrashAfterMarker::on();
+        let _crash = Crash::at(CrashPoint::MarkerWritten);
         assert!(s.erase_thread(id).is_err());
     }
     let marker = std::fs::read(d.path().join(PENDING_FILE)).unwrap();
@@ -646,4 +646,66 @@ fn delete_all_drops_the_key_before_the_files() {
     HistoryStore::new(d2.path(), &kr2).save_thread(doc("a1", 1, "x")).unwrap();
     assert!(HistoryStore::new(d2.path(), &DeadKeyring).erase_all().is_err());
     assert!(sealed_path(d2.path(), "a1").exists());
+}
+
+#[test]
+fn every_crash_point_in_an_erase_is_recoverable() {
+    // BerryManifold P2 on #679 at 84c0f5f3: the old key left the keyring before the marker (sealed
+    // under it) was removed, so a crash there refused all history. Walk every point.
+    for point in CrashPoint::ALL {
+        let d = TestDir::new(&format!("crashwalk{}", point as u8));
+        let kr = MemKeyring::default();
+        let s = HistoryStore::new(d.path(), &kr);
+        s.save_thread(doc("a1", 1, SECRET)).unwrap();
+        for (i, id) in ["b2", "c3", "d4"].iter().enumerate() {
+            s.save_thread(doc(id, 2 + i as u64, "keep")).unwrap();
+        }
+        let survived = std::fs::read(sealed_path(d.path(), "a1")).unwrap();
+        let old_key = kr.raw().unwrap();
+        {
+            let _crash = Crash::at(point);
+            let e = s.erase_thread("a1").unwrap_err();
+            assert!(e.contains(&format!("{point:?}")), "{point:?}: {e}");
+        }
+        // The next open recovers: a1 stays gone, the rest open, the erase is complete.
+        let l = s
+            .list_threads(10)
+            .unwrap_or_else(|e| panic!("{point:?}: history refused after the crash: {e}"));
+        assert_eq!(ids(&l), vec!["d4", "c3", "b2"], "{point:?}");
+        assert!(l.unreadable.is_empty(), "{point:?}");
+        assert!(!sealed_path(d.path(), "a1").exists(), "{point:?}");
+        assert!(!d.path().join(PENDING_FILE).exists(), "{point:?}");
+        let key = kr.raw().unwrap();
+        assert_eq!(key.len(), KEY_ONE_LEN, "{point:?}: the previous key is gone");
+        assert_ne!(key, old_key, "{point:?}: the key was rotated");
+        let gen = KeySet::decode(&key).unwrap().cur.gen;
+        for id in ["b2", "c3", "d4"] {
+            let bytes = std::fs::read(sealed_path(d.path(), id)).unwrap();
+            assert_eq!(file_gen(&bytes), Some(gen), "{point:?}: {id} under the current key");
+        }
+        // The deleted conversation's surviving copy opens under no key on the device.
+        std::fs::write(sealed_path(d.path(), "a1"), &survived).unwrap();
+        assert_eq!(s.list_threads(10).unwrap().unreadable, vec!["a1"], "{point:?}");
+        // And the store keeps working.
+        s.save_thread(doc("e5", 20, "after")).unwrap();
+        assert_eq!(s.list_threads(30).unwrap().threads.len(), 4, "{point:?}");
+    }
+}
+
+#[test]
+fn a_crash_after_the_marker_is_removed_but_before_the_old_key_is_dropped_recovers() {
+    // The exact point of the 84c0f5f3 finding, on its own.
+    let d = TestDir::new("crash56");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    s.save_thread(doc("a1", 1, SECRET)).unwrap();
+    s.save_thread(doc("b2", 2, "keep")).unwrap();
+    {
+        let _crash = Crash::at(CrashPoint::MarkerRemoved);
+        assert!(s.erase_thread("a1").is_err());
+    }
+    assert!(!d.path().join(PENDING_FILE).exists());
+    assert_eq!(kr.raw().unwrap().len(), KEY_TWO_LEN, "the previous key is still there");
+    assert_eq!(ids(&s.list_threads(3).unwrap()), vec!["b2"]);
+    assert_eq!(kr.raw().unwrap().len(), KEY_ONE_LEN);
 }
