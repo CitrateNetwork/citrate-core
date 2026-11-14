@@ -176,6 +176,15 @@ describe("update policy", () => {
     expect(() => policyEntry(other, "0.5.4")).toThrow(/not a citrate-core-update-policy/);
   });
 
+  it("--min none writes a rescind (minimumVersion null) that merge accepts for any feed version", () => {
+    expect(JSON.parse(policyBytes({ min: "none", issuedAt: 2 }).toString()).minimumVersion).toBeNull();
+    const d = dirWith([]);
+    const pol = path.join(d, "r.json");
+    fs.writeFileSync(pol, policyBytes({ min: "none", issuedAt: 2 }));
+    fs.writeFileSync(`${pol}.sig`, sigFor("r.json"));
+    expect(policyEntry(pol, "0.5.3").policy).toBe(fs.readFileSync(pol).toString("base64"));
+  });
+
   it("the policy CLI writes the file to sign", () => {
     const d = dirWith([]);
     const out = path.join(d, "update-policy.json");

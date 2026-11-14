@@ -22,9 +22,14 @@
 //!
 //! Fail open on anything unverified: a missing, malformed, unsigned or wrongly signed policy, or a
 //! minimum above the version the same feed offers, never gates the app (it would lock members out
-//! with nothing to update to). Sticky once verified: the highest verified minimum is kept on disk
-//! (and checked again at each read), so a replayed older feed, or no network at launch, does not
-//! lift a gate already seen.
+//! with nothing to update to). Sticky once verified: the kept policy is on disk (and checked again
+//! at each read), so no network at launch does not lift a gate already seen.
+//!
+//! Ordering is by the signed `issuedAt` alone (#678 review): a verified policy replaces the kept
+//! one only when its `issuedAt` is strictly later, whatever its minimum. So a minimum signed by
+//! mistake, or one whose release was pulled, is lowered or rescinded by signing a newer policy
+//! with a lower `minimumVersion`, or with `"minimumVersion": null` (no minimum). A replayed older
+//! policy, or a different one with the same `issuedAt`, is refused and the kept one stays.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -42,7 +47,8 @@ const MAX_FIELD: usize = 8 * 1024;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyDoc {
     pub domain: String,
-    pub minimum_version: String,
+    /// `None` (`null` or absent): no minimum, which rescinds a kept one when issued later.
+    pub minimum_version: Option<String>,
     pub issued_at: u64,
     #[serde(default)]
     pub reason: Option<String>,
@@ -156,11 +162,12 @@ pub fn verify(pubkey: &str, policy: &str, signature: &str) -> Result<PolicyDoc, 
             doc.domain
         ));
     }
-    if Version::parse(&doc.minimum_version).is_none() {
-        return Err(format!(
-            "the policy's minimum version {:?} is not a version",
-            doc.minimum_version
-        ));
+    if let Some(m) = &doc.minimum_version {
+        if Version::parse(m).is_none() {
+            return Err(format!(
+                "the policy's minimum version {m:?} is not a version"
+            ));
+        }
     }
     Ok(doc)
 }
@@ -168,12 +175,16 @@ pub fn verify(pubkey: &str, policy: &str, signature: &str) -> Result<PolicyDoc, 
 /// The verdict for `current` under a verified `doc` (or none).
 pub fn verdict(current: &str, doc: Option<&PolicyDoc>, refused: Option<String>) -> PolicyVerdict {
     let required = match (doc, Version::parse(current)) {
-        (Some(d), Some(cur)) => Version::parse(&d.minimum_version).is_some_and(|min| cur < min),
+        (Some(d), Some(cur)) => d
+            .minimum_version
+            .as_deref()
+            .and_then(Version::parse)
+            .is_some_and(|min| cur < min),
         _ => false,
     };
     PolicyVerdict {
         current_version: current.to_string(),
-        minimum_version: doc.map(|d| d.minimum_version.clone()),
+        minimum_version: doc.and_then(|d| d.minimum_version.clone()),
         update_required: required,
         reason: doc.and_then(|d| d.reason.clone()),
         refused,
@@ -210,19 +221,14 @@ pub fn load(path: &Path, pubkey: &str) -> (Option<(StoredPolicy, PolicyDoc)>, Op
     }
 }
 
-/// Whether `new` should replace `kept`: a higher minimum, or the same minimum issued later.
+/// Whether `new` replaces `kept`: only a strictly later signed `issuedAt`, whatever the minimum
+/// (so a later policy may lower or rescind it; an older or same-time one never replaces it).
 fn supersedes(new: &PolicyDoc, kept: &PolicyDoc) -> bool {
-    match (
-        Version::parse(&new.minimum_version),
-        Version::parse(&kept.minimum_version),
-    ) {
-        (Some(n), Some(k)) if n != k => n > k,
-        _ => new.issued_at > kept.issued_at,
-    }
+    new.issued_at > kept.issued_at
 }
 
 /// Apply a policy offered by the feed whose own version is `feed_version`: verify it, keep it if
-/// it raises the kept one, and return the verdict from whichever is now kept. Never fails: a
+/// it was issued after the kept one (raising, lowering or rescinding it), and return the verdict from whichever is now kept. Never fails: a
 /// refused policy is named in `refused` and gates nothing.
 pub fn apply(
     path: &Path,
@@ -237,19 +243,29 @@ pub fn apply(
     match verify(pubkey, &offered.policy, &offered.signature) {
         Err(e) => refused = Some(format!("the feed's update policy was not used: {e}")),
         Ok(doc) => {
-            let consistent = match (
-                Version::parse(&doc.minimum_version),
-                Version::parse(feed_version),
-            ) {
-                (Some(min), Some(feed)) => min <= feed,
-                _ => false,
+            let consistent = match doc.minimum_version.as_deref() {
+                // No minimum: nothing to update to is needed.
+                None => true,
+                Some(m) => match (Version::parse(m), Version::parse(feed_version)) {
+                    (Some(min), Some(feed)) => min <= feed,
+                    _ => false,
+                },
             };
+            let same_as_kept = kept.as_ref().is_some_and(|(k, _)| k == offered);
             if !consistent {
                 refused = Some(format!(
                     "the feed's update policy was not used: it requires {} but the feed offers {feed_version}",
-                    doc.minimum_version
+                    doc.minimum_version.as_deref().unwrap_or("none")
                 ));
-            } else if effective.as_ref().is_none_or(|k| supersedes(&doc, k)) {
+            } else if same_as_kept {
+                // The feed still carries the kept policy: nothing to do.
+            } else if effective.as_ref().is_some_and(|k| !supersedes(&doc, k)) {
+                refused = Some(format!(
+                    "the feed's update policy was not used: it was issued at {}, not after the kept policy ({})",
+                    doc.issued_at,
+                    effective.as_ref().map(|k| k.issued_at).unwrap_or_default()
+                ));
+            } else {
                 match save(path, offered) {
                     Ok(()) => {}
                     Err(e) => refused = Some(format!("the update policy could not be kept ({e}); it applies to this session only")),
@@ -315,6 +331,111 @@ pub async fn update_policy_apply(
             &StoredPolicy { policy, signature },
             &feed_version,
         ))
+    })
+    .await
+}
+
+/// Longest feed read when the policy is fetched directly (bytes).
+const MAX_FEED: u64 = 1024 * 1024;
+
+/// The verdict for a whole feed document (`latest.json`), read directly rather than through the
+/// updater plugin. Needed because the plugin hands back the feed only when it offers a version
+/// newer than this one: after a release is pulled and the feed goes back to the version a gated
+/// client already runs, the plugin reports "no update", and the signed policy that lowers or
+/// rescinds the minimum would never be read. A feed with no policy leaves the kept one in force.
+pub fn apply_feed(
+    path: &Path,
+    pubkey: &str,
+    current: &str,
+    feed: &serde_json::Value,
+) -> PolicyVerdict {
+    let version = feed.get("version").and_then(|v| v.as_str());
+    let pol = feed.get("citrate").and_then(|c| c.get("updatePolicy"));
+    let pair = pol.and_then(|p| Some((p.get("policy")?.as_str()?, p.get("signature")?.as_str()?)));
+    match (version, pair) {
+        (Some(v), Some((policy, signature))) => apply(
+            path,
+            pubkey,
+            current,
+            &StoredPolicy {
+                policy: policy.to_string(),
+                signature: signature.to_string(),
+            },
+            v,
+        ),
+        _ => status(path, pubkey, current),
+    }
+}
+
+/// The updater endpoints this build pins (`plugins.updater.endpoints`), in order.
+fn pinned_endpoints<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("endpoints"))
+        .and_then(|e| e.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The first endpoint that answers 2xx with JSON (the plugin's order), or why none did.
+fn fetch_feed(endpoints: &[String]) -> Result<serde_json::Value, String> {
+    let agent = ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .new_agent();
+    let mut last = "this build pins no updater endpoint".to_string();
+    for url in endpoints {
+        let mut resp = match agent.get(url).call() {
+            Ok(r) => r,
+            Err(e) => {
+                last = format!("{url}: {e}");
+                continue;
+            }
+        };
+        if !resp.status().is_success() {
+            last = format!("{url}: HTTP {}", resp.status().as_u16());
+            continue;
+        }
+        match resp
+            .body_mut()
+            .with_config()
+            .limit(MAX_FEED)
+            .read_to_string()
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => last = format!("{url}: {e}"),
+        }
+    }
+    Err(last)
+}
+
+/// `update_policy_refresh` — read the feed directly and apply its policy (used while gated and the
+/// plugin found no update). A feed that cannot be read leaves the kept policy in force.
+#[tauri::command]
+pub async fn update_policy_refresh(app_h: tauri::AppHandle) -> Result<PolicyVerdict, String> {
+    crate::blocking::off_main(move || {
+        let key = pinned_pubkey(&app_h)?;
+        let path = policy_path(&app_h)?;
+        let current = app_h.package_info().version.to_string();
+        match fetch_feed(&pinned_endpoints(&app_h)) {
+            Ok(feed) => Ok(apply_feed(&path, &key, &current, &feed)),
+            Err(e) => {
+                let mut v = status(&path, &key, &current);
+                v.refused = Some(format!("the update feed could not be read ({e})"));
+                Ok(v)
+            }
+        }
     })
     .await
 }

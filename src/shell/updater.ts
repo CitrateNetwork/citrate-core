@@ -15,7 +15,8 @@
 //     pinned updater key and keeps the highest verified minimum; below it, the app is gated
 //     (UpdateBanner's blocking screen), the update downloads by itself, and only Restart is left.
 //     An unsigned or wrongly signed minimum gates nothing (a tampered feed cannot lock members
-//     out). Clients older than 0.5.4 do not read the policy at all.
+//     out). A later signed policy may lower or rescind the minimum (#678 review); an older or
+//     same-time one is refused. Clients older than 0.5.4 do not read the policy at all.
 //   - CORE-D6 (0.5.3): the update is installed only after the sidecars are
 //     drained. On the restart click: `update_prepare` (Rust update_drain.rs)
 //     holds every new sidecar start, stops every sidecar through its owner and
@@ -103,9 +104,11 @@ export function feedPolicy(raw: unknown): { policy: string; signature: string } 
   return typeof policy === "string" && typeof signature === "string" && policy && signature ? { policy, signature } : null;
 }
 
-/** The state after a verdict. A verdict never lifts a gate already set this session. */
+/** The state after a verdict. Rust's verdict is the authority: it is always the verdict of the
+ *  policy Rust keeps (a refused or replayed policy leaves the kept one in force), so a gate is
+ *  lifted here only when Rust verified a strictly later policy that lowers or rescinds it. */
 export function withVerdict(s: UpdateState, v: PolicyVerdict): UpdateState {
-  if (!v.updateRequired) return s.required ? s : { ...s, minimumVersion: v.minimumVersion ?? s.minimumVersion };
+  if (!v.updateRequired) return { ...s, required: false, minimumVersion: v.minimumVersion, requiredReason: null };
   return { ...s, required: true, minimumVersion: v.minimumVersion, requiredReason: v.reason, dismissed: false };
 }
 
@@ -269,6 +272,8 @@ export function isNoPlatformInFeed(msg: string): boolean {
 export function useAppUpdate() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const pending = useRef<PluginUpdate | null>(null);
+  // Whether the app is gated now (read inside check without re-creating it).
+  const gatedRef = useRef(false);
   const patch = useCallback((p: Partial<UpdateState>) => setState((s) => ({ ...s, ...p })), []);
 
   const check = useCallback(async () => {
@@ -280,6 +285,19 @@ export function useAppUpdate() {
       const update = (await pluginCheck()) as PluginUpdate | null;
       if (!update) {
         setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate" }));
+        // #678 review: gated with no update offered (its release was pulled): the plugin hands back
+        // no feed, so Rust reads the feed itself, in case a later signed policy lowers or rescinds
+        // the minimum.
+        if (gatedRef.current) {
+          try {
+            const { invoke } = await import("../bridge/tauri/invoke");
+            const v = await invoke<PolicyVerdict>("update_policy_refresh", {});
+            if (v.refused) console.warn(`update policy: ${v.refused}`);
+            setState((s) => withVerdict(s, v));
+          } catch (e) {
+            console.warn(`update policy not refreshed: ${msgOf(e)}`);
+          }
+        }
         return;
       }
       pending.current = update;
@@ -359,6 +377,10 @@ export function useAppUpdate() {
     });
     if (!r.ok) patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
   }, [patch]);
+
+  useEffect(() => {
+    gatedRef.current = state.required;
+  }, [state.required]);
 
   // 0.5.4: a required update cannot be dismissed.
   const dismiss = useCallback(() => setState((s) => (s.required ? s : { ...s, dismissed: true })), []);

@@ -1128,6 +1128,7 @@ pub fn run() {
             // 0.5.4: the signed minimum version the update gate reads.
             update_policy::update_policy_apply,
             update_policy::update_policy_status,
+            update_policy::update_policy_refresh,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call

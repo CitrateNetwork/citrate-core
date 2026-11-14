@@ -20,10 +20,12 @@
 //        print the feed: {version, notes, pub_date, platforms}; one version, each platform once.
 //        0.5.4: with --policy, the signed update policy (<file> and <file>.sig) rides along as
 //        citrate.updatePolicy; its minimum must not be above the feed's version
-//   node scripts/updater-feed.mjs policy --min <x.y.z> --reason <text> --issued-at <unix s> --out <file>
+//   node scripts/updater-feed.mjs policy --min <x.y.z|none> --reason <text> --issued-at <unix s> --out <file>
 //        0.5.4: write the update policy bytes to <file> (then `tauri signer sign <file>` with the
 //        updater key writes <file>.sig). Apps from 0.5.4 on verify it and gate below the minimum
-//        (src-tauri/src/update_policy.rs; docs/release/054-FORCED-UPDATE.md)
+//        (src-tauri/src/update_policy.rs; docs/release/054-FORCED-UPDATE.md). A policy replaces
+//        the kept one only with a strictly later --issued-at; --min lower than before lowers the
+//        minimum and --min none rescinds it
 //
 // Fails closed (exit 1): an unknown platform, a missing file or signature, a signature that is not
 // a minisign signature, a base URL that is not https, fragments of different versions, a platform
@@ -77,10 +79,10 @@ export function fragment({ version, baseUrl, dir, platforms }) {
 
 /** The exact policy bytes: what `tauri signer sign` signs and the app verifies. */
 export function policyBytes({ min, reason, issuedAt }) {
-  if (!VERSION.test(min || "")) throw new Error(`--min must be x.y.z (got '${min}')`);
+  if (min !== "none" && !VERSION.test(min || "")) throw new Error(`--min must be x.y.z or none (got '${min}')`);
   const at = Number(issuedAt);
   if (!Number.isSafeInteger(at) || at <= 0) throw new Error(`--issued-at must be unix seconds (got '${issuedAt}')`);
-  const doc = { domain: POLICY_DOMAIN, minimumVersion: min, issuedAt: at };
+  const doc = { domain: POLICY_DOMAIN, minimumVersion: min === "none" ? null : min, issuedAt: at };
   if (reason) doc.reason = String(reason);
   return Buffer.from(JSON.stringify(doc));
 }
@@ -101,8 +103,9 @@ export function policyEntry(file, feedVersion) {
   } catch {
     throw new Error(`${file} is not a policy (not JSON)`);
   }
-  if (doc.domain !== POLICY_DOMAIN || !VERSION.test(doc.minimumVersion || "")) throw new Error(`${file} is not a ${POLICY_DOMAIN} policy`);
-  if (cmpVersion(doc.minimumVersion, feedVersion) > 0) {
+  const rescind = doc && doc.minimumVersion === null;
+  if (!doc || doc.domain !== POLICY_DOMAIN || (!rescind && !VERSION.test(doc.minimumVersion || ""))) throw new Error(`${file} is not a ${POLICY_DOMAIN} policy`);
+  if (!rescind && cmpVersion(doc.minimumVersion, feedVersion) > 0) {
     throw new Error(`the policy requires ${doc.minimumVersion} but this feed offers ${feedVersion}: every app would be gated with nothing to update to`);
   }
   return { policy: bytes.toString("base64"), signature: readSignature(file) };

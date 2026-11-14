@@ -37,10 +37,18 @@ describe("withVerdict", () => {
     const s = withVerdict(INITIAL_UPDATE_STATE, verdict());
     expect(s).toMatchObject({ required: true, minimumVersion: "0.5.4", requiredReason: "0.5.4 fixes Hermes", dismissed: false });
   });
-  it("not required (or refused) never gates, and never lifts a gate already set", () => {
-    expect(withVerdict(INITIAL_UPDATE_STATE, verdict({ updateRequired: false, refused: "bad signature" })).required).toBe(false);
+  it("not required (or refused with nothing kept) never gates", () => {
+    expect(withVerdict(INITIAL_UPDATE_STATE, verdict({ updateRequired: false, minimumVersion: null, refused: "bad signature" })).required).toBe(false);
+  });
+  it("a refused replay keeps the gate (Rust answers with the kept policy's verdict)", () => {
     const gated = withVerdict(INITIAL_UPDATE_STATE, verdict());
-    expect(withVerdict(gated, verdict({ updateRequired: false, minimumVersion: null })).required).toBe(true);
+    const replay = withVerdict(gated, verdict({ refused: "the feed's update policy was not used: it was issued at 10, not after the kept policy (20)" }));
+    expect(replay).toMatchObject({ required: true, minimumVersion: "0.5.4" });
+  });
+  it("a later signed policy that lowers or rescinds the minimum lifts the gate", () => {
+    const gated = withVerdict(INITIAL_UPDATE_STATE, verdict());
+    expect(withVerdict(gated, verdict({ updateRequired: false, minimumVersion: "0.5.2", reason: null }))).toMatchObject({ required: false, minimumVersion: "0.5.2", requiredReason: null });
+    expect(withVerdict(gated, verdict({ updateRequired: false, minimumVersion: null, reason: null })).required).toBe(false);
   });
   it("a gate un-dismisses the card", () => {
     expect(withVerdict({ ...INITIAL_UPDATE_STATE, dismissed: true }, verdict()).dismissed).toBe(false);
@@ -86,6 +94,9 @@ describe("wiring", () => {
   it("the feed's policy goes to Rust with the feed's own version, and the kept one is read at launch", () => {
     expect(src).toMatch(/invoke<PolicyVerdict>\("update_policy_apply", \{ policy: policy\.policy, signature: policy\.signature, feedVersion: update\.version \}\)/);
     expect(src).toMatch(/invoke<PolicyVerdict>\("update_policy_status"/);
+  });
+  it("gated with no update offered, Rust reads the feed itself (a rescind after a pulled release)", () => {
+    expect(src).toMatch(/if \(gatedRef\.current\) \{[\s\S]*invoke<PolicyVerdict>\("update_policy_refresh"/);
   });
   it("a required update downloads by itself; the restart stays a click", () => {
     expect(src).toMatch(/state\.status === "available" && \(state\.critical \|\| state\.required\)\) void install\(\)/);

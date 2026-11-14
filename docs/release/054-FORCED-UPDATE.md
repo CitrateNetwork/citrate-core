@@ -37,6 +37,7 @@ minimum is a separate document, signed with the updater key:
 
 The policy bytes are
 `{"domain":"citrate-core-update-policy/v1","minimumVersion":"0.5.4","issuedAt":<unix s>,"reason":"..."}`.
+`"minimumVersion": null` means no minimum (a rescind).
 
 `src-tauri/src/update_policy.rs` verifies the policy:
 
@@ -44,8 +45,13 @@ The policy bytes are
 - It checks the domain, and refuses unknown fields.
 - It refuses a minimum above the version the same feed offers, because the app would be gated with nothing to update to.
 
-The highest verified policy is kept in `<app data>/update-policy.json` and verified again at every
-read. A replayed older feed, or launching with no network, does not lift a gate the app has already seen.
+The verified policy is kept in `<app data>/update-policy.json` and verified again at every read, so
+launching with no network does not lift a gate the app has already seen.
+
+Policies are ordered by their signed `issuedAt` alone. A verified policy replaces the kept one only
+when its `issuedAt` is **strictly later**, whatever its minimum: it may raise, lower or rescind it.
+A replayed older policy, or a different policy with the same `issuedAt`, is refused and the kept one
+stays (the refusal is logged).
 
 Below the minimum, the app shows a blocking screen (`src/shell/UpdateBanner.tsx`). The update downloads by itself, the card cannot be dismissed, and Restart now is the only way forward. Anything unverified gates nothing: it fails open, and the reason is logged.
 
@@ -55,6 +61,25 @@ Below the minimum, the app shows a blocking screen (`src/shell/UpdateBanner.tsx`
 2. `tauri signer sign update-policy.json` with the updater key (the same step as the artifacts in `scripts/release-local.sh`). Check it with `minisign -V -p <pub> -m update-policy.json -x update-policy.json.sig`, after decoding the base64 `.sig` into a file.
 3. `node scripts/updater-feed.mjs merge --notes "[critical] ..." --pub-date ... --policy update-policy.json <fragments>`. This refuses a policy above the feed's version or one without a signature.
 4. Upload `latest.json` to both endpoints as usual (`053-UPDATER.md`).
+
+## Lowering or rescinding a minimum
+
+If a minimum was signed by mistake, or the release it points at is pulled, clients stay gated with
+nothing to install until a newer policy reaches them. Fix it the same way, with a later `issuedAt`:
+
+1. Lower: `node scripts/updater-feed.mjs policy --min <the version members can install> --reason "..." --issued-at $(date +%s) --out update-policy.json`.
+   Rescind entirely: use `--min none` instead (writes `"minimumVersion": null`).
+2. Sign it with the updater key and check it, as in step 2 above.
+3. `merge --policy update-policy.json` into the feed of the version that is actually published, and
+   upload `latest.json` to both endpoints. A rescind is accepted with any feed version. If the feed
+   now offers no version newer than the gated clients run (the release was pulled), the updater
+   plugin reports "no update"; a gated client then reads the feed itself (`update_policy_refresh`)
+   so it still gets the new policy.
+
+The new `issuedAt` must be later than the one being replaced (`date +%s` at signing time is). Gated
+clients keep checking every 5 minutes, so they pick it up without a restart. Never publish the
+mistaken policy's feed again afterwards: it is refused by clients that saw the newer one, but a
+fresh install that sees only the old feed would be gated.
 
 `scripts/release-local.sh` does not run steps 1 and 2 yet. They are manual until security signs off.
 

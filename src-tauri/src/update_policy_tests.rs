@@ -52,8 +52,13 @@ impl TestKey {
     }
 
     fn policy(&self, min: &str, issued_at: u64) -> StoredPolicy {
+        self.policy_json(&format!("\"{min}\""), issued_at)
+    }
+
+    /// `min_json` is the JSON value of `minimumVersion` (`"0.5.4"` quoted, or `null`).
+    fn policy_json(&self, min_json: &str, issued_at: u64) -> StoredPolicy {
         let body = format!(
-            r#"{{"domain":"{POLICY_DOMAIN}","minimumVersion":"{min}","issuedAt":{issued_at},"reason":"0.5.4 fixes Hermes"}}"#
+            r#"{{"domain":"{POLICY_DOMAIN}","minimumVersion":{min_json},"issuedAt":{issued_at},"reason":"0.5.4 fixes Hermes"}}"#
         );
         StoredPolicy {
             policy: b64(&body),
@@ -91,7 +96,7 @@ fn a_verified_policy_requires_the_update_below_its_minimum_only() {
     let k = TestKey::generate();
     let p = k.policy("0.5.4", 1_790_000_000);
     let doc = verify(&k.conf_pubkey(), &p.policy, &p.signature).expect("verifies");
-    assert_eq!(doc.minimum_version, "0.5.4");
+    assert_eq!(doc.minimum_version.as_deref(), Some("0.5.4"));
     assert!(verdict("0.5.3", Some(&doc), None).update_required);
     assert!(verdict("0.5.4-rc.2", Some(&doc), None).update_required);
     assert!(!verdict("0.5.4", Some(&doc), None).update_required);
@@ -151,16 +156,65 @@ fn apply_keeps_the_verified_policy_and_status_reads_it_back_offline() {
 }
 
 #[test]
-fn a_replayed_older_policy_does_not_lift_a_kept_higher_minimum() {
+fn a_later_signed_lower_minimum_ungates() {
+    // #678 review: a minimum signed by mistake (or whose release was pulled) is lowered by a newer
+    // signed policy, and the lower one is what is kept from then on.
     let k = TestKey::generate();
-    let path = tmp("replay");
-    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4");
+    let path = tmp("lower");
+    assert!(apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4").update_required);
     let v = apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.2", 30), "0.5.4");
-    assert_eq!(v.minimum_version.as_deref(), Some("0.5.4"));
-    assert!(v.update_required);
-    // A higher one replaces it.
+    assert_eq!(v.minimum_version.as_deref(), Some("0.5.2"));
+    assert!(!v.update_required, "{v:?}");
+    assert_eq!(v.refused, None);
+    assert!(!status(&path, &k.conf_pubkey(), "0.5.3").update_required);
+    // A newer one raises it again.
     let v = apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.5", 40), "0.5.5");
     assert_eq!(v.minimum_version.as_deref(), Some("0.5.5"));
+    assert!(v.update_required);
+}
+
+#[test]
+fn a_later_signed_policy_with_no_minimum_rescinds_it() {
+    let k = TestKey::generate();
+    let path = tmp("rescind");
+    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4");
+    let v = apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy_json("null", 21), "0.5.3");
+    assert_eq!((v.update_required, v.minimum_version.clone(), v.refused.clone()), (false, None, None), "{v:?}");
+    let s = status(&path, &k.conf_pubkey(), "0.5.3");
+    assert!(!s.update_required && s.minimum_version.is_none(), "{s:?}");
+}
+
+#[test]
+fn an_older_replay_is_still_refused() {
+    let k = TestKey::generate();
+    let path = tmp("replay");
+    let old = k.policy("0.5.2", 10);
+    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4");
+    // The older (validly signed) policy, replayed by a stale or hostile feed.
+    let v = apply(&path, &k.conf_pubkey(), "0.5.3", &old, "0.5.4");
+    assert_eq!(v.minimum_version.as_deref(), Some("0.5.4"));
+    assert!(v.update_required);
+    assert!(v.refused.as_deref().unwrap_or("").contains("not after the kept policy"), "{v:?}");
+    // An older rescind is refused too.
+    let v = apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy_json("null", 5), "0.5.4");
+    assert!(v.update_required, "{v:?}");
+}
+
+#[test]
+fn an_equal_timestamp_is_refused() {
+    let k = TestKey::generate();
+    let path = tmp("equal");
+    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4");
+    for other in [k.policy("0.5.2", 20), k.policy_json("null", 20), k.policy("0.5.6", 20)] {
+        let v = apply(&path, &k.conf_pubkey(), "0.5.3", &other, "0.5.4");
+        assert_eq!(v.minimum_version.as_deref(), Some("0.5.4"));
+        assert!(v.update_required, "{v:?}");
+        assert!(v.refused.is_some(), "{v:?}");
+    }
+    // The kept policy itself, still in the feed, is no refusal (nothing to say every check).
+    let kept: StoredPolicy = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let v = apply(&path, &k.conf_pubkey(), "0.5.3", &kept, "0.5.4");
+    assert_eq!((v.update_required, v.refused), (true, None));
 }
 
 #[test]
@@ -206,10 +260,36 @@ fn the_pinned_release_key_parses_in_the_form_verify_reads() {
 }
 
 #[test]
+fn a_pulled_release_feed_at_the_current_version_can_still_rescind_the_gate() {
+    // The plugin reports "no update" for a feed at this client's own version, so the policy is read
+    // from the whole feed document (update_policy_refresh).
+    let k = TestKey::generate();
+    let path = tmp("pulled");
+    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 20), "0.5.4");
+    let p = k.policy_json("null", 30);
+    let feed = serde_json::json!({
+        "version": "0.5.3",
+        "platforms": {},
+        "citrate": { "updatePolicy": { "policy": p.policy, "signature": p.signature } }
+    });
+    let v = apply_feed(&path, &k.conf_pubkey(), "0.5.3", &feed);
+    assert!(!v.update_required, "{v:?}");
+    // A feed with no policy (or garbage in it) leaves the kept one in force.
+    apply(&path, &k.conf_pubkey(), "0.5.3", &k.policy("0.5.4", 40), "0.5.4");
+    for feed in [
+        serde_json::json!({ "version": "0.5.3" }),
+        serde_json::json!({ "version": "0.5.3", "citrate": { "updatePolicy": { "policy": 1 } } }),
+        serde_json::json!({ "citrate": { "updatePolicy": { "policy": "eA==", "signature": "eA==" } } }),
+    ] {
+        assert!(apply_feed(&path, &k.conf_pubkey(), "0.5.3", &feed).update_required, "{feed}");
+    }
+}
+
+#[test]
 fn update_policy_commands_are_registered_and_allowed_for_the_main_window() {
     let lib = include_str!("lib.rs");
     let acl = include_str!("../permissions/main-window.toml");
-    for cmd in ["update_policy_apply", "update_policy_status"] {
+    for cmd in ["update_policy_apply", "update_policy_status", "update_policy_refresh"] {
         assert!(lib.contains(&format!("update_policy::{cmd}")), "{cmd} in generate_handler!");
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
     }
