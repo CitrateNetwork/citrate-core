@@ -56,7 +56,23 @@ A policy whose `issuedAt` is more than 24 h ahead of the client's clock is refus
 `updater-feed.mjs policy` refuses to write one. Otherwise a mis-set signing clock would date a
 policy that outranks every correction signed before that date.
 
-Below the minimum, the app shows a blocking screen (`src/shell/UpdateBanner.tsx`). The update downloads by itself, the card cannot be dismissed, and Restart now is the only way forward. Anything unverified gates nothing: it fails open, and the reason is logged.
+**Support: check the device clock.** The same rule cuts the other way. A device whose clock is more
+than 24 h *behind* sees every new policy as dated too far ahead, so it refuses them all, including
+a policy that lowers or rescinds the minimum. Such a member stays gated by the policy already kept
+on the device after everyone else is released. When a gated member reports that a lowered or
+rescinded minimum did not reach them, first ask them to set the device clock to automatic, then
+check for the update again (the refusal is logged as "dated ... ahead of this device's clock").
+
+Below the minimum, the app shows a blocking screen (`src/shell/UpdateBanner.tsx`). The update downloads by itself, the card cannot be dismissed, and Restart now is the way forward.
+
+For members whose updater cannot install, the screen also offers a manual way out:
+
+- **Quit Citrate Core.**
+- **Download manually:** a link to https://www.citrate.ai/download. Installers are behind the invite gate, so the screen says support can send a fresh invite link. No installer URL is shown.
+- **Support:** support@citrate.ai as selectable text, with a Copy button.
+- **What went wrong:** the update error text, when there is one.
+
+The wallet is not reachable while the app is gated, read-only or otherwise. Nothing on the screen loops: it checks again once every 5 minutes (one timer), and the automatic download starts only when an update is offered, never on its own after an error. Anything unverified gates nothing: it fails open, and the reason is logged.
 
 ## Release steps (once per release that raises the minimum)
 

@@ -10,10 +10,96 @@
 // under this card (z 59, the card stays on top and clickable), the card cannot be dismissed, and
 // the update downloads by itself. Only a minimum signed with the updater key does this.
 // =====================================================================
+import { useState } from "react";
 import { useAppUpdate, formatBytes, progressFraction, type UpdateState } from "./updater";
 
+/** #678 review: where a gated member can get the update by hand. Installers are behind the invite
+ *  gate, so this is the download page (not an installer URL); support sends a fresh invite link. */
+export const MANUAL_DOWNLOAD_URL = "https://www.citrate.ai/download";
+export const SUPPORT_EMAIL = "support@citrate.ai";
+
+/** Quit the app (the gated member's way out). */
+async function quitApp(): Promise<void> {
+  try {
+    const { exit } = await import("@tauri-apps/plugin-process");
+    await exit(0);
+  } catch {
+    window.close();
+  }
+}
+
+/** Copy `text`; resolves to whether it worked (no clipboard in some webviews). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The way out when this app cannot install the update itself: quit, download by hand, support. */
+export function UpdateRequiredHelp({
+  error,
+  onQuit = () => void quitApp(),
+  onCopy = copyText,
+}: {
+  error: string | null;
+  onQuit?: () => void;
+  onCopy?: (text: string) => Promise<boolean>;
+}) {
+  const [copied, setCopied] = useState<null | boolean>(null);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--line-1, rgba(127,127,127,.25))", paddingTop: 12 }}>
+      {error && (
+        <div aria-label="Update error">
+          <span style={{ display: "block", fontSize: 11.5, color: "var(--tx-3)" }}>What went wrong</span>
+          <pre className="mono" style={{ margin: 0, fontSize: 11, color: "var(--danger)", whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text" }}>
+            {error}
+          </pre>
+        </div>
+      )}
+      <div aria-label="Download manually">
+        <span style={{ display: "block", fontSize: 13, fontWeight: 600 }}>Download manually</span>
+        <p style={{ margin: "4px 0 0", fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)" }}>
+          If the update will not install here, quit Citrate Core and install the new version from{" "}
+          <a href={MANUAL_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+            {MANUAL_DOWNLOAD_URL.replace("https://", "")}
+          </a>
+          . Downloads need an invite link; if yours no longer works, ask support for a fresh one. Installing over this version keeps your wallet, keys and data.
+        </p>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Support:</span>
+        <span className="mono" style={{ fontSize: 12.5, userSelect: "all" }}>
+          {SUPPORT_EMAIL}
+        </span>
+        <button className="btn btn-ghost btn-sm" onClick={() => void onCopy(SUPPORT_EMAIL).then(setCopied)}>
+          {copied === true ? "Copied" : "Copy"}
+        </button>
+        {copied === false && <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>Copy did not work here; select the address instead.</span>}
+      </div>
+      <div>
+        <button className="btn btn-ghost btn-sm" onClick={onQuit}>
+          Quit Citrate Core
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 0.5.4: the blocking screen while this version is below the verified minimum. */
-export function UpdateRequiredScreen({ state, onRetry }: { state: UpdateState; onRetry: () => void }) {
+export function UpdateRequiredScreen({
+  state,
+  onRetry,
+  onQuit,
+  onCopy,
+}: {
+  state: UpdateState;
+  onRetry: () => void;
+  onQuit?: () => void;
+  onCopy?: (text: string) => Promise<boolean>;
+}) {
   if (!state.required) return null;
   const noUpdate = state.status === "uptodate" || state.status === "idle" || state.status === "checking";
   return (
@@ -30,6 +116,7 @@ export function UpdateRequiredScreen({ state, onRetry }: { state: UpdateState; o
         alignItems: "center",
         justifyContent: "center",
         padding: 16,
+        overflowY: "auto",
         color: "var(--tx-1)",
       }}
     >
@@ -61,6 +148,7 @@ export function UpdateRequiredScreen({ state, onRetry }: { state: UpdateState; o
             </button>
           </div>
         )}
+        <UpdateRequiredHelp error={state.error} onQuit={onQuit} onCopy={onCopy} />
       </div>
     </div>
   );
