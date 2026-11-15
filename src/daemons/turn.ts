@@ -18,6 +18,7 @@
 // The run's tokens are measured from the model server's usage reports when every model call has
 // one, otherwise estimated by the TokenMeter from characters (it says which).
 // =====================================================================
+import type { TurnToolOutput } from "../agent/deployClaims";
 import {
   AGENT_SYSTEM_PROMPT,
   AGENT_TOOLS,
@@ -59,6 +60,9 @@ export interface SidecarDaemonApi {
 }
 
 export interface DaemonTurnDeps {
+  /** #643: check the run's reply against its tool results before it is shown or logged (the
+   *  store's deploy-claim check). Absent = the reply is returned as the model wrote it. */
+  checkReply?: (reply: string, outputs: TurnToolOutput[]) => Promise<string>;
   /** The chat provider's kind right now (`local` | `sidecar` run daemons; nothing else does). */
   providerKind: string | undefined;
   /** The chat system prompt with its live context (the daemon preamble is appended here). */
@@ -216,6 +220,8 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   }
   const messages = [{ role: "user", content: task }];
   let answered = false;
+  // #643: the run's tool results, for the reply check.
+  const outputs: TurnToolOutput[] = [];
   try {
     const reply = await provider.send({
       messages,
@@ -226,6 +232,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         onActivity: (ev) => {
           if (ev.kind === "step") meter.round();
           else if (ev.kind === "usage") meter.measured(ev.promptTokens, ev.completionTokens);
+          else if (ev.kind === "tool_output") outputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
         },
         onToolCall: async (call, meta) => {
           throwIfStopped(signal);
@@ -233,12 +240,13 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
           const d = daemonToolDecision(call, claim.name, meta, allowed);
           const out = d.run ? await deps.handleTool(call, d.meta, signal) : d.result;
           meter.context(out.length);
+          outputs.push({ tool: call.name, content: out });
           return out;
         },
       },
     });
     answered = true;
-    return reply.content;
+    return deps.checkReply ? await deps.checkReply(reply.content, outputs) : reply.content;
   } catch (e) {
     if (openRefused !== null) throw new DaemonNotStarted(openRefused);
     throw e;

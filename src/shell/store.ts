@@ -68,6 +68,7 @@ import {
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
+import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -3322,7 +3323,7 @@ export class Store {
               planReported(ev.steps);
             } else if (ev.kind === "approval") {
               approvalNoted(ev.callId, ev.tool, ev.state);
-            } else if (!ac.signal.aborted) noteStep(ev.step);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
           },
         },
       });
@@ -3511,6 +3512,8 @@ export class Store {
       this.turnAbort = ac;
       beginTurn(provider.kind, `${provider.label} · resumed after reload`);
     };
+    // #643: the resumed turn's tool results (what this view saw), for the final-answer check.
+    const toolOutputs: TurnToolOutput[] = [];
     try {
       const r = await provider.reattach({
         signal: ac.signal,
@@ -3533,6 +3536,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, msgId, ensure, meta);
+              toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3550,6 +3554,8 @@ export class Store {
               commandRan(ev);
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
+            } else if (ev.kind === "tool_output") {
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
               // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
@@ -3572,6 +3578,7 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
+    if (shown) await this.checkAnswerClaims(msgId, toolOutputs);
     if (shown) patch((m) => ({ ...m, streaming: false }));
     if (began) this.setState({ chatStatus: "ready" });
     this.scrollChat();
@@ -3766,6 +3773,7 @@ export class Store {
         close: (id) => h.sessionClose(id),
       },
       handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
+      checkReply: (reply, outputs) => this.checkDaemonReply(reply, outputs),
     });
   }
 
@@ -3815,6 +3823,8 @@ export class Store {
     }
     beginTurn(provider.kind, provider.label);
     const asstId = "m" + ++this.mid;
+    // #643: this turn's tool results, for the final-answer check on deploy claims.
+    const toolOutputs: TurnToolOutput[] = [];
     let started = false;
     const ensure = () => {
       if (started) return;
@@ -3875,6 +3885,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
+              toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3902,6 +3913,11 @@ export class Store {
               this.toast(ev.text);
               return;
             }
+            // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
+            if (ev.kind === "tool_output") {
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              return;
+            }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
             if (ev.kind === "approval") {
               approvalNoted(ev.callId, ev.tool, ev.state);
@@ -3920,12 +3936,16 @@ export class Store {
       const winner = await Promise.race([run.then(() => "done" as const), stopSignal]);
       if (winner === "stopped") throw new TurnStopped();
       flush();
+      // #643: no deploy claim is kept unless this turn's tools confirmed it (receipt + code).
+      await this.checkAnswerClaims(asstId, toolOutputs);
       endTurn("answered");
       // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
       this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
       flush();
       ensure();
+      // #643: a stopped or failed turn's partial text is checked the same way.
+      await this.checkAnswerClaims(asstId, toolOutputs);
       if (e instanceof TurnStopped || stopped()) {
         patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
         endTurn("stopped");
@@ -3943,6 +3963,63 @@ export class Store {
     this.scrollChat();
     this.save();
   }
+  /** #643 — what each conversation (by thread id) has established about deploys. */
+  private deployLedgers = new Map<string, DeployLedger>();
+
+  /** #643 — the deploy ledger of the conversation on screen. */
+  private deployLedger(): DeployLedger {
+    const id = this.state.chatThreadId || "";
+    let l = this.deployLedgers.get(id);
+    if (!l) {
+      l = newDeployLedger();
+      this.deployLedgers.set(id, l);
+    }
+    return l;
+  }
+
+  /**
+   * #643 — read a turn's tool results into the conversation's deploy ledger and return the
+   * evidence for the final-answer check (src/agent/deployClaims.ts).
+   */
+  private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
+    return collectDeployEvidence(outputs, {
+      ledger: this.deployLedger(),
+      memberTexts: this.state.chatMsgs.filter((m) => m.who === "You").map((m) => m.text),
+      memberWallet: this.state.walletAddr || null,
+    });
+  }
+
+  /**
+   * #643 — the final-answer check. Before an answer is kept (shown as final, read aloud, saved,
+   * and sent back as context next turn), every deploy claim in it is checked: an address stays
+   * only when a trusted receipt in this conversation names it and `eth_getCode` on 40204 (core
+   * `contract_get_code`) returns code there, or, for a contract that is not the member's own
+   * deploy, when there is code at it; a malformed address is removed; a claimed deploy with no
+   * receipt is replaced by where the deploy really stands (refused, waiting for approval,
+   * declined, unfunded, ...).
+   */
+  private async checkAnswerClaims(msgId: string, outputs: TurnToolOutput[]): Promise<void> {
+    const ev = this.deployEvidence(outputs);
+    const msg = this.state.chatMsgs.find((m) => m.id === msgId);
+    if (!msg || !msg.text) return;
+    const checked = await checkDeployClaims(msg.text, ev, (a) => bridge.contracts.getCode(a));
+    if (!checked.changed) return;
+    console.warn("#643 answer check:", checked.findings.join("; "));
+    this.setState((s) => ({
+      chatMsgs: s.chatMsgs.map((m) =>
+        m.id === msgId ? { ...m, text: checked.text, chips: m.chips.concat([{ label: DEPLOY_CLAIM_CHIP, status: "declined" }]) } : m,
+      ),
+    }));
+  }
+
+  /** #643 — a scheduled daemon run's reply, checked the same way before it is shown or logged. */
+  private async checkDaemonReply(reply: string, outputs: TurnToolOutput[]): Promise<string> {
+    const ev = collectDeployEvidence(outputs, { memberWallet: this.state.walletAddr || null });
+    const checked = await checkDeployClaims(reply, ev, (a) => bridge.contracts.getCode(a));
+    if (checked.changed) console.warn("#643 daemon reply check:", checked.findings.join("; "));
+    return checked.text;
+  }
+
   scrollChat(): void {
     requestAnimationFrame(() => {
       if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
@@ -4559,7 +4636,7 @@ export class Store {
           // HUP-S6.4: the READY D-4 gate record core checked for exactly this bytecode.
           ...(view.gate ? { deployGate: view.gate } : {}),
         });
-        result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf.";
+        result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf. Nothing is deployed yet: there is no contract address until the member approves, the creation tx is sent, and its receipt names one.";
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         // HUP-S6.4 (D-4): core refused because the deploy gate is not READY for this bytecode.

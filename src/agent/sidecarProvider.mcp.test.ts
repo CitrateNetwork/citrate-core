@@ -187,3 +187,21 @@ describe("HUP-S4.1 MCP approval card content", () => {
     expect(notices[0]).toContain(URL);
   });
 });
+
+// #643: the result of a sidecar-hosted tool (a node MCP tool) reaches the store as a `tool_output`,
+// so the final-answer check sees what the node really said (for example a deploy refusal).
+describe("#643 sidecar-hosted tool results are reported", () => {
+  it("a node MCP deploy_propose refusal is reported with its status and content", async () => {
+    const refusal = "Deploy refused: no deploy gate record for this init code.";
+    const a = api(
+      [[call(1, "c1", "mcp__node__deploy_propose"), result(2, "c1", "error", refusal), { seq: 3, event: { type: "final", content: "ok" } }, done(4)]],
+      [],
+      false,
+    );
+    const p = createSidecarProvider(a, () => "p", () => [], () => null, OPTS);
+    const events: unknown[] = [];
+    await p.send({ messages: [{ role: "user", content: "deploy it" }], callbacks: { ...cb(), onActivity: (ev) => events.push(ev) } });
+    expect(events).toContainEqual({ kind: "tool_output", callId: "c1", tool: "mcp__node__deploy_propose", status: "error", content: refusal });
+  });
+});
+

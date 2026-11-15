@@ -244,6 +244,9 @@ export function createSidecarProvider(
   // HUP-S2.2: sidecar-hosted command calls of the current turn (call id -> tool name), so their
   // results are reported to the Activity log as command runs.
   const sidecarRunCalls = new Map<string, string>();
+  // #643: every sidecar-hosted call of the current turn (call id -> tool name), so each result is
+  // reported as a `tool_output` for the final-answer check.
+  const sidecarHostedCalls = new Map<string, string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -450,6 +453,13 @@ export function createSidecarProvider(
           if (type === "tool_result") {
             const callId = String(ev.call_id);
             inFlight.delete(callId);
+            // #643: a sidecar-hosted tool's result (node MCP tools among them) is reported, even
+            // while a stopped turn drains, so the final answer is checked against it.
+            const hostedTool = sidecarHostedCalls.get(callId);
+            if (hostedTool !== undefined) {
+              sidecarHostedCalls.delete(callId);
+              callbacks.onActivity?.({ kind: "tool_output", callId, tool: hostedTool, status: String(ev.status ?? ""), content: String(ev.content ?? "") });
+            }
             const runTool = sidecarRunCalls.get(callId);
             if (runTool !== undefined) {
               sidecarRunCalls.delete(callId);
@@ -467,6 +477,7 @@ export function createSidecarProvider(
           }
           if (type === "tool_call" && ev.host === "sidecar") {
             const c = ev.call as { id?: unknown; name?: unknown } | undefined;
+            if (c && typeof c.id === "string" && typeof c.name === "string") sidecarHostedCalls.set(c.id, c.name);
             if (c && typeof c.id === "string" && typeof c.name === "string" && isFileTool(c.name)) sidecarFileCalls.set(c.id, c.name);
             if (c && typeof c.id === "string" && typeof c.name === "string" && COMMAND_RUN_TOOLS.has(c.name)) sidecarRunCalls.set(c.id, c.name);
             if (!stopping && c && typeof c.id === "string" && c.name === SHELL_RUN_TOOL) {
@@ -630,6 +641,7 @@ export function createSidecarProvider(
     started.clear();
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarHostedCalls.clear();
     const reused = sessionId !== null;
     let id = await ensureSession();
     // Start from the session's current end: a turn sent from elsewhere (the CLI, an MCP client)
@@ -710,6 +722,7 @@ export function createSidecarProvider(
     for (const c of saved.inFlight) inFlight.add(c);
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarHostedCalls.clear();
     const fresh = page.events.filter((e) => e.seq > saved.lastSeq);
     // The sidecar keeps a bounded event log: if events after the saved point were dropped while
     // the view was away, say so instead of skipping them silently.
@@ -760,6 +773,7 @@ export function createSidecarProvider(
     started.clear();
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarHostedCalls.clear();
     const start = api.trackWorkflowRun.bind(api);
     const {
       id,
