@@ -16,8 +16,16 @@
 //   node scripts/updater-feed.mjs fragment --version <x.y.z> --base-url <https URL> --dir <dir> <platform>...
 //        print {version, platforms} for the files in <dir>; each <file> needs <file>.sig beside it
 //        (what `tauri signer sign` writes), and the url is <base-url>/<file>
-//   node scripts/updater-feed.mjs merge --notes <text> --pub-date <RFC 3339 UTC> <fragment.json>...
-//        print the feed: {version, notes, pub_date, platforms}; one version, each platform once
+//   node scripts/updater-feed.mjs merge --notes <text> --pub-date <RFC 3339 UTC> [--policy <file>] <fragment.json>...
+//        print the feed: {version, notes, pub_date, platforms}; one version, each platform once.
+//        0.5.4: with --policy, the signed update policy (<file> and <file>.sig) rides along as
+//        citrate.updatePolicy; its minimum must not be above the feed's version
+//   node scripts/updater-feed.mjs policy --min <x.y.z|none> --reason <text> --issued-at <unix s> --out <file>
+//        0.5.4: write the update policy bytes to <file> (then `tauri signer sign <file>` with the
+//        updater key writes <file>.sig). Apps from 0.5.4 on verify it and gate below the minimum
+//        (src-tauri/src/update_policy.rs; docs/release/054-FORCED-UPDATE.md). A policy replaces
+//        the kept one only with a strictly later --issued-at; --min lower than before lowers the
+//        minimum and --min none rescinds it
 //
 // Fails closed (exit 1): an unknown platform, a missing file or signature, a signature that is not
 // a minisign signature, a base URL that is not https, fragments of different versions, a platform
@@ -36,6 +44,8 @@ export const PLATFORM_FILES = Object.freeze({
 });
 
 const VERSION = /^\d+\.\d+\.\d+$/;
+/** The domain inside every policy (src-tauri/src/update_policy.rs POLICY_DOMAIN). */
+export const POLICY_DOMAIN = "citrate-core-update-policy/v1";
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 /** The .sig content (base64 of minisign text), or throw if it is not one. */
@@ -67,7 +77,47 @@ export function fragment({ version, baseUrl, dir, platforms }) {
   return { version, platforms: out };
 }
 
-export function merge({ fragments, notes, pubDate }) {
+/** The exact policy bytes: what `tauri signer sign` signs and the app verifies. */
+/** How far ahead of now a policy may be dated (the app refuses more: update_policy.rs MAX_ISSUED_AHEAD_S). */
+export const MAX_ISSUED_AHEAD_S = 24 * 60 * 60;
+
+export function policyBytes({ min, reason, issuedAt, now = Math.floor(Date.now() / 1000) }) {
+  if (min !== "none" && !VERSION.test(min || "")) throw new Error(`--min must be x.y.z or none (got '${min}')`);
+  const at = Number(issuedAt);
+  if (!Number.isSafeInteger(at) || at <= 0) throw new Error(`--issued-at must be unix seconds (got '${issuedAt}')`);
+  if (at > now + MAX_ISSUED_AHEAD_S) {
+    throw new Error(`--issued-at ${at} is more than 24 h ahead of this machine's clock (${now}); apps refuse it. Use $(date +%s)`);
+  }
+  const doc = { domain: POLICY_DOMAIN, minimumVersion: min === "none" ? null : min, issuedAt: at };
+  if (reason) doc.reason = String(reason);
+  return Buffer.from(JSON.stringify(doc));
+}
+
+const cmpVersion = (a, b) => {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  return 0;
+};
+
+/** The feed's citrate.updatePolicy from a signed policy file, checked against the feed version. */
+export function policyEntry(file, feedVersion) {
+  const bytes = fs.readFileSync(file);
+  let doc;
+  try {
+    doc = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(`${file} is not a policy (not JSON)`);
+  }
+  const rescind = doc && doc.minimumVersion === null;
+  if (!doc || doc.domain !== POLICY_DOMAIN || (!rescind && !VERSION.test(doc.minimumVersion || ""))) throw new Error(`${file} is not a ${POLICY_DOMAIN} policy`);
+  if (!rescind && cmpVersion(doc.minimumVersion, feedVersion) > 0) {
+    throw new Error(`the policy requires ${doc.minimumVersion} but this feed offers ${feedVersion}: every app would be gated with nothing to update to`);
+  }
+  return { policy: bytes.toString("base64"), signature: readSignature(file) };
+}
+
+export function merge({ fragments, notes, pubDate, policy }) {
   if (!fragments || fragments.length === 0) throw new Error("no fragments");
   if (!RFC3339_UTC.test(pubDate || "")) throw new Error(`pub_date must be RFC 3339 UTC, e.g. 2026-11-20T00:00:00Z (got '${pubDate}')`);
   const versions = [...new Set(fragments.map((f) => f.version))];
@@ -80,7 +130,9 @@ export function merge({ fragments, notes, pubDate }) {
       platforms[p] = entry;
     }
   }
-  return { version: versions[0], notes: String(notes ?? ""), pub_date: pubDate, platforms };
+  const feed = { version: versions[0], notes: String(notes ?? ""), pub_date: pubDate, platforms };
+  if (policy) feed.citrate = { updatePolicy: policyEntry(policy, versions[0]) };
+  return feed;
 }
 
 function parseArgs(argv) {
@@ -104,9 +156,14 @@ function main(argv) {
     out = fragment({ version: opts.version, baseUrl: opts["base-url"], dir: opts.dir || ".", platforms: rest });
   } else if (cmd === "merge") {
     const fragments = rest.map((f) => JSON.parse(fs.readFileSync(f, "utf8")));
-    out = merge({ fragments, notes: opts.notes, pubDate: opts["pub-date"] });
+    out = merge({ fragments, notes: opts.notes, pubDate: opts["pub-date"], policy: opts.policy });
+  } else if (cmd === "policy") {
+    if (!opts.out) throw new Error("--out <file> is required");
+    fs.writeFileSync(opts.out, policyBytes({ min: opts.min, reason: opts.reason, issuedAt: opts["issued-at"] }));
+    process.stdout.write(`wrote ${opts.out}; sign it: tauri signer sign ${opts.out}\n`);
+    return;
   } else {
-    throw new Error("usage: updater-feed.mjs fragment|merge ... (see the header)");
+    throw new Error("usage: updater-feed.mjs fragment|merge|policy ... (see the header)");
   }
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }

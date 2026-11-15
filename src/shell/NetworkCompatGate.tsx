@@ -11,6 +11,7 @@
 // =====================================================================
 import { useNetworkCompat } from "./networkCompat";
 import type { NetworkProfile } from "../network/profile";
+import { ExternalLink } from "./UpdateBanner";
 
 const short = (h: string | null) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : "unknown");
 
@@ -73,9 +74,7 @@ export function NetworkCompatGate({ profile }: { profile?: NetworkProfile | null
         )}
         <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5 }}>
           Use the update card in the corner, or download the latest version from{" "}
-          <a href="https://citrate.ai/download" target="_blank" rel="noreferrer">
-            citrate.ai/download
-          </a>
+          <ExternalLink url="https://citrate.ai/download" />
           .
         </p>
       </div>

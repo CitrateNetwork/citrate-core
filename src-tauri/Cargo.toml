@@ -31,6 +31,10 @@ tauri-plugin-store = "2"
 # never in the repo; it is passphrase-protected and held in the org secret manager /
 # CI secrets (see docs/RELEASE.md §1).
 tauri-plugin-updater = "2"
+# 0.5.4 — verify the signed update policy (minimum version) exactly as tauri-plugin-updater verifies
+# an artifact. Already in Cargo.lock (tauri-plugin-updater and citrate-components use it, and it was
+# a dev-dependency here), so no new crate.
+minisign-verify = "0.2"
 # W2.4 — relaunch the app after an update is staged (updater installs, process
 # plugin restarts into the new version).
 tauri-plugin-process = "2"
@@ -206,6 +210,5 @@ citrate-templates = { path = "../templates/renderer" }
 # K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
 # prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
 blake2 = "0.10"
-# RC52 G8 test-only: check the golden signatures as `minisign -V` does (minisign-verify is already in
-# Cargo.lock: tauri-plugin-updater and citrate-components use it).
-minisign-verify = "0.2"
+# RC52 G8: the golden signature tests use minisign-verify too; since 0.5.4 it is a normal
+# dependency (see [dependencies], the update policy).
