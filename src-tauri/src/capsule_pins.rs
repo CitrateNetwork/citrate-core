@@ -53,7 +53,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Check `<dir>/<name>.cps` against `pin`.
-fn verify_cps(dir: &Path, name: &str, pin: &str) -> Result<(), String> {
+pub(crate) fn verify_cps(dir: &Path, name: &str, pin: &str) -> Result<(), String> {
     let path = dir.join(format!("{name}.cps"));
     let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let got = sha256_hex(&bytes);
@@ -93,6 +93,10 @@ pub fn seed_verified(bundled: &Path, dest: &Path) -> SeedReport {
 /// own) are never touched. Best effort: every failure is reported, none is
 /// fatal.
 pub fn seed_verified_with(bundled: &Path, dest: &Path, pins: &[(&str, &str)]) -> SeedReport {
+    // #677 review: launch provisioning, the explicit repair and the Hermes manager may seed at
+    // once; one seeding at a time, so no copy is ever torn by another.
+    static SEEDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = SEEDING.lock().unwrap_or_else(|e| e.into_inner());
     let mut report = SeedReport::default();
     let _ = std::fs::create_dir_all(dest);
     if let Ok(entries) = std::fs::read_dir(bundled) {

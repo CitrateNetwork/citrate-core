@@ -198,6 +198,8 @@ mod cluster_mesh;
 mod comms;
 mod embed_serve;
 mod hermes;
+// 0.5.4: Hermes provisioning at launch + the setup self-check.
+mod hermes_setup;
 // SCL-S0.3: the managed browser does not outlive the Hermes sidecar.
 mod hermes_headless;
 mod hermes_learn;
@@ -371,6 +373,9 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // 0.5.4 (#677, owner 2026-11-14: on for new installs only): whether this install has
+            // data from an earlier run, read before this launch writes anything.
+            let had_existing_data = hermes_setup::had_existing_data(&hermes_setup::data_roots(app.handle()));
             // K6 — install the network gate before anything can sign. Every wallet signature is
             // checked locally against the active network profile (refused when no network is set,
             // or when it commits to another chain id). Transaction sends additionally check the
@@ -582,7 +587,13 @@ pub fn run() {
             // data dir; started on demand via ipfs_start (alongside the node).
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
             // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
-            // Settings; loopback only; every request needs a connect token; writes need approval.
+            // Settings, or (owner 2026-11-14: on for new installs only) a real first run turned it
+            // on above; loopback only; every request needs a connect token; writes need approval.
+            // 0.5.4: provision Hermes (data folders, pinned starter capsules) BEFORE the node MCP
+            // state is built. Owner 2026-11-14: on for new installs only. A real first run also
+            // offers Hermes the node MCP read tools and turns the server on; an upgraded install
+            // keeps both off (its Setup card offers "Turn on node tools").
+            hermes_setup::provision(app.handle(), had_existing_data);
             app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
             // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
             // watching (turns from the node MCP server or the CLI), instead of leaving them to the
@@ -889,6 +900,10 @@ pub fn run() {
             training::training_claim,
             hermes::hermes_start,
             hermes::hermes_status,
+            // 0.5.4: the Hermes setup self-check.
+            hermes_setup::hermes_setup_check,
+            hermes_setup::hermes_setup_repair,
+            hermes_setup::hermes_setup_enable_node_tools,
             hermes::hermes_skills,
             hermes::hermes_run_skill,
             hermes::hermes_pending_approvals,
