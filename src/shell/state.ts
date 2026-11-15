@@ -10,6 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import { newThreadId } from "./slices/chatHistory";
 import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
@@ -548,6 +549,9 @@ export interface AppState {
   /** Q-E.1 (@rule8, P0) — the pending wallet money-action review (null = none). */
   walletReview: WalletReview | null;
   chatMsgs: ChatMsg[];
+  /** 0.5.4 — the id the current thread is kept under in the chat history (slices/chatHistory.ts).
+   *  Not persisted: a launch starts a new thread; the earlier ones stay in the history. */
+  chatThreadId: string;
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
   /** SCL-S7.5a (D-16 extended) — a chat message held because the local model is configured but
    *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
@@ -946,6 +950,7 @@ export function freshState(pid: string): AppState {
     activation: null,
     activationError: null,
     chatMsgs: [],
+    chatThreadId: newThreadId(),
     chatStatus: "ready",
     chatRouteHold: null,
     chatRoute: "ask_first",

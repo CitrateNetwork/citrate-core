@@ -1706,7 +1706,7 @@ fn mint_bearer() -> Zeroizing<String> {
     use rand::RngCore;
     let mut bytes = Zeroizing::new([0u8; TOKEN_LEN]);
     OsRng.fill_bytes(bytes.as_mut());
-    Zeroizing::new(hex::encode(bytes.as_ref()))
+    Zeroizing::new(hex::encode(&bytes[..]))
 }
 
 /// Write the bearer to `path` `0600` (parent `0700`). Rewritten each start so a stale/loosened file

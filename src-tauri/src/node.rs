@@ -844,7 +844,7 @@ impl NodeManager {
                 self.keyring
                     .set(KEYRING_NODE_STORAGE_ACCOUNT, key.as_ref())
                     .map_err(|e| NodeError::Keyring(e.to_string()))?;
-                Ok(Zeroizing::new(hex::encode(key.as_ref())))
+                Ok(Zeroizing::new(hex::encode(&key[..])))
             }
         }
     }

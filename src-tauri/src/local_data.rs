@@ -43,6 +43,7 @@ const OWNED_LEGACY_ACCOUNTS: &[(&str, &str)] = &[
     ("node-storage-key", "Node storage key"),
     ("memory-store-key", "Journal and memory key"),
     ("deploy-records-key", "Deploy records key"),
+    ("hermes-history-key-v1", "Hermes chat history key"),
     (
         "comms-member-key-v2",
         "Messaging key (re-derived from your wallet)",

@@ -59,6 +59,8 @@ mod contract_reader;
 mod deploy_gate;
 // CORE-A3 (0.5.3): durable deploy records, encrypted per project.
 mod deploy_records;
+// 0.5.4 — the Hermes chat history, sealed on this device (ML-KEM-768 + AES-256-GCM, key in the keyring).
+mod hermes_history;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -775,6 +777,12 @@ pub fn run() {
             deploy_records::deploy_record_save,
             deploy_records::deploy_records_list,
             deploy_records::deploy_record_get,
+            // 0.5.4: the Hermes chat history, sealed on this device (P-11).
+            hermes_history::hermes_history_list,
+            hermes_history::hermes_history_save,
+            hermes_history::hermes_history_delete,
+            hermes_history::hermes_history_delete_all,
+            hermes_history::hermes_history_set_retention,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,

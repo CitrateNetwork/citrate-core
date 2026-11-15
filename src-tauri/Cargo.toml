@@ -43,6 +43,13 @@ argon2 = "0.5"
 aes-gcm = { version = "0.10", features = ["stream"] }
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
+# 0.5.4 — the Hermes chat history at rest: the federation's AES-256-GCM + ML-KEM-768 envelope
+# (citrate-homestead/crates/homestead-crypto: ml-kem 0.2 + hkdf 0.12, same versions). hkdf is
+# already in the lock. `deterministic` = the FIPS 203 seed form (d || z): the device keeps a 64-byte
+# seed in the OS keyring instead of the 2400-byte decapsulation key (Windows credentials cap at
+# 2560 bytes, and an erase holds two keys at once).
+hkdf = "0.12"
+ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
 # CORE-A3 — OIDC loopback-PKCE sign-in.
 # ureq: light blocking HTTP client (rustls TLS) for /token, /userinfo, JWKS,
 #   revoke. Chosen over reqwest (not already in the Tauri tree; pulls tokio +
