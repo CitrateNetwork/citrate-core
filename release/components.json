@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "a53bac644665a992bf871831250af7354fd69512"
+        "rev": "b2e91167bda2b81d52658c58f6327063a25cbedc"
       },
       "federation": {
-        "rev": "a53bac644665a992bf871831250af7354fd69512",
+        "rev": "b2e91167bda2b81d52658c58f6327063a25cbedc",
         "status": "match",
-        "note": "Set by scripts/network-cut.py apply from release/network-cut.json (r1007 genesis commit a53bac644665). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md)."
+        "note": "Set by scripts/network-cut.py apply from release/network-cut.json (citrate-chain main b2e91167bda2: the r1007 genesis commit a53bac644665 plus #476, the serve-split fix for the height-1552 wedge; 0.5.4). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md)."
       },
       "build": {
         "kind": "cargo",
@@ -37,12 +37,12 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-a53bac644665",
-          "evidence": "the release Mac (macOS 15.6.1, arm64), 2026-11-12: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain a53bac644665 (r1007/genesis, tag r1007-genesis), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-a53bac644665; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the live fleet"
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-b2e91167bda2",
+          "evidence": "the release Mac (macOS 15.6.1, arm64), 2026-11-14: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain b2e91167bda2 (main, #476 the serve-split fix), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-b2e91167bda2; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0x134ad1fc848af4a52f0f7abc5bac5224 = the live fleet (gitSha b2e91167bda2)"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "99cdaa48e11b0137304461f4fb2c981e8ee66212ba8662cd9d4a852b02c93673",
-          "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-12: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain a53bac644665 (public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-a53bac644665; consensus --json on the rendered r1007 node.toml: fingerprint 0x5d26c4ab5b0be144d26916b9070a70a4 = the macOS build and the live fleet"
+          "sha256": "59e651b048875356a58ec713be8a7ec8b952d5410a45dd5ad2441af036141ab7",
+          "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-15: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain b2e91167bda2 (public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-b2e91167bda2; consensus --json on the rendered r1007 node.toml: fingerprint 0x134ad1fc848af4a52f0f7abc5bac5224 = the macOS build and the live fleet"
         }
       },
       "pending": {
