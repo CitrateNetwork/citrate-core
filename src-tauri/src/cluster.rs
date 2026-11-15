@@ -344,7 +344,7 @@ fn mint_bearer() -> Zeroizing<String> {
     use rand::RngCore;
     let mut bytes = Zeroizing::new([0u8; TOKEN_LEN]);
     OsRng.fill_bytes(bytes.as_mut());
-    Zeroizing::new(hex::encode(bytes.as_ref()))
+    Zeroizing::new(hex::encode(&bytes[..]))
 }
 
 // CORE-B-001: routed through the shared [`citrate_core_kit::fsutil`] writer, which

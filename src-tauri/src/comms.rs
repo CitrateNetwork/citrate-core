@@ -493,7 +493,7 @@ fn mint_bearer() -> Zeroizing<String> {
     use rand::RngCore;
     let mut bytes = Zeroizing::new([0u8; TOKEN_LEN]);
     OsRng.fill_bytes(bytes.as_mut());
-    Zeroizing::new(hex::encode(bytes.as_ref()))
+    Zeroizing::new(hex::encode(&bytes[..]))
 }
 
 /// Write a secret (bearer token or seed hex) to a 0600 file under a 0700 dir. Fail closed.
@@ -946,7 +946,7 @@ fn load_or_derive_comms_seed(
             keyring
                 .set(KEYRING_COMMS_ACCOUNT_V2, raw.as_ref())
                 .map_err(|e| CommsError::Keyring(e.to_string()))?;
-            Ok(Zeroizing::new(hex::encode(raw.as_ref())))
+            Ok(Zeroizing::new(hex::encode(&raw[..])))
         }
     }
 }
