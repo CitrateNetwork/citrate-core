@@ -219,3 +219,27 @@ describe("an open-time refusal", () => {
     await expect(run).rejects.toThrow(/Not started/);
   });
 });
+
+// #643 / #680 P3: a scheduled run's reply is checked before the run log or journal shows it.
+describe("a daemon run's reply goes through the reply check", () => {
+  it("the check gets the run's tool results and its answer replaces the model's", async () => {
+    const pages = [
+      { events: [{ seq: 1, event: { type: "step_start", step: 1 } }, { seq: 2, event: { type: "tool_call", host: "core", call: { id: "c1", name: "contract_deploy", arguments: "{}" } } }], lastSeq: 2, busy: true },
+      { events: [{ seq: 3, event: { type: "tool_result", call_id: "c1" } }, { seq: 4, event: { type: "final", content: "Deployed at 0x7f2aB3C4d9e1F0a7b2C8dE9fG4h1I5j8K3l0M7n6." } }, { seq: 5, event: { type: "done", outcome: "answered" } }], lastSeq: 5, busy: false },
+    ];
+    const seen: { reply: string; tools: string[] }[] = [];
+    const d = deps({
+      providerKind: "sidecar",
+      sidecar: sidecarFake(pages),
+      handleTool: async () => "Deploy refused: the deploy gate is not READY for this bytecode.",
+      checkReply: async (reply, outputs) => {
+        seen.push({ reply, tools: outputs.map((o) => o.tool) });
+        return "checked";
+      },
+    });
+    const out = await runDaemonTurn(claim, new AbortController().signal, new TokenMeter(100_000, () => undefined), d);
+    expect(out).toBe("checked");
+    expect(seen).toEqual([{ reply: "Deployed at 0x7f2aB3C4d9e1F0a7b2C8dE9fG4h1I5j8K3l0M7n6.", tools: ["contract_deploy"] }]);
+  });
+});
+

@@ -17,7 +17,8 @@ const fakeProvider = (send: ChatProvider["send"]): ChatProvider =>
 const asst = () => store.state.chatMsgs.find((m) => m.who !== "You");
 
 beforeEach(() => {
-  store.setState({ chatMsgs: [], chatStatus: "ready" });
+  // A fresh conversation per test: each has its own deploy ledger.
+  store.setState({ chatMsgs: [], chatStatus: "ready", chatThreadId: "t643-" + Math.random().toString(36).slice(2) });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -84,10 +85,18 @@ describe("#643 the chat answer is checked before it is kept", () => {
     store.provider = fakeProvider(async ({ callbacks }) => {
       callbacks.onActivity?.({
         kind: "tool_output",
+        callId: "c2",
+        tool: "mcp__citrate-node__deploy_propose",
+        status: "ok",
+        content: JSON.stringify({ requestId: "r7", state: "pending" }),
+      });
+      callbacks.onActivity?.({
+        kind: "tool_output",
         callId: "c3",
         tool: "mcp__citrate-node__request_status",
         status: "ok",
         content: JSON.stringify({
+          id: "r7",
           state: "approved",
           summary: "Sign and send a contract deploy",
           confirmation: { state: "included", receipt: { transactionHash: TX, status: "success", blockNumber: 5, contractAddress: REAL } },
@@ -110,5 +119,39 @@ describe("#643 the chat answer is checked before it is kept", () => {
     await store.sendChat("deploy it");
     expect(asst()?.text).not.toContain(REAL);
     expect(asst()?.text).toContain("The node refused the deploy: Deploy refused: the deploy gate is not READY");
+    expect(asst()?.text).not.toMatch(/^Deployed!/);
+  });
+
+  it("#680: turn 2 may say where a contract turn 1 looked up is deployed (code is there)", async () => {
+    const WSALT = "0xAA91b5c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7";
+    vi.spyOn(bridge.contracts, "getCode").mockResolvedValue({ address: WSALT, bookNames: ["WrappedSALT"], isContract: true, codeSize: 3000, codeHash: null, proxy: null, verified: { status: "unverified", contractName: null, note: "" }, note: "" } as never);
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      callbacks.onActivity?.({ kind: "tool_output", callId: "b1", tool: "mcp__citrate-node__address_book", status: "ok", content: JSON.stringify({ book: { WrappedSALT: WSALT } }) });
+      callbacks.onToken("Found WrappedSALT in the address book.");
+    });
+    await store.sendChat("look up WrappedSALT");
+    const answer = `WrappedSALT is deployed at ${WSALT}.`;
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      callbacks.onToken(answer);
+    });
+    await store.sendChat("where is it deployed?");
+    const last = store.state.chatMsgs.filter((m) => m.who !== "You").pop();
+    expect(last?.text).toBe(answer);
+  });
+
+  it("#680: read-aloud speaks the checked answer, never the streamed claim", async () => {
+    const spoken: string[] = [];
+    const s = store as unknown as { readAloud: (t: string) => void };
+    vi.spyOn(s, "readAloud").mockImplementation((t: string) => {
+      spoken.push(t);
+    });
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      callbacks.onActivity?.({ kind: "tool_output", callId: "c1", tool: "mcp__citrate-node__deploy_propose", status: "error", content: "Deploy refused: no deploy gate record." });
+      callbacks.onToken(`Deployed! Your token is deployed at ${BAD_40}.`);
+    });
+    await store.sendChat("deploy");
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]).not.toContain(BAD_40);
+    expect(spoken[0]).toContain("The node refused the deploy");
   });
 });

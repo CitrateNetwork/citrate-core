@@ -68,7 +68,7 @@ import {
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
-import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, type TurnToolOutput } from "../agent/deployClaims";
+import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -3578,7 +3578,7 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
-    if (shown) await this.checkAnswerClaims(msgId, "", toolOutputs);
+    if (shown) await this.checkAnswerClaims(msgId, toolOutputs);
     if (shown) patch((m) => ({ ...m, streaming: false }));
     if (began) this.setState({ chatStatus: "ready" });
     this.scrollChat();
@@ -3773,6 +3773,7 @@ export class Store {
         close: (id) => h.sessionClose(id),
       },
       handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
+      checkReply: (reply, outputs) => this.checkDaemonReply(reply, outputs),
     });
   }
 
@@ -3936,7 +3937,7 @@ export class Store {
       if (winner === "stopped") throw new TurnStopped();
       flush();
       // #643: no deploy claim is kept unless this turn's tools confirmed it (receipt + code).
-      await this.checkAnswerClaims(asstId, text, toolOutputs);
+      await this.checkAnswerClaims(asstId, toolOutputs);
       endTurn("answered");
       // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
       this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
@@ -3944,7 +3945,7 @@ export class Store {
       flush();
       ensure();
       // #643: a stopped or failed turn's partial text is checked the same way.
-      await this.checkAnswerClaims(asstId, text, toolOutputs);
+      await this.checkAnswerClaims(asstId, toolOutputs);
       if (e instanceof TurnStopped || stopped()) {
         patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
         endTurn("stopped");
@@ -3962,18 +3963,46 @@ export class Store {
     this.scrollChat();
     this.save();
   }
+  /** #643 — what each conversation (by thread id) has established about deploys. */
+  private deployLedgers = new Map<string, DeployLedger>();
+
+  /** #643 — the deploy ledger of the conversation on screen. */
+  private deployLedger(): DeployLedger {
+    const id = this.state.chatThreadId || "";
+    let l = this.deployLedgers.get(id);
+    if (!l) {
+      l = newDeployLedger();
+      this.deployLedgers.set(id, l);
+    }
+    return l;
+  }
+
   /**
-   * #643 — the final-answer check. Before an answer is kept (shown, read aloud, saved, and sent
-   * back as context next turn), every deploy claim in it is checked against this turn's tool
-   * results: an address stays only when a confirmed receipt in this turn names it and
-   * `eth_getCode` on 40204 (core `contract_get_code`) returns code there; a malformed address is
-   * removed; a claimed deploy with no receipt is replaced by where the deploy really stands
-   * (refused, waiting for approval, declined, unfunded, ...). See src/agent/deployClaims.ts.
+   * #643 — read a turn's tool results into the conversation's deploy ledger and return the
+   * evidence for the final-answer check (src/agent/deployClaims.ts).
    */
-  private async checkAnswerClaims(msgId: string, memberText: string, outputs: TurnToolOutput[]): Promise<void> {
+  private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
+    return collectDeployEvidence(outputs, {
+      ledger: this.deployLedger(),
+      memberTexts: this.state.chatMsgs.filter((m) => m.who === "You").map((m) => m.text),
+      memberWallet: this.state.walletAddr || null,
+    });
+  }
+
+  /**
+   * #643 — the final-answer check. Before an answer is kept (shown as final, read aloud, saved,
+   * and sent back as context next turn), every deploy claim in it is checked: an address stays
+   * only when a trusted receipt in this conversation names it and `eth_getCode` on 40204 (core
+   * `contract_get_code`) returns code there, or, for a contract that is not the member's own
+   * deploy, when there is code at it; a malformed address is removed; a claimed deploy with no
+   * receipt is replaced by where the deploy really stands (refused, waiting for approval,
+   * declined, unfunded, ...).
+   */
+  private async checkAnswerClaims(msgId: string, outputs: TurnToolOutput[]): Promise<void> {
+    const ev = this.deployEvidence(outputs);
     const msg = this.state.chatMsgs.find((m) => m.id === msgId);
     if (!msg || !msg.text) return;
-    const checked = await checkDeployClaims(msg.text, collectDeployEvidence(outputs), memberText, (a) => bridge.contracts.getCode(a));
+    const checked = await checkDeployClaims(msg.text, ev, (a) => bridge.contracts.getCode(a));
     if (!checked.changed) return;
     console.warn("#643 answer check:", checked.findings.join("; "));
     this.setState((s) => ({
@@ -3981,6 +4010,14 @@ export class Store {
         m.id === msgId ? { ...m, text: checked.text, chips: m.chips.concat([{ label: DEPLOY_CLAIM_CHIP, status: "declined" }]) } : m,
       ),
     }));
+  }
+
+  /** #643 — a scheduled daemon run's reply, checked the same way before it is shown or logged. */
+  private async checkDaemonReply(reply: string, outputs: TurnToolOutput[]): Promise<string> {
+    const ev = collectDeployEvidence(outputs, { memberWallet: this.state.walletAddr || null });
+    const checked = await checkDeployClaims(reply, ev, (a) => bridge.contracts.getCode(a));
+    if (checked.changed) console.warn("#643 daemon reply check:", checked.findings.join("; "));
+    return checked.text;
   }
 
   scrollChat(): void {
