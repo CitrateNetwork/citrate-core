@@ -3,7 +3,7 @@
 // fixtures; on r1007 these reads never run (no WorkMarket in the shipped book).
 import { describe, expect, it } from "vitest";
 import { decodeFunctionData, encodeFunctionResult, toFunctionSelector, type Hex } from "viem";
-import { currentOffer, escrowOf, liveStateOf, payoutStatusOf, readMyWork } from "./myWork";
+import { currentOffer, disputeEnd, escrowOf, liveStateOf, payoutStatusOf, readMyWork } from "./myWork";
 import { FRL_ABI, getOffer, WITHDRAW_SIGNATURE, withdrawCalldata, WORK_MARKET_ABI, type ChainOffer, type ViewCall } from "./workMarketReads";
 
 const SALT = 10n ** 18n;
@@ -69,7 +69,7 @@ describe("WorkMarket and FRL reads", () => {
 });
 
 describe("state words", () => {
-  const o = (state: ChainOffer["state"], over: Partial<ChainOffer> = {}): ChainOffer => ({ id: 14, kind: "flRound", state, poster: "0x" + "11".repeat(20), bindRef: ROUND, groupHash: Z32, pricePerUnit: (3n * SALT) / 2n, budget: 600n * SALT, paid: 0n, refunded: 0n, deadline: 1, disputeWindow: 100, maxWorkers: 8, workers: 3, joinBond: 0n, coordinator: "0x" + "cd".repeat(20), payoutPostedAt: 0, payoutUnits: 0n, ...over });
+  const o = (state: ChainOffer["state"], over: Partial<ChainOffer> = {}): ChainOffer => ({ id: 14, kind: "flRound", state, poster: "0x" + "11".repeat(20), bindRef: ROUND, groupHash: Z32, pricePerUnit: (3n * SALT) / 2n, budget: 600n * SALT, paid: 0n, refunded: 0n, deadline: 1, disputeWindow: 100, maxWorkers: 8, workers: 3, joinBond: 0n, coordinator: "0x" + "cd".repeat(20), payoutPostedAt: 0, payoutUnits: 0n, payoutRoot: Z32, answerGraceUntil: 0, openChallenges: 0, reserveSwept: false, ...over });
   const r = (status: "committed" | "accepted" | "rejected") => ({ status, fault: status === "rejected" ? ("output mismatch" as const) : ("none" as const), deadlineBlock: 1, participants: 5, adapterHash: Z32, ordinal: 4 });
   it("maps offer and FRL state to the design's round states", () => {
     expect(liveStateOf(o("open"), null)).toBe("pending");
@@ -83,13 +83,48 @@ describe("state words", () => {
   it("escrow: reserved for posted units, the rest refundable", () => {
     expect(escrowOf(o("payoutPosted", { payoutUnits: 7n }))).toEqual({ budgetWei: 600n * SALT, paidWei: 0n, reservedWei: (21n * SALT) / 2n, refundableWei: 600n * SALT - (21n * SALT) / 2n });
   });
-  it("payouts: waiting inside the dispute window, then claimable; settled is claimed", () => {
-    const posted = o("payoutPosted", { payoutPostedAt: 1_000, disputeWindow: 100 });
-    expect(payoutStatusOf(posted, false, 1_050)).toBe("waiting");
-    expect(payoutStatusOf(posted, false, 1_200)).toBe("claimable");
-    expect(payoutStatusOf(posted, true, 1_200)).toBe("claimed");
-    expect(payoutStatusOf(o("disputed"), false, 5)).toBe("disputed");
-    expect(payoutStatusOf(o("running"), false, 5)).toBeNull();
+  it("payouts: claimable only when every settle precondition holds", () => {
+    const live = "0x" + "77".repeat(32);
+    const posted = o("payoutPosted", { payoutPostedAt: 1_000, disputeWindow: 100, payoutRoot: live });
+    const me = { joined: true, settled: false };
+    expect(payoutStatusOf(posted, me, 1_200)).toBe("claimable");
+    expect(payoutStatusOf({ ...posted, state: "closed" }, me, 1_200)).toBe("claimable");
+  });
+  // Red tests, one per WorkMarket.settle precondition: each makes "claimable" false.
+  const live = "0x" + "77".repeat(32);
+  const posted = o("payoutPosted", { payoutPostedAt: 1_000, disputeWindow: 100, payoutRoot: live });
+  const me = { joined: true, settled: false };
+  it("settle: state must be PayoutPosted or Closed (Running has no payout; Disputed is frozen)", () => {
+    expect(payoutStatusOf({ ...posted, state: "running" }, me, 1_200)).toBeNull();
+    expect(payoutStatusOf({ ...posted, state: "disputed" }, me, 1_200)).toBe("disputed");
+  });
+  it("settle: a live payout root (a withdrawn list is not claimable)", () => {
+    expect(payoutStatusOf({ ...posted, payoutRoot: Z32 }, me, 1_200)).toBe("no-payout-list");
+  });
+  it("settle: the dispute window has ended", () => {
+    expect(payoutStatusOf(posted, me, 1_099)).toBe("waiting");
+    expect(payoutStatusOf(posted, me, 1_100)).toBe("claimable");
+  });
+  it("settle: the grace after an answered challenge has ended (answerGraceUntil)", () => {
+    expect(payoutStatusOf({ ...posted, answerGraceUntil: 5_000 }, me, 1_200)).toBe("waiting");
+    expect(payoutStatusOf({ ...posted, answerGraceUntil: 5_000 }, me, 5_000)).toBe("claimable");
+  });
+  it("settle: no open challenges", () => {
+    expect(payoutStatusOf({ ...posted, openChallenges: 1 }, me, 1_200)).toBe("challenge-open");
+  });
+  it("settle: the reserve is not swept", () => {
+    expect(payoutStatusOf({ ...posted, reserveSwept: true }, me, 1_200)).toBe("reserve-swept");
+  });
+  it("settle: joined", () => {
+    expect(payoutStatusOf(posted, { joined: false, settled: false }, 1_200)).toBe("not-joined");
+  });
+  it("settle: not already settled", () => {
+    expect(payoutStatusOf(posted, { joined: true, settled: true }, 1_200)).toBe("claimed");
+  });
+  it("getOffer carries every settle precondition", async () => {
+    const x = await getOffer(chain({ 9: offerTuple(2, { payoutRoot: live as Hex, answerGraceUntil: 77n, openChallenges: 2, reserveSwept: true }) }, []), WM, 9);
+    expect(x).toMatchObject({ payoutRoot: live, answerGraceUntil: 77, openChallenges: 2, reserveSwept: true });
+    expect(disputeEnd({ ...posted, answerGraceUntil: 5_000 })).toBe(5_000);
   });
   it("the current round is the newest still in progress", () => {
     expect(currentOffer([o("closed", { id: 20 }), o("running", { id: 18 })])!.id).toBe(18);

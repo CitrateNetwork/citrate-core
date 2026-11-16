@@ -117,6 +117,14 @@ export interface ChainOffer {
   coordinator: string;
   payoutPostedAt: number;
   payoutUnits: bigint;
+  /** The live payout list's root; zero when none is live (never posted, or withdrawn). */
+  payoutRoot: string;
+  /** Disputes stay open at least until this time (seconds), set when a challenge is answered. */
+  answerGraceUntil: number;
+  /** Inclusion and index challenges awaiting an answer under the live root. */
+  openChallenges: number;
+  /** The poster took back the unsettled reserve after the claim period. */
+  reserveSwept: boolean;
 }
 
 export interface ChainRound {
@@ -160,6 +168,10 @@ export async function getOffer(call: ViewCall, market: string, id: number): Prom
     coordinator: o.coordinator.toLowerCase(),
     payoutPostedAt: Number(o.payoutPostedAt),
     payoutUnits: o.payoutUnits,
+    payoutRoot: o.payoutRoot,
+    answerGraceUntil: Number(o.answerGraceUntil),
+    openChallenges: o.openChallenges,
+    reserveSwept: o.reserveSwept,
   };
 }
 

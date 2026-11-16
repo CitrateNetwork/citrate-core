@@ -50,14 +50,61 @@ export function escrowOf(o: ChainOffer): { budgetWei: bigint; paidWei: bigint; r
   return { budgetWei: o.budget, paidWei: o.paid, reservedWei: reserved, refundableWei: left > 0n ? left : 0n };
 }
 
-export type PayoutStatusWord = "waiting" | "claimable" | "claimed" | "disputed";
+/**
+ * Where this member's payout on an offer stands. Mirrors every precondition of WorkMarket.settle
+ * (citrate-chain contracts/src/work/WorkMarket.sol), in its order, so "claimable" is said only
+ * when a claim with a valid leaf would not revert:
+ *   state is PayoutPosted or Closed; a live payout root; now >= the dispute end (the later of
+ *   payoutPostedAt + disputeWindow and answerGraceUntil); no open challenges; the reserve not
+ *   swept; joined; not already settled.
+ * The leaf itself (units, proof) is the coordinator's and is not checked here.
+ */
+export type PayoutStatusWord =
+  /** You already settled this offer. */
+  | "claimed"
+  /** The payout list is under dispute; the payout is frozen. */
+  | "disputed"
+  /** The offer is PayoutPosted or Closed but no payout list is live (withdrawn by a dispute). */
+  | "no-payout-list"
+  /** Inside the dispute window (or the grace after an answered challenge). */
+  | "waiting"
+  /** A challenge against the payout list awaits an answer. */
+  | "challenge-open"
+  /** The poster took back the unsettled reserve; nothing is left to settle. */
+  | "reserve-swept"
+  /** This wallet did not join the offer. */
+  | "not-joined"
+  | "claimable";
 
-/** Where this member's payout on an offer stands, or null before a payout list is posted. */
-export function payoutStatusOf(o: ChainOffer, settled: boolean, nowSecs: number): PayoutStatusWord | null {
-  if (o.state !== "payoutPosted" && o.state !== "disputed" && o.state !== "closed") return null;
-  if (settled) return "claimed";
+export const PAYOUT_STATUS_WORDS: Record<PayoutStatusWord, string> = {
+  claimed: "Claimed",
+  disputed: "Disputed, frozen",
+  "no-payout-list": "No payout list is live",
+  waiting: "Waiting for the dispute window",
+  "challenge-open": "A challenge to the payout list is open",
+  "reserve-swept": "The unsettled reserve was returned to the poster",
+  "not-joined": "You did not join this round",
+  claimable: "Claimable",
+};
+
+/** The dispute window's end: the later of payoutPostedAt + disputeWindow and answerGraceUntil. */
+export function disputeEnd(o: ChainOffer): number {
+  return Math.max(o.payoutPostedAt + o.disputeWindow, o.answerGraceUntil);
+}
+
+const ZERO_ROOT = /^0x0{64}$/i;
+
+/** Where this member's payout stands, or null before a payout list was ever posted. */
+export function payoutStatusOf(o: ChainOffer, slot: { joined: boolean; settled: boolean }, nowSecs: number): PayoutStatusWord | null {
+  if (slot.settled) return "claimed";
   if (o.state === "disputed") return "disputed";
-  return nowSecs < o.payoutPostedAt + o.disputeWindow ? "waiting" : "claimable";
+  if (o.state !== "payoutPosted" && o.state !== "closed") return null;
+  if (ZERO_ROOT.test(o.payoutRoot)) return "no-payout-list";
+  if (nowSecs < disputeEnd(o)) return "waiting";
+  if (o.openChallenges !== 0) return "challenge-open";
+  if (o.reserveSwept) return "reserve-swept";
+  if (!slot.joined) return "not-joined";
+  return "claimable";
 }
 
 export interface MyWork {
