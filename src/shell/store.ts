@@ -647,6 +647,19 @@ export function cloudModelFor(
   return choice;
 }
 
+/** #691: a steer sent for one run of one conversation. */
+interface PendingSteer {
+  text: string;
+  asstId: string;
+  threadId: string;
+  /** Its transcript message, once shown. */
+  msgId: string | null;
+  /** Hermes took it (its `steered` event), possibly before the request returned. */
+  taken: boolean;
+  /** The steer request has not returned yet. */
+  inFlight: boolean;
+}
+
 /** Board 01: the function names of a tool list (OpenAI wrapper shape). */
 function toolNamesOf(tools: readonly unknown[]): string[] {
   return tools.map((t) => (t as { function?: { name?: unknown } }).function?.name).filter((n): n is string => typeof n === "string" && n !== "");
@@ -4214,7 +4227,7 @@ export class Store {
     if (this.liveAsstId === asstId) this.liveAsstId = null;
     patch((m) => ({ ...m, streaming: false, run: m.run ? runEnd(m.run, turnOutcome, Date.now()) : m.run }));
     // #691: a steer Hermes accepted but never took (the run ended first) goes next, as a message.
-    this.resendUntakenSteers();
+    this.resendUntakenSteers(asstId);
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
     this.save();
@@ -4273,49 +4286,100 @@ export class Store {
     // #691: Hermes takes the message into the running turn at its next step; nothing stops.
     const provider = this.provider;
     const asstId = this.liveAsstId;
+    // Everything after the await acts only on the conversation and run the steer was typed in.
+    const threadId = this.state.chatThreadId;
     if (this.chatRunLive() && provider?.steer && asstId) {
+      // Registered before the request, so a `steered` event that beats the response is not lost.
+      const p: PendingSteer = { text: t, asstId, threadId, msgId: null, taken: false, inFlight: true };
+      this.pendingSteers.push(p);
       const r = await provider.steer(t);
-      if (r.ok && this.liveAsstId === asstId) {
-        const msg: ChatMsg = { id: "m" + ++this.mid, who: "You", text: t, chips: [], streaming: false, steer: "sent" };
-        this.setState((s) => {
-          const i = s.chatMsgs.findIndex((m) => m.id === asstId);
-          const msgs = s.chatMsgs.slice();
-          msgs.splice(i < 0 ? msgs.length : i, 0, msg);
-          return { chatMsgs: msgs };
-        });
-        this.pendingSteers.push({ msgId: msg.id, text: t });
+      p.inFlight = false;
+      const sameRun = this.liveAsstId === asstId;
+      if (r.ok) {
+        if (p.taken) {
+          // Hermes already took it: show it, taken, before the reply it steered.
+          this.forgetPendingSteer(p);
+          this.showSteer(p, "taken");
+          return;
+        }
+        if (sameRun) {
+          this.showSteer(p, "sent");
+          return;
+        }
+        // Accepted for a run that has since ended without taking it: it goes next, in its own
+        // conversation only, as an ordinary message.
+        this.forgetPendingSteer(p);
+        this.queueSteerFor(threadId, t);
         return;
       }
-      if (!r.ok) this.toast(`${STEER_NOT_TAKEN} (${r.reason}), so this run stops and your message goes next.`);
+      this.forgetPendingSteer(p);
+      if (p.taken) return;
+      if (!sameRun || this.state.chatThreadId !== threadId) {
+        // The run ended (and perhaps the conversation changed) while the request was out: the
+        // text stays with its own conversation, and nothing else is stopped.
+        this.queueSteerFor(threadId, t);
+        return;
+      }
+      this.toast(`${STEER_NOT_TAKEN} (${r.reason}), so this run stops and your message goes next.`);
     }
-    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId: s.chatThreadId }, ...s.chatQueue.filter((q) => !q.steer)] }));
+    this.queueSteerFor(threadId, t);
     if (this.chatRunLive()) this.stopAgentTurn();
     else this.drainChatQueue("answered");
   }
 
+  /** Queue a steer's text as the next message of conversation `threadId` (sent only there). */
+  private queueSteerFor(threadId: string, t: string): void {
+    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId }, ...s.chatQueue.filter((q) => !(q.steer && q.threadId === threadId))] }));
+    if (this.state.chatThreadId === threadId && this.state.chatStatus === "ready") this.drainChatQueue("answered");
+  }
+
+  /** Put an accepted steer in the transcript, before the reply it steers. */
+  private showSteer(p: PendingSteer, state: "sent" | "taken"): void {
+    if (this.state.chatThreadId !== p.threadId) return;
+    const msg: ChatMsg = { id: "m" + ++this.mid, who: "You", text: p.text, chips: [], streaming: false, steer: state };
+    p.msgId = msg.id;
+    this.setState((s) => {
+      const i = s.chatMsgs.findIndex((m) => m.id === p.asstId);
+      const msgs = s.chatMsgs.slice();
+      msgs.splice(i < 0 ? msgs.length : i, 0, msg);
+      return { chatMsgs: msgs };
+    });
+  }
+
+  private forgetPendingSteer(p: PendingSteer): void {
+    this.pendingSteers = this.pendingSteers.filter((x) => x !== p);
+  }
+
   /** #691: the assistant message of the chat turn running now (null between turns). */
   private liveAsstId: string | null = null;
-  /** #691: steers Hermes accepted for the running turn and has not taken yet. */
-  private pendingSteers: { msgId: string; text: string }[] = [];
+  /** #691: steers sent for the running turn that Hermes has not taken yet (and ones whose
+   *  request is still out). */
+  private pendingSteers: PendingSteer[] = [];
 
-  /** Hermes took a steer (its `steered` event): mark the first waiting one with that text. */
+  /** Hermes took a steer (its `steered` event): mark the first waiting one with that text. It may
+   *  arrive before the steer request has returned; the entry then records it. */
   private steerTaken(text: string): void {
-    const i = this.pendingSteers.findIndex((p) => p.text === text.trim());
-    if (i < 0) return;
-    const [hit] = this.pendingSteers.splice(i, 1);
-    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === hit.msgId ? { ...m, steer: "taken" as const } : m)) }));
+    const p = this.pendingSteers.find((x) => !x.taken && x.text === text.trim() && x.asstId === this.liveAsstId);
+    if (!p) return;
+    p.taken = true;
+    if (p.msgId === null) return;
+    this.forgetPendingSteer(p);
+    const id = p.msgId;
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === id ? { ...m, steer: "taken" as const } : m)) }));
   }
 
   /** The run ended before Hermes took these steers: they leave the transcript and go next, as
-   *  ordinary messages, so nothing the member sent is lost or shown as taken when it was not. */
-  private resendUntakenSteers(): void {
-    const left = this.pendingSteers;
-    this.pendingSteers = [];
+   *  ordinary messages in their own conversation, so nothing the member sent is lost or shown as
+   *  taken when it was not. A steer whose request is still out is decided when it returns. */
+  private resendUntakenSteers(asstId: string): void {
+    const mine = this.pendingSteers.filter((p) => p.asstId === asstId && !p.inFlight);
+    this.pendingSteers = this.pendingSteers.filter((p) => !mine.includes(p));
+    const left = mine.filter((p) => !p.taken);
     if (left.length === 0) return;
-    const ids = new Set(left.map((p) => p.msgId));
+    const ids = new Set(left.map((p) => p.msgId).filter((x): x is string => x !== null));
     this.setState((s) => ({
       chatMsgs: s.chatMsgs.filter((m) => !ids.has(m.id)),
-      chatQueue: [...left.map((p) => ({ id: "q" + ++this.queueSeq, text: p.text, steer: true, threadId: s.chatThreadId })), ...s.chatQueue],
+      chatQueue: [...left.map((p) => ({ id: "q" + ++this.queueSeq, text: p.text, steer: true, threadId: p.threadId })), ...s.chatQueue],
     }));
     this.toast("The run ended before Hermes took your message, so it goes now as a new message.");
   }

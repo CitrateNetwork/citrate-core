@@ -92,4 +92,65 @@ describe("#691 steering in place", () => {
     expect(toast.mock.calls.some((c) => String(c[0]).includes("Hermes could not take your message mid-run (the bundled Hermes is too old"))).toBe(true);
     await vi.waitFor(() => expect(sent).toEqual(["Network status", "and peers"]));
   });
+
+  it("race 1: Hermes takes the steer before the POST returns: it is shown taken and never sent again", async () => {
+    let resolveSteer: (r: SteerResult) => void = () => undefined;
+    store.provider = provider(() => new Promise<SteerResult>((r) => (resolveSteer = r)));
+    const turn = store.sendChat("Network status");
+    await vi.waitFor(() => expect(callbacks).not.toBeNull());
+    const steering = store.steerChat("and peers");
+    // The sidecar takes it at the next step boundary; the event poll delivers that first.
+    callbacks!.onActivity?.({ kind: "steered", step: 2, text: "and peers" });
+    resolveSteer({ ok: true, waiting: 0 });
+    await steering;
+    expect(store.state.chatMsgs.filter((m) => m.who === "You").map((m) => [m.text, m.steer])).toEqual([
+      ["Network status", undefined],
+      ["and peers", "taken"],
+    ]);
+    finish();
+    await turn;
+    await vi.waitFor(() => expect(store.state.chatStatus).toBe("ready"));
+    expect(sent).toEqual(["Network status"]);
+    expect(store.state.chatQueue).toEqual([]);
+  });
+
+  it("race 2: the conversation changes while the POST is pending: nothing moves to it, and its run is not stopped", async () => {
+    let resolveSteer: (r: SteerResult) => void = () => undefined;
+    store.provider = provider(() => new Promise<SteerResult>((r) => (resolveSteer = r)));
+    vi.spyOn(store, "rebuildProvider").mockResolvedValue();
+    const orig = store.state.chatThreadId;
+    const turn = store.sendChat("Network status");
+    await vi.waitFor(() => expect(callbacks).not.toBeNull());
+    const steering = store.steerChat("private text for the first chat");
+    // The run ends and the member moves to another conversation before the POST answers.
+    finish();
+    await turn;
+    expect(store.newChat()).toBe(true);
+    const other = store.state.chatThreadId;
+    const stop = vi.spyOn(store, "stopAgentTurn");
+    resolveSteer({ ok: false, reason: "the run is finishing", code: 409 } as unknown as SteerResult);
+    await steering;
+    expect(stop).not.toHaveBeenCalled();
+    // Nothing of the first chat's text is queued in, shown in, or sent to the second.
+    expect(store.state.chatQueue.filter((q) => q.threadId === other)).toEqual([]);
+    expect(store.state.chatMsgs.some((m) => m.text.includes("private text"))).toBe(false);
+    expect(sent).toEqual(["Network status"]);
+    expect(store.state.chatQueue.filter((q) => q.threadId === orig).map((q) => q.text)).toEqual(["private text for the first chat"]);
+  });
+
+  it("race 2b: accepted by the sidecar for a run that has since ended: not queued again", async () => {
+    let resolveSteer: (r: SteerResult) => void = () => undefined;
+    store.provider = provider(() => new Promise<SteerResult>((r) => (resolveSteer = r)));
+    const turn = store.sendChat("Network status");
+    await vi.waitFor(() => expect(callbacks).not.toBeNull());
+    const steering = store.steerChat("and peers");
+    finish();
+    await turn;
+    resolveSteer({ ok: true, waiting: 1 });
+    await steering;
+    await vi.waitFor(() => expect(store.state.chatStatus).toBe("ready"));
+    // The run ended without taking it: it goes next exactly once, in its own conversation.
+    await vi.waitFor(() => expect(sent).toEqual(["Network status", "and peers"]));
+    expect(store.state.chatQueue).toEqual([]);
+  });
 });
