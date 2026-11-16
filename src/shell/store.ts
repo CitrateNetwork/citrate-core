@@ -3233,6 +3233,9 @@ export class Store {
     this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
     if (this.chatInputEl) this.chatInputEl.value = "";
     await this.rebuildProvider();
+    // Earlier messages are never put in the system prompt: the in-app loops send them as earlier
+    // turns, and a Hermes sidecar session opens with them as `history` (branchHistory). A sidecar
+    // that cannot take history says so when the session opens.
     this.toast("Branched into a new chat. The original stays in History.");
     if (opts.text !== undefined) await this.sendChat(opts.text);
     return true;
