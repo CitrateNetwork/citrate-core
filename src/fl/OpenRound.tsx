@@ -14,7 +14,7 @@ import { CeremonySheet, outcomeWords, type TxOutcome } from "./CeremonySheet";
 import type { Group } from "../bridge/domains";
 import { NOT_AVAILABLE, ROUNDS_NOT_LIVE, type FlNetworkState } from "./networkState";
 import { Chip, HicBadge, KV, Note, Unknown } from "./primitives";
-import { draftProblems, leasesCovered, saveRoundDraft, weiOf, type RoundDraft, type RoundTemplate, type WhoMayJoin } from "./roundDraft";
+import { asSavedByMember, draftProblems, leasesCovered, saveRoundDraft, weiOf, type RoundDraft, type RoundTemplate, type WhoMayJoin } from "./roundDraft";
 import { saltExact } from "./format";
 
 export const STEPS = ["Template", "Budget and rate", "Who and coordinator", "Preview and sign"] as const;
@@ -66,7 +66,10 @@ export function OpenRoundView(p: OpenRoundViewProps) {
   const save = p.save ?? saveRoundDraft;
   const doSave = () => {
     try {
-      const at = save(d);
+      // PAY-19: money is typed here by the member, so a filled-in draft is the member's.
+      const mine = asSavedByMember(d);
+      const at = save(mine);
+      setD(mine);
       setSaved(`Draft saved on this device at ${new Date(at).toTimeString().slice(0, 5)}`);
     } catch (e) {
       setSaved("Couldn't save the draft: " + (e instanceof Error ? e.message : String(e)));
@@ -75,7 +78,7 @@ export function OpenRoundView(p: OpenRoundViewProps) {
   const sign = async () => {
     setSheet({ step: "signing" });
     try {
-      const outcome = await p.onOpen(d);
+      const outcome = await p.onOpen(asSavedByMember(d));
       setSheet({ step: "done", outcome });
     } catch (e) {
       setSheet({ step: "done", outcome: { kind: "not-sent", reason: e instanceof Error ? e.message : String(e) } });
@@ -103,7 +106,7 @@ export function OpenRoundView(p: OpenRoundViewProps) {
         <Note style={{ marginTop: 10 }}>Opening a round is HIC-1: you sign the escrow. The budget leaves your wallet into WorkMarket escrow.</Note>
       </nav>
       <section className="fl-main" aria-labelledby="open-h">
-        {d.source === "hermes" && (
+        {(d.source === "hermes" || d.draftedBy === "hermes") && (
           <div className="fl-card" style={{ padding: "8px 12px", display: "flex", gap: 10, alignItems: "center", fontSize: 12.5 }}>
             <Chip tone="info">Drafted by Hermes</Chip>
             <span>{d.draftedFor ? `For ${d.draftedFor}. ` : ""}Check every field; Hermes cannot sign.</span>

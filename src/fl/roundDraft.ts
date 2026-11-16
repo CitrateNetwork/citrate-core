@@ -39,6 +39,8 @@ export interface RoundDraft {
   source: "member" | "hermes";
   /** Who Hermes drafted it for and when, for the banner. */
   draftedFor?: string;
+  /** Set when Hermes handed the draft in; stays after the member makes it theirs (the banner). */
+  draftedBy?: "hermes";
   savedAt?: number;
 }
 
@@ -92,8 +94,19 @@ export const MONEY_FIELDS = ["budgetSalt", "rateSalt", "joinBondSalt", "coordina
  *  draft carries only non-money fields; every money field arrives empty, whatever was passed. */
 export function handedIn(d: Partial<RoundDraft>, source: RoundDraft["source"]): RoundDraft {
   const out: RoundDraft = { ...BLANK_DRAFT, ...d, source };
-  if (source === "hermes") for (const k of MONEY_FIELDS) out[k] = "";
+  if (source === "hermes") {
+    for (const k of MONEY_FIELDS) out[k] = "";
+    out.draftedBy = "hermes";
+  }
   return out;
+}
+
+/** The draft as the member saves it on Open a round. Every money field is typed there by the
+ *  member (a Hermes hand-in arrives with none), so once any money is typed the draft is the
+ *  member's: source "member", money kept. Saving without money keeps its source. */
+export function asSavedByMember(d: RoundDraft): RoundDraft {
+  const typedMoney = MONEY_FIELDS.some((k) => d[k].trim() !== "");
+  return typedMoney ? { ...d, source: "member" } : d;
 }
 
 export function clearRoundDraft(): void {
