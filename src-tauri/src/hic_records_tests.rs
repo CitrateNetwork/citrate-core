@@ -309,3 +309,28 @@ fn long_and_multibyte_subjects_still_make_valid_records() {
     let (_d, o) = outbox();
     o.append(grant_revoked(&"g".repeat(500)), 1).unwrap();
 }
+
+/// 0.5.4: the Records view reads the outbox back newest first, capped, and a broken chain is an
+/// error rather than a shorter list.
+#[test]
+fn recent_reads_newest_first_capped_and_fails_closed_on_a_broken_chain() {
+    let (_d, o) = outbox();
+    assert!(
+        o.recent(10).unwrap().is_empty(),
+        "an empty outbox is an empty list"
+    );
+    o.append(grant_added("/home/m/a", &["g-1".into()]), 10)
+        .unwrap();
+    o.append(grant_revoked("g-1"), 11).unwrap();
+    o.append(grant_reset(), 12).unwrap();
+    let r = o.recent(2).unwrap();
+    assert_eq!(
+        r.iter().map(|x| x.record_id).collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+    assert_eq!(r[0].event.kind, "grant.reset");
+    let file = o.dir().join("outbox.jsonl");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replacen("/home/m/a", "/home/m/b", 1)).unwrap();
+    assert!(o.recent(10).unwrap_err().contains("broken"));
+}
