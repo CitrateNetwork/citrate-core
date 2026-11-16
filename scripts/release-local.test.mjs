@@ -28,8 +28,8 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-const run = (args) => {
-  const r = spawnSync("bash", [script, "--check-args", ...args], { encoding: "utf8" });
+const run = (args, env = {}) => {
+  const r = spawnSync("bash", [script, "--check-args", ...args], { encoding: "utf8", env: { ...process.env, RELEASE_NOTES: "", ...env } });
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
 const linux = () => ["--linux-dir", path.join(dir, "linux"), "--out", path.join(dir, "out")];
@@ -325,5 +325,39 @@ describe("release-local.sh --publish-target spaces", () => {
   it("a spaces rehearsal cleanup removes only its own prefix", () => {
     expect(src).toContain('s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive');
     expect(src).not.toMatch(/s3 rm "s3:\/\/\$CDN_BUCKET\/downloads\/"/);
+  });
+});
+
+// 0.5.4 forced update (owner 2026-11-14): --policy-min signs the update policy at release time.
+describe("release-local.sh --policy-min", () => {
+  const CRIT = { RELEASE_NOTES: "[critical] Citrate Core 0.5.4" };
+  it("accepts a minimum at or below the release's version with [critical] notes", () => {
+    const r = run(["--version", conf.version, "--policy-min", conf.version, ...linux()], CRIT);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain(`update policy: minimum ${conf.version}, signed with the updater key at release time`);
+  });
+  const refusals = [
+    ["a minimum that is not x.y.z", ["--policy-min", "0.5"], CRIT, /--policy-min must be x\.y\.z/],
+    ["a minimum above the release's version", ["--policy-min", "99.0.0"], CRIT, /above --version/],
+    ["notes without [critical]", ["--policy-min", conf.version], { RELEASE_NOTES: "Citrate Core 0.5.4" }, /\[critical\]/],
+    ["no notes", ["--policy-min", conf.version], {}, /\[critical\]/],
+  ];
+  for (const [what, extra, env, msg] of refusals) {
+    it(`refuses ${what}`, () => {
+      const r = run(["--version", conf.version, ...extra, ...linux()], env);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(msg);
+    });
+  }
+  it("signs the policy in the same key subshell as the update files, verifies it, and embeds it", () => {
+    const src = fs.readFileSync(script, "utf8");
+    const sub = src.slice(src.indexOf('TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"'), src.indexOf('if [ -n "$POLICY_MIN" ]; then\n  [ -f "$OUT/update-policy.json.sig" ]'));
+    expect(sub).toContain('tauri signer sign "$OUT/update-policy.json"');
+    expect(sub).toContain('--issued-at "$RELEASE_TS"');
+    expect(src).toMatch(/minisign -V -q -P "\$PUBKEY" -m "\$OUT\/update-policy\.json"/);
+    expect(src).toContain('POLICY_ARGS=(--policy "$OUT/update-policy.json")');
+    expect(src).toContain('PUB_DATE="$(date -u -r "$RELEASE_TS"');
+    // The key never reaches argv.
+    expect(src).not.toMatch(/signer sign[^\n]*(-p|--password|-k|--private-key)\b/);
   });
 });
