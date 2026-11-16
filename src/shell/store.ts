@@ -57,6 +57,7 @@ import { readFlNetworkState, type FlNetworkState, type PayoutsGateStatus } from 
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
 import { isFlRoundTool, runFlRoundTool } from "../agent/flRoundTools";
 import { isFlHistoryTool, runFlHistoryTool } from "../agent/flHistoryTools";
+import { flSnapshot } from "../fl/flSnapshot";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -2846,6 +2847,9 @@ export class Store {
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
+      // 0.5.4 WP-H12: what FL contracts this network has, payouts and the envelope, from the
+      // shipped address book and the network profile, so Hermes answers from data.
+      fl: flSnapshot(flAddressBook, ACTIVE_PROFILE),
       membership: {
         grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
