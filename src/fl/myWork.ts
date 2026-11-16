@@ -59,7 +59,8 @@ export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord
 /** Budget split into paid, reserved for posted units, and refundable (wei). */
 export function escrowOf(o: ChainOffer): { budgetWei: bigint; paidWei: bigint; reservedWei: bigint; refundableWei: bigint } {
   const owedToWorkers = o.payoutUnits * o.pricePerUnit;
-  const reserved = owedToWorkers > o.paid ? owedToWorkers - o.paid : 0n;
+  // Once the poster swept the unsettled reserve, nothing is held back for workers any more.
+  const reserved = !o.reserveSwept && owedToWorkers > o.paid ? owedToWorkers - o.paid : 0n;
   const left = o.budget - o.paid - o.refunded - reserved;
   return { budgetWei: o.budget, paidWei: o.paid, reservedWei: reserved, refundableWei: left > 0n ? left : 0n };
 }
