@@ -112,9 +112,11 @@ describe("a deep link and a pasted link open the same Join screen", () => {
 
   it("Groups and onboarding render the same component, and no other paste field exists", () => {
     const src = (p: string) => readFileSync(resolve(__dirname, p), "utf8");
-    expect(src("./Groups.tsx")).toContain("<HaveAnInvite ");
+    expect(src("./groups/GroupChat.tsx")).toContain("<HaveAnInvite ");
+    // The Join sheet in Groups › Chat renders the same JoinCard; it never sends a request itself.
+    expect(src("./groups/GroupSheets.tsx")).toContain("<JoinCard");
     expect(src("../onboarding/Onboarding.tsx")).toContain("<HaveAnInvite ");
-    for (const f of ["./Groups.tsx", "../onboarding/Onboarding.tsx"]) {
+    for (const f of ["./Groups.tsx", "./groups/GroupChat.tsx", "./groups/GroupSheets.tsx", "../onboarding/Onboarding.tsx"]) {
       expect(src(f)).not.toMatch(/InvitePasteField|acceptInviteInput|invites\.request\(/);
     }
   });
