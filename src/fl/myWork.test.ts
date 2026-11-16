@@ -55,7 +55,7 @@ describe("WorkMarket and FRL reads", () => {
     const w = await readMyWork({ workMarket: WM, frl: FRL }, ME, call);
     expect(w.offers.map((o) => o.id)).toEqual([14, 12]);
     expect(w.settled).toEqual({ 14: false, 12: true });
-    expect(w.rounds[14]).toMatchObject({ status: "committed", deadlineBlock: 1_209_911, participants: 5 });
+    expect(w.rounds[14]).toMatchObject({ status: "committed", deadlineBlock: 1_209_911, participants: 5, faultChunk: 0 });
     expect(w.pullWei).toBe(3n * SALT);
   });
   it("without FRL the rounds are null; without a wallet nothing is read", async () => {
@@ -70,7 +70,7 @@ describe("WorkMarket and FRL reads", () => {
 
 describe("state words", () => {
   const o = (state: ChainOffer["state"], over: Partial<ChainOffer> = {}): ChainOffer => ({ id: 14, kind: "flRound", state, poster: "0x" + "11".repeat(20), bindRef: ROUND, groupHash: Z32, pricePerUnit: (3n * SALT) / 2n, budget: 600n * SALT, paid: 0n, refunded: 0n, deadline: 1, disputeWindow: 100, maxWorkers: 8, workers: 3, joinBond: 0n, coordinator: "0x" + "cd".repeat(20), payoutPostedAt: 0, payoutUnits: 0n, payoutRoot: Z32, answerGraceUntil: 0, openChallenges: 0, reserveSwept: false, ...over });
-  const r = (status: "committed" | "accepted" | "rejected") => ({ status, fault: status === "rejected" ? ("output mismatch" as const) : ("none" as const), deadlineBlock: 1, participants: 5, adapterHash: Z32, ordinal: 4 });
+  const r = (status: "committed" | "accepted" | "rejected") => ({ status, fault: status === "rejected" ? ("output mismatch" as const) : ("none" as const), faultChunk: 0, deadlineBlock: 1, participants: 5, adapterHash: Z32, ordinal: 4 });
   it("maps offer and FRL state to the design's round states", () => {
     expect(liveStateOf(o("open"), null)).toBe("pending");
     expect(liveStateOf(o("running"), null)).toBe("running");
@@ -79,6 +79,12 @@ describe("state words", () => {
     expect(liveStateOf(o("payoutPosted"), r("accepted"))).toBe("accepted");
     expect(liveStateOf(o("disputed"), null)).toBe("disputed");
     expect(liveStateOf(o("expired"), null)).toBe("expired");
+  });
+  it("#701 review P1: a Closed offer with no payout root (refunded) is closed, never accepted", () => {
+    expect(liveStateOf(o("closed", { payoutRoot: Z32, refunded: 600n * SALT }), null)).toBe("closed");
+    expect(liveStateOf(o("closed", { payoutRoot: Z32 }), r("accepted"))).toBe("closed");
+    expect(liveStateOf(o("closed", { payoutRoot: "0x" + "77".repeat(32) }), r("accepted"))).toBe("accepted");
+    expect(liveStateOf(o("closed", { payoutRoot: Z32 }), r("rejected"))).toBe("rejected");
   });
   it("escrow: reserved for posted units, the rest refundable", () => {
     expect(escrowOf(o("payoutPosted", { payoutUnits: 7n }))).toEqual({ budgetWei: 600n * SALT, paidWei: 0n, reservedWei: (21n * SALT) / 2n, refundableWei: 600n * SALT - (21n * SALT) / 2n });

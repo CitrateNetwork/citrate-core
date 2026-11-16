@@ -9,7 +9,7 @@ const SALT = 10n ** 18n;
 const Z32 = "0x" + "0".repeat(64);
 const ROUND = "0x" + "3e".repeat(32);
 const o = (state: ChainOffer["state"], over: Partial<ChainOffer> = {}): ChainOffer => ({ id: 14, kind: "flRound", state, poster: "0x" + "11".repeat(20), bindRef: ROUND, groupHash: Z32, pricePerUnit: (3n * SALT) / 2n, budget: 600n * SALT, paid: 0n, refunded: 0n, deadline: 1, disputeWindow: 100, maxWorkers: 8, workers: 3, joinBond: 0n, coordinator: "0x" + "cd".repeat(20), payoutPostedAt: 0, payoutUnits: 0n, payoutRoot: Z32, answerGraceUntil: 0, openChallenges: 0, reserveSwept: false, ...over });
-const r = (status: ChainRound["status"]): ChainRound => ({ status, fault: status === "rejected" ? "output mismatch" : "none", deadlineBlock: 1_209_911, participants: 5, adapterHash: "0x" + "a7".repeat(32), ordinal: 4 });
+const r = (status: ChainRound["status"]): ChainRound => ({ status, fault: status === "rejected" ? "output mismatch" : "none", faultChunk: 0, deadlineBlock: 1_209_911, participants: 5, adapterHash: "0x" + "a7".repeat(32), ordinal: 4 });
 
 describe("Live round from the chain", () => {
   it("what the chain does not hold is said, never filled", () => {
@@ -22,6 +22,10 @@ describe("Live round from the chain", () => {
     expect(lr.contribution.find((c) => c.key === "training")!.detail).toBe(NOT_ON_CHAIN.training);
     expect(lr.ids.mergedHash).toBe("0x" + "a7".repeat(32));
     expect(lr.payout).toBeNull();
+  });
+  it("a refunded Closed offer is drawn as Closed, never Accepted", () => {
+    const lr = liveRoundFrom(o("closed", { payoutRoot: Z32, refunded: 600n * SALT }), null, null, "dark");
+    expect(lr.state).toBe("closed");
   });
   it("accepted closes the clock; rejected ends it early with the fault", () => {
     expect(liveRoundFrom(o("payoutPosted"), r("accepted"), null, "dark").clock.state).toBe("closed");
