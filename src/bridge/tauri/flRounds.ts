@@ -36,8 +36,8 @@ export const tauriFlRounds: FlRoundsDomain = {
   loadAdapter(sha256: string) {
     return invoke<string>("fl_adapter_load", { sha256 });
   },
-  async unloadAdapter() {
-    await invoke("fl_adapter_unload");
+  unloadAdapter() {
+    return invoke<boolean>("fl_adapter_unload");
   },
   revokeConsent(roundId: string) {
     return invoke<string[]>("fl_round_consent_revoke", { roundId });
