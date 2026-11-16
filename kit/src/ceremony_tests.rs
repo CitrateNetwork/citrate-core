@@ -886,12 +886,24 @@ fn ceremony_errors_are_secret_free() {
 // (This is the @rule8 consolidation the sprint asks for — not new product.)
 // =========================================================================
 
+/// The BIP-39 English test vector for entropy `7f7f…7f` (128 bits): a valid mnemonic whose words
+/// do not occur in the error text the ADV-8 sweep checks (see the test).
+const ADV8_MNEMONIC: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
 #[test]
 fn adv8_no_secret_across_wallet_ceremony_rpc_txdecode() {
     use crate::rpc::RpcError;
 
-    // Drive a REAL create on a fresh vault so we have a live mnemonic/entropy to
-    // hunt for, then assert NONE of it leaks through any error/Debug on the path.
+    // Seal a REAL wallet in a fresh vault so we have live mnemonic/entropy to hunt
+    // for, then assert NONE of it leaks through any error/Debug on the path.
+    //
+    // The mnemonic is FIXED (the BIP-39 test vector for entropy 0x7f…7f), not a fresh
+    // `wallet::create`: a random first word of four or more letters sometimes matched
+    // ordinary words in the fixed error text below (e.g. "refuse" in "connect refused",
+    // "fund" in "insufficient funds", "price", "result"), so the test failed at random
+    // across unrelated PRs. None of these words appears in that text, so every word is
+    // now checked, which is stricter than the old first-word check.
     let mut p = std::env::temp_dir();
     p.push(format!(
         "citrate-core-adv8-{}-{}.enc",
@@ -906,9 +918,8 @@ fn adv8_no_secret_across_wallet_ceremony_rpc_txdecode() {
     let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
     v.init(&mut PASS.to_vec()).expect("init");
     v.unlock(&mut PASS.to_vec()).expect("unlock");
-    let created =
-        crate::wallet::create(&v).expect("create a fresh wallet for live secret material");
-    let mnemonic = created.mnemonic.clone();
+    let mnemonic = String::from(ADV8_MNEMONIC);
+    let created = crate::wallet::import(&v, &mnemonic).expect("seal a wallet for live secret material");
     let first_word = mnemonic.split_whitespace().next().unwrap().to_string();
     let three_word_prefix = mnemonic
         .split_whitespace()
@@ -980,10 +991,13 @@ fn adv8_no_secret_across_wallet_ceremony_rpc_txdecode() {
 
     // The whole cross-module haystack must be free of ANY secret needle.
     let hay_lower = haystack.to_lowercase();
-    assert!(
-        !hay_lower.contains(&first_word.to_lowercase()) || first_word.len() < 4,
-        "no mnemonic word may appear across wallet/ceremony/rpc/txdecode surfaces"
-    );
+    assert!(first_word.len() >= 4, "the fixed mnemonic's first word is a real needle");
+    for w in mnemonic.split_whitespace() {
+        assert!(
+            !hay_lower.contains(&w.to_lowercase()),
+            "no mnemonic word ({w}) may appear across wallet/ceremony/rpc/txdecode surfaces"
+        );
+    }
     assert!(
         !hay_lower.contains(&three_word_prefix.to_lowercase()),
         "no multi-word mnemonic prefix (high-entropy needle) may appear on any surface"
