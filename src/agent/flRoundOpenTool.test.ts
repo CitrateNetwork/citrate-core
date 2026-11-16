@@ -5,11 +5,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { decodeFunctionData, toFunctionSelector, type Hex } from "viem";
 import realBook from "../../src-tauri/addresses/40204.json";
 import { store } from "../shell/store";
+import { bridge } from "../bridge";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { annotationFor } from "./toolAnnotations";
 import { runFlRoundOpen, type FlRoundOpenDeps } from "./flRoundOpenTool";
 import { readFlNetworkState, type FlReads } from "../fl/networkState";
-import { BLANK_DRAFT, OPEN_NEEDS_BINDING, OPEN_SIGNATURE, WORK_MARKET_OPEN_ABI, saveRoundDraft } from "../fl/roundDraft";
+import { OPEN_NEEDS_BINDING, OPEN_SIGNATURE, WORK_MARKET_OPEN_ABI, saveRoundDraft } from "../fl/roundDraft";
 import { FILLED_DRAFT, ROUND_BINDING, payoutsOpenNetwork } from "../fl/fixtures/market";
 
 const call: ToolCall = { id: "c1", name: "fl_round_open_propose", arguments: "{}" };
@@ -21,6 +22,7 @@ const dark = () => readFlNetworkState({ addresses: { ...realBook.addresses, Work
 const deps = (over: Partial<FlRoundOpenDeps> = {}): FlRoundOpenDeps => ({
   loadDraft: () => ({ ...FILLED_DRAFT }),
   networkState: payoutsOpenNetwork,
+  roleIn: async () => "admin",
   binding: async () => ROUND_BINDING,
   propose: async () => ({ proposed: true }),
   ...over,
@@ -55,11 +57,46 @@ describe("fl_round_open_propose", () => {
     expect((await runFlRoundOpen(deps({ loadDraft: () => null }))).result).toMatch(/no round draft on this device.*round_draft_propose/);
   });
 
-  it("refuses in openIntent's order: gate dark with its reason, then no binding, then a bad draft", async () => {
+  it("refuses in openIntent's order: gate dark with its reason, then no binding, then a bad draft (past the money and role checks)", async () => {
     const propose = vi.fn();
     expect((await runFlRoundOpen(deps({ networkState: dark, propose }))).result).toMatch(/opens with payouts after the security review\. WorkMarket is not pinned on this network/);
     expect((await runFlRoundOpen(deps({ binding: async () => null, propose }))).result).toContain(OPEN_NEEDS_BINDING);
-    expect((await runFlRoundOpen(deps({ loadDraft: () => ({ ...BLANK_DRAFT }), propose }))).result).toMatch(/Choose a group/);
+    expect((await runFlRoundOpen(deps({ loadDraft: () => ({ ...FILLED_DRAFT, maxWorkers: 2 }), propose }))).result).toMatch(/At least three workers/);
+    expect(propose).not.toHaveBeenCalled();
+  });
+
+  it("only an owner or admin of the draft's group on the live roster may open it (WorkMarket does not check)", async () => {
+    const propose = vi.fn(async () => ({ proposed: true }));
+    expect((await runFlRoundOpen(deps({ roleIn: async () => "member", propose }))).result).toMatch(/Your role in this group is member\. Only owners and admins can open a round/);
+    expect((await runFlRoundOpen(deps({ roleIn: async () => null, propose }))).result).toMatch(/not on this group's live roster/);
+    expect((await runFlRoundOpen(deps({ roleIn: async () => { throw new Error("comms daemon not running"); }, propose }))).result).toMatch(/couldn't read the group's roster.*comms daemon not running/);
+    expect(propose).not.toHaveBeenCalled();
+    await runFlRoundOpen(deps({ roleIn: async () => "owner", propose }));
+    expect(propose).toHaveBeenCalledTimes(1);
+  });
+
+  it("through handleTool checks the member's own role on the live roster", async () => {
+    vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
+    vi.spyOn(store, "flRoundBinding").mockResolvedValue(ROUND_BINDING);
+    store.setState({ commsAddr: "0xME" });
+    const roster = (role: string) => [{ id: FILLED_DRAFT.groupId, name: "g", owner: "o", kind: "channel" as const, members: [{ address: "0xme", role }] }] as never;
+    saveRoundDraft({ ...FILLED_DRAFT });
+    const propose = vi.spyOn(store, "proposeContractCall").mockResolvedValue({ proposed: true });
+    vi.spyOn(bridge.groups, "list").mockResolvedValue(roster("member"));
+    expect(await store.handleTool(call, "m1", noop)).toMatch(/Your role in this group is member/);
+    expect(propose).not.toHaveBeenCalled();
+    vi.spyOn(bridge.groups, "list").mockResolvedValue(roster("admin"));
+    expect(await store.handleTool(call, "m1", noop)).toMatch(/waiting in your wallet review/);
+    expect(propose).toHaveBeenCalledTimes(1);
+    store.setState({ commsAddr: "" });
+  });
+
+  it("PAY-19: refuses a Hermes-sourced draft and empty money fields, whatever amounts it carries", async () => {
+    const propose = vi.fn();
+    expect((await runFlRoundOpen(deps({ loadDraft: () => ({ ...FILLED_DRAFT, source: "hermes" }), propose }))).result).toMatch(/handed in by Hermes, and Hermes may never set money/);
+    expect((await runFlRoundOpen(deps({ loadDraft: () => ({ ...FILLED_DRAFT, budgetSalt: "", joinBondSalt: " " }), propose }))).result).toBe(
+      "The draft has no budget, join bond yet. Only the member types amounts, on Groups › Rounds › Open a round. Nothing was proposed.",
+    );
     expect(propose).not.toHaveBeenCalled();
   });
 

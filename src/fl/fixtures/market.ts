@@ -4,6 +4,7 @@
 import realBook from "../../../src-tauri/addresses/40204.json";
 import { readFlNetworkState, type FlNetworkState } from "../networkState";
 import type { MarketView } from "../market";
+import type { RoundDraft } from "../roundDraft";
 import { ACTIVE_PROFILE, type NetworkProfile } from "../../network/profile";
 
 const WM = "0x" + "ab".repeat(20);
@@ -39,10 +40,10 @@ export function oneOfferMarket(): MarketView {
 export const VRAM_24GB_REPORT = { facts: { gpuVramBytes: 24 * 1024 ** 3, unifiedMemory: false, totalRamBytes: 64 * 1024 ** 3 } } as never;
 
 /** A complete Open a round draft and a round binding (test-only shapes of roundDraft.ts). */
-export const FILLED_DRAFT = {
-  groupId: "0x" + "ab".repeat(16), template: "tune" as const, dataClass: "support-tickets", minVramGb: 16, estHours: 2,
+export const FILLED_DRAFT: RoundDraft = {
+  groupId: "0x" + "ab".repeat(16), template: "tune", dataClass: "support-tickets", architecture: "llama-8b-lora-r8", minVramGb: 16, estHours: 2,
   budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", coordinatorBondSalt: "", disputeWindowHours: 24,
-  maxWorkers: 8, deadline: "2026-11-22", who: "members" as const, coordinator: null, source: "member" as const,
+  maxWorkers: 8, deadline: "2026-11-22", who: "members", coordinator: null, source: "member",
 };
 export const ROUND_BINDING = {
   verifier: "0x" + "22".repeat(20), bindRef: "0x" + "3e".repeat(32), jobSpecHash: "0x" + "44".repeat(32), requirementsHash: "0x" + "55".repeat(32),

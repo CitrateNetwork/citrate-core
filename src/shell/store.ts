@@ -4661,6 +4661,11 @@ export class Store {
       const out = await runFlRoundOpen({
         loadDraft: () => loadRoundDraft(),
         networkState: () => this.flNetworkState(),
+        roleIn: async (groupId) => {
+          const self = (this.state.commsAddr || (await bridge.groups.selfAddress())).toLowerCase();
+          const g = (await bridge.groups.list()).find((x) => x.id === groupId);
+          return g?.members.find((m) => m.address.toLowerCase() === self)?.role ?? null;
+        },
         binding: () => this.flRoundBinding(),
         propose: (intent) => this.proposeContractCall(intent),
       });
