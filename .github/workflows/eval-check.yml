@@ -22,6 +22,10 @@ name: eval-check
 on:
   pull_request:
     branches: [main, "release/**"]
+  # Merge queue: it runs on every PR into main, so merge-gate's `ci` summary must find it on the
+  # merge-group commit too. No model, no secret: cheap enough for every queued group.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch: {}
 
 permissions:
