@@ -206,3 +206,26 @@ describe("Adapters states (StateMatrix)", () => {
     m.done();
   });
 });
+
+describe("#692 review: an empty round file never shows the round checks as passed", () => {
+  it("source 'A round result' with the round file left empty: the five round checks are not checked, with why", async () => {
+    const fl = domain({ gateAdapter: vi.fn(async () => record("ACCEPT", [], false)) });
+    const m = await mount(fl);
+    m.type("adapter", "/m/a.gguf");
+    m.type("sha", SHA);
+    m.type("baseTools", "/m/b.json");
+    m.type("candTools", "/m/c.json");
+    await m.run();
+    for (const id of ["accepted", "devices", "digests", "replay", "ids"]) {
+      expect(m.el.querySelector(`[data-check="${id}"]`)!.getAttribute("data-state")).not.toBe("passed");
+    }
+    expect(m.el.querySelector('[data-check="accepted"]')!.textContent).toContain("not checked: no round result file was given");
+    expect(m.el.querySelector('[data-check="sha"]')!.getAttribute("data-state")).toBe("passed");
+    m.done();
+  });
+  it("a record core made without a round binding never passes the round checks, whatever the form said", () => {
+    const s = checkStates({ record: record("ACCEPT", [], false), refusal: null, withRound: true });
+    expect(s.accepted).toBe("not-applicable");
+    expect(s.sha).toBe("passed");
+  });
+});

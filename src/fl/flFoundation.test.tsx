@@ -491,6 +491,16 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     const h = html("groups/rounds/open");
     expect(h).toContain("Group rounds not live yet. WorkMarket is not available yet on this network, so there is no Open button. You can save this draft.");
     expect(h).not.toContain("Sign escrow and open");
+    const el = document.createElement("div");
+    el.innerHTML = h;
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
+  it("#695 review: the Payouts page passes the banned-words check (both panes)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/payouts");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
   });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");
