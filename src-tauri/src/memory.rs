@@ -103,6 +103,33 @@ pub const CHAIN_STATE_TENANT: &str = "chain-state";
 /// The default personal tenant for a single user's own memory graph.
 pub const PERSONAL_TENANT: &str = "personal";
 
+/// The longest fact (in characters) Hermes may write with `memory_assert`.
+pub const MAX_FACT_CHARS: usize = 2_000;
+
+/// What a durable `memory_assert` write produced: the tenant it landed in and
+/// the node id the daemon printed (None when the reply named no id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RememberReceipt {
+    pub tenant: String,
+    pub node_id: Option<String>,
+}
+
+/// Trim a fact and reject an empty or oversize one before anything is written.
+pub fn validate_fact(fact: &str) -> std::result::Result<&str, String> {
+    let fact = fact.trim();
+    if fact.is_empty() {
+        return Err("the fact is empty, so nothing was saved".to_string());
+    }
+    let n = fact.chars().count();
+    if n > MAX_FACT_CHARS {
+        return Err(format!(
+            "the fact is {n} characters; the limit is {MAX_FACT_CHARS}, so nothing was saved"
+        ));
+    }
+    Ok(fact)
+}
+
 /// How long to wait for the daemon to bind its socket after spawn before the
 /// first JSON-RPC call gives up (honest transport error, never a fabricated
 /// graph).
@@ -970,6 +997,25 @@ impl MemoryManager {
         )
     }
 
+    /// Hermes "remember this fact": write one fact the member approved on the
+    /// `memory_assert` card into their personal tenant, as a `claim` node. The
+    /// approval card in the chat is the HIC-1 gate; this only runs after it.
+    /// Fails honestly when the fact is empty or too long, or when the daemon is
+    /// not running, so the chat never says a fact was saved when it was not.
+    pub fn remember_fact(&self, fact: &str) -> std::result::Result<RememberReceipt, String> {
+        let fact = validate_fact(fact)?;
+        if !self.is_running() {
+            return Err("memory daemon not running, so nothing was saved".to_string());
+        }
+        let reply = self
+            .assert(PERSONAL_TENANT, fact, "claim")
+            .map_err(|e| format!("memory write failed: {e}"))?;
+        Ok(RememberReceipt {
+            tenant: PERSONAL_TENANT.to_string(),
+            node_id: crate::hermes_learn::node_id_from_assert(&reply),
+        })
+    }
+
     /// W3.2 — first-run docs preload into the `citrate-docs` tenant. GATED + honest:
     ///  - skips unless the BGE embedder is wired (`semantic`) — else it would author
     ///    invisible (unembedded) nodes (Rule 1);
@@ -1481,6 +1527,24 @@ pub async fn memory_stop(app_h: tauri::AppHandle) -> std::result::Result<(), Str
 pub fn memory_stop_sync(state: State<'_, MemoryState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
+}
+
+/// `MemoryDomain.assert` — Hermes's `memory_assert` tool, after the member
+/// approved its card: a durable write of one fact into the personal tenant of
+/// the bundled mem-mcp daemon. A local mem-dag write under the daemon's author
+/// identity, not a custody-key signature.
+#[tauri::command]
+pub async fn memory_assert(
+    app_h: tauri::AppHandle,
+    fact: String,
+) -> std::result::Result<RememberReceipt, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        st0.0.remember_fact(&fact)
+    })
+    .await
 }
 
 /// `MemoryDomain.recall` — a real recall over a tenant, returned as parsed rows.

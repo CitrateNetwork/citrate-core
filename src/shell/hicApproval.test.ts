@@ -244,3 +244,42 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
     expect(storeSrc.match(/this\.(approveWalletReview|rejectWalletReview)\(/g) ?? []).toHaveLength(0);
   });
 });
+
+describe("Feature: Hermes remembers an approved fact durably", () => {
+  it("Given the member approves, then the fact is written to memory and the result names the node", async () => {
+    vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    const write = vi.spyOn(bridge.memory, "assert").mockResolvedValue({ tenant: "personal", nodeId: "0a1b2c3d4e5f" });
+    const out = await store.handleTool(call("memory_assert", { fact: "  likes tea " }), "m1", noop);
+    expect(write).toHaveBeenCalledWith("likes tea");
+    expect(out).toMatch(/Saved to the member's personal memory as node 0a1b2c3d4e5f/);
+  });
+
+  it("Given the member declines, then nothing is written", async () => {
+    vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    const write = vi.spyOn(bridge.memory, "assert");
+    const out = await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
+    expect(write).not.toHaveBeenCalled();
+    expect(out).toMatch(/declined; nothing was saved/);
+  });
+
+  it("Given the write fails, then the result says nothing was saved and gives the reason", async () => {
+    vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    vi.spyOn(bridge.memory, "assert").mockRejectedValue(new Error("memory daemon not running, so nothing was saved"));
+    const out = await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
+    expect(out).toMatch(/approved, but the memory write failed, so nothing was saved: memory daemon not running/);
+  });
+
+  it("Given the card, then it carries no demo wording", async () => {
+    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
+    const spec = sig.mock.calls[0][0];
+    expect(JSON.stringify(spec)).not.toMatch(/demo|not durable/i);
+    // memory.rs: the mem-mcp store is not encrypted at rest yet, so the card must not claim it is.
+    store.setState({ memDaemon: "running" });
+    await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
+    const up = JSON.stringify(sig.mock.calls[1][0].rows);
+    expect(up).toContain("not encrypted at rest yet");
+    expect(up).not.toMatch(/·\s*encrypted at rest/);
+    expect(spec.title).toBe("Remember this in your memory");
+  });
+});

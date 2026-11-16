@@ -4215,26 +4215,35 @@ export class Store {
     } else if (call.name === DELEGATION_STATUS_TOOL_NAME) {
       result = await runDelegationStatusTool({ status: (id) => bridge.delegation.status(id) }, args as Record<string, unknown>);
     } else if (call.name === "memory_assert") {
-      // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
-      // isn't bundled yet), so an approval here does NOT durably write anything. Show
-      // the real approval ceremony, but the copy must not imply a durable write
-      // occurred — it is a preview of the write the real agent would queue.
+      // Hermes "remember this fact": the card is the HIC-1 gate; on approve the fact is a
+      // durable write into the personal tenant of the bundled memory daemon (mem-mcp).
+      const fact = (args.fact || "").trim();
+      const daemonUp = this.state.memDaemon === "running";
       const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool memory_assert",
-        title: "Approve a memory write (demo — not durable)",
+        title: "Remember this in your memory",
         chainless: true,
         rows: [
-          { k: "Assertion", v: "“" + (args.fact || "") + "”" },
-          { k: "Tenant", v: "personal · your capability grant" },
-          { k: "Store", v: this.state.memSocketPath ?? "memory daemon offline — nothing is written" },
+          { k: "Fact", v: "“" + fact + "”" },
+          { k: "Tenant", v: "personal" },
+          { k: "Store", v: daemonUp ? "memory daemon on this device · stored on this computer, not encrypted at rest yet" : "memory daemon offline · approving will fail and nothing is saved" },
         ],
-        cost: "none — demo mode does not write to the memory graph",
+        cost: "none, a local memory write",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      }, fieldsCard("memory_assert", ann, { fact: args.fact || "" }, "remember a fact in your personal memory"));
+      }, fieldsCard("memory_assert", ann, { fact }, "remember a fact in your personal memory"));
       status = r;
-      result = r;
+      if (r !== "approved") {
+        result = "The member declined; nothing was saved to memory.";
+      } else {
+        try {
+          const saved = await bridge.memory.assert(fact);
+          result = "Saved to the member's " + saved.tenant + " memory" + (saved.nodeId ? " as node " + saved.nodeId : "") + ", with the member's approval.";
+        } catch (e) {
+          result = "The member approved, but the memory write failed, so nothing was saved: " + (e instanceof Error ? e.message : String(e));
+        }
+      }
     } else if (call.name === "journal_append") {
       const entry = args.entry || "work note";
       const today = new Date().toISOString().slice(0, 10);

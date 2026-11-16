@@ -447,9 +447,6 @@ describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", 
     // NOTE: `auth` (CORE-A3) and `node` (CORE-C1.1) are now genuinely wired and
     // are asserted separately.
     const calls = [
-      // memory.assert (a signed WRITE) stays a seam stub until it routes through
-      // the ceremony; recall/search/neighbors are now genuinely wired (C3).
-      () => bridge.memory.assert("x"),
       () => bridge.membership.entitlement(),
       () => bridge.commissary.catalog(),
       () => bridge.comms.connections(),
@@ -758,9 +755,12 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
     expect(graph.map((t) => t.tenant).sort()).toEqual(["chain-state", "personal"]);
   });
 
-  it("memory.assert (a signed WRITE) is still honestly Unavailable until the ceremony WP", async () => {
+  it("memory.assert invokes the durable memory_assert write with the fact", async () => {
     const bridge = createTauriBridge();
-    await expect(bridge.memory.assert("x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce({ tenant: "personal", nodeId: "0a1b2c3d4e5f" });
+    await expect(bridge.memory.assert("likes tea")).resolves.toEqual({ tenant: "personal", nodeId: "0a1b2c3d4e5f" });
+    expect(invokeMock).toHaveBeenCalledWith("memory_assert", { fact: "likes tea" });
   });
 });
 

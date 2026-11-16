@@ -1073,9 +1073,9 @@ pub fn run() {
             // importer against its manifest; idempotent; progress on memory://knowledge-import-progress).
             knowledge_import::memory_import_knowledge,
             memory::memory_constellation,
-            // seam domains — honest Unavailable until each later phase (A1.3).
-            // memory_assert stays a seam stub: the assert WRITE path routes
-            // through the SignatureCeremony (a later WP), not C3's read wiring.
+            // Hermes "remember this fact": the approved memory_assert card writes one
+            // fact into the personal tenant (a local mem-dag write, not a signature).
+            memory::memory_assert,
             // earnings — the REAL on-chain claimable read (C2). agent_earnings
             // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
             // 40204 (Rule 1: the single real value; no sim per-source breakdown).
@@ -1240,7 +1240,6 @@ pub fn run() {
             // not-provisioned index; never fabricated (Rule 1). NOT @rule8.
             activity::wallet_activity,
             // seam domains — honest Unavailable until each later phase (A1.3)
-            seam::memory_assert,
             seam::chat_backend,
             seam::membership_entitlement,
             seam::commissary_catalog,

@@ -600,7 +600,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       async assert() {
         assertSimAllowed("memory.assert");
-        return "approved";
+        return { tenant: "personal", nodeId: null };
       },
       async recall(tenant: string) {
         assertSimAllowed("memory.recall");
