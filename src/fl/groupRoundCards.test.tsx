@@ -208,14 +208,16 @@ describe("flag ON in the app", () => {
     expect(h).not.toContain("reads live");
   });
 
-  it("a group's chat shows the round card above the conversation", () => {
+  it("a group's chat reads the round ledgers in its details rail and offers no join (0.5.4 FL design)", () => {
     const stubStore = { toast: () => {}, identity: () => ({ wallet: "" }) } as unknown as Store;
     const GROUP = { id: "0x" + "ab".repeat(16), name: "Garden club", owner: "0x" + "11".repeat(20), kind: "channel" as const, members: [] };
     groupsSlice.set({ groups: [GROUP], selectedId: GROUP.id, roster: [], messages: [] });
     const h = renderToStaticMarkup(<Groups store={stubStore} s={freshState("p1")} />);
-    expect(h).toContain('data-testid="group-rounds-card"');
-    expect(h).toContain('data-reading="loading"');
-    expect(h.indexOf('data-testid="group-rounds-card"')).toBeLessThan(h.indexOf("Nothing here yet"));
+    // Board 02 replaces the card above the thread with the rail's Rounds section (first render: reading).
+    expect(h).toContain('data-testid="rail-rounds"');
+    expect(h).toContain("Group rounds not live yet");
+    expect(h).not.toContain('data-testid="group-rounds-card"');
+    expect(h).not.toMatch(/>Join( round)?</);
   });
 
   it("mounted with a book missing a ledger, the card never calls the chain", async () => {
