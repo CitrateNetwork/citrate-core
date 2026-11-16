@@ -20,6 +20,7 @@ import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
+import { FL_DATASET_AGENT_TOOLS } from "./flDatasetTools.ts";
 import { ChatPlan } from "./chatPlan.ts";
 import { labelFor as liveLabelFor, noticeFor, type SidecarDownReason } from "./sidecarLiveness.ts";
 
@@ -805,6 +806,8 @@ export const AGENT_TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  // ── local training datasets (0.5.4 Hermes x FL, WP-H6) ──
+  ...FL_DATASET_AGENT_TOOLS,
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1312,6 +1315,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "explain_tx",
   "fl_round_plan",
   "fl_adapter_gate_read",
+  "fl_dataset_list",
+  "fl_dataset_sample",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
