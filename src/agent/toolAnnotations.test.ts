@@ -8,6 +8,7 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
+import { VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -52,6 +53,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        offerId: 1,
       }),
     });
     for (const n of names) {
@@ -64,6 +66,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H5: fl_join_propose reaches the wallet review only on a 0.6.0 network with payouts open.
+      vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
+      vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
+      vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
+      vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

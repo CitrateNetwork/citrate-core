@@ -39,6 +39,11 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
+import { readFlNetworkState, type FlNetworkState } from "../fl/networkState";
+import { machineFrom, readMarket, type MarketView } from "../fl/market";
+import { loadWorkerTerms } from "../fl/workerTerms";
+import flBook from "../../src-tauri/addresses/40204.json";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -126,7 +131,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_join_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4048,6 +4053,20 @@ export class Store {
     return r === "approved";
   }
 
+  /** 0.5.4 Hermes x FL: the FL network state from the shipped address book and eth_getCode (the
+   *  boards' own read). A method so the gate tripwires can stand in a 0.6.0 network. */
+  flNetworkState(): Promise<FlNetworkState> {
+    return readFlNetworkState(flBook, {
+      codeSize: (a) => bridge.contracts.codeSize("citrate", a),
+      viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d),
+    });
+  }
+
+  /** 0.5.4 Hermes x FL: core's WorkMarket offers read model (fl_market_offers). */
+  flMarketOffers(): Promise<MarketView> {
+    return readMarket();
+  }
+
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
   everydayInvoke(): EverydayInvoke | null {
     if (BRIDGE_MODE !== "tauri") return null;
@@ -4613,6 +4632,18 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlMarketTool(call.name)) {
+      // 0.5.4 WP-H5: offers (read) and join (the member signs the bond in the wallet review; the
+      // shared joinIntent refuses until WorkMarket is here and payouts open).
+      const out = await runFlMarketTool(call.name, args as Record<string, unknown>, {
+        networkState: () => this.flNetworkState(),
+        readMarket: () => this.flMarketOffers(),
+        terms: () => loadWorkerTerms(),
+        machine: async () => machineFrom((await bridge.tier.recommend())?.facts),
+        propose: (intent) => this.proposeContractCall(intent),
+      });
+      status = out.status;
+      result = out.result;
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.

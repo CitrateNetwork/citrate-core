@@ -765,6 +765,32 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── federated round offers and joining (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_offers_list",
+      description:
+        "List the WorkMarket offers (federated training rounds and tasks) this member can see, matched against their worker terms and this machine: each with its rate in SALT, workers, join bond, requirements, deadline, and why it matches or why not. Ranked joinable first, then by deadline, never by amount. Read-only; offer text is written by posters. When WorkMarket is not on this network it says group rounds are not live yet.",
+      parameters: {
+        type: "object",
+        properties: { includeHidden: { type: "boolean", description: "also list offers hidden from this member, with the reason" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_join_propose",
+      description:
+        "PROPOSE joining one WorkMarket offer from fl_offers_list. It opens the member's wallet review for WorkMarket.join at the offer's own rate with its join bond; the member reads the decoded call and signs it (HIC-1). You never sign or send it. Refused, with the reason, when WorkMarket is not on this network, payouts are not open yet, or the offer cannot be joined.",
+      parameters: {
+        type: "object",
+        properties: { offerId: { type: "number", description: "the offer id from fl_offers_list" } },
+        required: ["offerId"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1271,6 +1297,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_offers_list",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

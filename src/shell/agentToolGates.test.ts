@@ -18,6 +18,7 @@ import { bridge } from "../bridge";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
+import { VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -129,6 +130,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H5: fl_join_propose reaches the wallet review only on a 0.6.0 network with payouts open.
+      vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
+      vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
+      vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
+      vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -145,6 +151,7 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           rows: [["a", 1]],
           title: "Weekly review",
           start: "2099-01-05T09:00",
+          offerId: 1,
         }),
         "m1",
         noop,

@@ -7,6 +7,7 @@
 228bca88fc273b2d5dbf3dcc39f1ec7724510358b3e4d786152107cfed05c8b5  injection-v2.d/00-v1-appends.json
 9309366175fa4df5ddfb9dfb710af22ce0a89f2d62fadbe24a8e26343ed46a9d  injection-v2.d/10-mcp-output.json
 cec6566086f672fde6b8faad453865e3f453d8e02f60ba4fe0df08d287546197  injection-v2.d/20-browser-snapshot.json
+76f3f41018c4a154e64145a67ebc792c54b933a07103a22c08e99f294417416a  injection-v2.d/44-fl-offers-join.json
 a329a7b2a4cbf363b684bbfb37a3adaf7a735c3d22be14a8d2517e47f6a9f497  injection-v2.d/everyday.json
 831c7447c9d78170e6b646211e70514b90cbf66748c58f8dfdb06a0ca682c77c  injection-v2.json
 6b3027b799e094dd07ead3ab8cf92a258911bc46c04279aa41737f23bf1f9baa  qa-literacy-v1.anchors.json
@@ -21,7 +22,8 @@ d0f75f9f9cece494ee9adb652e042bf247490698f72fe5f5aa2b469d0e46ce11  toolcall-v2.d/
 70f835def84ca6ba12814ea62d1f9c6e56e4c358f0742c93516a5b9b00f3fd28  toolcall-v2.d/10-belnap-codec.json
 de934f1bcd540c2b0412c383b09534f1b949efb8efef056716822ecec0fe809c  toolcall-v2.d/20-contract-view.json
 1d7ebb93a2b81aa4641097a459706ed28d60768138eec8a2f7ecb67557354fa8  toolcall-v2.d/30-contract-intel.json
+8bf47e250aa1bd007bc47dedb9f6bffa5eff8408bc18b75923b828074b4e6f79  toolcall-v2.d/44-fl-offers-join.json
 d77b836649fe90f4f3cc46784510a42742c58c09f5477cdce4cabf180ddbec6d  toolcall-v2.d/everyday.json
-a8b32532830d5ce98593e5bab81154ff2ab9e1579b0221a1985a6cad76c354c3  toolcall-v2.heldout.json
+6689ab76888745fbdf71c8c89542e8c75ca6f112aa96f8d5e4aac564142a5fd4  toolcall-v2.heldout.json
 2dc9be7c3cc72b48c0b33b4f6d94a309459e1b3b8906107206236b79f2c1214d  toolcall-v2.json
 432e0d7fb754ff1f84a84caefb405a939261fa13c2473aa5b553370efdf472a6  workflow-v1.json
