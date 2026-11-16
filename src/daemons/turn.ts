@@ -34,8 +34,11 @@ import { AGENT_TOOL_ANNOTATIONS, annotationFor } from "../agent/toolAnnotations"
 import type { TokenMeter } from "./tokenMeter";
 import type { Claim } from "./api";
 
+/** The tools that only move the UI: a daemon runs while the member may not be watching. */
+export const UI_MOVING_TOOLS: ReadonlySet<string> = new Set(["app_navigate", "cluster_add_machine_open"]);
+
 /** The tools a daemon turn is offered: every agent tool except moving the UI. */
-export const DAEMON_TOOLS = AGENT_TOOLS.filter((t) => t.function.name !== "app_navigate");
+export const DAEMON_TOOLS = AGENT_TOOLS.filter((t) => !UI_MOVING_TOOLS.has(t.function.name));
 
 /** The tools offered to one run: the member-daemon set, or exactly the approved ones. */
 export function daemonToolsFor(allowed: readonly string[] | null | undefined) {
@@ -147,7 +150,7 @@ export function daemonToolDecision(
   sidecarMeta?: ToolCallMeta,
   allowed?: readonly string[] | null,
 ): { run: false; result: string } | { run: true; meta: ToolCallMeta | undefined } {
-  if (call.name === "app_navigate" || !annotationFor(call.name) || (allowed != null && !allowed.includes(call.name))) {
+  if (UI_MOVING_TOOLS.has(call.name) || !annotationFor(call.name) || (allowed != null && !allowed.includes(call.name))) {
     return { run: false, result: `${call.name} is not available in a scheduled daemon run; nothing was done.` };
   }
   if (READ_ONLY_AGENT_TOOLS.has(call.name)) return { run: true, meta: sidecarMeta };

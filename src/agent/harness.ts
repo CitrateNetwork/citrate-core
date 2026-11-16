@@ -520,6 +520,88 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── groups and cluster (0.5.4 Hermes × FL, WP-H2; src/agent/groupClusterTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "group_join_propose",
+      description:
+        "PROPOSE asking to join a group with an invite link the member pasted (citrate://invite?...). Core reads the link and the member decides on a card (HIC-1). Approving only ASKS: the inviter approves or declines the request, and the member joins after an approval. If the link can't be read, say \"We couldn't find that invite\".",
+      parameters: {
+        type: "object",
+        properties: { link: { type: "string", description: "the invite link exactly as the member pasted it" } },
+        required: ["link"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_invites_list",
+      description: "List the open invites this device made for a group: id, who it is for, expiry. Read-only. Links are never shown to you.",
+      parameters: { type: "object", properties: { group: { type: "string", description: "group id from groups_list" } }, required: ["group"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_invite_revoke",
+      description: "Revoke one open invite (its id from group_invites_list). Its link stops working at once. This lowers access, so it applies without a card.",
+      parameters: {
+        type: "object",
+        properties: { group: { type: "string", description: "group id" }, id: { type: "string", description: "invite id from group_invites_list" } },
+        required: ["group", "id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_role_propose",
+      description:
+        "PROPOSE a role change for a group member (admin, member or guest), or offboarding them (role \"offboard\", which cannot be undone). The member decides on a card (HIC-1); the grant is signed with their comms key on this device. Only the owner can make admins, and core passes on any refusal.",
+      parameters: {
+        type: "object",
+        properties: {
+          group: { type: "string", description: "group id" },
+          member: { type: "string", description: "the member's address from group_roster" },
+          role: { type: "string", enum: ["admin", "member", "guest", "offboard"], description: "the new role, or offboard" },
+        },
+        required: ["group", "member", "role"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_read",
+      description:
+        "Read a group's machine cluster from the cluster daemon: machines online of total, peers (direct or relayed), each member's linked devices, and whether the cross-machine mesh is on and why. Read-only. A part that can't be read says unknown with its reason.",
+      parameters: { type: "object", properties: { group: { type: "string", description: "group id from groups_list" } }, required: ["group"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_mesh_propose",
+      description:
+        "Turn the cross-machine mesh on (PROPOSE: the member decides on a card) or off (applies at once). Core refuses to turn it on until its security review (CL-S4) is signed off; say so plainly when it does.",
+      parameters: {
+        type: "object",
+        properties: { enabled: { type: "boolean", description: "true to turn on, false to turn off" } },
+        required: ["enabled"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_add_machine_open",
+      description:
+        "Open Groups › Cluster so the member can press Add a machine. The pairing link and code are shown on the member's screen only, never to you, and both machines approve the pairing.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   {
     type: "function",
     function: {
@@ -1258,6 +1340,9 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "staking_status",
   "groups_list",
   "group_roster",
+  "group_invites_list",
+  "cluster_read",
+  "cluster_add_machine_open",
   "directory_find",
   "skills_list",
   "skill_run",
@@ -1275,4 +1360,15 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "gsheets_read",
   "schedule_list",
   "calendar_list",
+]);
+
+/**
+ * 0.5.4 Hermes x FL: the REVIEWED list of agent tools that change something but only LOWER the
+ * member's exposure (unload an adapter, withdraw a consent, revoke an invite), so they run with no
+ * approval card. Raising authority always asks. The tripwire in src/shell/agentToolGates.test.ts
+ * exempts exactly these from "must reach an approval" and instead checks each one asks nothing and
+ * calls only its lowering command. A tool lands here only with a reviewed reason.
+ */
+export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "group_invite_revoke", // core group_invite_revoke: delete the invite's key, so its link stops working
 ]);

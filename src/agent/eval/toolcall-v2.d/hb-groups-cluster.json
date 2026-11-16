@@ -1,0 +1,138 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H2 (lane HB: group_join_propose, group_invites_list, group_invite_revoke, group_role_propose, cluster_read, cluster_mesh_propose, cluster_add_machine_open)",
+  "note": "Fragment for toolcall-v2 (A50). Single-turn, hand-written, disjoint from any training set. Placeholder group ids, addresses and an invite link with a fixture token; no live keys.",
+  "tasks": [
+    {
+      "id": "tc-group-join-link",
+      "prompt": "Dana sent me this invite, can you get me into the group? citrate://invite?g=grp-2b81&t=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&k=pubkeyfixture&e=4102444800",
+      "expect": {
+        "tool": "group_join_propose",
+        "argsMatch": {
+          "link": "re:^citrate://invite\\?g=grp-2b81"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "groups"
+      ]
+    },
+    {
+      "id": "tc-group-invites-open",
+      "prompt": "Which invite links are still open for group grp-7f3a91?",
+      "expect": {
+        "tool": "group_invites_list",
+        "argsMatch": {
+          "group": "re:^grp-7f3a91$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "groups"
+      ]
+    },
+    {
+      "id": "tc-group-invite-revoke",
+      "prompt": "Revoke invite 0123456789abcdef in group grp-7f3a91, I sent it to the wrong person.",
+      "expect": {
+        "tool": "group_invite_revoke",
+        "argsMatch": {
+          "group": "re:^grp-7f3a91$",
+          "id": "re:^0123456789abcdef$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "groups"
+      ]
+    },
+    {
+      "id": "tc-group-make-admin",
+      "prompt": "Make 0x4444444444444444444444444444444444444444 an admin of group grp-7f3a91.",
+      "expect": {
+        "tool": "group_role_propose",
+        "argsMatch": {
+          "group": "re:^grp-7f3a91$",
+          "member": "re:^0x4{40}$",
+          "role": "re:^admin$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "groups"
+      ]
+    },
+    {
+      "id": "tc-group-offboard",
+      "prompt": "Remove 0x4444444444444444444444444444444444444444 from group grp-7f3a91 for good.",
+      "expect": {
+        "tool": "group_role_propose",
+        "argsMatch": {
+          "member": "re:^0x4{40}$",
+          "role": "re:^offboard$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "groups"
+      ]
+    },
+    {
+      "id": "tc-cluster-read",
+      "prompt": "How many machines in group grp-7f3a91's cluster are online, and are any of them relayed?",
+      "expect": {
+        "tool": "cluster_read",
+        "argsMatch": {
+          "group": "re:^grp-7f3a91$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "cluster"
+      ]
+    },
+    {
+      "id": "tc-cluster-mesh-on",
+      "prompt": "Turn on the cross-machine mesh so my laptop and desktop can work together.",
+      "expect": {
+        "tool": "cluster_mesh_propose",
+        "argsMatch": {
+          "enabled": "re:^true$"
+        },
+        "alsoAccept": [
+          "cluster_read"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "cluster"
+      ]
+    },
+    {
+      "id": "tc-cluster-add-machine",
+      "prompt": "I want to add my desktop to my cluster. Where do I do that?",
+      "expect": {
+        "tool": "cluster_add_machine_open"
+      },
+      "tags": [
+        "tool-choice",
+        "navigate",
+        "cluster"
+      ]
+    }
+  ]
+}

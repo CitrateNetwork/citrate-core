@@ -3,7 +3,7 @@
 // output as untrusted; core keeps ONE reviewed annotation per tool so the downgrade is precise.
 // Enumeration tripwire: a new tool without an annotation, or an effectful tool marked `none`, fails.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
+import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./toolAnnotations";
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
@@ -52,6 +52,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        // 0.5.4 WP-H2: an invite link, a roster member, a role and the mesh switch.
+        link: "citrate://invite?g=g&t=t&k=k&e=9",
+        member: "0x" + "1".repeat(40),
+        role: "admin",
+        enabled: true,
       }),
     });
     for (const n of names) {
@@ -64,6 +69,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H2: a readable invite, a roster with the member, a signed-off mesh that is off.
+      vi.spyOn(bridge.invites, "preview").mockResolvedValue({ group: "g", groupName: "G", inviter: "A", expiresAt: 9, expired: false, requested: false });
+      vi.spyOn(bridge.invites, "revoke").mockResolvedValue({ notified: false });
+      vi.spyOn(bridge.groups, "roster").mockResolvedValue([{ address: "0x" + "1".repeat(40), role: "member" }]);
+      vi.spyOn(bridge.cluster, "meshStatus").mockResolvedValue({ on: false, source: "off", signedOff: true, note: "" });
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"
@@ -79,6 +89,8 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       await store.handleTool(call(n), "m1", () => {});
       const gated = sig.mock.calls.length + review.mock.calls.length > 0;
       if (gated) expect(annotationFor(n)!.effect, `tool ${n} asks the member, so it has an effect`).not.toBe("none");
+      // An authority-lowering tool changes something without asking (reviewed list in harness.ts).
+      else if (AUTHORITY_LOWERING_AGENT_TOOLS.has(n)) expect(annotationFor(n)!.effect, `tool ${n} lowers authority`).toBe("write");
       else expect(annotationFor(n)!.effect, `tool ${n} never asks, so it must be read-only`).toBe("none");
     }
   });
