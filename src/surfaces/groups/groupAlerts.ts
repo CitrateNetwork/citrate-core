@@ -32,6 +32,8 @@ export interface AlertInput {
   /** Waiting requests per group id you manage. */
   requests: Record<string, IncomingRequest[]>;
   me: string;
+  /** Refs of the Hermes answers this device posted (groupHermes.ownAnswers). */
+  ownAnswers?: Set<string>;
 }
 
 const short = (a: string) => (a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a);
@@ -48,10 +50,15 @@ export function groupAlerts(i: AlertInput): GroupAlert[] {
       if (!h) continue;
       const ref = messageRef(m.sender, m.body);
       if (h.draft && (role === "owner" || role === "admin")) {
-        out.push({ key: "d" + g.id + ref, kind: "draft", tag: "HIC-1", text: `${g.name} has a round draft waiting for an owner or admin to review: ${h.draft.title}`, groupId: g.id, route: "groups/chat" });
+        const verified = m.sender.toLowerCase() === me && (i.ownAnswers?.has(ref) ?? false);
+        out.push(
+          verified
+            ? { key: "d" + g.id + ref, kind: "draft", tag: "HIC-1", text: `${g.name} has a round draft waiting for an owner or admin to review: ${h.draft.title}`, groupId: g.id, route: "groups/chat" }
+            : { key: "d" + g.id + ref, kind: "draft", tag: "Hermes", text: `${short(m.sender)} posted a round draft as a Hermes answer in ${g.name} (not verified): ${h.draft.title}`, groupId: g.id, route: "groups/chat" },
+        );
       }
       if (mine.has(h.to) && m.sender.toLowerCase() !== me) {
-        out.push({ key: "a" + g.id + ref, kind: "answer", tag: "Hermes", text: `Hermes answered your message in ${g.name}, on ${short(m.sender)}'s device`, groupId: g.id, route: "groups/chat" });
+        out.push({ key: "a" + g.id + ref, kind: "answer", tag: "Hermes", text: `${short(m.sender)} posted a Hermes answer to your message in ${g.name} (not verified)`, groupId: g.id, route: "groups/chat" });
       }
     }
     for (const r of i.requests[g.id] ?? []) {

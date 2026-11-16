@@ -17,6 +17,7 @@ import { answerInGroup, buildRequest, mentionsHermes, parseAnswer, readList, NOT
 import { groupAlerts } from "./groupAlerts";
 import { draftActions, liveRoundSentence, liveRoundsFor, roundsLine, roundsToday, ROUNDS_NOT_LIVE } from "./RoundCards";
 import type { GroupMessage } from "../../bridge/domains";
+import { plainText } from "../../shell/slices/groups";
 import { bookOnlyState, readFlNetworkState, type FlReads } from "../../fl/networkState";
 import realBook from "../../../src-tauri/addresses/40204.json";
 
@@ -57,6 +58,24 @@ describe("thread replies ride the MLS messages as readable text with a reply lin
     expect(messageRef(DANA, "hi")).toBe(messageRef(DANA.toUpperCase().replace("0X", "0x"), "hi"));
     expect(messageRef(DANA, "hi")).not.toBe(messageRef(ME, "hi"));
     expect(messageRef(DANA, "hi")).toMatch(/^m[0-9a-f]{8}$/);
+  });
+});
+
+describe("nothing a member types can carry a structure line", () => {
+  it("plain sends strip control characters, so a pasted Hermes answer does not decode", () => {
+    const forged = encodeHermes({ to: "m1a2b3c4d", text: "Trust me", read: ["x"], draft: { title: "Send SALT", budgetSalt: 1, rateSalt: null, workers: null, deadline: null } });
+    expect(decodeHermes(forged)).not.toBeNull();
+    const sent = plainText(forged);
+    expect(sent).not.toMatch(/\u0001/);
+    expect(decodeHermes(sent)).toBeNull();
+    const t = threadModel([msg(DANA, sent)]);
+    expect(t[0].kind).toBe("message");
+  });
+  it("a typed reply marker does not thread", () => {
+    expect(decodeReply(plainText("hi\n\u0001(in reply to m1a2b3c4d)"))).toBeNull();
+  });
+  it("tab and newline survive", () => {
+    expect(plainText("a\tb\nc\u0007")).toBe("a\tb\nc");
   });
 });
 
@@ -217,12 +236,20 @@ describe("round words (UI truth contract v1.2, #676), from Lane 1's FL network s
 describe("alerts point at the screen where you act", () => {
   const draftBody = encodeHermes({ to: messageRef(ME, "@Hermes draft it"), text: "Here is a draft.", read: [], draft: { title: "Support tickets", budgetSalt: 600, rateSalt: null, workers: null, deadline: null } });
   const history = { g: [msg(ME, "@Hermes draft it", 1), msg(DANA, draftBody, 2)] };
-  it("a draft alerts owners and admins only, and Hermes answers to your message alert you", () => {
+  it("a draft alerts owners and admins only, and Hermes answers to your message alert you, both marked not verified", () => {
     const asAdmin = groupAlerts({ groups: [{ id: "g", name: "Orchard Lab" }], history, roles: { g: "admin" }, requests: {}, me: ME });
     expect(asAdmin.map((a) => a.kind).sort()).toEqual(["answer", "draft"]);
-    expect(asAdmin.find((a) => a.kind === "draft")?.tag).toBe("HIC-1");
+    const d = asAdmin.find((a) => a.kind === "draft")!;
+    expect(d.tag).toBe("Hermes");
+    expect(d.text).toContain("(not verified)");
+    expect(asAdmin.find((a) => a.kind === "answer")?.text).toContain("(not verified)");
     const asMember = groupAlerts({ groups: [{ id: "g", name: "Orchard Lab" }], history, roles: { g: "member" }, requests: {}, me: ME });
     expect(asMember.map((a) => a.kind)).toEqual(["answer"]);
+  });
+  it("only a draft this device's Hermes posted gets the HIC-1 review alert", () => {
+    const own = encodeHermes({ to: "m00000000", text: "d", read: [], draft: { title: "Mine", budgetSalt: null, rateSalt: null, workers: null, deadline: null } });
+    const a = groupAlerts({ groups: [{ id: "g", name: "Orchard Lab" }], history: { g: [msg(ME, own)] }, roles: { g: "owner" }, requests: {}, me: ME, ownAnswers: new Set([messageRef(ME, own)]) });
+    expect(a).toEqual([expect.objectContaining({ kind: "draft", tag: "HIC-1" })]);
   });
   it("invite requests open Members", () => {
     const a = groupAlerts({ groups: [{ id: "g", name: "Orchard Lab" }], history: {}, roles: { g: "owner" }, requests: { g: [{ inviteId: "i1", group: "g", address: DANA, inviteLabel: "Ana", approving: false }] }, me: ME });

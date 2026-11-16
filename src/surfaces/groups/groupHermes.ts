@@ -17,6 +17,39 @@ import type { GroupMember, GroupMessage } from "../../bridge/domains";
 import { checkDraft, encodeHermes, MAX_TEXT, threadModel, type RoundDraft } from "./groupEnvelope";
 import { roleWord } from "./memberRoles";
 
+// ---- which Hermes answers this device posted ----------------------------------------------------
+// A Hermes answer is an ordinary group message; nothing proves another member's app produced it
+// with Hermes (there is no signature for it), so a received one is shown as "not verified". This
+// device remembers the refs of the answers it posted itself, so those show as its own. The record
+// is a per-device convenience: if it is lost, your own past answers also read "not verified".
+const OWN_KEY = "citrate.groups.hermesPosted.v1";
+const OWN_CAP = 500;
+
+function loadOwn(): string[] {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(OWN_KEY) : null;
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remember that this device posted the Hermes answer with ref `ref`. */
+export function rememberOwnAnswer(ref: string): void {
+  try {
+    const all = loadOwn().filter((r) => r !== ref).concat(ref).slice(-OWN_CAP);
+    localStorage.setItem(OWN_KEY, JSON.stringify(all));
+  } catch {
+    /* storage unavailable: the answer shows as not verified after a reload */
+  }
+}
+
+/** The refs of Hermes answers this device posted. */
+export function ownAnswers(): Set<string> {
+  return new Set(loadOwn());
+}
+
 /** Does a message mention Hermes? `@Hermes` as a word, any case. */
 export function mentionsHermes(text: string): boolean {
   return /(^|[^\w@])@hermes\b/i.test(text);
@@ -104,6 +137,7 @@ export function parseAnswer(raw: string): { text: string; draft: RoundDraft | nu
 
 export interface HermesDeps {
   inferLocal(messagesJson: string, contextJson: string): Promise<string>;
+  /** Post the encoded answer to `groupId` (a structured body this module built). */
   send(groupId: string, body: string): Promise<void>;
 }
 

@@ -172,13 +172,26 @@ export async function sendMessage(body: string): Promise<void> {
   });
 }
 
+/** Control characters a member's message never carries (tab and newline are kept). U+0001 marks the
+ *  app's own structure lines and control messages, so a typed or pasted one could forge them. */
+const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
+
+/** A member's typed text as it may be sent: control characters removed. */
+export function plainText(body: string): string {
+  return body.replace(CONTROL_CHARS, "");
+}
+
 /**
  * Send `body` to `groupId` (not necessarily the selected group): echo it locally at once, relay it,
  * then drain. Rejects when the relay refused it (the reason is also in `error`), so a caller that
  * must know (a Hermes answer, a thread reply) can say it was not sent.
+ *
+ * Control characters are stripped from every send, so nothing typed can carry the app's structure
+ * marker. `structured` is only for bodies this app built itself (groups/groupEnvelope.ts encodes a
+ * reply or a Hermes answer with its own marker line, after stripping the member's text).
  */
-export async function sendMessageTo(groupId: string, body: string): Promise<void> {
-  const text = body.trim();
+export async function sendMessageTo(groupId: string, body: string, opts: { structured?: boolean } = {}): Promise<void> {
+  const text = (opts.structured ? body : plainText(body)).trim();
   if (!groupId || !text) return;
   groupsSlice.set({ sending: true, error: null });
   // Optimistic echo: the relay delivers a message only to OTHER members, never back to the sender,

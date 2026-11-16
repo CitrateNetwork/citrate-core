@@ -114,14 +114,19 @@ export function draftActions(role: GroupRole | null): "review" | "wait" | "read-
   return "wait";
 }
 
-export function RoundDraftCard({ draft, rounds, myRole, onReview }: { draft: RoundDraft; rounds: RoundsToday; myRole: GroupRole | null; onReview: () => void }) {
-  const act = draftActions(myRole);
+/**
+ * A round draft from a Hermes answer. `verified` is true only for an answer this device's Hermes
+ * posted; a draft in any other message is shown as what it is, a member's message, and never gets
+ * the Review action.
+ */
+export function RoundDraftCard({ draft, rounds, myRole, onReview, verified }: { draft: RoundDraft; rounds: RoundsToday; myRole: GroupRole | null; onReview: () => void; verified: boolean }) {
+  const act = verified ? draftActions(myRole) : "unverified";
   const leases = draft.budgetSalt !== null && draft.rateSalt ? Math.floor(draft.budgetSalt / draft.rateSalt) : null;
   const hId = "draft-" + draft.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 40);
   const notProposed = <Unknown reason="not proposed" />;
   return (
     <Card as="section" raised labelledBy={hId} testid="round-draft-card">
-      <span data-rounds={rounds.kind} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <span data-rounds={rounds.kind} data-verified={verified ? "yes" : "no"} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <HicBadge level="HIC-1" />
         <h3 id={hId} className="grp-h2">Round draft: {draft.title}</h3>
         <Chip>Draft · no SALT moved</Chip>
@@ -134,7 +139,11 @@ export function RoundDraftCard({ draft, rounds, myRole, onReview }: { draft: Rou
           { k: "Deadline", v: draft.deadline ?? notProposed },
         ]}
       />
-      <span className="grp-note">Hermes proposed these values. Rendered by Citrate Core. Hermes cannot press these buttons.</span>
+      <span className="grp-note">
+        {verified
+          ? "Hermes proposed these values. Rendered by Citrate Core. Hermes cannot press these buttons."
+          : "Not verified as Hermes output: these values came in a member's message. To use them, open a round yourself in Groups › Rounds."}
+      </span>
       <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         {act === "review" && (
           <button className="btn btn-sm" onClick={onReview}>{rounds.kind === "live" ? "Review and sign to open" : "Review draft"}</button>

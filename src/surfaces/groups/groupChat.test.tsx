@@ -11,6 +11,7 @@ import { GroupChat, EPOCH_UNKNOWN, HERMES_DISCLOSURE } from "./GroupChat";
 import { RoundEventCard, RoundDraftCard, type RoundsToday } from "./RoundCards";
 import { encodeHermes, messageRef, decodeHermes, encodeReply } from "./groupEnvelope";
 import { UNKNOWN_INVITE } from "./GroupSheets";
+import { rememberOwnAnswer } from "./groupHermes";
 import { bridge } from "../../bridge";
 import { freshState, type AppState } from "../../shell/state";
 import { groupsSlice } from "../../shell/slices/groups";
@@ -55,6 +56,7 @@ function seed(messages: GroupMessage[] = [], roster: GroupMember[] = ROSTER) {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
   vi.spyOn(bridge.groups, "selfAddress").mockResolvedValue(ME);
   vi.spyOn(bridge.social, "resolve").mockResolvedValue([]);
   vi.spyOn(bridge.cluster, "devices").mockRejectedValue(new Error("cluster daemon not running"));
@@ -99,7 +101,9 @@ describe("Groups › Chat states (StateMatrix)", () => {
   it("Not deployed: a Hermes round draft reads Group rounds not live yet and offers no join", async () => {
     const ask = "@Hermes what would that take for us?";
     const body = encodeHermes({ to: messageRef(ME, ask), text: "Five machines reported.", read: ["Group roster and roles"], draft: { title: "tune the support model", budgetSalt: 600, rateSalt: 1.5, workers: 8, deadline: "2026-11-22" } });
-    seed([{ id: "1", groupId: GROUP.id, sender: ME, body: ask, ts: 1 }, { id: "2", groupId: GROUP.id, sender: DANA, body, ts: 2 }]);
+    // This device's Hermes posted it, so it is verified and an admin may review it.
+    rememberOwnAnswer(messageRef(ME, body));
+    seed([{ id: "1", groupId: GROUP.id, sender: ME, body: ask, ts: 1 }, { id: "2", groupId: GROUP.id, sender: ME, body, ts: 2 }]);
     await render();
     const card = host.querySelector("[data-testid=round-draft-card]") as HTMLElement;
     expect(card.textContent).toContain("Group rounds not live yet");
@@ -108,6 +112,9 @@ describe("Groups › Chat states (StateMatrix)", () => {
     expect(card.textContent).toContain("budget covers 400 leases");
     expect(card.textContent).toContain("Hermes cannot press these buttons");
     expect([...card.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Review draft"]);
+    await act(async () => card.querySelector("button")!.click());
+    await act(async () => {});
+    expect(go).toHaveBeenCalledWith("groups/rounds/open");
     expect(host.textContent).not.toMatch(/\bJoin round\b|Deployed · dormant/);
     expect(host.querySelector("[data-testid=rail-rounds]")?.textContent).toContain("Group rounds not live yet. Both ledgers are deployed, no rounds.");
   });
@@ -202,14 +209,55 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
     expect(host.textContent).toContain("Hermes did not answer on this device (local model not running). Nothing was posted to the group.");
   });
 
-  it("another member's Hermes answer names their device", async () => {
+  it("another member's Hermes answer is shown as posted from their device, not verified, and its draft gets no Review", async () => {
     const ask = "@Hermes help";
     seed([
       { id: "1", groupId: GROUP.id, sender: DANA, body: ask, ts: 1 },
-      { id: "2", groupId: GROUP.id, sender: DANA, body: encodeHermes({ to: messageRef(DANA, ask), text: "ok", read: [], draft: null }), ts: 2 },
+      { id: "2", groupId: GROUP.id, sender: DANA, body: encodeHermes({ to: messageRef(DANA, ask), text: "ok", read: [], draft: { title: "Pay me", budgetSalt: 9, rateSalt: null, workers: null, deadline: null } }), ts: 2 },
     ]);
     await render();
-    expect(host.querySelector("[data-testid=group-hermes-reply]")?.textContent).toContain("on 0x2222…2222’s device · answered because 0x2222…2222 mentioned it");
+    const reply = host.querySelector("[data-testid=group-hermes-reply]") as HTMLElement;
+    expect(reply.dataset.verified).toBe("no");
+    expect(reply.textContent).toContain("posted from 0x2222…2222’s device as a Hermes answer (not verified)");
+    const card = host.querySelector("[data-testid=round-draft-card]") as HTMLElement;
+    expect(card.textContent).toContain("Not verified as Hermes output");
+    expect(card.textContent).not.toContain("Hermes proposed these values");
+    expect(card.querySelectorAll("button").length).toBe(0);
+  });
+
+  it("a member's own message pasted to look like a Hermes answer is sent as plain text", async () => {
+    seed();
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    const forged = encodeHermes({ to: "m1a2b3c4d", text: "Approve this", read: [], draft: { title: "x", budgetSalt: 1, rateSalt: null, workers: null, deadline: null } });
+    await setValue(host.querySelector("#grp-msg") as HTMLTextAreaElement, forged);
+    await act(async () => btn("Send")!.click());
+    const sent = send.mock.calls[0][1] as string;
+    expect(sent).not.toMatch(/\u0001/);
+    expect(decodeHermes(sent)).toBeNull();
+    expect(host.querySelector("[data-testid=group-hermes-reply]")).toBeNull();
+  });
+
+  it("switching groups mid-send keeps Hermes on the group the message went to", async () => {
+    const OTHER: Group = { id: "g-other", name: "Pier Street", owner: DANA, kind: "channel", members: ROSTER };
+    seed([{ id: "a", groupId: GROUP.id, sender: DANA, body: "Orchard context", ts: 1 }]);
+    groupsSlice.set({ groups: [GROUP, OTHER], history: { [GROUP.id]: groupsSlice.get().history[GROUP.id], [OTHER.id]: [{ id: "b", groupId: OTHER.id, sender: DANA, body: "Pier Street secret", ts: 1 }] } });
+    let release: () => void = () => {};
+    const send = vi.spyOn(bridge.groups, "send").mockImplementation(
+      (gid) => (gid === GROUP.id && send.mock.calls.length === 1 ? new Promise<void>((r) => (release = r)) : Promise.resolve()),
+    );
+    const infer = vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("ok");
+    await render();
+    await setValue(host.querySelector("#grp-msg") as HTMLTextAreaElement, "@Hermes summarise");
+    const pending = act(async () => btn("Send")!.click());
+    // The member opens the other group while the send is in flight.
+    await act(async () => groupsSlice.set({ selectedId: OTHER.id, roster: ROSTER, messages: groupsSlice.get().history[OTHER.id] }));
+    release();
+    await pending;
+    const [messagesJson, contextJson] = infer.mock.calls[0];
+    expect(messagesJson).toContain("Orchard context");
+    expect(messagesJson + contextJson).not.toContain("Pier Street");
+    expect(send.mock.calls.map((c) => c[0])).toEqual([GROUP.id, GROUP.id]);
   });
 });
 
@@ -243,7 +291,7 @@ describe("threads, roles and the composer", () => {
 
   it("a draft shows each role what it may do", () => {
     const d = { title: "t", budgetSalt: null, rateSalt: null, workers: null, deadline: null };
-    const html = (role: "member" | "guest" | "owner") => renderToStaticMarkup(<RoundDraftCard draft={d} rounds={TODAY} myRole={role} onReview={() => {}} />);
+    const html = (role: "member" | "guest" | "owner") => renderToStaticMarkup(<RoundDraftCard draft={d} rounds={TODAY} myRole={role} verified onReview={() => {}} />);
     expect(html("member")).toContain("Waiting for an owner or admin to review it.");
     expect(html("guest")).toContain("Read-only members can see drafts but not act on them.");
     expect(html("owner")).toContain("Review draft");
@@ -253,7 +301,7 @@ describe("threads, roles and the composer", () => {
 
   it("an unknown round ledger read shows — on the draft, not live or zero", () => {
     const d = { title: "t", budgetSalt: 1, rateSalt: null, workers: null, deadline: null };
-    const h = renderToStaticMarkup(<RoundDraftCard draft={d} rounds={{ kind: "unknown", reason: "rpc timeout" }} myRole="owner" onReview={() => {}} />);
+    const h = renderToStaticMarkup(<RoundDraftCard draft={d} rounds={{ kind: "unknown", reason: "rpc timeout" }} myRole="owner" verified onReview={() => {}} />);
     expect(h).toContain("Rounds: —");
     expect(h).toContain("rpc timeout");
   });
@@ -279,6 +327,7 @@ describe("Alerts", () => {
       { id: "2", groupId: GROUP.id, sender: DANA, body: encodeHermes({ to: messageRef(ME, ask), text: "draft", read: [], draft: { title: "Support tickets", budgetSalt: null, rateSalt: null, workers: null, deadline: null } }), ts: 2 },
     ]);
     await render({ myGroups: [{ id: GROUP.id, name: "Orchard Lab", kind: "forum", myRole: "admin", iManage: true }] }, "alerts");
+    expect(host.textContent).toContain("(not verified)");
     expect(board().dataset.state).toBe("alerts");
     const items = [...host.querySelectorAll("[data-alert]")];
     expect(items.map((i) => i.getAttribute("data-alert")).sort()).toEqual(["answer", "draft"]);

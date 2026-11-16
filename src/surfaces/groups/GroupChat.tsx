@@ -28,14 +28,15 @@ import { SOCIAL_BINDING_MSG_PREFIX } from "../../bridge/domains";
 import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../../fleet/deviceLinkShare";
 import { HaveAnInvite } from "../HaveAnInvite";
 import { RelayStatusChip } from "../RelayStatusChip";
-import { groupsSlice, refreshGroups, selectGroup, reloadMessages, sendMessageTo, groupLabel, mySendAddress } from "../../shell/slices/groups";
+import { groupsSlice, refreshGroups, selectGroup, reloadMessages, sendMessageTo, groupLabel, mySendAddress, plainText } from "../../shell/slices/groups";
 import { encodeReply, lastLine, messageRef, roleOf, threadModel, type ThreadItem } from "./groupEnvelope";
-import { answerInGroup, mentionsHermes, NOT_READ, type GroupContext } from "./groupHermes";
+import { answerInGroup, mentionsHermes, NOT_READ, ownAnswers, rememberOwnAnswer, type GroupContext } from "./groupHermes";
 import { myRoleIn, presenceOf, roleWord } from "./memberRoles";
 import { liveRoundsFor, roundsLine, RoundDraftCard, RoundEventCard, ROUNDS_NOT_LIVE, useRoundsToday, type RoundsToday } from "./RoundCards";
 import { groupAlerts, type GroupAlert } from "./groupAlerts";
 import { CreateGroupSheet, JoinInviteSheet, KINDS, ShareFileSheet } from "./GroupSheets";
 import { HicBadge } from "../../fl/primitives";
+import { handOffDraft } from "./roundDraftLink";
 import "./groups.css";
 
 const shortAddr = (a: string): string => (!a ? "—" : a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a);
@@ -46,7 +47,7 @@ export const EPOCH_UNKNOWN = "The comms daemon this app runs does not report the
 /** The line under the composer. */
 export const HERMES_DISCLOSURE = "@Hermes runs on your device; its reply is posted to everyone in this group.";
 
-type HermesRun = { kind: "idle" } | { kind: "running" } | { kind: "failed"; reason: string };
+type HermesRun = { kind: "idle" } | { kind: "running"; groupId: string } | { kind: "failed"; groupId: string; reason: string };
 
 export interface GroupChatProps extends SurfaceProps {
   view?: "groups" | "alerts";
@@ -68,6 +69,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [hermes, setHermes] = useState<HermesRun>({ kind: "idle" });
+  const [own, setOwn] = useState<Set<string>>(() => ownAnswers());
   const [faces, setFaces] = useState<Record<string, ResolvedIdentity>>({});
   const [devices, setDevices] = useState<ClusterMemberDevices[] | null>(null);
   const [devicesWhy, setDevicesWhy] = useState("Reading the group's cluster.");
@@ -189,20 +191,20 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
   const live = selected ? liveRoundsFor(selected.id) : [];
   const drafts = thread.filter((t): t is Extract<ThreadItem, { kind: "hermes" }> => t.kind === "hermes" && !!t.draft);
 
-  const context = (asker: string): GroupContext => ({
-    groupName: gName,
-    roster: st.roster,
-    cluster: cluster ? { online: cluster.online, total: cluster.total } : null,
-    rounds: roundsLine(rounds),
-    messages: groupsSlice.get().messages,
-    asker,
-  });
-
   const send = async () => {
     if (!selected || readOnly) return;
-    const text = draft.trim();
+    // What is sent is the typed text with control characters removed (the slice strips them too).
+    const text = plainText(draft).trim();
     if (!text) return;
+    // Everything Hermes reads is taken now, for the group this message goes to: the member may
+    // switch groups while the send and the model run, and the answer must stay in this group.
     const groupId = selected.id;
+    const at = {
+      groupName: gName,
+      roster: st.roster,
+      cluster: cluster ? { online: cluster.online, total: cluster.total } : null,
+      rounds: roundsLine(rounds),
+    };
     setDraft("");
     try {
       await sendMessageTo(groupId, text);
@@ -211,14 +213,19 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
     }
     if (!mentionsHermes(text)) return;
     const asker = await mySendAddress();
-    setHermes({ kind: "running" });
-    const out = await answerInGroup(groupId, messageRef(asker, text), context(asker), {
-      inferLocal: (m, c) => bridge.chat.inferLocal(m, c),
-      send: (gid, body) => sendMessageTo(gid, body),
+    const c: GroupContext = { ...at, messages: groupsSlice.get().history[groupId] ?? [], asker };
+    setHermes({ kind: "running", groupId });
+    const out = await answerInGroup(groupId, messageRef(asker, text), c, {
+      inferLocal: (m, ctx) => bridge.chat.inferLocal(m, ctx),
+      send: async (gid, body) => {
+        rememberOwnAnswer(messageRef(asker, body));
+        setOwn(ownAnswers());
+        await sendMessageTo(gid, body, { structured: true });
+      },
     });
     if (out.kind === "posted") setHermes({ kind: "idle" });
-    else if (out.kind === "no-answer") setHermes({ kind: "failed", reason: `Hermes did not answer on this device (${out.reason}). Nothing was posted to the group.` });
-    else setHermes({ kind: "failed", reason: `Hermes answered, but the answer was not sent to the group (${out.reason}).` });
+    else if (out.kind === "no-answer") setHermes({ kind: "failed", groupId, reason: `Hermes did not answer on this device (${out.reason}). Nothing was posted to the group.` });
+    else setHermes({ kind: "failed", groupId, reason: `Hermes answered, but the answer was not sent to the group (${out.reason}).` });
   };
 
   const sendReply = async (to: string) => {
@@ -228,7 +235,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
     setReplyText("");
     setReplyTo(null);
     setOpen((o) => ({ ...o, [to]: true }));
-    await sendMessageTo(selected.id, encodeReply(to, text)).catch(() => {});
+    await sendMessageTo(selected.id, encodeReply(to, text), { structured: true }).catch(() => {});
   };
 
   const openAlert = (a: GroupAlert) => {
@@ -244,6 +251,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
           roles: Object.fromEntries(s.myGroups.map((g) => [g.id, g.myRole])),
           requests,
           me,
+          ownAnswers: own,
         })
       : [];
 
@@ -292,24 +300,45 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
   const renderItem = (item: ThreadItem) => {
     if (item.kind === "hermes") {
       const asker = nameOf(item.device);
-      const by = asker === "You" ? "your" : `${asker}’s`;
+      // Verified only for an answer this device posted itself; anything else is a message that
+      // claims to be a Hermes answer, attributed to the member whose device sent it.
+      const verified = asker === "You" && own.has(item.ref);
       return (
-        <article key={item.ref} className="grp-msg" aria-label="Hermes reply in group" data-testid="group-hermes-reply">
+        <article key={item.ref} className="grp-msg" aria-label={verified ? "Hermes reply in group" : "Message posted as a Hermes answer, not verified"} data-testid="group-hermes-reply" data-verified={verified ? "yes" : "no"}>
           <span className="grp-avatar grp-avatar-agent" aria-hidden="true">H</span>
           <div className="grp-msg-body">
             <div className="grp-msg-meta">
               <b style={{ fontWeight: 500 }}>Hermes</b>
-              <span className="grp-faint">on {by} device · answered because {asker === "You" ? "you" : asker} mentioned it · visible to everyone here</span>
+              {verified ? (
+                <span className="grp-faint">on your device · answered because you mentioned it · visible to everyone here</span>
+              ) : (
+                <span className="grp-faint">posted from {asker === "You" ? "your" : `${asker}’s`} device as a Hermes answer (not verified) · visible to everyone here</span>
+              )}
             </div>
             <Markdown text={item.text} />
             <details className="grp-details">
-              <summary>What Hermes read ({item.read.length})</summary>
+              <summary>{verified ? "What Hermes read" : "What the message says Hermes read"} ({item.read.length})</summary>
               <ul className="grp-note" style={{ margin: "4px 0", paddingLeft: 18 }}>
                 {item.read.map((r) => <li key={r}>{r}</li>)}
               </ul>
               <p className="grp-note">{NOT_READ}</p>
             </details>
-            {item.draft && <RoundDraftCard draft={item.draft} rounds={rounds} myRole={myRole} onReview={() => store.go("groups/rounds/open")} />}
+            {item.draft && (
+              <RoundDraftCard
+                draft={item.draft}
+                rounds={rounds}
+                myRole={myRole}
+                verified={verified}
+                onReview={() => {
+                  const d = item.draft!;
+                  const gid = selected!.id;
+                  void handOffDraft(d, gid, gName).then((handed) => {
+                    if (!handed) store.toast("Open a round could not take the draft in this build; enter its values there.");
+                    store.go("groups/rounds/open");
+                  });
+                }}
+              />
+            )}
             {renderReplies(item)}
           </div>
         </article>
@@ -433,8 +462,8 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
               {live.map((r) => (
                 <RoundEventCard key={r.round} r={r} onOpen={() => store.go("groups/rounds/live")} />
               ))}
-              {hermes.kind === "running" && <div role="status" className="grp-typing">Hermes is answering on your device.</div>}
-              {hermes.kind === "failed" && (
+              {hermes.kind === "running" && hermes.groupId === selected.id && <div role="status" className="grp-typing">Hermes is answering on your device.</div>}
+              {hermes.kind === "failed" && hermes.groupId === selected.id && (
                 <div role="alert" className="grp-alert">
                   {hermes.reason}{" "}
                   <button className="btn btn-ghost btn-sm" onClick={() => setHermes({ kind: "idle" })}>Dismiss</button>

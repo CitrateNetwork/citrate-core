@@ -12,6 +12,15 @@
 import { invoke } from "./invoke";
 import type { Group, GroupMember, GroupMessage, GroupRole, GroupsDomain } from "../domains";
 
+/** Drains in this app run, for message ids (see `messages`). */
+let drainSeq = 0;
+
+/** The id of the `i`th message of drain number `batch`, received at `at` ms. Unique per app run and
+ *  across runs (the time differs). */
+export function messageId(groupId: string, at: number, batch: number, i: number): string {
+  return `${groupId}:rx${at}.${batch}:${i}`;
+}
+
 /** (address, role) rows as the Rust groups_roster / groups_list tuples arrive in JS. */
 type Pair = [string, string];
 
@@ -59,8 +68,11 @@ export const tauriGroups: GroupsDomain = {
     // was deduped away). The key is the receipt time plus the index, unique across drains. `ts` is
     // when this device received the message: it keeps the thread in arrival order next to this
     // member's own echoed sends. It is not the send time, so the chat does not show it as one.
+    // A per-app-run counter keeps two drains in the same millisecond apart (a poll plus the drain
+    // after a send); the time keeps ids apart across restarts, since history is kept on disk.
     const at = Date.now();
-    return rows.map(([sender, body], i) => ({ id: `${groupId}:rx${at}:${i}`, groupId, sender, body, ts: at }));
+    const batch = ++drainSeq;
+    return rows.map(([sender, body], i) => ({ id: messageId(groupId, at, batch, i), groupId, sender, body, ts: at }));
   },
   async relayStatus(): Promise<string> {
     // Bounded read; never force-starts the daemon (the command reads MANAGER or returns "idle").

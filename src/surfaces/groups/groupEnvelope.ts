@@ -80,11 +80,14 @@ export function messageRef(sender: string, body: string): string {
 }
 
 const clip = (s: string) => s.slice(0, MAX_TEXT);
+/** A member's or the model's text: control characters removed (tab and newline kept), so it can
+ *  never carry a structure line of its own. */
+const plain = (s: string) => s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
 /** One line, no sentinel: what goes inside a fixed-format line. */
 const line = (s: string) => s.replace(/[\u0000-\u001f]+/g, " ").trim();
 
 export function encodeReply(to: string, text: string): string {
-  return `${clip(text.replace(/\u0001/g, "").trim())}\n\u0001(in reply to ${to})`;
+  return `${clip(plain(text).trim())}\n\u0001(in reply to ${to})`;
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4, useGrouping: false });
@@ -98,7 +101,7 @@ function draftLines(d: RoundDraft): string[] {
 }
 
 export function encodeHermes(e: HermesEnvelope): string {
-  const parts = [HERMES_HEADER, clip(e.text.replace(/\u0001/g, "").trim())];
+  const parts = [HERMES_HEADER, clip(plain(e.text).trim())];
   if (e.draft) parts.push("", ...draftLines(e.draft));
   const read = e.read.slice(0, 8).map((r) => line(r).replace(/;/g, ",").replace(/\.$/, ""));
   parts.push("", `What Hermes read: ${read.join("; ")}.`, `\u0001(Hermes answer to ${e.to})`);
