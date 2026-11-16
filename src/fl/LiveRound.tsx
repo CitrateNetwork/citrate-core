@@ -20,10 +20,10 @@ import { EscrowBar, type Escrow } from "./EscrowBar";
 import { saltFromWei } from "./format";
 import { LeaseDots, leaseCounts, leaseSentence, orderLeases, type Lease } from "./LeaseDots";
 import { NOT_AVAILABLE, PAYOUTS_DARK, type PayoutsState } from "./networkState";
-import { Card, Chip, Eyebrow, Hex, KV, Note, Unknown, type Tone } from "./primitives";
+import { Card, Chip, Eyebrow, Hex, KV, Unknown, type Tone } from "./primitives";
 import { RoundRing, type RingOutcome, type RingStage } from "./RoundRing";
 
-export type LiveState = "pending" | "running" | "verifying" | "accepted" | "rejected" | "disputed" | "expired";
+export type LiveState = "pending" | "running" | "verifying" | "accepted" | "rejected" | "disputed" | "expired" | "closed";
 
 export interface LiveRound {
   offerId: number;
@@ -63,6 +63,7 @@ const RING: Record<LiveState, { stage: RingStage; outcome?: RingOutcome }> = {
   rejected: { stage: "verifying", outcome: "rejected" },
   disputed: { stage: "payout", outcome: "disputed" },
   expired: { stage: "open", outcome: "expired" },
+  closed: { stage: "closed" },
 };
 
 const WORD: Record<LiveState, { word: string; tone: Tone }> = {
@@ -73,6 +74,7 @@ const WORD: Record<LiveState, { word: string; tone: Tone }> = {
   rejected: { word: "Rejected", tone: "danger" },
   disputed: { word: "Disputed", tone: "warn" },
   expired: { word: "Expired", tone: "neutral" },
+  closed: { word: "Closed", tone: "neutral" },
 };
 
 export const NEXT: Record<LiveState, string> = {
@@ -83,6 +85,7 @@ export const NEXT: Record<LiveState, string> = {
   rejected: "No payout. The poster can reclaim the escrow. The merged adapter cannot pass the adapter checks.",
   disputed: "Payouts stay frozen until the dispute resolves. If the worker's signed receipt holds, the coordinator bond can be slashed.",
   expired: "The full budget is refundable to the poster. Nobody is paid.",
+  closed: "The round closed with no payout list. The escrow went back to the poster; nobody is paid from this round.",
 };
 
 /** The state line beside the title, in truth contract words ("Accepted on chain at block N"). */
@@ -103,6 +106,8 @@ export function stateLine(r: LiveRound): string {
       return "A worker disputed the payout list · payout frozen";
     case "expired":
       return "Deadline passed before enough updates · full refund, no payout";
+    case "closed":
+      return "Closed with no payout list · refunded to the poster";
   }
 }
 
@@ -242,7 +247,7 @@ export function LiveRoundView({ r, go }: { r: LiveRound; go: (route: string) => 
   );
 }
 
-/** WorkMarket is deployed but this build cannot read your round (no per-lease read model yet). */
+/** WorkMarket is deployed and your wallet has joined no round in the newest offers. */
 export function NoLiveRound({ go }: { go: (route: string) => void }) {
   return (
     <section className="fl-main" data-testid="live-none">
@@ -250,9 +255,8 @@ export function NoLiveRound({ go }: { go: (route: string) => void }) {
         No live round to show
       </h1>
       <p className="fl-muted" style={{ margin: 0, fontSize: 13 }}>
-        You are not in a round on this device. A round you join appears here.
+        Your wallet has not joined a round in the newest offers on WorkMarket. A round you join appears here.
       </p>
-      <Note>This build reads offers, not the leases inside a round, so a round's ring, leases and receipts appear once that read model ships.</Note>
       <button type="button" className="btn btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => go("groups/rounds")}>
         See matches
       </button>

@@ -17,7 +17,12 @@ import { machineFrom, readMarket } from "./market";
 import { joinIntent, MatchesView, useMarket } from "./Matches";
 import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
-import { NoLiveRound } from "./LiveRound";
+import { LiveRoundView, NoLiveRound } from "./LiveRound";
+import { currentOffer } from "./myWork";
+import { liveRoundFrom, myWorkRefreshKey, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
+import { latestBlockTime } from "./chainTime";
+import { Unknown } from "./primitives";
+import type { Receipt } from "./Payouts";
 import { PayoutsView, usePayoutsRecords } from "./Payouts";
 import { OpenRoundView } from "./OpenRound";
 import { DatasetsView } from "./Datasets";
@@ -86,23 +91,42 @@ function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-function PayoutsRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+/** The latest block's timestamp, read once there is something to compare it with. */
+function useChainNow(when: boolean): number | null {
+  const [t, setT] = useState<number | null>(null);
+  useEffect(() => {
+    if (!when) return;
+    latestBlockTime().then(setT, () => setT(null));
+  }, [when]);
+  return t;
+}
+
+function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
   const { ov, error } = usePayoutsRecords(bridge.flRounds);
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
+  const read = work.kind === "read" ? work.work : null;
+  const chainNow = useChainNow(work.kind === "read");
+  // Every offer here is one this wallet joined (myOffers). Statuses use the chain's clock; until
+  // the latest block's time is read, a window that might be over is still "waiting".
+  const now = chainNow ?? 0;
+  const receipts = read ? read.offers.map((o) => receiptFrom(o, { joined: true, settled: read.settled[o.id] ?? false }, now)).filter((r): r is Receipt => r !== null) : null;
   return (
     <PayoutsView
       state={state}
-      receipts={null}
-      receiptsReason="this build has no settled-lines read model yet"
-      pullWei={null}
-      pullReason="this build does not read the WorkMarket pull balance yet"
+      receipts={receipts}
+      receiptsReason={work.kind === "failed" ? work.reason : "reading WorkMarket"}
+      pullWei={read ? read.pullWei : null}
+      pullReason={work.kind === "failed" ? work.reason : "reading WorkMarket"}
       wallet={s.walletAddr}
-      chainNow={null}
+      chainNow={chainNow}
       ov={ov}
       ovError={error}
       go={go}
       save={(name, text) => downloadText(name, text)}
-      act={async () => {
-        throw new Error("claims, withdrawals and disputes need the settled-lines read model, which is not in this build");
+      disputeBlocker="Disputing needs your coordinator-signed receipt, which the training worker keeps; it is not bundled in this release."
+      act={async (kind) => {
+        if (kind !== "withdraw") throw new Error("claiming needs your leaf from the coordinator's payout list, which the app does not read yet");
+        await store.proposeContractCall(withdrawIntent(state, read ? read.pullWei : null));
       }}
     />
   );
@@ -142,18 +166,40 @@ function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: App
   );
 }
 
+const chainCall = (address: string, calldata: string) => bridge.contracts.viewCall("citrate", address, calldata);
+
+function LiveFromChain({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
+  if (work.kind === "failed")
+    return (
+      <section className="fl-main">
+        <p style={{ margin: 0, fontSize: 13 }}>
+          Your rounds: <Unknown reason={work.reason} />
+        </p>
+      </section>
+    );
+  if (work.kind !== "read")
+    return (
+      <section className="fl-main">
+        <p className="fl-muted" style={{ margin: 0, fontSize: 13 }}>Reading your rounds from WorkMarket.</p>
+      </section>
+    );
+  const o = currentOffer(work.work.offers);
+  if (!o) return <NoLiveRound go={go} />;
+  return <LiveRoundView r={liveRoundFrom(o, work.work.rounds[o.id] ?? null, s.height > 0 ? s.height : null, state.payouts)} go={go} />;
+}
+
 function NotLiveSubtab({ route, s, go, toast, store }: { route: string; s: AppState; go: (r: string) => void; toast: (m: string) => void; store: Store }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
     case ROUNDS_ROUTES.live:
-      // Board 06: the live round view (LiveRound.tsx) needs a joined round; this build has no
-      // per-lease read model, so with WorkMarket deployed it says there is none to show.
+      // Board 06: your newest round, read from WorkMarket and FederatedRoundLedger (myWork.ts).
       return (
         <>
           {band}
           {state.phase === "rounds-live" ? (
-            <NoLiveRound go={go} />
+            <LiveFromChain state={state} s={s} go={go} />
           ) : (
             <RoundsNotLive testid="rounds-live-not-live" state={state} headline="There is no live round to show on this network yet." lead="A live round appears here once you join one. Rounds are offered through the WorkMarket contract." />
           )}
@@ -167,7 +213,7 @@ function NotLiveSubtab({ route, s, go, toast, store }: { route: string; s: AppSt
       return <DatasetsView state={state} fl={bridge.flRounds} toast={toast} go={go} />;
     case ROUNDS_ROUTES.payouts:
       // Board 10: receipts (dark or not deployed in this build) and the device's history.
-      return <PayoutsRoute state={state} s={s} go={go} />;
+      return <PayoutsRoute state={state} s={s} go={go} store={store} />;
     default:
       return null;
   }

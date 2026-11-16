@@ -9,9 +9,11 @@
 import type { ReactNode } from "react";
 import { saltFromWei } from "./format";
 import { NOT_AVAILABLE, PAYOUTS_DARK } from "./networkState";
-import { Chip, Hex, type Tone } from "./primitives";
+import { Chip, Hex, Unknown, type Tone } from "./primitives";
 
-export type PayoutStatus = "nothing" | "waiting" | "claimable" | "claimed" | "disputed" | "dark" | "not-deployed";
+/** The board's statuses: WorkMarket.settle's blocking reasons (myWork.ts PayoutStatusWord), plus
+ *  nothing, dark (G-SEC) and not deployed. */
+export type PayoutStatus = "nothing" | "waiting" | "claimable" | "claimed" | "disputed" | "no-payout-list" | "challenge-open" | "reserve-swept" | "not-joined" | "dark" | "not-deployed";
 
 export const PAYOUT_WORD: Record<PayoutStatus, string> = {
   nothing: "Nothing to claim",
@@ -19,6 +21,10 @@ export const PAYOUT_WORD: Record<PayoutStatus, string> = {
   claimable: "Claimable",
   claimed: "Claimed",
   disputed: "Disputed, frozen",
+  "no-payout-list": "No payout list is live",
+  "challenge-open": "A challenge to the payout list is open",
+  "reserve-swept": "The unsettled reserve was returned to the poster",
+  "not-joined": "You did not join this round",
   dark: PAYOUTS_DARK,
   "not-deployed": NOT_AVAILABLE,
 };
@@ -29,21 +35,27 @@ const TONE: Record<PayoutStatus, Tone> = {
   claimable: "ok",
   claimed: "neutral",
   disputed: "warn",
+  "no-payout-list": "neutral",
+  "challenge-open": "warn",
+  "reserve-swept": "neutral",
+  "not-joined": "neutral",
   dark: "neutral",
   "not-deployed": "neutral",
 };
 
 export interface PayoutLine {
   round: string;
-  units: bigint;
+  /** null = not read: your units are a leaf of the coordinator's posted payout list. */
+  units: bigint | null;
   rateWei: bigint;
-  amountWei: bigint;
+  amountWei: bigint | null;
   txHash?: string;
   block?: number;
 }
 
 export function payoutSentence(status: PayoutStatus, line?: PayoutLine): string {
   if (!line || status === "dark" || status === "not-deployed" || status === "nothing") return PAYOUT_WORD[status];
+  if (line.units === null || line.amountWei === null) return `Round ${line.round}: ${saltFromWei(line.rateWei)} SALT per unit, your units not read, ${PAYOUT_WORD[status].toLowerCase()}`;
   return `Round ${line.round}: ${line.units} units times ${saltFromWei(line.rateWei)} SALT equals ${saltFromWei(line.amountWei)} SALT, ${PAYOUT_WORD[status].toLowerCase()}`;
 }
 
@@ -55,9 +67,14 @@ export function PayoutReceipt({ status, line, actions }: { status: PayoutStatus;
         {line && <span style={{ fontSize: 13.5, fontWeight: 500 }}>Round {line.round}</span>}
         <Chip tone={TONE[status]}>{PAYOUT_WORD[status]}</Chip>
       </div>
-      {showAmount && line && (
+      {showAmount && line && line.units !== null && line.amountWei !== null && (
         <span className="mono" style={{ fontSize: 13 }}>
           {line.units.toString()} units × {saltFromWei(line.rateWei)} SALT = {saltFromWei(line.amountWei)} SALT
+        </span>
+      )}
+      {showAmount && line && (line.units === null || line.amountWei === null) && (
+        <span style={{ fontSize: 13 }}>
+          <span className="mono">{saltFromWei(line.rateWei)} SALT per unit</span> · your units: <Unknown reason="they are in the coordinator's payout list, which the app does not read yet" />
         </span>
       )}
       {showAmount && line?.txHash && (
