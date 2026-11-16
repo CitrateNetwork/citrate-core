@@ -30,7 +30,7 @@
 // The plugin modules are dynamically imported inside the Tauri-gated path so the
 // web bundle never eagerly loads Tauri internals.
 // =====================================================================
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 /** How often to re-check for an update while the app is open (6 h). */
@@ -66,6 +66,10 @@ export interface UpdateState {
   minimumVersion: string | null;
   /** The policy's reason, shown on the gate. */
   requiredReason: string | null;
+  /** The last check found no entry in the release feed for this platform (the target the
+   *  updater asked for, e.g. "linux-aarch64"): nothing is published for it, which is not "up to
+   *  date". Null after any other outcome. */
+  unpublishedFor: string | null;
 }
 
 export const INITIAL_UPDATE_STATE: UpdateState = {
@@ -80,6 +84,7 @@ export const INITIAL_UPDATE_STATE: UpdateState = {
   required: false,
   minimumVersion: null,
   requiredReason: null,
+  unpublishedFor: null,
 };
 
 /** Mirrors Rust `update_policy::PolicyVerdict`. */
@@ -269,22 +274,89 @@ export function isNoPlatformInFeed(msg: string): boolean {
   return /found in the response .?platforms.? object|platform[^.]*not (?:found|available)/i.test(msg);
 }
 
+/** The one updater's state and its check, published by {@link useAppUpdate} (mounted once, in
+ *  App) so Settings › Updates can show it and run "Check now" without a second updater. */
+export interface SharedAppUpdate {
+  state: UpdateState;
+  check: () => Promise<void>;
+}
+let shared: SharedAppUpdate | null = null;
+const sharedListeners = new Set<() => void>();
+
+/** Publish (or clear, with null) the app's updater for {@link useSharedAppUpdate}. */
+export function publishAppUpdate(next: SharedAppUpdate | null): void {
+  shared = next;
+  for (const l of sharedListeners) l();
+}
+
+/** The app's updater, or null when none is mounted (web preview, tests). */
+export function useSharedAppUpdate(): SharedAppUpdate | null {
+  return useSyncExternalStore(
+    (l) => {
+      sharedListeners.add(l);
+      return () => sharedListeners.delete(l);
+    },
+    () => shared,
+    () => shared,
+  );
+}
+
+/** What Settings › Updates says about the last check. */
+export function updateCheckText(st: UpdateState): string {
+  switch (st.status) {
+    case "idle":
+      return "not checked yet";
+    case "checking":
+      return "checking the signed release feed";
+    case "uptodate":
+      return st.unpublishedFor ? `no update is published for this platform (${st.unpublishedFor})` : "up to date";
+    case "available":
+      return `version ${st.version ?? "unknown"} is available: download it from the update banner`;
+    case "downloading":
+      return `downloading version ${st.version ?? "unknown"}`;
+    case "ready":
+      return `version ${st.version ?? "unknown"} is downloaded: restart from the update banner (Check now is off until then)`;
+    case "installing":
+      return "installing the update";
+    case "installed":
+      return st.error ?? "the update is installed: quit and reopen Citrate Core";
+    case "error":
+      return "the check failed: " + (st.error ?? "unknown error");
+  }
+}
+
+/** The platform target named in the updater's "no entry for this platform" error (the first
+ *  fallback it tried, e.g. "linux-aarch64-appimage"), or "this platform" when it names none. */
+export function feedPlatformOf(msg: string): string {
+  const list = /\[\s*"([^"]+)"/.exec(msg);
+  if (list) return list[1];
+  const one = /platform\s+`([^`]+)`/.exec(msg);
+  return one ? one[1] : "this platform";
+}
+
 export function useAppUpdate() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const pending = useRef<PluginUpdate | null>(null);
+  // #709 review: the handle whose download finished, which is the only one Restart installs, and
+  // whether a download or install holds the updater. While held, a check (Check now or the 6 h
+  // timer) does nothing: a fresh check returns a new, undownloaded handle, and replacing the
+  // downloaded one made Restart drain the services and then fail to install.
+  const staged = useRef<PluginUpdate | null>(null);
+  const held = useRef(false);
   // Whether the app is gated now (read inside check without re-creating it).
   const gatedRef = useRef(false);
   const patch = useCallback((p: Partial<UpdateState>) => setState((s) => ({ ...s, ...p })), []);
 
   const check = useCallback(async () => {
     if (BRIDGE_MODE !== "tauri") return; // honest no-op off-desktop
+    if (held.current) return; // a download is in flight or downloaded: keep it
     // Don't clobber an in-flight download/ready with a re-check.
     setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "checking", error: null }));
     try {
       const { check: pluginCheck } = await import("@tauri-apps/plugin-updater");
       const update = (await pluginCheck()) as PluginUpdate | null;
       if (!update) {
-        setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate" }));
+        setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate", unpublishedFor: null }));
         // #678 review: gated with no update offered (its release was pulled): the plugin hands back
         // no feed, so Rust reads the feed itself, in case a later signed policy lowers or rescinds
         // the minimum.
@@ -300,6 +372,8 @@ export function useAppUpdate() {
         }
         return;
       }
+      // A download began while this check was in flight: keep the handle being downloaded.
+      if (held.current) return;
       pending.current = update;
       // 0.5.4: a signed minimum in the feed. Rust verifies it; a refusal gates nothing.
       const policy = feedPolicy(update.rawJson);
@@ -321,6 +395,7 @@ export function useAppUpdate() {
         notes: update.body ?? null,
         critical,
         dismissed: false,
+        unpublishedFor: null,
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -331,16 +406,19 @@ export function useAppUpdate() {
       // the "Update failed" banner never appears. Real errors (network,
       // signature, download) still surface. Mac/Linux are listed, so unaffected.
       if (isNoPlatformInFeed(msg)) {
-        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate", error: null }));
+        const target = feedPlatformOf(msg);
+        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate", error: null, unpublishedFor: target }));
         return;
       }
-      patch({ status: "error", error: msg });
+      patch({ status: "error", error: msg, unpublishedFor: null });
     }
   }, [patch]);
 
   const install = useCallback(async () => {
     const update = pending.current;
-    if (!update || BRIDGE_MODE !== "tauri") return;
+    if (!update || BRIDGE_MODE !== "tauri" || held.current) return;
+    held.current = true;
+    staged.current = null;
     patch({ status: "downloading", downloadedBytes: 0, totalBytes: null, error: null });
     try {
       let downloaded = 0;
@@ -355,15 +433,23 @@ export function useAppUpdate() {
           setState((s) => ({ ...s, status: "ready" }));
         }
       });
+      staged.current = update;
       patch({ status: "ready" });
     } catch (e) {
+      held.current = false;
       patch({ status: "error", error: e instanceof Error ? e.message : String(e) });
     }
   }, [patch]);
 
   const restart = useCallback(async () => {
-    const update = pending.current;
-    if (!update || BRIDGE_MODE !== "tauri") return;
+    if (BRIDGE_MODE !== "tauri") return;
+    // Only the handle that finished downloading is installed, and nothing is stopped without one.
+    const update = staged.current;
+    if (!update) {
+      held.current = false;
+      patch({ status: "error", error: "No downloaded update is waiting, so nothing was stopped or installed. Check for updates again." });
+      return;
+    }
     patch({ status: "installing", error: null });
     const { invoke } = await import("../bridge/tauri/invoke");
     const { relaunch } = await import("@tauri-apps/plugin-process");
@@ -375,7 +461,14 @@ export function useAppUpdate() {
       install: () => update.install(),
       relaunch,
     });
-    if (!r.ok) patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
+    if (!r.ok) {
+      if (!r.keepStopped) {
+        // The services were released; the next check starts over with a fresh download.
+        held.current = false;
+        staged.current = null;
+      }
+      patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
+    }
   }, [patch]);
 
   useEffect(() => {
@@ -429,6 +522,12 @@ export function useAppUpdate() {
   useEffect(() => {
     if (state.status === "available" && (state.critical || state.required)) void install();
   }, [state.status, state.critical, state.required, install]);
+
+  // Settings › Updates reads this updater instead of starting a second one.
+  useEffect(() => {
+    publishAppUpdate({ state, check });
+  }, [state, check]);
+  useEffect(() => () => publishAppUpdate(null), []);
 
   return { state, check, install, restart, dismiss };
 }

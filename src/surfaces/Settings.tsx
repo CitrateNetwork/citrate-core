@@ -39,6 +39,7 @@ import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { browserSpeech } from "../agent/speech";
 import { ComponentUpdates } from "../components/ComponentUpdates";
+import { updateCheckText, useSharedAppUpdate } from "../shell/updater";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { GrantsPanel } from "../agent/grants/GrantsPanel";
@@ -529,8 +530,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   const buildTime = typeof __BUILD_TIME__ === "string" ? __BUILD_TIME__ : "";
   const appVer = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0";
   const buildDay = buildTime ? buildTime.slice(0, 10) : "";
-  const updText =
-    "citrate-core " + appVer + " · build " + buildSha + (buildDay ? " (" + buildDay + ")" : "") + " · " + s.channel + " channel";
+  // One signed feed (tauri.conf.json `plugins.updater.endpoints`); there is no beta feed to choose.
+  const updText = "citrate-core " + appVer + " · build " + buildSha + (buildDay ? " (" + buildDay + ")" : "") + " · stable channel";
 
   const setSec = (id: string) => {
     store.setState({ sSec: id });
@@ -1229,41 +1230,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <button
-                  className={btnCls(s.channel === "stable")}
-                  onClick={() => {
-                    writeConfig(store, { channel: "stable" });
-                    store.save();
-                  }}
-                >
-                  stable
-                </button>
-                <button
-                  className={btnCls(s.channel === "beta")}
-                  onClick={() => {
-                    writeConfig(store, { channel: "beta" });
-                    store.save();
-                  }}
-                >
-                  beta
-                </button>
-              </span>
-              {/* Q-A.1 (Rule 1) — no updater backend in this build. Check-now is an
-                  honest DISABLED state (never a fake "current" toast), and the
-                  footer no longer asserts an offline signature check that does not
-                  run. The running version + channel below are real. */}
-              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
-                  Check now
-                </button>
-                <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)" }}>
-                  {updText}
-                </span>
-              </span>
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                automatic update checks are not available in this build · citrate-core 0.1.0-proto
-              </span>
+              <UpdatesCheck updText={updText} />
             </div>
             {/* HUP-S5.5 / S6.1 — signed first-run components (toolchain today, browser later). */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1307,4 +1274,30 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
 export function cpuCapThreads(cores: number, percent: number): number | null {
   if (!(cores > 0) || !(percent > 0) || percent >= 100) return null;
   return Math.min(cores, Math.max(1, Math.ceil((cores * percent) / 100)));
+}
+
+/** Settings › Updates: "Check now" runs the app's one updater check (src/shell/updater.ts), which
+ *  also checks on start and every 6 hours. Off the desktop app there is no updater to run. */
+export function UpdatesCheck({ updText }: { updText: string }) {
+  const up = useSharedAppUpdate();
+  // #709 review: off while a check runs and while an update is downloading, downloaded and waiting
+  // for Restart, or installing (a check then would only discard the download).
+  const busy = up !== null && ["checking", "downloading", "ready", "installing", "installed"].includes(up.state.status);
+  return (
+    <>
+      <span style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button className="btn btn-ghost btn-sm" data-testid="update-check-now" disabled={up === null || busy} onClick={() => void up?.check()}>
+          {up?.state.status === "checking" ? "Checking" : "Check now"}
+        </button>
+        <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)" }}>
+          {updText}
+        </span>
+      </span>
+      <span className="mono" data-testid="update-check-status" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
+        {up === null
+          ? "Update checks run in the desktop app."
+          : "Last check: " + updateCheckText(up.state) + ". The app also checks on start and every 6 hours, and installs only a signed update after you restart."}
+      </span>
+    </>
+  );
 }
