@@ -306,6 +306,15 @@ say "4/7 signing the update files (tauri signer sign) and verifying each against
 # One release time: the feed's pub_date and the update policy's issuedAt.
 RELEASE_TS="$(date -u +%s)"
 PUBKEY="$(python3 -c "import base64,sys;print(base64.b64decode(sys.argv[1]).decode().strip().splitlines()[-1])" "$V052_UPDATER_PUBKEY")"
+# 0.5.4: the policy file is written BEFORE the key subshell (#698 review), with the key variables
+# removed from node's environment even if the caller's shell had them, so node never sees the key.
+if [ -n "$POLICY_MIN" ]; then
+  rm -f "$OUT/update-policy.json" "$OUT/update-policy.json.sig"
+  (cd "$ROOT" && env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+    node scripts/updater-feed.mjs policy --min "$POLICY_MIN" --issued-at "$RELEASE_TS" \
+    --reason "Citrate Core $POLICY_MIN or later is required" --out "$OUT/update-policy.json") >/dev/null
+  [ -f "$OUT/update-policy.json" ] || die "updater-feed.mjs wrote no update-policy.json"
+fi
 (
   # The updater key, for this subshell only (never on argv, never in the build's environment).
   TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
@@ -316,11 +325,9 @@ PUBKEY="$(python3 -c "import base64,sys;print(base64.b64decode(sys.argv[1]).deco
     rm -f "$OUT/$f.sig"
     tauri signer sign "$OUT/$f" >/dev/null
   done
-  # 0.5.4: the update policy, signed the same way with the same key (owner 2026-11-14).
+  # 0.5.4: the update policy (written above, outside this subshell), signed the same way with the
+  # same key (owner 2026-11-14). Only `tauri signer sign` sees the key.
   if [ -n "$POLICY_MIN" ]; then
-    rm -f "$OUT/update-policy.json" "$OUT/update-policy.json.sig"
-    (cd "$ROOT" && node scripts/updater-feed.mjs policy --min "$POLICY_MIN" --issued-at "$RELEASE_TS" \
-      --reason "Citrate Core $POLICY_MIN or later is required" --out "$OUT/update-policy.json") >/dev/null
     tauri signer sign "$OUT/update-policy.json" >/dev/null
   fi
 )

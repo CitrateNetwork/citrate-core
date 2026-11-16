@@ -351,13 +351,41 @@ describe("release-local.sh --policy-min", () => {
   }
   it("signs the policy in the same key subshell as the update files, verifies it, and embeds it", () => {
     const src = fs.readFileSync(script, "utf8");
-    const sub = src.slice(src.indexOf('TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"'), src.indexOf('if [ -n "$POLICY_MIN" ]; then\n  [ -f "$OUT/update-policy.json.sig" ]'));
+    const keyAt = src.indexOf('TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"');
+    const subStart = src.lastIndexOf("\n(\n", keyAt);
+    const subEnd = src.indexOf("\n)\n", keyAt);
+    const sub = src.slice(subStart, subEnd);
     expect(sub).toContain('tauri signer sign "$OUT/update-policy.json"');
-    expect(sub).toContain('--issued-at "$RELEASE_TS"');
     expect(src).toMatch(/minisign -V -q -P "\$PUBKEY" -m "\$OUT\/update-policy\.json"/);
     expect(src).toContain('POLICY_ARGS=(--policy "$OUT/update-policy.json")');
     expect(src).toContain('PUB_DATE="$(date -u -r "$RELEASE_TS"');
+    // #698 review: node writes the policy before the key subshell, never inside it, and with the key
+    // variables removed from its environment.
+    expect(sub).not.toMatch(/\bnode\b/);
+    const nodeAt = src.indexOf("node scripts/updater-feed.mjs policy");
+    expect(nodeAt).toBeGreaterThan(0);
+    expect(nodeAt).toBeLessThan(subStart);
+    const nodeCmd = src.slice(src.lastIndexOf("(cd", nodeAt), src.indexOf(">/dev/null", nodeAt));
+    expect(nodeCmd).toMatch(/env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD\s*\\?\s*node scripts\/updater-feed\.mjs policy/);
+    expect(nodeCmd).toContain('--issued-at "$RELEASE_TS"');
+    expect(src.indexOf('RELEASE_TS="$(date -u +%s)"')).toBeLessThan(nodeAt);
     // The key never reaches argv.
     expect(src).not.toMatch(/signer sign[^\n]*(-p|--password|-k|--private-key)\b/);
+  });
+});
+
+describe("release-local.sh: the policy writer never sees the updater key (#698 review)", () => {
+  it("running the script's own node invocation with the key exported leaves no key variable in node's environment", () => {
+    const src = fs.readFileSync(script, "utf8");
+    const at = src.indexOf("node scripts/updater-feed.mjs policy");
+    const line = src.slice(src.lastIndexOf("env -u", at), at);
+    // The same env -u prefix, around a node that reports what it sees.
+    const probe = `${line.replace(/\\\s*$/, "")} node -e 'process.stdout.write(JSON.stringify([!!process.env.TAURI_SIGNING_PRIVATE_KEY, !!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD]))'`;
+    const r = spawnSync("bash", ["-c", probe], {
+      encoding: "utf8",
+      env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY: "secret-key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "secret-pass" },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([false, false]);
   });
 });

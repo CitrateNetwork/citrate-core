@@ -83,7 +83,7 @@ Owner 2026-11-14: "I also need the forced update to be live as well in this rele
 sign-off on signing the policy with the updater key. `scripts/release-local.sh --policy-min` does
 the whole policy step inside the release, on the release Mac:
 
-- **When it's written:** after the update files are signed, with `issuedAt` equal to the release time (the same instant as the feed's `pub_date`).
+- **When it's written:** just before the signing step, outside it, so the node script that writes it never has the key in its environment (`env -u` removes the key variables even if the caller's shell had them). Its `issuedAt` is the release time, the same instant as the feed's `pub_date`.
 - **How it's signed:** with `tauri signer sign`, in the same subshell and with the same key handling as the update files:
   - The key comes from `UPDATER_KEY_FILE` (default `~/.citrate-updater/citrate-core-v2.key`).
   - The passphrase comes from the macOS Keychain item `citrate-core-updater-v2`.
