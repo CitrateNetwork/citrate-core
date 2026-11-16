@@ -139,6 +139,8 @@ commands.allow = [
   "fl_work_envelope_get",
   "fl_work_envelope_approve",
   "fl_work_envelope_off",
+  "fl_envelope_status",
+  "fl_envelope_check",
   "contract_source",
   "contract_code_size",
   "contract_view_call",
