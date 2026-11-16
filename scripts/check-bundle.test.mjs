@@ -341,7 +341,7 @@ describe("the built bundle (filesystem only)", () => {
     execFileSync("ar", ["rc", deb, "debian-binary", "control.tar.gz", "data.tar.gz"], { cwd: work });
     const ok = spawnSync("node", [SCRIPT, "deb", "--deb", deb, "--src-tauri", path.join(root, "src-tauri"), "--overlay", opts().overlay, "--target", TRIPLE, "--skills-lock", opts().skillsLock], { encoding: "utf8" });
     expect(ok.status, ok.stderr).toBe(0);
-  });
+  }, 30_000); // ar + tar over a staged tree; slow runners took over the 5 s default
 
   it("the AppImage's squashfs starts where the ELF ends (read from the header, never run)", () => {
     const h = Buffer.alloc(64);
