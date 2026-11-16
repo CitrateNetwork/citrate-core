@@ -35,6 +35,9 @@ export type NetworkProfile = {
    *  the node refuses to start when they differ). Written by scripts/network-cut.py apply; absent
    *  = the template's section. */
   nodeCheckpoint?: NodeCheckpoint | null;
+  /** FL design 0.5.4 (G-SEC): the one switch that opens payout and claim surfaces. Absent or
+   *  false = payouts ship dark (src/fl/networkState.ts). No shipped profile sets it. */
+  payoutsOpen?: boolean | null;
   pending: Record<string, string>;
 };
 
@@ -164,6 +167,9 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   }
   if (p.nodeCheckpoint != null && !isNodeCheckpoint(p.nodeCheckpoint)) {
     out.push("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers");
+  }
+  if (p.payoutsOpen != null && typeof p.payoutsOpen !== "boolean") {
+    out.push("payoutsOpen is not true or false");
   }
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");

@@ -1,14 +1,15 @@
 // =====================================================================
 // citrate-core: the member's worker terms (FL design board 11, Settings › Work › Terms)
 //
-// Terms are sealed on this device and never published; only the floor is enforced on chain. They
-// are written to core storage (worker-policy.json, board 11) after the member confirms them: the
-// Settings › Work confirm card, or a core-rendered Hermes policy proposal card. This module never
-// shows a card itself and Hermes output never calls it.
-//
-// Until core's worker-policy storage ships, saving is refused with a plain sentence (nothing is
-// written anywhere, Rule 1) and loading reads nothing.
+// Terms are sealed on this device and never published; only the floor is enforced on chain
+// (WorkMarket join's minPrice). Data source (Rule 7): core's fl_work.rs, `<app data>/fl-work/
+// terms.sealed` under the work key in the OS keyring (ML-KEM-768 + AES-256-GCM, as the Hermes
+// history). They are written only after the member confirms them: the Settings › Work confirm
+// card, or a core-rendered Hermes policy proposal card. This module never shows a card itself
+// and Hermes output never calls it.
 // =====================================================================
+import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke } from "../bridge/tauri/invoke";
 
 export interface WorkerTerms {
   /** Decimal SALT per unit, e.g. "1.20". */
@@ -27,7 +28,8 @@ export interface WorkerTermsReceipt {
   sealed: boolean;
 }
 
-export const TERMS_SAVE_UNAVAILABLE = "Saving terms is not available in this build";
+/** Outside the desktop app there is no sealed store to read or write. */
+export const TERMS_NEED_DESKTOP = "Your terms are kept by the desktop app";
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const FLOOR = /^\d{1,6}(\.\d{1,18})?$/;
@@ -40,14 +42,16 @@ export function termsProblem(t: WorkerTerms): string | null {
   return null;
 }
 
-/** Write confirmed terms to core. Refused in this build (no storage yet); nothing changes. */
+/** Seal confirmed terms in core. Refuses malformed terms before asking core; core checks again. */
 export async function saveWorkerTerms(terms: WorkerTerms): Promise<WorkerTermsReceipt> {
   const bad = termsProblem(terms);
   if (bad) throw new Error(bad);
-  throw new Error(TERMS_SAVE_UNAVAILABLE);
+  if (BRIDGE_MODE !== "tauri") throw new Error(TERMS_NEED_DESKTOP);
+  return invoke<WorkerTermsReceipt>("fl_work_terms_save", { terms });
 }
 
-/** The saved terms, or null when none are saved (always null until core storage ships). */
+/** The saved terms, or null when none are saved. */
 export async function loadWorkerTerms(): Promise<WorkerTerms | null> {
-  return null;
+  if (BRIDGE_MODE !== "tauri") throw new Error(TERMS_NEED_DESKTOP);
+  return invoke<WorkerTerms | null>("fl_work_terms_get");
 }

@@ -87,6 +87,12 @@ struct RawProfile {
     retired: Option<String>,
     #[serde(default)]
     node_checkpoint: Option<RawNodeCheckpoint>,
+    /// FL design 0.5.4 (G-SEC): the one switch that opens payout and claim surfaces on this network.
+    /// Absent or false = payouts ship dark. Read by the webview (`src/fl/networkState.ts`); core
+    /// accepts the key and gates nothing on it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    payouts_open: Option<bool>,
     #[serde(default)]
     pending: BTreeMap<String, String>,
 }

@@ -70,8 +70,9 @@ FIELDS = [
 # MIN_MEMBER_PRUNE_RETAIN), `retired` (CORE-N2, why the network is retired; refused like unset) and
 # `nodeCheckpoint` (the [checkpoint] interval, committeeSize and voteDepth the node config repeats,
 # for a genesis that compiles them; written by scripts/network-cut.py apply from the cut's
-# chainParams; absent = the template's [checkpoint] section).
-OPTIONAL = ["memberPruneRetain", "retired", "nodeCheckpoint"]
+# chainParams; absent = the template's [checkpoint] section) and `payoutsOpen` (FL design 0.5.4,
+# G-SEC: true opens payout and claim surfaces; absent or false = payouts ship dark).
+OPTIONAL = ["memberPruneRetain", "retired", "nodeCheckpoint", "payoutsOpen"]
 NODE_CHECKPOINT_KEYS = {"interval", "committeeSize", "voteDepth"}
 KNOWN = set(FIELDS) | {"label", "pending"} | set(OPTIONAL)
 # The undo window (ADR CV-7a): network_profile.rs MIN_MEMBER_PRUNE_RETAIN.
@@ -154,6 +155,9 @@ def optional_problems(p: dict) -> list:
     if c is not None and not (isinstance(c, dict) and set(c) == NODE_CHECKPOINT_KEYS and all(
             isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in c.values())):
         out.append("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers")
+    o = p.get("payoutsOpen")
+    if o is not None and not isinstance(o, bool):
+        out.append("payoutsOpen is not true or false")
     return out
 
 

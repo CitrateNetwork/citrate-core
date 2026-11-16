@@ -88,7 +88,7 @@ export function pinOf(book: FlBook, name: FlContractName): string | null {
 
 /** Payouts open only when the network profile says so (G-SEC). No shipped profile does. */
 export function payoutsEnabledBy(profile: NetworkProfile | null): boolean {
-  return (profile as (NetworkProfile & { payoutsOpen?: unknown }) | null)?.payoutsOpen === true;
+  return profile?.payoutsOpen === true;
 }
 
 function payoutsFor(work: ContractReading, profile: NetworkProfile | null): PayoutsState {

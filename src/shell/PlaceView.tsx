@@ -14,6 +14,7 @@ import { HermesLearn } from "../surfaces/hermes/HermesLearn";
 import { HermesControls } from "../surfaces/hermes/HermesControls";
 import { agentSlice } from "./slices/agent";
 import { RoundsRoute } from "../fl/RoundsRoute";
+import { WorkSettings } from "../fl/WorkSettings";
 import { Models, StorageFiles, Groups, Cluster, Connections, Community, People } from "../surfaces";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
@@ -146,6 +147,9 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
       return <Settings store={store} s={{ ...s, sSec: sectionFor(ACCOUNT_SETTINGS, s.sSec) }} sections={ACCOUNT_SETTINGS} />;
     case "settings/connections":
       return <Connections store={store} s={s} />;
+    case "settings/work":
+      // FL design board 11 (src/fl/WorkSettings.tsx).
+      return <WorkSettings store={store} s={s} />;
     default:
       return <Dashboard store={store} s={s} />;
   }

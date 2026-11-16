@@ -32,7 +32,7 @@ import { CeremonySheet, outcomeFromBroadcastError, outcomeFromReceipt, outcomeWo
 import { Chip, HicBadge, KV, Unknown, shortHex } from "./primitives";
 import { aboutDuration, saltFromWei, saltText } from "./format";
 import { HIC1, selectAuthority, setEnvelopeForAuthority, subscribeAuthority } from "./authority";
-import { loadWorkerTerms, saveWorkerTerms, TERMS_SAVE_UNAVAILABLE, termsProblem, type WorkerTerms } from "./workerTerms";
+import { loadWorkerTerms, saveWorkerTerms, TERMS_NEED_DESKTOP, termsProblem, type WorkerTerms } from "./workerTerms";
 import { RoundsNotLive } from "./RoundsNotLive";
 import { ContractTable } from "./ContractTable";
 import { FlBand } from "./FlBand";
@@ -408,11 +408,11 @@ describe("authority (HIC-1 by default)", () => {
   });
 });
 
-describe("worker terms (no core storage in this build)", () => {
+describe("worker terms outside the desktop app", () => {
   const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
-  it("saving is refused with a plain sentence; loading reads nothing", async () => {
-    await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_SAVE_UNAVAILABLE);
-    await expect(loadWorkerTerms()).resolves.toBeNull();
+  it("with no sealed store (web/dev), saving and loading say so; nothing is written anywhere", async () => {
+    await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_NEED_DESKTOP);
+    await expect(loadWorkerTerms()).rejects.toThrow(TERMS_NEED_DESKTOP);
   });
   it("malformed terms are refused with the problem", async () => {
     expect(termsProblem(terms)).toBeNull();
