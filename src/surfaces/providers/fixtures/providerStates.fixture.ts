@@ -33,3 +33,18 @@ export function usage(over: Partial<ProviderUsage> = {}): ProviderUsage {
   return { id: "openai", today: zero, month: zero, unsettledCalls: 0, caps: vendor().caps, ...over };
 }
 
+
+/** The Cognition delegate as `providers_status` reports it (kind `delegate`, the v3 host). */
+export function delegate(over: Partial<ProviderStatus> = {}): ProviderStatus {
+  return vendor({
+    id: "cognition",
+    name: "Cognition (Devin)",
+    kind: "delegate",
+    baseUrl: "https://api.devin.ai/v3",
+    host: "api.devin.ai",
+    adapter: "delegate",
+    keyPage: "https://app.devin.ai/settings",
+    revokePage: "https://app.devin.ai/settings",
+    ...over,
+  });
+}

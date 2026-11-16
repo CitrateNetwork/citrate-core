@@ -2,7 +2,7 @@
 // D-11 (RC52) — Settings › Models (Hermes › Controls › Details › Models).
 //
 // One card per governed vendor core reports (OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Meta),
-// a Cognition "Delegate to Devin" card that says it is not available yet, custom endpoints behind
+// the Cognition delegate card (a Devin key, kept in the keychain like a vendor key), custom endpoints behind
 // an Advanced toggle (Unverified everywhere), and the Spend and usage view.
 //
 // Data sources (Rule 7), all through `bridge.providers` (Rust `providers_ipc.rs`):
@@ -23,6 +23,7 @@ import { BRIDGE_MODE } from "../../bridge/mode";
 import { InvokeTimeout } from "../../bridge/tauri/invoke";
 import type { ProviderModelPrice, ProviderRecentCall, ProviderStatus, ProviderUsage, ProviderUsageSummary } from "../../bridge/domains";
 import { formatMicros, parseUsdToMicros } from "../../agent/escalation";
+import { DEFAULT_ACU_LIMIT } from "../../agent/cognition";
 import {
   EMPTY_CUSTOM,
   LARGE_RESERVE_MICROS,
@@ -118,6 +119,7 @@ const STATE_CHIP: Record<CardState, { text: string; color: string }> = {
 const ADAPTER_LABEL: Record<string, string> = {
   native: "native adapter",
   "openai-compatible": "OpenAI-compatible adapter",
+  delegate: "remote-agent delegate",
 };
 
 const small = { fontSize: 10.5, color: "var(--tx-3)" } as const;
@@ -173,6 +175,8 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
   const err = v.errors[p.id];
   const notice = v.notices[p.id];
   const custom = p.kind === "custom";
+  // The Cognition delegate runs remote tasks: no chat models, no token prices.
+  const delegate = p.kind === "delegate";
   const age = rotationDue(p, v.nowMs);
   const draft = v.keyDrafts[p.id] ?? "";
   // Core's model list with price sources; models it listed but did not price yet are added unpriced.
@@ -335,7 +339,16 @@ function ProviderCard(props: { p: ProviderStatus; u: ProviderUsage | undefined; 
         </span>
       )}
 
-      {st !== "unavailable" && (p.keyConfigured || priced.length > 0) && (
+      {delegate && st !== "unavailable" && (
+        <span data-testid="delegate-note" style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+          {p.keyConfigured
+            ? "Hermes can offer to hand one software task to a Devin session, from your next new chat on."
+            : "With a Devin key connected, Hermes can offer to hand one software task to a Devin session."}{" "}
+          Each hand-off shows the exact prompt on an approval card and is sent only if you approve it, and it is never offered under Local model only. Devin bills your Devin account in ACUs, with a ceiling of {DEFAULT_ACU_LIMIT} per task unless you ask for another.
+        </span>
+      )}
+
+      {!delegate && st !== "unavailable" && (p.keyConfigured || priced.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span className="eyebrow">Models and prices</span>
           {priced.length === 0 ? (
@@ -515,6 +528,7 @@ export function ModelsSettingsView(v: ModelsViewProps) {
   const st = v.statuses;
   const usageFor = (id: string) => v.usage?.providers.find((x) => x.id === id);
   const vendors = st?.filter((p) => p.kind === "vendor") ?? [];
+  const delegates = st?.filter((p) => p.kind === "delegate") ?? [];
   const customs = st?.filter((p) => p.kind === "custom") ?? [];
   const nameOf = (id: string) => st?.find((p) => p.id === id)?.name || id;
   const cf = v.customForm;
@@ -593,19 +607,8 @@ export function ModelsSettingsView(v: ModelsViewProps) {
             {v.loadError ? "Provider status could not be read: " + v.loadError : v.desktop ? "loading" : "Not available in the web preview."}
           </span>
         ) : (
-          vendors.map((p) => <ProviderCard key={p.id} p={p} u={usageFor(p.id)} v={v} />)
+          [...vendors, ...delegates].map((p) => <ProviderCard key={p.id} p={p} u={usageFor(p.id)} v={v} />)
         )}
-        <div data-testid="provider-card-cognition" data-state="unavailable" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
-          <span style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>Cognition · Delegate to Devin</span>
-            <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", marginLeft: 8 }}>
-              not available yet
-            </span>
-          </span>
-          <span style={{ fontSize: 12, color: "var(--tx-2)" }}>
-            Handing a task to a Devin session is not available in this build. Devin runs a remote agent rather than a chat model, so each hand-off will need your approval for that task.
-          </span>
-        </div>
       </div>
 
       {/* ---------- custom endpoints (Advanced) ---------- */}
@@ -758,7 +761,9 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
     }
   };
   const find = (id: string) => statuses?.find((p) => p.id === id);
-  const listed = (n: number) => (n === 1 ? "1 model listed" : `${n} models listed`);
+  const listedFor = (id: string, n: number) =>
+    // The Cognition delegate has no chat models: its key test reads who the key belongs to.
+    statuses?.find((p) => p.id === id)?.kind === "delegate" ? "Devin confirmed the key" : n === 1 ? "1 model listed" : `${n} models listed`;
 
   return (
     <ModelsSettingsView
@@ -786,7 +791,7 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
           void act(id, "connect", id, async () => {
             try {
               const t = await bridge.providers.setKey(id, key);
-              setNotice(id, `Connected. The key passed a live test (${listed(t.listedModels)}).`);
+              setNotice(id, `Connected. The key passed a live test (${listedFor(id, t.listedModels)}).`);
             } catch (e) {
               // A timeout is not a refusal: core may still finish the test and store the key.
               if (e instanceof InvokeTimeout) throw new Error("No answer from core yet, so whether the key was stored is unknown. This card shows what core reports; check it before pasting the key again.");
@@ -799,7 +804,7 @@ export function ModelsSettings({ onOpen }: { onOpen(url: string): void }) {
           void act(id, "test", id, async () => {
             try {
               const t = await bridge.providers.testKey(id);
-              setNotice(id, `The key works (${listed(t.listedModels)}).`);
+              setNotice(id, `The key works (${listedFor(id, t.listedModels)}).`);
             } catch (e) {
               throw new Error(`The key test failed: ${message(e)}`);
             }

@@ -183,11 +183,13 @@ export const VENDOR_HINT: Record<string, string> = {
   xai: "xAI: create the key in the xAI console and limit the models and endpoints it may use.",
   deepseek: "DeepSeek charges a prepaid balance, so top up only what you are willing to spend.",
   meta: "Meta: create the key in the Llama developer console, in a project used only by Citrate Core.",
+  cognition: "Cognition: make a service user key (it starts with cog_) under Settings › Devin API, for an organization you use only with Citrate Core, and set that organization's ACU limit. Older apk_ keys are refused.",
 };
 
 /** Optional subtitle for a vendor's card. */
 export const VENDOR_SUBTITLE: Record<string, string> = {
   meta: "Muse models on the Meta Model API",
+  cognition: "Delegate to Devin, a remote coding agent",
 };
 
 // ---- large reservations ----
