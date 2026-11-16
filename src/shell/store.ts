@@ -4000,10 +4000,6 @@ export class Store {
     return l;
   }
 
-  /**
-   * #643 — read a turn's tool results into the conversation's deploy ledger and return the
-   * evidence for the final-answer check (src/agent/deployClaims.ts).
-   */
   /** #681: whether the MCP server Hermes knows as `node` is core's own node entry (core checked
    *  the allowlist it started Hermes with). Anything else, an error included, is "no". */
   private async nodeMcpTrusted(): Promise<boolean> {
@@ -4014,6 +4010,10 @@ export class Store {
     }
   }
 
+  /**
+   * #643 — read a turn's tool results into the conversation's deploy ledger and return the
+   * evidence for the final-answer check (src/agent/deployClaims.ts).
+   */
   private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
     return collectDeployEvidence(outputs, {
       ledger: this.deployLedger(),

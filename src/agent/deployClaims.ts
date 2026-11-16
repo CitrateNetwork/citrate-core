@@ -405,7 +405,8 @@ export function collectDeployEvidence(
   const w = wallet();
   if (w) contextStrings.add(w);
   for (const t of opts.contextTexts ?? []) for (const a of addressLikeTokens(plainText(t))) contextStrings.add(a.toLowerCase());
-  const latest = (opts.memberTexts ?? []).at(-1) ?? "";
+  const texts = opts.memberTexts ?? [];
+  const latest = texts.length > 0 ? texts[texts.length - 1] : "";
   const deployRequested = DEPLOY_ASK.test(fold(plainText(latest)));
   return { state, receipts: ledger.receipts, toolStrings: ledger.toolStrings, memberStrings, contextStrings, unfunded, deployRequested };
 }

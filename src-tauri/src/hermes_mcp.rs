@@ -194,9 +194,10 @@ pub fn node_entry_in_file(path: Option<&Path>, core_exe: &Path) -> bool {
 }
 
 /// #681 review: whether the running Hermes's `node` MCP server is core's own node entry. The chat
-/// view takes that server's results as deploy evidence only when this says so.
+/// view takes that server's results as deploy evidence only when this says so. Async (it only
+/// reads a flag the manager set at start), so it never runs on the main thread.
 #[tauri::command]
-pub fn hermes_node_mcp_trusted() -> bool {
+pub async fn hermes_node_mcp_trusted() -> bool {
     crate::hermes::running_manager().is_some_and(|m| m.node_server_is_core())
 }
 
