@@ -2,9 +2,10 @@
 //
 // Data source (Rule 7): the generated address book `src-tauri/addresses/40204.json` for the two
 // ledger addresses, then `eth_getCode` on 40204 (core's `contract_code_size`) for each. Group rounds
-// need both FederatedRoundLedger and PatronageLedger. They deploy dormant at genesis (audit phase A)
-// and rounds go live after mainnet, so the most this card can say is "deployed, dormant". Until the
-// book pins both, it says "Group rounds not live yet" and reads nothing from the chain.
+// need both FederatedRoundLedger and PatronageLedger. They deploy at genesis with no rounds, and
+// rounds reach members only through WorkMarket (not on r1007), so the most this card can say is
+// "deployed, no rounds" (#676: never "dormant"). Until the book pins both, it says "Group rounds
+// not live yet" and reads nothing from the chain.
 
 export const ROUND_LEDGERS = ["FederatedRoundLedger", "PatronageLedger"] as const;
 export type RoundLedgerName = (typeof ROUND_LEDGERS)[number];
@@ -28,8 +29,8 @@ export type GroupRoundsReading =
   | { kind: "no-code"; empty: RoundLedgerName[] }
   /** The code read failed: unknown, not zero. */
   | { kind: "unavailable"; reason: string }
-  /** Both ledgers have code. Rounds are not open before mainnet. */
-  | { kind: "dormant"; ledgers: { name: RoundLedgerName; address: string; codeSize: number }[] };
+  /** Both ledgers have code, and no round can reach members yet. */
+  | { kind: "deployed-no-rounds"; ledgers: { name: RoundLedgerName; address: string; codeSize: number }[] };
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const ZERO = "0x" + "0".repeat(40);
@@ -62,5 +63,5 @@ export async function readGroupRounds(book: RoundLedgerBook, codeSize: (address:
     return { kind: "unavailable", reason: e instanceof Error ? e.message : String(e) };
   }
   const empty = ledgers.filter((l) => !(l.codeSize > 0)).map((l) => l.name);
-  return empty.length ? { kind: "no-code", empty } : { kind: "dormant", ledgers };
+  return empty.length ? { kind: "no-code", empty } : { kind: "deployed-no-rounds", ledgers };
 }

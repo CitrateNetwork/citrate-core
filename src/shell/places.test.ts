@@ -27,7 +27,7 @@ const OLD_ROUTES: Record<string, [string, string, string | null, string | null]>
   comms: ["groups/chat/alerts", "groups", "Chat", "Alerts"],
   people: ["groups/members", "groups", "Members", null],
   cluster: ["groups/cluster", "groups", "Cluster", null],
-  train: ["groups/rounds", "groups", "Rounds", null],
+  train: ["groups/rounds", "groups", "Rounds", "Matches"],
   alf: ["groups/alf", "groups", "ALF", null],
   community: ["groups/community", "groups", null, null],
   wallet: ["wallet", "wallet", "Wallet", null],

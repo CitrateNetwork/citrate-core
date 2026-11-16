@@ -145,7 +145,7 @@ describe("Groups", () => {
   });
 
   it("the old Training, Members, Cluster and Alerts routes open their tabs", () => {
-    expect(selected(html("train"))).toEqual(["Rounds"]);
+    expect(selected(html("train"))).toEqual(["Rounds", "Matches"]);
     expect(selected(html("people"))).toEqual(["Members"]);
     expect(selected(html("cluster"))).toEqual(["Cluster"]);
     expect(selected(html("comms"))).toEqual(["Chat", "Alerts"]);
