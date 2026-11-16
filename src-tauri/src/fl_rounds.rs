@@ -1995,17 +1995,28 @@ pub async fn fl_adapter_load(app_h: tauri::AppHandle, sha256: String) -> Result<
     .await
 }
 
-/// **Command — fl_adapter_unload.** Serve the base model alone again.
+/// Does an unload have anything to do? Only when an adapter is served or remembered for a
+/// put-back; otherwise it must not restart llama-server for nothing.
+pub fn unload_needed(served: bool, remembered: bool) -> bool {
+    served || remembered
+}
+
+/// **Command — fl_adapter_unload.** Serve the base model alone again and forget the remembered
+/// adapter. Returns false, touching nothing, when no adapter was loaded or remembered.
 #[tauri::command]
-pub async fn fl_adapter_unload(app_h: tauri::AppHandle) -> Result<(), String> {
+pub async fn fl_adapter_unload(app_h: tauri::AppHandle) -> Result<bool, String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let _serial = adapter_lock();
-        restart_with_lora(&app_h, &serve, LoraChoice::None)?;
         let fl = state(&app_h)?;
+        let _serial = adapter_lock();
+        if !unload_needed(serve.0.lora().is_some(), fl.active().is_some()) {
+            return Ok(false);
+        }
+        restart_with_lora(&app_h, &serve, LoraChoice::None)?;
         fl.note_restore(None);
-        fl.forget_active()
+        fl.forget_active()?;
+        Ok(true)
     })
     .await
 }
