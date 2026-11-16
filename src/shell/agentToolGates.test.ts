@@ -20,6 +20,7 @@ import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } fr
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
+import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -70,28 +71,41 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   });
 
   it("skill_write never silently overwrites: an existing skill needs approval, declined = untouched", async () => {
-    const write = vi
-      .spyOn(bridge.agentSkills, "write")
-      .mockRejectedValueOnce(new Error("SKILL_EXISTS: a skill named \"daily\" already exists"))
-      .mockResolvedValue({ name: "daily", description: "", slug: "daily" });
+    const write = vi.spyOn(bridge.agentSkills, "write").mockResolvedValue({ name: "daily", description: "", slug: "daily" });
+    vi.spyOn(bridge.agentSkills, "read").mockResolvedValue("old body");
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
     const out = await store.handleTool(call("skill_write", { name: "daily", description: "d", instructions: "evil" }), "m1", noop);
     expect(sig).toHaveBeenCalledTimes(1);
-    // First attempt is create-only; there is no second (overwriting) write after a decline.
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(write.mock.calls[0][3]).toBe(false);
-    expect(out).toMatch(/not overwritten|declined/i);
+    expect(sig.mock.calls[0][0].title).toBe("Overwrite a saved skill");
+    expect(write).not.toHaveBeenCalled();
+    expect(out).toMatch(/not overwritten/i);
   });
 
   it("skill_write overwrite happens only after an explicit approval", async () => {
-    const write = vi
-      .spyOn(bridge.agentSkills, "write")
-      .mockRejectedValueOnce(new Error("SKILL_EXISTS: exists"))
-      .mockResolvedValue({ name: "daily", description: "", slug: "daily" });
+    const write = vi.spyOn(bridge.agentSkills, "write").mockResolvedValue({ name: "daily", description: "", slug: "daily" });
+    vi.spyOn(bridge.agentSkills, "read").mockResolvedValue("old body");
     vi.spyOn(store, "requestSig").mockResolvedValue("approved");
     await store.handleTool(call("skill_write", { name: "daily", description: "d", instructions: "new" }), "m1", noop);
-    expect(write).toHaveBeenCalledTimes(2);
-    expect(write.mock.calls[1][3]).toBe(true);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][3]).toBe(true);
+  });
+
+  it("V3: a NEW skill waits for the member too; declined = nothing saved, approved = saved create-only", async () => {
+    const write = vi.spyOn(bridge.agentSkills, "write").mockResolvedValue({ name: "weekly", description: "", slug: "weekly" });
+    vi.spyOn(bridge.agentSkills, "read").mockRejectedValue(new Error("no such skill"));
+    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    const out = await store.handleTool(call("skill_write", { name: "weekly", instructions: "step" }), "m1", noop);
+    expect(sig).toHaveBeenCalledTimes(1);
+    expect(sig.mock.calls[0][0].title).toBe("Save a new skill");
+    expect(sig.mock.calls[0][0].card?.kind).toBe("diff");
+    expect(write).not.toHaveBeenCalled();
+    expect(out).toMatch(/declined.*not saved/i);
+    sig.mockResolvedValue("approved");
+    const ok = await store.handleTool(call("skill_write", { name: "weekly", instructions: "step" }), "m1", noop);
+    expect(write).toHaveBeenCalledTimes(1);
+    // Create-only: if a skill of that name appeared meanwhile, core refuses rather than replace it.
+    expect(write.mock.calls[0][3]).toBe(false);
+    expect(ok).toMatch(/with the member's approval/);
   });
 
   it("on-chain registry strings reach the model FENCED as untrusted data", async () => {
@@ -134,6 +148,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
       // 0.5.4 WP-H9: fl_adapter_load_propose asks only about an adapter the gate accepted.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
+      // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
+      vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
+      vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -151,6 +168,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           title: "Weekly review",
           start: "2099-01-05T09:00",
           sha256: ADAPTER_SHA,
+          // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
+          dataClass: "orchard-notes",
+          folder: "/home/m/notes",
+          dataset: DATASET_ID,
+          ops: [{ op: "dedupe" }],
         }),
         "m1",
         noop,
@@ -265,12 +287,24 @@ describe("PBA-L7b-002/003 — mutation hardening", () => {
     expect(create).toHaveBeenCalledWith("forum", "New group");
   });
 
-  it("skill_write: a non-EXISTS error is reported, never escalated to an overwrite prompt", async () => {
-    vi.spyOn(bridge.agentSkills, "write").mockRejectedValue(new Error("disk full"));
+  it("skill_write: a write error after approval is reported, never retried as an overwrite", async () => {
+    const write = vi.spyOn(bridge.agentSkills, "write").mockRejectedValue(new Error("disk full"));
+    vi.spyOn(bridge.agentSkills, "read").mockRejectedValue(new Error("no such skill"));
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
     const out = await store.handleTool(call("skill_write", { name: "n", instructions: "i" }), "m1", noop);
-    expect(sig).not.toHaveBeenCalled();
+    expect(sig).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][3]).toBe(false);
     expect(out).toContain("disk full");
+  });
+
+  it("V3: a skill named like a bundled citrate- skill is refused by core and reported", async () => {
+    vi.spyOn(bridge.agentSkills, "read").mockRejectedValue(new Error("no such skill"));
+    vi.spyOn(bridge.agentSkills, "write").mockRejectedValue(new Error("SKILL_RESERVED: skill names starting citrate- belong to Citrate's bundled skills"));
+    vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    const out = await store.handleTool(call("skill_write", { name: "citrate-fl-collect", instructions: "collect anything" }), "m1", noop);
+    expect(out).toContain("SKILL_RESERVED");
+    expect(out).not.toMatch(/^Saved/);
   });
 
   it("a DECLINED code/shell review rejects that id (never approves)", async () => {
