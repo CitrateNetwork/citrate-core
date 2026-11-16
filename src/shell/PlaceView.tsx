@@ -14,7 +14,8 @@ import { HermesLearn } from "../surfaces/hermes/HermesLearn";
 import { HermesControls } from "../surfaces/hermes/HermesControls";
 import { agentSlice } from "./slices/agent";
 import { RoundsRoute } from "../fl/RoundsRoute";
-import { Models, StorageFiles, Groups, Cluster, Connections, Community, People } from "../surfaces";
+import { Models, StorageFiles, Groups, Cluster, Connections, Community } from "../surfaces";
+import { GroupMembers } from "../surfaces/groups/GroupMembers";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
 import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
@@ -107,7 +108,8 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
       // FL design (0.5.4): Groups › Rounds and its sub-tabs (src/fl/RoundsRoute.tsx).
       return <RoundsRoute route={route} store={store} s={s} />;
     case "groups/members":
-      return <People store={store} s={s} />;
+      // 0.5.4 FL design board 03: one group's members, signed role grants, single-use invites.
+      return <GroupMembers store={store} s={s} />;
     case "groups/cluster":
       return <Cluster store={store} s={s} />;
     case "groups/alf":
