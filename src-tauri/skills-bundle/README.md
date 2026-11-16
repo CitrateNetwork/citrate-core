@@ -19,7 +19,7 @@ is not pinned is never offered. Scripts are never staged.
 
 - Stage from the source checkouts: `node scripts/stage-skills-bundle.mjs build --sources-base <dir>`
 - Check a staged tree: `node scripts/stage-skills-bundle.mjs verify src-tauri/skills-bundle`
-- Release: `.github/workflows/release.yml` stages the pinned `skills-bundle.tar.gz` asset with
+- Release: `.github/workflows/release.yml` stages the pinned `skills-bundle-<sha12>.tar.gz` asset (named in release/components.json) with
   `node scripts/stage-skills-bundle.mjs from-tarball`, which refuses an asset that does not match
   this repo's `skills.lock` exactly.
 
