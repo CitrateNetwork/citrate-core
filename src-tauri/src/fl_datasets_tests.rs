@@ -1390,7 +1390,11 @@ fn an_ipfs_failure_publishes_nothing_and_the_retry_reuses_the_publish_version() 
             1,
         )
         .unwrap_err();
-    assert!(e.contains("nothing left this device"), "{e}");
+    assert!(e.contains("Nothing is recorded as published"), "{e}");
+    assert!(
+        !e.contains("nothing left this device"),
+        "an add can succeed before the pin fails"
+    );
     assert!(s.published(&id).unwrap().is_empty());
     let l = s.list().unwrap();
     assert_eq!(l.datasets[0].versions.len(), 2, "the publish version waits");
@@ -1411,4 +1415,198 @@ fn an_ipfs_failure_publishes_nothing_and_the_retry_reuses_the_publish_version() 
         "the waiting publish version is published as it is"
     );
     assert_eq!(s.list().unwrap().datasets[0].versions.len(), 2);
+}
+// ------------------------------------------------------------------ review of #715 (Codex)
+
+/// P1: a protected file inside a granted folder (PSReadLine's history, a .netrc-like file) is
+/// never read, even though the folder itself is not a deny location.
+#[test]
+fn a_protected_file_inside_a_granted_folder_is_never_read() {
+    let root = tmp("denyfile").join("PSReadLine");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("ConsoleHost_history.txt"), SECRET).unwrap();
+    std::fs::write(root.join("notes.txt"), "a real note").unwrap();
+    let ing = ingest_folder(&root, 1).unwrap();
+    assert_eq!(ing.rows.len(), 1, "{:?}", ing.skipped);
+    assert!(
+        ing.skipped
+            .iter()
+            .any(|s| s.starts_with("ConsoleHost_history.txt: a protected location")),
+        "{:?}",
+        ing.skipped
+    );
+    assert!(!ing
+        .rows
+        .iter()
+        .any(|r| r.data.to_string().contains("plum-orchard")));
+}
+
+/// P1: a withdrawal whose replacement version cannot be written leaves the consent in force, so
+/// the retry works and the sources never stay behind a "withdrawn" record.
+#[test]
+fn a_failed_withdrawal_keeps_the_consent_in_force_and_retries() {
+    let d = tmp("wdatomic");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, _) = make(&s, "wdatomicsrc");
+    s.append(
+        &id,
+        1,
+        new_web_consent(),
+        vec![web_item("https://docs.example.org/a", "page a")],
+        2,
+    )
+    .unwrap();
+    // Block version 3: a directory where its manifest goes makes the write fail.
+    let blocker = d.join("datasets").join(&id).join("v3.manifest.sealed");
+    std::fs::create_dir_all(&blocker).unwrap();
+    assert!(s.consent_withdraw(&id, "c-2", 3).is_err());
+    let c2 = s
+        .consent_list(&id)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id == "c-2")
+        .unwrap();
+    assert_eq!(
+        c2.withdrawn_at_ms, None,
+        "the failed withdrawal recorded nothing"
+    );
+    std::fs::remove_dir_all(&blocker).unwrap();
+    let w = s.consent_withdraw(&id, "c-2", 4).unwrap();
+    assert_eq!(
+        w.new_version.as_ref().map(|v| v.version),
+        Some(3),
+        "the retry works"
+    );
+    assert_eq!(w.consent.withdrawn_at_ms, Some(4));
+    assert!(s
+        .manifest(&id, 3)
+        .unwrap()
+        .manifest
+        .sources
+        .iter()
+        .all(|x| x.consent_ref == "c-1"));
+}
+
+/// A withdrawal an earlier build recorded without its version is finished, not refused.
+#[test]
+fn a_withdrawal_recorded_without_its_version_is_finished() {
+    let d = tmp("wdfinish");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, _) = make(&s, "wdfinishsrc");
+    s.append(
+        &id,
+        1,
+        new_web_consent(),
+        vec![web_item("https://docs.example.org/a", "page a")],
+        2,
+    )
+    .unwrap();
+    let keys = s.need_keys().unwrap();
+    let mut doc = s.consent_doc(&keys, &id).unwrap();
+    doc.records
+        .iter_mut()
+        .find(|c| c.id == "c-2")
+        .unwrap()
+        .withdrawn_at_ms = Some(3);
+    s.save_consent(&keys, &id, &doc).unwrap();
+    let w = s.consent_withdraw(&id, "c-2", 9).unwrap();
+    assert_eq!(w.new_version.map(|v| v.version), Some(3));
+    assert_eq!(
+        w.consent.withdrawn_at_ms,
+        Some(3),
+        "the first withdrawal time is kept"
+    );
+    assert!(s
+        .consent_withdraw(&id, "c-2", 10)
+        .unwrap_err()
+        .contains("already withdrawn"));
+}
+
+/// P2: a rows file left without its manifest does not block the next version.
+#[test]
+fn an_orphan_rows_file_does_not_block_the_next_version() {
+    let d = tmp("orphan");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, _) = make(&s, "orphansrc");
+    let dir = d.join("datasets").join(&id);
+    std::fs::copy(dir.join("v1.rows.sealed"), dir.join("v2.rows.sealed")).unwrap();
+    let ops = vec![CleanOp::Dedupe];
+    let p = s.clean_preview(&id, 1, &ops).unwrap();
+    let v2 = s
+        .clean_apply(&id, 1, &ops, &p.result_content_hash, 5)
+        .unwrap();
+    assert_eq!(v2.version, 2);
+    assert_eq!(s.sample(&id, 2, 20, 0).unwrap().total_rows, p.kept);
+    assert!(s.list().unwrap().datasets[0].chain_ok);
+}
+
+/// Codex review of #732 (P1): the public bundle carries the manifest, so the manifest's text (the
+/// dataset name, folder and file names in locators, license evidence) is scanned too. A clean
+/// note in a folder named after its owner's email never goes public.
+#[test]
+fn private_information_in_the_manifest_blocks_publishing() {
+    let root = tmp("publoc").join("alice@example.org");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("LICENSE"), "MIT License\n").unwrap();
+    std::fs::write(root.join("note.txt"), "Prune in late winter.").unwrap();
+    let d = tmp("publoc-store");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let v = s
+        .create(&req("Notes"), ingest_folder(&root, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals
+            .iter()
+            .any(|r| r.contains("manifest") && r.contains("email")),
+        "{:?}",
+        c.refusals
+    );
+    let sink = MemSink::default();
+    assert!(s
+        .publish(
+            &v.dataset,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v.content_hash,
+            &sink,
+            2
+        )
+        .is_err());
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
+    // A dataset name is scanned too.
+    let root2 = tmp("publoc2").join("plain");
+    std::fs::create_dir_all(&root2).unwrap();
+    std::fs::write(root2.join("note.txt"), "Prune in late winter.").unwrap();
+    let v2 = s
+        .create(
+            &req("call 202-555-0143"),
+            ingest_folder(&root2, 1).unwrap(),
+            1,
+        )
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v2.dataset, 1, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c2 = s
+        .publish_preview(&v2.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c2.refusals.iter().any(|r| r.contains("manifest")),
+        "{:?}",
+        c2.refusals
+    );
 }

@@ -281,3 +281,33 @@ fn every_publishable_license_passes_the_registry_rule() {
         assert!(!l.contains("-NC") && !l.contains("-ND"), "{l}");
     }
 }
+
+#[test]
+fn json_keys_numbers_and_key_value_pairs_are_scanned() {
+    // Codex review of #734 (P1): the scan read only JSON string values, so object keys, numbers
+    // and the key next to its value were never scanned, although ingest and publish keep them.
+    let mail = ["alice", "@", "example.org"].concat();
+    let card: u64 = ["4111", "1111", "1111", "1111"].concat().parse().unwrap();
+    let pw = ["violet", "orchard", "7392"].join("-");
+    let row = |data: serde_json::Value| crate::fl_datasets::Row {
+        source: "s1".into(),
+        data,
+    };
+    let mut key_and_number = serde_json::Map::new();
+    key_and_number.insert(mail.clone(), serde_json::json!(card));
+    let cases = [
+        ("an email as a key, a card as a number", serde_json::Value::Object(key_and_number), &["email", "card"][..]),
+        ("a password value next to its key", serde_json::json!({ "password": pw }), &["secret"][..]),
+        ("a card as a nested number", serde_json::json!({ "pay": [{ "card": card }] }), &["card"][..]),
+    ];
+    for (what, data, classes) in cases {
+        let r = scan_manifest_rows(&[row(data)]);
+        assert!(!r.passed, "{what}: {r:?}");
+        for c in classes {
+            assert!(r.counts.keys().any(|k| k.key() == *c), "{what}: no {c} in {:?}", r.counts);
+        }
+    }
+    // Plain structure is still clean.
+    let clean = scan_manifest_rows(&[row(serde_json::json!({ "title": "Orchards", "year": 1987, "ok": true, "tags": ["apple", null] }))]);
+    assert!(clean.passed, "{clean:?}");
+}
