@@ -15,9 +15,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { store } from "./store";
 import { rejectApproval } from "./slices/agent";
 import { bridge } from "../bridge";
-import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
+import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
+import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -116,7 +117,8 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   // stop at a member approval (requestSig or the wallet-review ceremony) when invoked.
   it("tripwire: every non-read agent tool reaches a member approval gate", async () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
-    const writeTools = names.filter((n) => !READ_ONLY_AGENT_TOOLS.has(n));
+    const writeTools = names.filter((n) => !READ_ONLY_AGENT_TOOLS.has(n) && !AUTHORITY_LOWERING_AGENT_TOOLS.has(n));
+    for (const n of AUTHORITY_LOWERING_AGENT_TOOLS) expect(names).toContain(n);
     expect(writeTools.length).toBeGreaterThan(0);
     for (const n of READ_ONLY_AGENT_TOOLS) expect(names).toContain(n); // the list names real tools
     for (const name of writeTools) {
@@ -129,6 +131,8 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H9: fl_adapter_load_propose asks only about an adapter the gate accepted.
+      vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -145,11 +149,25 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           rows: [["a", 1]],
           title: "Weekly review",
           start: "2099-01-05T09:00",
+          sha256: ADAPTER_SHA,
         }),
         "m1",
         noop,
       );
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must stop at a member approval`).toBeGreaterThan(0);
+    }
+  });
+
+  // 0.5.4 Hermes x FL: an authority-lowering tool never opens a signature or a wallet review, so
+  // it cannot be used to move value or raise authority. (Its own test checks the one command.)
+  it("tripwire: authority-lowering tools open no signature and no wallet review", async () => {
+    for (const name of AUTHORITY_LOWERING_AGENT_TOOLS) {
+      vi.restoreAllMocks();
+      const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+      const review = vi.spyOn(store, "openWalletReview").mockImplementation(() => {});
+      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue();
+      await store.handleTool(call(name, {}), "m1", noop);
+      expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must not ask or sign`).toBe(0);
     }
   });
 });
