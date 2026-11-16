@@ -160,6 +160,9 @@ export interface ChatMsg {
   run?: RunRecord;
   /** Board 01: the model this reply ran on, as the chat header named it when the turn began. */
   model?: string;
+  /** #691: a member message sent into a running turn. `sent`: waiting for the next step;
+   *  `taken`: Hermes took it into the run (its `steered` event). */
+  steer?: "sent" | "taken";
   /** Board 01: a proposal core renders in the transcript for the member to decide (HIC-1). */
   proposal?: ChatProposal;
 }

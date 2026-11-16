@@ -93,6 +93,8 @@ const LONG: Record<string, number> = {
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,
   hermes_session_stop: 45_000,
+  // #691: a steering message for the running turn (loopback control bound).
+  hermes_session_steer: 45_000,
   // HUP-S2.2: the held shell_run commands and the member's decision (loopback control bound).
   hermes_shell_pending: 45_000,
   hermes_shell_decide: 45_000,

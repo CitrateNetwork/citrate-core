@@ -918,6 +918,7 @@ pub fn run() {
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,
             hermes::hermes_session_stop,
+            hermes::hermes_session_steer,
             // HUP-S10.3 — daemon runs: unattended sessions, closed when the run ends.
             hermes::hermes_session_open_unattended,
             hermes::hermes_session_close,

@@ -67,6 +67,10 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async sessionStop() {
       /* nothing running */
     },
+    // #691: no sidecar, so no running turn to steer (the chat sends it as a new message instead).
+    async sessionSteer() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
     // HUP-S10.3 — daemon runs need the sidecar in the desktop app.
     async sessionOpenUnattended() {
       throw new Error("the sidecar agent loop needs the desktop app");

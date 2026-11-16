@@ -24,7 +24,7 @@
 // =====================================================================
 import { annotationFor } from "./toolAnnotations";
 
-export type RunStepKind = "think" | "read" | "tool" | "draft";
+export type RunStepKind = "think" | "read" | "tool" | "draft" | "steer";
 export type RunStepState = "running" | "done" | "refused" | "failed" | "stopped";
 
 export interface RunStep {
@@ -181,6 +181,7 @@ export function kindForTool(tool: string): "read" | "tool" {
 
 /** The row text of any step. */
 export function stepLabel(s: RunStep): string {
+  if (s.kind === "steer") return `Steered: ${s.detail ?? ""}`;
   if (s.kind === "think") return s.state === "running" ? "Thinking" : "Thought about the next step";
   if (s.kind === "draft") return s.state === "running" ? "Writing the answer" : "Wrote the answer";
   return toolLabel(s.tool ?? "");
@@ -243,6 +244,13 @@ export function runModelTime(r: RunRecord, ms: number | null): RunRecord {
   if (idx < 0) return r;
   const at = r.steps.length - 1 - idx;
   return withSteps(r, r.steps.map((s, i) => (i === at ? { ...s, durationMs: ms, timing: "model" as const } : s)));
+}
+
+/** #691: Hermes took a member message into the running turn (its `steered` event). */
+export function runSteered(r: RunRecord, text: string, now: number): RunRecord {
+  if (r.outcome) return r;
+  const steps = closeOpenText(r.steps, now);
+  return withSteps(r, steps.concat([{ id: nextId("s"), kind: "steer", state: "done", startedAt: now, endedAt: now, durationMs: null, detail: clip(text) }]));
 }
 
 /** The answer text began streaming. */
@@ -393,7 +401,7 @@ export function parseRun(raw: unknown): RunRecord | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const r = raw as Record<string, unknown>;
   if (typeof r.startedAt !== "number" || !Array.isArray(r.steps)) return undefined;
-  const kinds = new Set(["think", "read", "tool", "draft"]);
+  const kinds = new Set(["think", "read", "tool", "draft", "steer"]);
   const states = new Set(["running", "done", "refused", "failed", "stopped"]);
   const steps = r.steps
     .filter((s): s is RunStep => typeof s === "object" && s !== null && kinds.has((s as RunStep).kind) && states.has((s as RunStep).state) && typeof (s as RunStep).startedAt === "number")

@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { AgentChat, STARTERS } from "./AgentChat";
 import { store } from "../shell/store";
 import { freshState, type ChatMsg } from "../shell/state";
-import { newRun, runEnd, runThink, runToolEnd, runToolStart, runDraft } from "../agent/runTimeline";
+import { newRun, runEnd, runThink, runToolEnd, runToolStart, runDraft, runSteered } from "../agent/runTimeline";
 import { setEnvelopeForAuthority } from "../fl/authority";
 import * as agentSlice from "../shell/slices/agent";
 
@@ -147,6 +147,25 @@ describe("board 01 Hermes chat", () => {
     act(() => q("chat-send")!.click());
     act(() => q("queue-after")!.click());
     expect(queue).toHaveBeenCalledWith("and Saturdays");
+  });
+
+  it("Running: a steer taken mid-run shows as your steer and as a Steered step", () => {
+    const run = runSteered(liveRun(), "also skip Fridays", 600);
+    store.setState({
+      chatStatus: "thinking",
+      chatMsgs: [you("Put my GPU to work on rounds at night."), { ...you("also skip Fridays"), id: "u2", steer: "taken" }, agent({ streaming: true, run })],
+    });
+    render();
+    expect(q("steer-label")?.textContent).toContain("steer, taken mid-run");
+    const steerRow = qa("run-step").find((r) => r.dataset.kind === "steer");
+    expect(steerRow?.textContent).toContain("Steered: also skip Fridays");
+    // Steer now says what it does: Hermes keeps working, or the run stops if it cannot.
+    const input = q("chat-input") as HTMLTextAreaElement;
+    input.value = "and Saturdays";
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(q("steer-now")?.getAttribute("title")).toContain("keeps working");
   });
 
   it("Running: queued follow-ups are listed and can be removed", () => {

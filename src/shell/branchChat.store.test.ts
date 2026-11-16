@@ -43,10 +43,17 @@ describe("board 01: edit and branch", () => {
     expect(sent).toEqual(["Put my GPU to work on rounds, weeknights only."]);
     // The original thread was archived before the switch.
     expect(record).toHaveBeenCalled();
-    // The new Hermes session hears the earlier messages as context.
-    expect(store.sidecarSystemPrompt()).toContain("Member: Network status");
-    expect(store.sidecarSystemPrompt()).toContain("Hermes: Synced at block 10.");
-    expect(store.sidecarSystemPrompt()).not.toContain("Put my GPU to work on rounds at night.");
+    // The new Hermes session opens with the earlier messages as normal earlier turns (the
+    // provider's open gets them as `history`, sidecarProvider.steer.test.ts), never in the prompt.
+    expect(store.branchHistory()).toEqual([
+      { role: "user", content: "Network status" },
+      { role: "assistant", content: "Synced at block 10." },
+    ]);
+    expect(store.sidecarSystemPrompt()).not.toContain("Network status");
+    expect(store.sidecarSystemPrompt()).not.toContain("Synced at block 10.");
+    // Another conversation on screen gets no seed.
+    store.setState({ chatThreadId: "tother" });
+    expect(store.branchHistory()).toBeNull();
   });
 
   it("Retry sends the answer's member message again in a branch", async () => {

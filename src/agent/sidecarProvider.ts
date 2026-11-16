@@ -8,14 +8,16 @@
 // =====================================================================
 import { parseFileChange, isFileTool } from "./fileChanges";
 import { ChatPlan } from "./chatPlan";
-import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
-import type { McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import { TurnStopped, untilStopped, usageEventOf, type SteerResult, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
+import type { McpPendingView, SessionPersonaChoice, SessionSeedTurn, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
   /** `persona` is passed only when the member chose one (HUP-S3.3). */
-  open(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice): Promise<string>;
+  open(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice, history?: SessionSeedTurn[]): Promise<string>;
+  /** #691 — add a member message to the session's running turn (absent = steering unsupported). */
+  steer?(id: string, text: string): Promise<number>;
   send(id: string, text: string): Promise<void>;
   events(id: string, after: number, waitMs: number): Promise<{ events: { seq: number; event: Record<string, unknown> }[]; lastSeq: number; busy: boolean; pendingCoreCalls?: string[] }>;
   toolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
@@ -112,6 +114,23 @@ export interface SidecarProviderOptions {
   /** D-11: the session runs on a cloud model through the core proxy (absent = the local model).
    *  Sets the provider's kind to `sidecar-cloud` and names the model in its label. */
   cloud?: { name: string; model: string };
+  /** #693 review: earlier turns a new session opens with (a branched conversation); null or empty
+   *  = a fresh conversation. Read each time a session is opened. */
+  history?: () => SessionSeedTurn[] | null;
+}
+
+/** #693 review: said when the bundled Hermes refuses a branch's earlier turns (it is too old to
+ *  take them). The branch then starts without them; they are never put in the system prompt. */
+export const BRANCH_HISTORY_REFUSED =
+  "This branch starts without its earlier messages: the bundled Hermes could not take them. Ask again with the context you need.";
+
+/** #691 — said when a steer cannot be taken mid-run and the run is stopped so it can go next. */
+export const STEER_NOT_TAKEN = "Hermes could not take your message mid-run";
+
+/** An open the sidecar refused because it does not know the `history` key (an older build). */
+export function historyRefused(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return /\bhistory\b/i.test(m) && /(unknown field|returned 4\d\d)/i.test(m);
 }
 
 /** HUP-S1.1 — said when the saved session is gone because Hermes restarted. */
@@ -274,16 +293,38 @@ export function createSidecarProvider(
     }
   }
 
+  // #693 review: a notice from opening a session, said by the next turn that reads it.
+  let openNotice: string | null = null;
   async function ensureSession(): Promise<string> {
     if (!sessionId) {
-      const p = persona();
-      sessionId = p ? await api.open(systemPrompt(), JSON.stringify(tools()), p) : await api.open(systemPrompt(), JSON.stringify(tools()));
+      const p = persona() ?? undefined;
+      const seed = options.history?.() ?? null;
+      const prompt = systemPrompt();
+      const toolsJson = JSON.stringify(tools());
+      if (seed && seed.length > 0) {
+        try {
+          sessionId = await api.open(prompt, toolsJson, p, seed);
+        } catch (e) {
+          if (!historyRefused(e)) throw e;
+          // An older sidecar: open without them, and say so (never in the system prompt).
+          sessionId = await api.open(prompt, toolsJson, p);
+          openNotice = BRANCH_HISTORY_REFUSED;
+        }
+      } else {
+        sessionId = p ? await api.open(prompt, toolsJson, p) : await api.open(prompt, toolsJson);
+      }
       lastSeq = 0;
       started.clear();
       persist();
     }
     return sessionId;
   }
+  const sayOpenNotice = (callbacks: SendOpts["callbacks"]) => {
+    if (openNotice) callbacks.onActivity?.({ kind: "notice", text: openNotice });
+    openNotice = null;
+  };
+  // #691: the session a chat turn is running in right now (null between turns), for steering.
+  let liveTurn: string | null = null;
 
   /**
    * Long-poll the session's events and act on them until the work ends: a chat turn ends at its
@@ -530,6 +571,10 @@ export function createSidecarProvider(
             callbacks.onStatus("thinking");
             const step = Number(ev.step);
             if (Number.isFinite(step)) callbacks.onActivity?.({ kind: "step", step });
+          } else if (type === "steered") {
+            // #691: a member message the loop took into this turn.
+            const step = Number(ev.step);
+            callbacks.onActivity?.({ kind: "steered", step: Number.isFinite(step) ? step : planStep, text: String(ev.text ?? "") });
           } else if (type === "usage") {
             // HUP-S7.6 (US-7.4 AC1): the model server's own usage for one model call.
             const usage = usageEventOf(ev);
@@ -681,7 +726,15 @@ export function createSidecarProvider(
       await api.send(id, text);
     }
     persist();
-    const { final, failure, stopping } = await drive(id, opts, null);
+    sayOpenNotice(callbacks);
+    liveTurn = id;
+    let driven: Awaited<ReturnType<typeof drive>>;
+    try {
+      driven = await drive(id, opts, null);
+    } finally {
+      liveTurn = null;
+    }
+    const { final, failure, stopping } = driven;
     if (stopping) throw new TurnStopped();
     if (failure) {
       callbacks.onStatus("error");
@@ -830,6 +883,21 @@ export function createSidecarProvider(
     },
     reattach(opts: WorkflowRunOpts) {
       return reattachSaved(opts);
+    },
+    async steer(text: string): Promise<SteerResult> {
+      const t = text.trim();
+      if (!t) return { ok: false, reason: "the message is empty" };
+      if (!api.steer) return { ok: false, reason: "this chat's Hermes cannot take messages mid-run" };
+      const id = liveTurn;
+      if (!id) return { ok: false, reason: "no run is live" };
+      try {
+        return { ok: true, waiting: await api.steer(id, t) };
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        if (/returned 409\b/.test(m)) return { ok: false, reason: "the run was already finishing" };
+        if (/returned 404\b/.test(m)) return { ok: false, reason: "the bundled Hermes is too old to take messages mid-run" };
+        return { ok: false, reason: m };
+      }
     },
   };
 }

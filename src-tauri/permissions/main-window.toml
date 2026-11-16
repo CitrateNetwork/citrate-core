@@ -253,6 +253,7 @@ commands.allow = [
   "hermes_session_events",
   "hermes_session_tool_result",
   "hermes_session_stop",
+  "hermes_session_steer",
   "hermes_shell_pending",
   "hermes_mcp_pending",
   "hermes_mcp_decide",
