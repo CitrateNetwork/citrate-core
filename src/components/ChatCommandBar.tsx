@@ -47,7 +47,13 @@ export function slashMatches(cmds: ChatCommand[], typed: string): ChatCommand[] 
   const t = typed.trim().toLowerCase();
   if (!t.startsWith("/")) return [];
   const word = t.split(/\s+/)[0];
-  return cmds.filter((c) => c.slash.startsWith(word) || (word.length > 1 && c.slash === word));
+  return cmds.filter((c) => c.slash.startsWith(word));
+}
+
+/** The command whose slash word is exactly the first word typed, or undefined. */
+export function exactCommand(cmds: ChatCommand[], typed: string): ChatCommand | undefined {
+  const word = typed.trim().toLowerCase().split(/\s+/)[0];
+  return cmds.find((c) => c.slash === word);
 }
 
 /** Filter by words in the label or the slash word. */

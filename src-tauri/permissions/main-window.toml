@@ -137,6 +137,7 @@ commands.allow = [
   "contract_source",
   "contract_code_size",
   "contract_view_call",
+  "contract_view_call_at",
   "contract_write_propose",
   "contract_address_book_lookup",
   "contract_get_code",

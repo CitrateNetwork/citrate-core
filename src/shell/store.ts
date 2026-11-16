@@ -3966,7 +3966,6 @@ export class Store {
       ensure();
       patch((m) => ({ ...m, run: fn(m.run ?? newRun(Date.now())) }));
     };
-    const headBlock = () => (this.state.height > 0 ? this.state.height : null);
     ensure();
     let turnOutcome: RunOutcome = "failed";
     // HUP-S0.6: coalesce streamed tokens — one render per ~frame instead of one full-app render
@@ -4027,7 +4026,7 @@ export class Store {
               const result = await this.handleTool(call, asstId, ensure, meta);
               toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
-              runPatch((r) => runToolEnd(r, call.id, call.name, /\bdeclined\b/i.test(result) ? "denied" : "ok", result, Date.now(), { block: headBlock() }));
+              runPatch((r) => runToolEnd(r, call.id, call.name, this.takeCallRefusal(call.id) ? "denied" : "ok", result, Date.now()));
               return result;
             } catch (e) {
               toolFinished(call.id, false);
@@ -4071,7 +4070,7 @@ export class Store {
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
               toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
-              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow(), { block: headBlock() }));
+              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow()));
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
@@ -4128,6 +4127,17 @@ export class Store {
     this.save();
     // Board 01: a follow-up typed during the run goes now (a steer, or the queue after a finish).
     this.drainChatQueue(turnOutcome);
+  }
+
+  /** Board 01: whether core's last run of a call id was refused by the member (structured, from
+   *  the approval decision), read once by the run timeline. */
+  private callRefusals = new Map<string, boolean>();
+
+  /** Take (and forget) whether the call `id` was refused. */
+  takeCallRefusal(id: string): boolean {
+    const r = this.callRefusals.get(id) === true;
+    this.callRefusals.delete(id);
+    return r;
   }
 
   // ---------- Board 01 — Stop, Steer now, Queue for after ----------
@@ -4319,9 +4329,12 @@ export class Store {
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
     // HUP-S7.6 (US-7.4 AC1): every approval this call asks for shows in the Activity monitor,
     // pending until the member decides. `signal`: a daemon run's; its cards close when the run ends.
+    // Board 01: the member's last decision on this call, the structured source of "refused".
+    let lastDecision: string | null = null;
     const tracked = async (decide: () => Promise<string>): Promise<string> => {
       approvalNoted(call.id, call.name, "pending");
       const r = await decide();
+      lastDecision = r;
       approvalNoted(call.id, call.name, r === "approved" ? "approved" : "declined");
       return r;
     };
@@ -4868,6 +4881,10 @@ export class Store {
     }
     // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
+    // Board 01: refused when the member's decision (or the tool's own structured status) said no.
+    const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
+    this.callRefusals.set(call.id, refused);
+    if (this.callRefusals.size > 64) this.callRefusals.delete(this.callRefusals.keys().next().value as string);
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +

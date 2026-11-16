@@ -3,7 +3,7 @@
 //
 // Each step Hermes takes in a turn (think, read, tool, draft) with its state and how long it took,
 // plus the receipts the answer shows under it (what it read, and for chain reads the block the
-// node was at). Every row is written from a real event of the turn (Rule 1):
+// read ran at, as the read itself reports it). Every row is written from a real event of the turn (Rule 1):
 //   - think: the provider reported a model step (sidecar `step_start`, or "thinking" from the
 //     in-app loop). Its time is the model server's own report (`usage` prompt_ms + generation_ms)
 //     when there is one, otherwise the time between the events as this app received them.
@@ -13,7 +13,14 @@
 //   - draft: the answer text streaming in, until the turn ends.
 // A row never appears before its event, so there are no "queued" rows for steps Hermes has not
 // taken. When the start and end of a step arrived in the same event page (the same receive time),
-// its duration is unknown and none is shown (never 0).
+// its duration is unknown and shown as "—" with that reason (never 0).
+//
+// A step's state comes only from structured outcomes: the sidecar's tool_result status, or core's
+// own record of the member's decision on that call. Never from words in the tool's text.
+//
+// Blocks: a chain fact names the block only when the read reports the block it ran at (node_status:
+// this node's own height; contract_view: the eth_call pinned to the RPC's head, with that RPC's
+// host; explain_tx: the transaction's own block). Any other chain read shows "—" with the reason.
 // =====================================================================
 import { annotationFor } from "./toolAnnotations";
 
@@ -39,16 +46,23 @@ export interface RunStep {
   timing?: "core" | "events" | "model";
   /** One plain line: what came back, or why it was refused. */
   detail?: string;
-  /** For a finished chain read: the node's head block when the result came back (null = not known). */
+  /** For a finished chain read: the block the read ran at, as the read reports it (null = not
+   *  reported, see `blockReason`). Absent on reads that are not chain facts. */
   block?: number | null;
+  /** Where the block came from ("this node", "rpc.citrate.ai", "the transaction's block"). */
+  blockSource?: string;
+  /** Why a chain read has no block. */
+  blockReason?: string;
 }
 
 export interface RunReceipt {
   tool: string;
   label: string;
   status: "ok" | "refused" | "failed";
-  /** For a chain read: the node's head block when the result came back (null = not known). */
+  /** For a chain read: the block it ran at (null = not reported, see `blockReason`). */
   block?: number | null;
+  blockSource?: string;
+  blockReason?: string;
   chain: boolean;
 }
 
@@ -74,12 +88,40 @@ export const CHAIN_READ_TOOLS: ReadonlySet<string> = new Set([
   "identify_contract",
   "address_book_lookup",
   "explain_tx",
-  "decode_log",
-  "models_list",
-  "skills_list",
-  "directory_find",
-  "get_verified_source",
 ]);
+
+/** Why a chain read without a reported block shows "—". */
+export const BLOCK_NOT_REPORTED = "this read does not report the block it ran at";
+
+/**
+ * The block a chain read ran at, read only from the parts of its result that core itself writes
+ * (never from fenced contract or registry values). Null with a reason when the read reports none.
+ */
+export function blockFromResult(tool: string, content: string): { block: number; source: string } | { block: null; reason: string } {
+  const first = content.split("\n", 1)[0] ?? "";
+  if (tool === "node_status") {
+    try {
+      const v: unknown = JSON.parse(content);
+      const h = typeof v === "object" && v !== null ? (v as { height?: unknown }).height : undefined;
+      if (typeof h === "number" && Number.isSafeInteger(h) && h > 0) return { block: h, source: "this node" };
+    } catch {
+      /* not the status JSON */
+    }
+    return { block: null, reason: "this node did not report its height" };
+  }
+  if (tool === "contract_view") {
+    const m = /^contract_view: read .* \((?:chain \d+|the local fork at [^)]*)\) at block (\d+) on ([A-Za-z0-9.:-]+), using /.exec(first);
+    if (m) return { block: Number(m[1]), source: m[2] };
+    return { block: null, reason: BLOCK_NOT_REPORTED };
+  }
+  if (tool === "explain_tx") {
+    const line = content.split("\n").find((l) => l.startsWith("Status: "));
+    const m = line ? /^Status: [a-z_ -]+ in block (\d+)/i.exec(line) : null;
+    if (m) return { block: Number(m[1]), source: "the transaction's block" };
+    return { block: null, reason: "the transaction has no block yet" };
+  }
+  return { block: null, reason: BLOCK_NOT_REPORTED };
+}
 
 /** Plain words for the tools members see most; any other tool is named as it is. */
 const TOOL_WORDS: Record<string, string> = {
@@ -219,10 +261,10 @@ export function runToolStart(r: RunRecord, callId: string, tool: string, now: nu
   return withSteps(r, steps.concat([{ id: nextId("t"), kind: kindForTool(tool), tool, callId, state: "running", startedAt: now, endedAt: null, durationMs: null, timing }]));
 }
 
-/** Map a tool status and its content to a row state. */
-export function toolStateOf(status: string, content: string): RunStepState {
-  if (status === "denied" || /^declined\b/i.test(content.trim())) return "refused";
-  if (status === "error" || /^tool error:/i.test(content.trim())) return "failed";
+/** A row state from a structured tool status only ("denied" refused, "error" failed). */
+export function toolStateOf(status: string): RunStepState {
+  if (status === "denied") return "refused";
+  if (status === "error") return "failed";
   return "done";
 }
 
@@ -237,9 +279,8 @@ export function runToolEnd(
   status: string,
   content: string,
   now: number,
-  opts: { block?: number | null } = {},
 ): RunRecord {
-  const state = toolStateOf(status, content);
+  const state = toolStateOf(status);
   const detail = state === "done" ? undefined : clip(content.replace(/^(declined|tool error):\s*/i, ""));
   let hit = -1;
   for (let i = r.steps.length - 1; i >= 0; i--) {
@@ -249,22 +290,31 @@ export function runToolEnd(
       break;
     }
   }
-  const block = CHAIN_READ_TOOLS.has(tool) && state === "done" ? opts.block ?? null : undefined;
-  const extra = (s: RunStep): RunStep => ({ ...s, ...(detail ? { detail } : {}), ...(block !== undefined ? { block } : {}) });
+  const b = CHAIN_READ_TOOLS.has(tool) && state === "done" ? blockFromResult(tool, content) : null;
+  const blockPart: Partial<RunStep> = !b ? {} : b.block !== null ? { block: b.block, blockSource: b.source } : { block: null, blockReason: b.reason };
+  const extra = (s: RunStep): RunStep => ({ ...s, ...(detail ? { detail } : {}), ...blockPart });
   if (hit < 0) {
-    return withSteps(r, r.steps.concat([extra({ id: nextId("t"), kind: kindForTool(tool), tool, callId, state, startedAt: now, endedAt: now, durationMs: null, timing: "events" })]));
+    // Its start was not seen, so it has no timing at all.
+    return withSteps(r, r.steps.concat([extra({ id: nextId("t"), kind: kindForTool(tool), tool, callId, state, startedAt: now, endedAt: now, durationMs: null })]));
   }
   return withSteps(r, r.steps.map((s, i) => (i === hit ? extra(closeStep(s, state, now)) : s)));
 }
 
-/** The turn ended: every running row is closed (stopped when the member stopped or it failed). */
+/** What a tool or read row says when the turn ended before its result arrived. */
+export const NO_RESULT = "No result arrived before the reply ended.";
+
+/**
+ * The turn ended. Only think and draft rows close as done (an answer ends them); a tool or read
+ * row still running had no result, so it is stopped with no duration, and says so.
+ */
 export function runEnd(r: RunRecord, outcome: RunOutcome, now: number): RunRecord {
   if (r.outcome) return r;
   const steps = r.steps.map((s) => {
     if (s.state !== "running") return s;
-    if (outcome === "answered") return closeStep(s, "done", now);
-    // A step cut off by Stop or a failure has no meaningful duration.
-    return { ...closeStep(s, "stopped", now), durationMs: null };
+    if (outcome === "answered" && (s.kind === "think" || s.kind === "draft")) return closeStep(s, "done", now);
+    // A step cut off by Stop, a failure or a missing result has no meaningful duration.
+    const cut = { ...closeStep(s, "stopped", now), durationMs: null };
+    return s.kind === "read" || s.kind === "tool" ? { ...cut, detail: NO_RESULT } : cut;
   });
   return { ...r, steps, outcome, endedAt: now };
 }
@@ -277,17 +327,32 @@ export function receiptsOf(r: RunRecord | undefined): RunReceipt[] {
     if ((s.kind !== "read" && s.kind !== "tool") || !s.tool || s.state === "running") continue;
     const status: RunReceipt["status"] = s.state === "refused" ? "refused" : s.state === "done" ? "ok" : "failed";
     const chain = CHAIN_READ_TOOLS.has(s.tool);
-    const prev = out.find((x) => x.tool === s.tool && x.status === status && (x.block ?? null) === (s.block ?? null));
+    const prev = out.find((x) => x.tool === s.tool && x.status === status && (x.block ?? null) === (s.block ?? null) && x.blockSource === s.blockSource);
     if (prev) continue;
-    out.push({ tool: s.tool, label: toolLabel(s.tool), status, chain, ...(chain && status === "ok" ? { block: s.block ?? null } : {}) });
+    const blockPart =
+      chain && status === "ok"
+        ? s.block !== undefined && s.block !== null
+          ? { block: s.block, ...(s.blockSource ? { blockSource: s.blockSource } : {}) }
+          : { block: null, blockReason: s.blockReason ?? BLOCK_NOT_REPORTED }
+        : {};
+    out.push({ tool: s.tool, label: toolLabel(s.tool), status, chain, ...blockPart });
   }
   return out;
+}
+
+/** Why a finished step has no duration (shown with "—"); null when it has one or is running. */
+export function durationReason(s: RunStep): string | null {
+  if (s.state === "running" || (s.durationMs !== null && Number.isFinite(s.durationMs))) return null;
+  if (s.state === "stopped") return "cut off before it finished";
+  if (s.timing === "events") return "start and end arrived together";
+  return "its start was not seen";
 }
 
 /** "1.2 s", "340 ms", "1 min 4 s"; "" when unknown. */
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return "";
-  if (ms < 1000) return `${Math.max(1, Math.round(ms))} ms`;
+  if (ms < 1) return "under 1 ms";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
   const s = ms / 1000;
   if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`;
   const m = Math.floor(s / 60);

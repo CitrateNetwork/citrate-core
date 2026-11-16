@@ -284,6 +284,45 @@ fn a_view_call_is_an_eth_call_to_the_address_with_the_calldata() {
 }
 
 #[test]
+fn a_pinned_view_call_runs_at_the_block_it_reports() {
+    let rpc = crate::rpc::RpcClient::with_transport(ScriptedRpc::new(vec![
+        (
+            "eth_blockNumber",
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": "0x12604f"}),
+        ),
+        (
+            "eth_call",
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "result": "0x01F4"}),
+        ),
+    ]));
+    let (data, block) = view_call_at(&rpc, ADDR, &[0x18, 0x16, 0x0d, 0xdd]).unwrap();
+    assert_eq!(data, "0x01f4");
+    assert_eq!(block, 1_204_303);
+    let seen = rpc.transport().seen.borrow();
+    assert_eq!(seen[0]["method"], "eth_blockNumber");
+    assert_eq!(seen[1]["method"], "eth_call");
+    // The call is pinned to the block that was read, never "latest".
+    assert_eq!(seen[1]["params"][1], "0x12604f");
+}
+
+#[test]
+fn a_pinned_view_call_with_an_unreadable_head_is_not_run() {
+    let rpc = crate::rpc::RpcClient::with_transport(ScriptedRpc::new(vec![(
+        "eth_blockNumber",
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": 7}),
+    )]));
+    let e = view_call_at(&rpc, ADDR, &[1, 2, 3, 4]).unwrap_err();
+    assert!(e.contains("eth_blockNumber"), "{e}");
+    assert_eq!(rpc.transport().seen.borrow().len(), 1, "no eth_call without a block");
+}
+
+#[test]
+fn rpc_host_names_the_host_only() {
+    assert_eq!(rpc_host("https://rpc.citrate.ai/"), "rpc.citrate.ai");
+    assert_eq!(rpc_host("http://127.0.0.1:8545"), "127.0.0.1:8545");
+}
+
+#[test]
 fn a_reverting_view_call_reports_the_node_message() {
     let rpc = crate::rpc::RpcClient::with_transport(ScriptedRpc::new(vec![(
         "eth_call",
