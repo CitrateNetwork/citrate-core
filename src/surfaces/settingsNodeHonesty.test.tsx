@@ -60,11 +60,11 @@ describe("Settings › Node configuration", () => {
     expect(host.textContent).toMatch(/This build joins one network/);
   });
 
-  it("names the worker-thread cap the next node start applies", async () => {
+  it("names exactly what the cap holds (the main worker threads) and what it does not", async () => {
     Object.defineProperty(navigator, "hardwareConcurrency", { value: 8, configurable: true });
     await mount(25);
     expect(host.querySelector('[data-testid="cpu-cap-note"]')?.textContent).toBe(
-      "Applies at the next node start: the node's worker threads use at most 2 of this computer's 8 cores. Database background work is not included.",
+      "Applies at the next node start: the node's main worker threads use at most 2 of this computer's 8 cores. Not capped: its RPC server's own 16 threads, its blocking work and its database threads, so the node can use more CPU than this while it syncs or serves many RPC calls.",
     );
   });
 });

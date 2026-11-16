@@ -447,8 +447,10 @@ pub struct NodeManager {
     /// node's `sidecars_health` row.
     liveness_note: Mutex<Option<String>>,
     /// Settings › Node "Resource cap · CPU" (`config.cpuCap`, percent): the share of this
-    /// computer's cores the node's worker threads may use, applied at each node start. 0 or 100 and
-    /// above = no cap.
+    /// computer's cores the node's MAIN tokio runtime may use as worker threads, applied at each
+    /// node start. Not capped (no knob in the node at the pinned rev): the RPC runtime's fixed 16
+    /// workers (`core/api/src/rpc_runtime.rs`), the blocking pool and RocksDB's threads; the
+    /// Settings copy says so. 0 or 100 and above = no cap.
     cpu_cap_percent: AtomicU32,
 }
 
@@ -462,8 +464,9 @@ pub(crate) fn capped_worker_threads(cores: usize, percent: u32) -> Option<usize>
     Some(n.clamp(1, cores))
 }
 
-/// The environment that holds the node's worker threads to a CPU cap: tokio's runtime (the node
-/// builds a default multi-thread runtime, which reads `TOKIO_WORKER_THREADS`) and any rayon pool.
+/// The environment that holds the node's main worker threads to a CPU cap: its main tokio runtime
+/// (`node/src/main.rs` builds a default multi-thread runtime, which reads `TOKIO_WORKER_THREADS`)
+/// and any rayon pool. The RPC runtime sets its own 16 workers and is not reached by this.
 pub(crate) fn cpu_cap_env(cores: usize, percent: u32) -> Vec<(String, String)> {
     match capped_worker_threads(cores, percent) {
         Some(n) => vec![
@@ -976,7 +979,7 @@ impl NodeManager {
         ];
         spec.env
             .extend(node_consensus_env(self.network.as_ref().ok()));
-        // Settings › Node CPU cap: the node's worker threads are held to that share of the cores.
+        // Settings › Node CPU cap: the node's main worker threads are held to that share of the cores.
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(0);

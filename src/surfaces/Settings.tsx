@@ -813,8 +813,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
               </span>
               <span className="mono" data-testid="cpu-cap-note" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
                 {capThreads === null
-                  ? "Applies at the next node start: the node's worker threads are held to this share of the CPU cores."
-                  : `Applies at the next node start: the node's worker threads use at most ${capThreads} of this computer's ${cores} cores. Database background work is not included.`}
+                  ? "Applies at the next node start to the node's main worker threads only (see below)."
+                  : `Applies at the next node start: the node's main worker threads use at most ${capThreads} of this computer's ${cores} cores.`}{" "}
+                Not capped: its RPC server's own 16 threads, its blocking work and its database threads, so the node can use more CPU than this while it syncs or serves many RPC calls.
               </span>
             </div>
           </div>
