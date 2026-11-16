@@ -150,9 +150,8 @@ fn salt_amount(s: &str) -> bool {
     !whole.is_empty()
         && whole.len() <= 6
         && whole.bytes().all(|b| b.is_ascii_digit())
-        && frac.map_or(true, |f| {
-            !f.is_empty() && f.len() <= 18 && f.bytes().all(|b| b.is_ascii_digit())
-        })
+        && frac
+            .is_none_or(|f| !f.is_empty() && f.len() <= 18 && f.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn data_class(s: &str) -> bool {
@@ -180,7 +179,9 @@ impl WorkerTerms {
             return Some(format!("At most {MAX_DATA_CLASSES} data classes"));
         }
         if self.data_classes.iter().any(|c| !data_class(c)) {
-            return Some("A data class must be letters, digits, dots, dashes or underscores".into());
+            return Some(
+                "A data class must be letters, digits, dots, dashes or underscores".into(),
+            );
         }
         None
     }
@@ -422,6 +423,8 @@ impl<'a> WorkStore<'a> {
     }
 
     fn read_stem(&self, stem: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+        // The keyring first: an unreachable keyring refuses every read, even of nothing.
+        let key = self.key(false)?;
         let path = self.path(stem);
         let bytes = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -430,7 +433,7 @@ impl<'a> WorkStore<'a> {
             Ok(_) => std::fs::read(&path)
                 .map_err(|e| format!("a work settings file cannot be read: {}", e.kind()))?,
         };
-        let Some(key) = self.key(false)? else {
+        let Some(key) = key else {
             return Err("your work settings exist but their key is not in the keychain; they cannot be opened".into());
         };
         open_sealed(&key, stem, &bytes)
@@ -480,7 +483,9 @@ impl<'a> WorkStore<'a> {
     /// The envelope, with its week of use rolled forward to `now`.
     pub fn envelope(&self, now: u64) -> Result<Option<Envelope>, String> {
         let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(self.read_json::<Envelope>(ENVELOPE_STEM)?.map(|e| roll_week(e, now)))
+        Ok(self
+            .read_json::<Envelope>(ENVELOPE_STEM)?
+            .map(|e| roll_week(e, now)))
     }
 
     pub fn approve_envelope(&self, input: EnvelopeInput, now: u64) -> Result<Envelope, String> {

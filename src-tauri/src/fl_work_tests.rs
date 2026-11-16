@@ -91,7 +91,10 @@ fn nothing_saved_reads_none_and_mints_no_key() {
     let s = WorkStore::new(&d.0, &k);
     assert_eq!(s.terms().unwrap(), None);
     assert_eq!(s.envelope(0).unwrap(), None);
-    assert!(k.get(KEY_ACCOUNT).unwrap().is_none(), "a read never mints a key");
+    assert!(
+        k.get(KEY_ACCOUNT).unwrap().is_none(),
+        "a read never mints a key"
+    );
 }
 
 #[test]
@@ -107,7 +110,10 @@ fn terms_round_trip_sealed_with_a_receipt() {
     let raw = std::fs::read(d.0.join("terms.sealed")).unwrap();
     assert_eq!(&raw[..8], MAGIC);
     let text = String::from_utf8_lossy(&raw);
-    assert!(!text.contains("support-tickets"), "the file is not plaintext");
+    assert!(
+        !text.contains("support-tickets"),
+        "the file is not plaintext"
+    );
     assert!(!text.contains("1.20"));
 }
 
@@ -204,8 +210,14 @@ fn files_without_their_key_are_refused_and_no_key_is_minted_over_them() {
     WorkStore::new(&d.0, &k).save_terms(terms(), 1).unwrap();
     let fresh = MemKeyring::default();
     let s = WorkStore::new(&d.0, &fresh);
-    assert!(s.terms().unwrap_err().contains("key is not in the keychain"));
-    assert!(s.save_terms(terms(), 2).unwrap_err().contains("key is not in the keychain"));
+    assert!(s
+        .terms()
+        .unwrap_err()
+        .contains("key is not in the keychain"));
+    assert!(s
+        .save_terms(terms(), 2)
+        .unwrap_err()
+        .contains("key is not in the keychain"));
     assert!(fresh.get(KEY_ACCOUNT).unwrap().is_none());
 }
 
@@ -213,7 +225,10 @@ fn files_without_their_key_are_refused_and_no_key_is_minted_over_them() {
 fn an_unreachable_keyring_refuses_reads_and_writes() {
     let d = TestDir::new("dead");
     let s = WorkStore::new(&d.0, &DeadKeyring);
-    assert!(s.save_terms(terms(), 1).unwrap_err().contains("keychain is not reachable"));
+    assert!(s
+        .save_terms(terms(), 1)
+        .unwrap_err()
+        .contains("keychain is not reachable"));
     assert!(s.terms().unwrap_err().contains("keychain is not reachable"));
 }
 
@@ -225,12 +240,15 @@ fn envelope_approve_off_and_the_week_of_use() {
     assert_eq!(s.envelope_off(5).unwrap(), None, "nothing to turn off");
     let e = s.approve_envelope(input(), 1_000).unwrap();
     assert!(e.on);
-    assert_eq!((e.joins_per_week, e.max_hours_per_round, e.joins_this_week), (3, 6, 0));
+    assert_eq!(
+        (e.joins_per_week, e.max_hours_per_round, e.joins_this_week),
+        (3, 6, 0)
+    );
     assert_eq!(s.envelope(2_000).unwrap(), Some(e.clone()));
     let off = s.envelope_off(3_000).unwrap().unwrap();
     assert!(!off.on);
     assert_eq!(off.off_at, Some(3_000));
-    assert_eq!(s.envelope(3_001).unwrap().unwrap().on, false);
+    assert!(!s.envelope(3_001).unwrap().unwrap().on);
 
     let used = Envelope {
         joins_this_week: 2,
@@ -239,7 +257,10 @@ fn envelope_approve_off_and_the_week_of_use() {
     let rolled = roll_week(used.clone(), 1_000 + MS_PER_WEEK * 2 + 5);
     assert_eq!(rolled.joins_this_week, 0);
     assert_eq!(rolled.week_start, 1_000 + MS_PER_WEEK * 2);
-    assert_eq!(roll_week(used.clone(), 1_000 + MS_PER_WEEK - 1).joins_this_week, 2);
+    assert_eq!(
+        roll_week(used.clone(), 1_000 + MS_PER_WEEK - 1).joins_this_week,
+        2
+    );
 }
 
 #[test]
