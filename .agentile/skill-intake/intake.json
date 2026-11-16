@@ -213,6 +213,22 @@
     "hermes-optional/creative/hyperframes": {
       "verdict": "exclude",
       "reason": "HUP-S3.2 intake rewrite pass: the name collides with the admitted frontend-skills hyperframes skill; one loader source cannot hold two skills of one name"
+    },
+    "hermes-optional/security/sherlock": {
+      "verdict": "exclude",
+      "reason": "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): an OSINT username search across hundreds of social networks to find a person's accounts; people-search and OSINT results about individuals are never collected"
+    },
+    "hermes-optional/security/unbroker": {
+      "verdict": "exclude",
+      "reason": "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): it drives data-broker and people-search sites autonomously (searching them for a person's records to file opt-outs); the collector never reaches those sites, and this build keeps Hermes off them"
+    },
+    "hermes-optional/research/osint-investigation": {
+      "verdict": "exclude",
+      "reason": "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): a public-records OSINT investigation framework (filings, court and property records, sanctions, leaks) about people and organisations; OSINT results about individuals are never collected"
+    },
+    "hermes-optional/research/scrapling": {
+      "verdict": "exclude",
+      "reason": "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy): web collection goes through core's one compliant collector (robots.txt, the curated allow and deny lists, rate limits, provenance; fl_collect.rs); this skill teaches scraping around it (stealth browsing, Cloudflare bypass, spider crawling), so it is not bundled and collection requests use the collector"
     }
   }
 }
