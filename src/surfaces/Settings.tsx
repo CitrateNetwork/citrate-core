@@ -384,10 +384,17 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
     label: c + " %",
     cls: btnCls(s.cpuCap === c),
     go: () => {
-      writeConfig(store, { cpuCap: c });
+      store.setState({ cpuCap: c } as Partial<AppState>);
       store.save();
+      // Core reads the saved cap at each node start (node_start), so say so only once it is saved.
+      bridge.config
+        .write({ cpuCap: c })
+        .then(() => store.toast("CPU cap saved: it applies at the next node start, and a running node keeps its threads"))
+        .catch((e) => store.toast("The CPU cap was not saved: " + (e instanceof Error ? e.message : String(e))));
     },
   }));
+  const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 0 : 0;
+  const capThreads = cpuCapThreads(cores, s.cpuCap);
 
   // ---------- Network (K6-3) ----------
   // Block 0 is read only while Node configuration is open.
@@ -776,29 +783,14 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
           <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
-            <span className="eyebrow">Node configuration · every field here is wired</span>
+            <span className="eyebrow">Node configuration</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <span className="lbl">Network</span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <button
-                  className={btnCls(s.net === "testnet")}
-                  onClick={() => {
-                    writeConfig(store, { net: "testnet" });
-                    store.save();
-                  }}
-                >
-                  {ACTIVE_PROFILE?.nodeNetwork ?? "not set"} · {ACTIVE_PROFILE?.chainId ?? "not set"}
-                </button>
-                <button
-                  className={btnCls(s.net === "local")}
-                  onClick={() => {
-                    writeConfig(store, { net: "local" });
-                    store.toast("Applies at next node start — the running sidecar is untouched");
-                    store.save();
-                  }}
-                >
-                  local devnet
-                </button>
+              <span className="mono" data-testid="node-network" style={{ fontSize: 12 }}>
+                {ACTIVE_PROFILE?.nodeNetwork ?? "not set"} · chain {ACTIVE_PROFILE?.chainId ?? "not set"}
+              </span>
+              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
+                This build joins one network, set by its network profile below. A local devnet is not offered here: the wallet, contracts and address book in this build are for this network only.
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -824,8 +816,11 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                   </button>
                 ))}
               </span>
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                applies to the citrate-node sidecar at next start
+              <span className="mono" data-testid="cpu-cap-note" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
+                {capThreads === null
+                  ? "Applies at the next node start to the node's main worker threads only (see below)."
+                  : `Applies at the next node start: the node's main worker threads use at most ${capThreads} of this computer's ${cores} cores.`}{" "}
+                Not capped: its RPC server's own 16 threads, its blocking work and its database threads, so the node can use more CPU than this while it syncs or serves many RPC calls.
               </span>
             </div>
           </div>
@@ -1305,4 +1300,11 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
       </div>
     </div>
   );
+}
+
+/** The node's worker threads under the CPU cap (mirrors Rust `capped_worker_threads`): `percent`
+ *  of `cores`, rounded up, at least one. Null = no cap, or the core count is unknown. */
+export function cpuCapThreads(cores: number, percent: number): number | null {
+  if (!(cores > 0) || !(percent > 0) || percent >= 100) return null;
+  return Math.min(cores, Math.max(1, Math.ceil((cores * percent) / 100)));
 }
