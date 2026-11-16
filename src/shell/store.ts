@@ -50,6 +50,7 @@ import { isFlEnvelopeTool, runFlEnvelopeTool, type FlEnvelopeApi, type FlEnvelop
 import { approveEnvelope, envelopeOff, ENVELOPE_NEEDS_DESKTOP } from "../fl/authority";
 import { loadWorkerTerms } from "../fl/workerTerms";
 import flAddressBook from "../../src-tauri/addresses/40204.json";
+import { isGroupClusterTool, runGroupClusterTool } from "../agent/groupClusterTools";
 import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { FL_DATASET_PUBLISH_TOOL, isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
 import { runPublishTool } from "../fl/datasetPublishTool";
@@ -159,7 +160,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose", "fl_collect_plan", "fl_dataset_publish_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose", "fl_collect_plan", "fl_dataset_publish_propose", "group_join_propose", "group_role_propose", "cluster_mesh_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -5186,6 +5187,19 @@ export class Store {
         reads: { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d) },
         publisher: () => this.state.custodyAddr,
         propose: (i) => this.proposeContractCall(i),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isGroupClusterTool(call.name)) {
+      // 0.5.4 WP-H2: groups and cluster. A join request, a role change, an offboard and mesh-on ask
+      // on a card; revoking an invite and mesh-off lower authority and apply at once; reads read.
+      const out = await runGroupClusterTool(call.name, args as Record<string, unknown>, ann, {
+        invites: bridge.invites,
+        groups: bridge.groups,
+        cluster: bridge.cluster,
+        ask,
+        go: (route) => this.go(route),
+        toast: (text) => this.toast(text),
       });
       status = out.status;
       result = out.result;

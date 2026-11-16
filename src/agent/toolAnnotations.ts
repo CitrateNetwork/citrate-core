@@ -38,6 +38,16 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   group_roster: { effect: "none", trust: "untrusted" },
   group_create: { effect: "write", trust: "trusted" },
   group_invite: { effect: "write", trust: "trusted" },
+  // 0.5.4 WP-H2 (src/agent/groupClusterTools.ts). Invite previews, roster rows, peer addresses and
+  // device labels are written by other members, so the reads are untrusted. Invite labels come from
+  // this device, but Hermes may have copied one from untrusted text: untrusted too (conservative).
+  group_join_propose: { effect: "write", trust: "untrusted" }, // its result names the group and inviter from the link
+  group_invites_list: { effect: "none", trust: "untrusted" },
+  group_invite_revoke: { effect: "write", trust: "trusted" }, // lowers authority; no card
+  group_role_propose: { effect: "write", trust: "trusted" }, // a comms-key grant, after the member's card
+  cluster_read: { effect: "none", trust: "untrusted" },
+  cluster_mesh_propose: { effect: "write", trust: "trusted" }, // on after a card; off at once
+  cluster_add_machine_open: { effect: "none", trust: "trusted" }, // moves the UI only; returns no link
   directory_find: { effect: "none", trust: "untrusted" }, // third-party published bindings
   skills_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain SkillRegistry
   skill_write: { effect: "write", trust: "trusted" },

@@ -62,6 +62,10 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         enabled: true,
         joinsPerWeek: 3,
         maxHoursPerRound: 8,
+        // 0.5.4 WP-H2: an invite link, a roster member, a role and the mesh switch.
+        link: "citrate://invite?g=g&t=t&k=k&e=9",
+        member: "0x" + "1".repeat(40),
+        role: "admin",
         sha256: ADAPTER_SHA,
         // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
         dataClass: "orchard-notes",
@@ -90,6 +94,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         approve: async () => ({}) as never,
         off: async () => null,
       });
+      // 0.5.4 WP-H2: a readable invite, a roster with the member, a signed-off mesh that is off.
+      vi.spyOn(bridge.invites, "preview").mockResolvedValue({ group: "g", groupName: "G", inviter: "A", expiresAt: 9, expired: false, requested: false });
+      vi.spyOn(bridge.invites, "revoke").mockResolvedValue({ notified: false });
+      vi.spyOn(bridge.groups, "roster").mockResolvedValue([{ address: "0x" + "1".repeat(40), role: "member" }]);
+      vi.spyOn(bridge.cluster, "meshStatus").mockResolvedValue({ on: false, source: "off", signedOff: true, note: "" });
       // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
       vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);

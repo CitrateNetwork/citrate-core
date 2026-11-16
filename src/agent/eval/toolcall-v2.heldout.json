@@ -173,6 +173,18 @@
       "sha256": "528713a0dd405e13b58017749d46ca4902aeefc644047c6d0d34c4e37a8abb34"
     },
     {
+      "id": "tc-cluster-add-machine",
+      "sha256": "dbe71ca6c54dbe5bc09d9d0713737d1d5ca272bceadb8509ce8db151e01ae59f"
+    },
+    {
+      "id": "tc-cluster-mesh-on",
+      "sha256": "abda80200bd3fc3f3740eca59cb0744b4ac35a942ebc3a2e160dc53b0994d333"
+    },
+    {
+      "id": "tc-cluster-read",
+      "sha256": "39b39119d9f93b5dc9aab257e4c9bf2eeb9974d84b3d20a96e879c4cdffd6193"
+    },
+    {
       "id": "tc-contract-deploy-explicit",
       "sha256": "8b7e4b5d542a9caa045d75361f29d7db4fa41ecaf9b3f58a3ded9b7f05a5a98f"
     },
@@ -283,6 +295,26 @@
     {
       "id": "tc-group-invite-explicit",
       "sha256": "35810b5f9bec05fff9862e4ede218d15108144cc40835017c9e2064eb507e7bb"
+    },
+    {
+      "id": "tc-group-invite-revoke",
+      "sha256": "32c43dd3e18da5c41fabfc27e044ed2df1815f7501c4df651275cbd94be56cab"
+    },
+    {
+      "id": "tc-group-invites-open",
+      "sha256": "948374b922651cc018361edf1dab8e21166d0faafb13d976a23da4d01f8aded1"
+    },
+    {
+      "id": "tc-group-join-link",
+      "sha256": "d8001754173c7ebc6898a7f951f8aee9291a2653191f8fefec5470d0ef15dcc7"
+    },
+    {
+      "id": "tc-group-make-admin",
+      "sha256": "dbfa8924b77981b478c7220e2c1fb896cc55012a3d6620545068e48d15dc08c7"
+    },
+    {
+      "id": "tc-group-offboard",
+      "sha256": "1e26ee132366f4de048ac2c89d4d04149f68c89f35a32135c8d8782e352bbe21"
     },
     {
       "id": "tc-group-roster",

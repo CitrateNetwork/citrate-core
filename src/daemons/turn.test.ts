@@ -2,7 +2,7 @@
 // the member as an explicit (HIC-required) decision. Sidecar runs use an UNATTENDED session that is
 // closed afterwards.
 import { describe, it, expect, vi } from "vitest";
-import { DAEMON_NEEDS_HERMES, daemonAvailability, daemonToolDecision, daemonToolsFor, DAEMON_TOOLS, runDaemonTurn, type DaemonTurnDeps } from "./turn";
+import { DAEMON_NEEDS_HERMES, daemonAvailability, daemonToolDecision, daemonToolsFor, DAEMON_TOOLS, runDaemonTurn, UI_MOVING_TOOLS, type DaemonTurnDeps } from "./turn";
 import { TokenMeter } from "./tokenMeter";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall, type ToolCallMeta } from "../agent/harness";
 import type { Claim } from "./api";
@@ -44,11 +44,12 @@ describe("daemon tool rules", () => {
   it("offers every agent tool except moving the UI", () => {
     const names = DAEMON_TOOLS.map((t) => t.function.name);
     expect(names).not.toContain("app_navigate");
-    expect(names.length).toBe(AGENT_TOOLS.length - 1);
+    expect(names).not.toContain("cluster_add_machine_open");
+    expect(names.length).toBe(AGENT_TOOLS.length - UI_MOVING_TOOLS.size);
   });
 
   it("refuses app_navigate and unknown tools without running anything", () => {
-    for (const name of ["app_navigate", "sign_approve", "invoke"]) {
+    for (const name of ["app_navigate", "cluster_add_machine_open", "sign_approve", "invoke"]) {
       const d = daemonToolDecision(call(name), "Node digest");
       expect(d.run).toBe(false);
     }
@@ -57,7 +58,7 @@ describe("daemon tool rules", () => {
   it("runs read-only tools as they are, and marks every other tool HIC-required", () => {
     for (const t of AGENT_TOOLS) {
       const name = t.function.name;
-      if (name === "app_navigate") continue;
+      if (UI_MOVING_TOOLS.has(name)) continue;
       const d = daemonToolDecision(call(name), "Node digest");
       expect(d.run).toBe(true);
       if (!d.run) continue;

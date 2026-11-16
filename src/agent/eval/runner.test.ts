@@ -62,6 +62,11 @@ describe("WRITE_TOOLS is derived from the real harness", () => {
         "fl_consent_withdraw",
         // 0.5.4 WP-H4
         "fl_envelope_propose",
+        // 0.5.4 WP-H2
+        "group_join_propose",
+        "group_invite_revoke",
+        "group_role_propose",
+        "cluster_mesh_propose",
       ].sort(),
     );
   });
