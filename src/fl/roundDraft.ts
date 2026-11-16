@@ -78,12 +78,16 @@ export function loadRoundDraft(): RoundDraft | null {
 /** Save a draft on this device. Returns the saved time. Throws when storage refuses. */
 export function saveRoundDraft(d: RoundDraft): number {
   const at = Date.now();
-  localStorage.setItem(KEY, JSON.stringify({ ...d, savedAt: at }));
+  // PAY-19: whoever calls this, a draft still marked Hermes's is stored without money.
+  const safe = d.source === "hermes" ? handedIn(d, "hermes") : d;
+  localStorage.setItem(KEY, JSON.stringify({ ...safe, savedAt: at }));
   return at;
 }
 
 /** Hand a draft in (Hermes or a group card). The member still checks and signs every field. */
-export function setRoundDraft(d: Partial<RoundDraft>, source: RoundDraft["source"] = "member"): void {
+/** `source` is required (no default): a caller that leaves it out fails to compile instead of
+ *  skipping the Hermes money clear. */
+export function setRoundDraft(d: Partial<RoundDraft>, source: RoundDraft["source"]): void {
   saveRoundDraft(handedIn(d, source));
 }
 
