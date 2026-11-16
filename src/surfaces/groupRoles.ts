@@ -11,8 +11,5 @@
  *  `ROLE_GRANTS_NEED_NEWER_DAEMON`. */
 export const ROLE_CHANGES_NEED_NEWER_DAEMON = "Role changes need the 0.6.0 comms daemon; the one this app runs is older.";
 
-/** Whether this member may use the role control. Only the owner: making an admin is the owner's
- *  alone (admin gates money-adjacent surfaces), and the daemon refuses it from anyone else. */
-export function canChangeRoles(myRole: string): boolean {
-  return myRole === "owner";
-}
+// Who may change whose role is `roleActions` in groups/memberRoles.ts (the daemon's rule: owners and
+// admins assign roles, only the owner makes or unmakes an admin).

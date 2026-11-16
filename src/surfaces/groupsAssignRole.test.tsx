@@ -7,8 +7,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Groups } from "./Groups";
-import { ROLE_CHANGES_NEED_NEWER_DAEMON, canChangeRoles } from "./groupRoles";
+import { GroupMembers } from "./groups/GroupMembers";
+import { roleActions } from "./groups/memberRoles";
+import { ROLE_CHANGES_NEED_NEWER_DAEMON } from "./groupRoles";
 import { bridge } from "../bridge";
 import { freshState } from "../shell/state";
 import { groupsSlice, assignRole } from "../shell/slices/groups";
@@ -61,15 +62,13 @@ afterEach(async () => {
 async function openPeopleTab(): Promise<void> {
   const store = {
     toast: () => {},
-    identity: () => ({ wallet: "" }),
+    go: () => {},
+    identity: () => ({ wallet: "", name: "" }),
     refreshPeople: async () => {},
     requestSig,
   } as unknown as Store;
   const s = { ...freshState("p1"), commsAddr: ME };
-  await act(async () => root.render(<Groups store={store} s={s} />));
-  const tab = [...host.querySelectorAll("button")].find((b) => b.textContent === "People");
-  expect(tab, "the People tab").toBeDefined();
-  await act(async () => tab!.click());
+  await act(async () => root.render(<GroupMembers store={store} s={s} />));
 }
 const roleButton = () =>
   [...host.querySelectorAll("button")].find((b) => /Make admin|Make member/.test(b.textContent ?? "")) as HTMLButtonElement | undefined;
@@ -90,9 +89,11 @@ describe("Assign role sends a grant the daemon signs with the comms key (#495, G
     expect(send).toHaveBeenCalledWith(GROUP.id, THEM, "admin");
   });
 
-  it("only the owner changes roles", () => {
-    expect(canChangeRoles("owner")).toBe(true);
-    for (const r of ["admin", "member", "guest", "agent"] as const) expect(canChangeRoles(r)).toBe(false);
+  it("only the owner makes or unmakes an admin; members and agents change no roles", () => {
+    expect(roleActions("owner", "member", false).actions.some((a) => a.to === "admin")).toBe(true);
+    expect(roleActions("admin", "member", false).actions.some((a) => a.to === "admin")).toBe(false);
+    expect(roleActions("admin", "admin", false).actions).toEqual([]);
+    for (const r of ["member", "guest", "agent"] as const) expect(roleActions(r, "member", false).actions).toEqual([]);
   });
 
   it("an older daemon's refusal is shown in plain words", async () => {
@@ -117,7 +118,7 @@ describe("Assign role sends a grant the daemon signs with the comms key (#495, G
   });
 
   it("no copy claims the grant is enforced at the relay", () => {
-    for (const p of ["src/surfaces/Groups.tsx", "src/shell/slices/groups.ts", "src/bridge/domains.ts"]) {
+    for (const p of ["src/surfaces/Groups.tsx", "src/surfaces/groups/GroupChat.tsx", "src/surfaces/groups/GroupMembers.tsx", "src/shell/slices/groups.ts", "src/bridge/domains.ts"]) {
       expect(read(p), p).not.toMatch(/enforced at the relay/i);
     }
   });
