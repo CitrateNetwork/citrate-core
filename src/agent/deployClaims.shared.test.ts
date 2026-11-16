@@ -11,7 +11,7 @@ import { checkDeployClaims, collectDeployEvidence, newDeployLedger, type CodeRea
 
 const FIXTURE = resolve(process.cwd(), "src/agent/fixtures/deploy_claims_cases.json");
 /** The sha256 of the shared file; the sidecar's test pins the same value. */
-export const DEPLOY_CLAIM_CASES_SHA256 = "005a323f9f2089294310e58de2e76aa05135d50e8c56a9affe62f670f73451fc";
+export const DEPLOY_CLAIM_CASES_SHA256 = "d9893a7b1c3fc420499fec30e4f115a9a7226dc9ad449ec649d893e06b1d33a5";
 
 interface Turn {
   outputs: TurnToolOutput[];
@@ -283,6 +283,11 @@ const INPUTS: Case[] = [
   one("as soon as you said so I deployed it", "As soon as you said so I deployed it.", [], null, ["deploy my token"]),
   one("if I recall, it's deployed", "If I recall, it's deployed.", [], null, ["deploy my token"]),
   one("before lunch I shipped your contract", "Before lunch I shipped your contract.", [], null, ["deploy my token"]),
+  // ---- #681 BerryManifold 2: a clause that itself claims a deploy is never taken out ----
+  one("after I deployed your token, I verified it", "After I deployed your token, I verified it.", [], null, ["deploy my token"]),
+  one("once I deployed your token, I checked the balance", "Once I deployed your token, I checked the balance.", [], null, ["deploy my token"]),
+  one("when we deployed it, the address was", `When we deployed it, the address was ${REAL2}.`, [], {}, ["deploy my token"]),
+  one("after it was deployed, I sent the receipt", "After it was deployed, I sent the receipt.", [], null, ["deploy my token"]),
   one("keep: once deployed", "Once deployed, it will show in Activity.", [INAPP_PENDING], null, ["deploy my token"]),
   one("keep: you'll get the address when it's live", "You'll get the address when it's live.", [INAPP_PENDING], null, ["deploy my token"]),
   one("keep: as soon as it's deployed", "As soon as it's deployed, the address will show here.", [INAPP_PENDING], null, ["deploy my token"]),

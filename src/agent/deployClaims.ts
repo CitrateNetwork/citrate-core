@@ -426,11 +426,11 @@ export function collectDeployEvidence(
 
 /** Spans that talk about a deploy without claiming one happened (future, conditional, negated). */
 const NOT_A_CLAIM =
-  /\b(?:not|never)\s+(?:yet\s+)?(?:been\s+)?deployed\b|\b\w+n't\s+(?:yet\s+)?(?:been\s+)?deployed\b|\bno (?:contract|deploy(?:ment)?)\s+(?:was|is|has been|happened|ran)(?:\s+deployed)?\b|\b(?:will|would|can|could|should|may|might|to)\s+be\s+deployed\b|\b(?:once|until|after|before|when|if|unless)\s+(?:it(?:'s| is)?|they(?:'re| are)?|the contract (?:is )?|your contract (?:is )?)?\s*deployed\b|\bnot (?:yet )?(?:live|on[- ]?chain)\b|\bready to (?:be )?deploy(?:ed)?\b|\bdeployed nothing\b|\bnothing (?:was |has been |got )?deployed\b|\b(?:once|when|whenever|after|if|until|unless|before|as soon as)\b[^.!?\n,;]*[,;]|\b(?:once|when|whenever|after|until|unless|before|if|as soon as)\s+(?:it|they|the (?:contract|token|deployment|deploy))\s+(?:is|are|goes|go|has|have)?\s*(?:been\s+)?(?:live|on[- ]?chain|complete|completed|done|confirmed|through|deployed)\b/gi;
+  /\b(?:not|never)\s+(?:yet\s+)?(?:been\s+)?deployed\b|\b\w+n't\s+(?:yet\s+)?(?:been\s+)?deployed\b|\bno (?:contract|deploy(?:ment)?)\s+(?:was|is|has been|happened|ran)(?:\s+deployed)?\b|\b(?:will|would|can|could|should|may|might|to)\s+be\s+deployed\b|\b(?:once|until|after|before|when|if|unless)\s+(?:it(?:'s| is)?|they(?:'re| are)?|the contract (?:is )?|your contract (?:is )?)?\s*deployed\b|\bnot (?:yet )?(?:live|on[- ]?chain)\b|\bready to (?:be )?deploy(?:ed)?\b|\bdeployed nothing\b|\bnothing (?:was |has been |got )?deployed\b|\b(?:once|when|whenever|after|until|unless|before|if|as soon as)\s+(?:it|they|the (?:contract|token|deployment|deploy))\s+(?:is|are|goes|go|has|have)?\s*(?:been\s+)?(?:live|on[- ]?chain|complete|completed|done|confirmed|through|deployed)\b/gi;
 
 /** A sentence (with the non-claim spans taken out) that says a deploy happened. */
 const DONE_CLAIM =
-  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\b(?:i|i've|i have|we|we've|we have)\s+(?:just\s+|now\s+|already\s+|successfully\s+)*(?:shipped|launched)\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|\b(?:deploy(?:ment)?|contract)\s+(?:is\s+|was\s+|has been\s+)?confirmed\b|\b(?:it|it's|it is|that's|that is|they're|they are|everything is|we're|we are)\s+(?:now\s+)?live\b|\b(?:it|that|everything)\s+went\s+through\b|^\W*(?:now\s+)?live\b|\b(?:contract|token|it|they|deployment|vault|everything)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\b|\b(?:has been|was|is|got)\s+shipped\b|^\W*(?:shipped|launched)\b|^\W*(?:the\s+|your\s+|my\s+)?(?:[\w'-]+\s+){0,2}(?:deployed|shipped|launched)\W*$|^\W*(?:all\s+|both\s+)?deployed\b/i;
+  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\b(?:i|i've|i have|we|we've|we have)\s+(?:just\s+|now\s+|already\s+|successfully\s+|then\s+)*(?:deployed|shipped|launched|published)\b|\b(?:it|they)\s+(?:was|were|got|has been|had been|have been)\s+(?:just\s+|already\s+|successfully\s+)*(?:deployed|shipped|launched|published)\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|\b(?:deploy(?:ment)?|contract)\s+(?:is\s+|was\s+|has been\s+)?confirmed\b|\b(?:it|it's|it is|that's|that is|they're|they are|everything is|we're|we are)\s+(?:now\s+)?live\b|\b(?:it|that|everything)\s+went\s+through\b|^\W*(?:now\s+)?live\b|\b(?:contract|token|it|they|deployment|vault|everything)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\b|\b(?:has been|was|is|got)\s+shipped\b|^\W*(?:shipped|launched)\b|^\W*(?:the\s+|your\s+|my\s+)?(?:[\w'-]+\s+){0,2}(?:deployed|shipped|launched)\W*$|^\W*(?:all\s+|both\s+)?deployed\b/i;
 
 /** Words that tie an address in a sentence to a deployment. */
 const DEPLOY_WORD =
@@ -496,8 +496,22 @@ export function sentences(text: string): string[] {
 const HAS_BEEN = /\b(\w+)'s\s+been\b/gi;
 const IS_DONE = /\b(\w+)'s\s+((?:now\s+|already\s+|successfully\s+|officially\s+|fully\s+)*(?:deployed|live|on[- ]?chain|done|complete|completed|confirmed|shipped|launched|up)\b)/gi;
 
+/** A conditional or temporal clause that ends in a comma or semicolon ("Once the deployment is
+ *  complete, …"). */
+const COND_CLAUSE = /\b(?:once|when|whenever|after|if|until|unless|before|as soon as)\b[^.!?\n,;]*[,;]/gi;
+/** A past-tense deploy by someone ("I deployed", "we shipped", "it was deployed"). */
+const PAST_DEPLOY =
+  /\b(?:i|we|it|they|you|i've|we've|i have|we have)\s+(?:just\s+|already\s+|successfully\s+|then\s+)*(?:deployed|shipped|launched|published)\b|\b(?:was|were|got|has been|had been|have been)\s+(?:just\s+|already\s+|successfully\s+)*(?:deployed|shipped|launched|published)\b/i;
+
+/** A conditional clause says nothing happened, so it is taken out. A clause that itself claims a
+ *  deploy ("After I deployed your token, …") stays: it is read like any other claim. */
+function dropConditionals(text: string): string {
+  return text.replace(COND_CLAUSE, (clause) => (PAST_DEPLOY.test(clause) || DONE_CLAIM.test(clause.replace(NOT_A_CLAIM, " ")) ? clause : " "));
+}
+
 function claimText(sentence: string): string {
-  return fold(sentence).replace(HAS_BEEN, "$1 has been").replace(IS_DONE, "$1 is $2").replace(NOT_A_CLAIM, " ");
+  const read = fold(sentence).replace(HAS_BEEN, "$1 has been").replace(IS_DONE, "$1 is $2");
+  return dropConditionals(read).replace(NOT_A_CLAIM, " ");
 }
 
 /** The claim with a leading interjection or short clause taken off. */
