@@ -91,6 +91,20 @@ describe("release-local.sh source", () => {
     return i;
   };
 
+  it("stages the skills bundle pinned in runtime-deps.sha256, the asset release.yml stages (#737)", () => {
+    // The old skills-bundle.tar.gz (ea95d49d, 240 skills) is refused by skills.lock and has no pin.
+    expect(src).not.toMatch(/-p skills-bundle\.tar\.gz/);
+    const sed = /SKILLS_ASSET="\$\(sed -n '([^']+)' "\$ROOT\/src-tauri\/runtime-deps\.sha256"\)"/.exec(src);
+    expect(sed, "SKILLS_ASSET is read from runtime-deps.sha256").not.toBeNull();
+    const r = spawnSync("sed", ["-n", sed[1], path.join(repo, "src-tauri/runtime-deps.sha256")], { encoding: "utf8" });
+    const asset = r.stdout.trim();
+    expect(asset).toMatch(/^skills-bundle-[0-9a-f]{12}\.tar\.gz$/);
+    const wf = fs.readFileSync(path.join(repo, ".github/workflows/release.yml"), "utf8");
+    expect(wf).toContain(`ASSETS=(${asset})`);
+    expect(at('gh release download runtime-deps -p "$SKILLS_ASSET"')).toBeLessThan(at('verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" "$SKILLS_ASSET"'));
+    expect(src).toContain('from-tarball "$WORK/runtime-deps/$SKILLS_ASSET"');
+  });
+
   it("a rehearsal is created only as a draft prerelease that cannot be latest", () => {
     expect(src).toMatch(/gh release create "\$TAG" "\$\{ASSETS\[@\]\}" --repo "\$REPO_SLUG" --draft --prerelease --latest=false/);
     expect(src.match(/gh release create/g)).toHaveLength(2);

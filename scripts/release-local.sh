@@ -259,13 +259,20 @@ if [ "$REHEARSAL" -eq 0 ]; then
   # do: download, check the digest against runtime-deps.sha256, then from-tarball (which refuses
   # anything that is not this repo's skills.lock file for file). A re-pinned tarball needs only its
   # new pin and skills.lock; nothing here counts skills.
+  # The tarball is the one skills-bundle-<sha12>.tar.gz pinned in runtime-deps.sha256 (#737 renamed it
+  # from skills-bundle.tar.gz, whose ea95d49d bytes the 0.5.4 skills.lock refuses), as release.yml stages.
+  SKILLS_ASSET="$(sed -n 's/^[0-9a-f]\{64\}  \(skills-bundle-[0-9a-f]\{12\}\.tar\.gz\)$/\1/p' "$ROOT/src-tauri/runtime-deps.sha256")"
+  case "$SKILLS_ASSET" in
+    skills-bundle-????????????.tar.gz) ;;
+    *) die "src-tauri/runtime-deps.sha256 must pin exactly one skills-bundle-<sha12>.tar.gz (found: ${SKILLS_ASSET:-none})" ;;
+  esac
   rm -rf "$WORK/runtime-deps" && mkdir -p "$WORK/runtime-deps"
-  gh release download runtime-deps -p skills-bundle.tar.gz -D "$WORK/runtime-deps" --repo "$REPO_SLUG" --clobber ||
-    die "cannot download skills-bundle.tar.gz from the runtime-deps release"
-  (cd "$ROOT" && scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" skills-bundle.tar.gz) ||
-    die "skills-bundle.tar.gz does not match its pin in src-tauri/runtime-deps.sha256"
-  (cd "$ROOT" && node scripts/stage-skills-bundle.mjs from-tarball "$WORK/runtime-deps/skills-bundle.tar.gz" --out src-tauri/skills-bundle) ||
-    die "skills-bundle.tar.gz does not match skills.lock"
+  gh release download runtime-deps -p "$SKILLS_ASSET" -D "$WORK/runtime-deps" --repo "$REPO_SLUG" --clobber ||
+    die "cannot download $SKILLS_ASSET from the runtime-deps release"
+  (cd "$ROOT" && scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" "$SKILLS_ASSET") ||
+    die "$SKILLS_ASSET does not match its pin in src-tauri/runtime-deps.sha256"
+  (cd "$ROOT" && node scripts/stage-skills-bundle.mjs from-tarball "$WORK/runtime-deps/$SKILLS_ASSET" --out src-tauri/skills-bundle) ||
+    die "$SKILLS_ASSET does not match skills.lock"
   say "1/7 verifying the staged inputs"
   (cd "$ROOT" && node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin)
   (cd "$ROOT" && node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256)
