@@ -230,9 +230,26 @@ check_dmg_version() {
 if [ "$REHEARSAL" -eq 0 ]; then
   # The app must be the release version.
   APP_VERSION="$VERSION"
+  say "1/7 staging the reviewed third-party skills from the pinned runtime-deps asset"
+  # 0.5.4 (release gate): skills-bundle/ is gitignored and only release.yml staged it, so a Mac build
+  # could ship no third-party skills, or a stale set. Staged here as release.yml and RELEASE_LINUX.md
+  # do: download, check the digest against runtime-deps.sha256, then from-tarball (which refuses
+  # anything that is not this repo's skills.lock file for file). A re-pinned tarball needs only its
+  # new pin and skills.lock; nothing here counts skills.
+  rm -rf "$WORK/runtime-deps" && mkdir -p "$WORK/runtime-deps"
+  gh release download runtime-deps -p skills-bundle.tar.gz -D "$WORK/runtime-deps" --repo "$REPO_SLUG" --clobber ||
+    die "cannot download skills-bundle.tar.gz from the runtime-deps release"
+  (cd "$ROOT" && scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" skills-bundle.tar.gz) ||
+    die "skills-bundle.tar.gz does not match its pin in src-tauri/runtime-deps.sha256"
+  (cd "$ROOT" && node scripts/stage-skills-bundle.mjs from-tarball "$WORK/runtime-deps/skills-bundle.tar.gz" --out src-tauri/skills-bundle) ||
+    die "skills-bundle.tar.gz does not match skills.lock"
   say "1/7 verifying the staged inputs"
   (cd "$ROOT" && node scripts/component-pins.mjs verify-staged src-tauri/binaries aarch64-apple-darwin)
   (cd "$ROOT" && node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256)
+  # Every externalBin and resources glob of bundle-lite is staged (non-README, pinned digests where
+  # pins exist, skills-bundle against skills.lock). Fails closed before anything is built.
+  (cd "$ROOT" && node scripts/check-bundle.mjs staged --overlay src-tauri/tauri.bundle-lite.conf.json --target aarch64-apple-darwin) ||
+    die "the staged inputs are incomplete (see check-bundle above)"
   say "1/7 building and codesigning (tauri build, bundle-lite)"
   # No updater artifacts from the build: the update tarball is made from the stapled app in step 3
   # and signed in step 4, so the updater key is not in the build's environment at all.
@@ -259,6 +276,10 @@ else
   hdiutil create -quiet -volname "Citrate Core" -srcfolder "$APP" -ov -format UDZO "$WORK/app.dmg"
   codesign --force --timestamp --sign "$IDENTITY" "$WORK/app.dmg"
 fi
+# The built (or given) app carries every sidecar and every staged resource, read from its
+# Contents/MacOS and Contents/Resources only: the app and its binaries are never run.
+(cd "$ROOT" && node scripts/check-bundle.mjs app --app "$APP" --overlay src-tauri/tauri.bundle-lite.conf.json --target aarch64-apple-darwin) ||
+  die "$APP_NAME is missing a sidecar or a resource, or carries a stale one (see check-bundle above)"
 codesign --verify --deep --strict "$APP" || die "the app's signature does not verify"
 check_app_version "$APP"
 check_dmg_version "$WORK/app.dmg"
