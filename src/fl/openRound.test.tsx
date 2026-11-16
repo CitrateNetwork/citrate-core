@@ -172,6 +172,35 @@ describe("round drafts", () => {
     setRoundDraft({ budgetSalt: "600" }, "member");
     expect(loadRoundDraft()!.budgetSalt).toBe("600");
   });
+  it("PAY-19 follow-up: a Hermes hand-in the member fills in and saves becomes the member's; opening alone does not", async () => {
+    setRoundDraft({ dataClass: "support-tickets", budgetSalt: "600" }, "hermes");
+    const handed = loadRoundDraft()!;
+    let stored: RoundDraft | null = null;
+    const save = (d: RoundDraft) => {
+      stored = d;
+      return 1;
+    };
+    // Opening and saving without typing any money keeps it Hermes's.
+    const a = mount(await live(), { draft: handed, save });
+    a.click("Save draft");
+    expect(stored!.source).toBe("hermes");
+    a.done();
+    // The member types the money on the board and saves: it is now the member's, money kept.
+    const m = mount(await live(), { draft: handed, save });
+    m.click("Continue");
+    const [budget, rate] = [...m.el.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]')];
+    const type = (i: HTMLInputElement, v: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(i, v);
+        i.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    type(budget, "600");
+    type(rate, "1.50");
+    m.click("Save draft");
+    expect(stored!).toMatchObject({ source: "member", budgetSalt: "600", rateSalt: "1.50", draftedBy: "hermes" });
+    expect(m.el.textContent).toContain("Drafted by Hermes");
+    m.done();
+  });
   it("a draft handed in by Hermes is kept on this device for the member to check", () => {
     setRoundDraft({ dataClass: "photos" }, "hermes");
     expect(loadRoundDraft()).toMatchObject({ dataClass: "photos", source: "hermes" });
