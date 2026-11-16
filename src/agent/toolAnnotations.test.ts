@@ -3,7 +3,7 @@
 // output as untrusted; core keeps ONE reviewed annotation per tool so the downgrade is precise.
 // Enumeration tripwire: a new tool without an annotation, or an effectful tool marked `none`, fails.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AGENT_TOOLS, DRAFT_ONLY_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
+import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./toolAnnotations";
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
@@ -79,8 +79,6 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       await store.handleTool(call(n), "m1", () => {});
       const gated = sig.mock.calls.length + review.mock.calls.length > 0;
       if (gated) expect(annotationFor(n)!.effect, `tool ${n} asks the member, so it has an effect`).not.toBe("none");
-      // A draft-only tool saves a draft without asking (reviewed list in harness.ts).
-      else if (DRAFT_ONLY_AGENT_TOOLS.has(n)) expect(annotationFor(n)!.effect, `tool ${n} saves a draft`).toBe("write");
       else expect(annotationFor(n)!.effect, `tool ${n} never asks, so it must be read-only`).toBe("none");
     }
   });

@@ -39,7 +39,7 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
-import { FL_ROUND_DRAFT_TOOL, defaultDraftStore, runFlRoundDraft } from "../agent/flRoundDraftTool";
+import { FL_ROUND_DRAFT_READ_TOOL, runFlRoundDraftRead } from "../agent/flRoundDraftTool";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -127,7 +127,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_round_draft"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4614,17 +4614,9 @@ export class Store {
         status = out.status;
         result = out.message;
       }
-    } else if (call.name === FL_ROUND_DRAFT_TOOL) {
-      // 0.5.4 WP-H5: the board 07 draft (no SALT, nothing signed). A member-written draft is
-      // replaced only on Approve; opening the round stays the member's HIC-1 escrow signature.
-      const out = await runFlRoundDraft(args as Record<string, unknown>, ann, {
-        ...defaultDraftStore,
-        groupIds: async () => (await bridge.groups.list()).map((g) => g.id),
-        ask,
-        toast: (m) => this.toast(m),
-      });
-      status = out.status;
-      result = out.result;
+    } else if (call.name === FL_ROUND_DRAFT_READ_TOOL) {
+      // 0.5.4 WP-H5: read the board 07 draft. Writing one is round_draft_propose's card (#725).
+      result = runFlRoundDraftRead();
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.

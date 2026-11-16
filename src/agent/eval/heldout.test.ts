@@ -47,8 +47,8 @@ describe("held-out normalization", () => {
 // compute-pool pins the same value (PARITY_V1_TOOLS in training-worker/src/fl/dataset.rs): the
 // trainer rows name the 35 parity-v1 tools, so a renamed or added tool fails one side until both
 // are updated. CORE-A1/A2 (2026-11-04) added six read-only contract tools (29 -> 35); 0.5.4 WP-H5
-// (2026-11-15) added fl_round_draft (35 -> 36). compute-pool follows in its own PR.
-const PARITY_V1_TOOL_NAMES_SHA256 = "7b050881ef789ae43fc7ffdd6704b6818b0b950287d1d3089dffb7180e45bb96";
+// (2026-11-15) added fl_round_draft_read (35 -> 36). compute-pool follows in its own PR.
+const PARITY_V1_TOOL_NAMES_SHA256 = "92e792edb2997aecb7cf0f2db8bf9d77c1b86f8d97cb7c047b7e7f83dec55bdc";
 
 describe("parity-v1 tool names (the trainer's tool schema)", () => {
   it("are the 36 names compute-pool trains against", () => {
