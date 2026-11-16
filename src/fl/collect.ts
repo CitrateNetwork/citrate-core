@@ -96,7 +96,18 @@ const ROBOTS: Record<FlRobotsState, string> = {
 
 function licenseWords(l: FlCollectLicense): string {
   if (!l.id) return "no license stated";
-  return l.basis === "member-attested" ? `${l.id}, attested by you` : `${l.id}, stated by the source`;
+  return l.basis === "member-attested" ? `${l.id}, attested with the statement "${l.evidence ?? ""}"` : `${l.id}, stated by the source`;
+}
+
+/** Review of #739: the rows of the separate card on which the member confirms a license
+ *  attestation. Hermes wrote it from the conversation, so the member sees it word for word. */
+export function attestationCardRows(a: FlAttestation, urls: string[]): { k: string; v: string }[] {
+  return [
+    { k: "License", v: a.license },
+    { k: "Statement, exactly as Hermes wrote it", v: a.statement },
+    { k: "Applies to", v: `pages among these ${urls.length} that state no license of their own` },
+    { k: "What confirming means", v: "you say these pages are under this license; it is recorded in the dataset as your attestation and travels with it if you publish" },
+  ];
 }
 
 /** One source's verdict in plain words. */

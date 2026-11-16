@@ -58,14 +58,33 @@ describe("fl_collect_plan (HIC-1)", () => {
     expect(out).toContain("Nothing on that list can be collected");
   });
 
-  it("a license attestation needs both the SPDX id and the member's words", async () => {
-    vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+  it("a license attestation needs both the SPDX id and the words, and the member confirms it verbatim on its own card", async () => {
+    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
     const plan = vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
     vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan());
     await store.handleTool(call("fl_collect_plan", { dataset: DATASET, baseVersion: 1, urls: ["https://example.org/a"], license: "CC-BY-4.0" }), "m1", noop);
     expect(plan.mock.calls[0][3]).toBeNull();
-    await store.handleTool(call("fl_collect_plan", { dataset: DATASET, baseVersion: 1, urls: ["https://example.org/a"], license: "CC-BY-4.0", licenseStatement: "the footer says CC BY 4.0" }), "m1", noop);
-    expect(plan.mock.calls[1][3]).toEqual({ license: "CC-BY-4.0", statement: "the footer says CC BY 4.0" });
+    // Declined attestation card: the plan is built without the attestation.
+    sig.mockClear();
+    const words = "the footer says CC BY 4.0";
+    await store.handleTool(call("fl_collect_plan", { dataset: DATASET, baseVersion: 1, urls: ["https://example.org/a"], license: "CC-BY-4.0", licenseStatement: words }), "m1", noop);
+    const card = sig.mock.calls[0][0];
+    expect(card.title).toBe("Confirm a license you are attesting");
+    expect(card.rows).toContainEqual({ k: "Statement, exactly as Hermes wrote it", v: words });
+    expect(card.rows).toContainEqual({ k: "License", v: "CC-BY-4.0" });
+    expect(plan.mock.calls[1][3]).toBeNull();
+    // Confirmed: the plan carries exactly those words (then the plan card, declined here).
+    sig.mockReset();
+    sig.mockResolvedValueOnce("approved").mockResolvedValueOnce("declined");
+    await store.handleTool(call("fl_collect_plan", { dataset: DATASET, baseVersion: 1, urls: ["https://example.org/a"], license: "CC-BY-4.0", licenseStatement: words }), "m1", noop);
+    expect(sig).toHaveBeenCalledTimes(2);
+    expect(plan.mock.calls[2][3]).toEqual({ license: "CC-BY-4.0", statement: words });
+  });
+
+  it("the plan card shows an attested license with its exact statement", () => {
+    expect(sourceLine(allowedSource({ policy: "needs-member-approval", license: { id: "MIT", basis: "member-attested", evidence: "README says MIT" } }))).toContain(
+      'MIT, attested with the statement "README says MIT"',
+    );
   });
 });
 
@@ -75,7 +94,7 @@ describe("the read tools", () => {
     const out = await store.handleTool(call("fl_source_check", { url: "https://example.org/a" }), "m1", noop);
     expect(out).toContain("Collectable through fl_collect_plan");
     expect(out).toContain("your approval of this plan is the tap");
-    expect(out).toContain("MIT, attested by you");
+    expect(out).toContain('MIT, attested with the statement "x"');
   });
 
   it("fl_dataset_pii_scan and fl_dataset_license_check ask core and never take a verdict from the model", async () => {

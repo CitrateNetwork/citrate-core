@@ -78,7 +78,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
-import { flCollect, planCardRows, runForAgent, sourceCheckForAgent, sourceLine, type FlAttestation, type FlCollectPlan } from "../fl/collect";
+import { attestationCardRows, flCollect, planCardRows, runForAgent, sourceCheckForAgent, sourceLine, type FlAttestation, type FlCollectPlan } from "../fl/collect";
 import { datasetGate, licensesForAgent, scanForAgent } from "../fl/datasetGate";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { STALL_MS, SyncTracker } from "./syncProgress";
@@ -4620,9 +4620,29 @@ export class Store {
       // WP-H8 (HIC-1): core builds and checks the plan; the member decides on the card; only an
       // approved plan runs, once, and core checks every page again before it fetches it.
       const urls = Array.isArray(args.urls) ? (args.urls as unknown[]).map(String) : [];
+      // Review of #739: an attestation comes from the model's arguments, so the member confirms
+      // it, word for word, on its own card first. Declined = the plan is built without it.
+      let attestation = attestationFrom(args);
+      if (attestation) {
+        const a = attestation;
+        const ok = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool fl_collect_plan (license attestation)",
+            title: "Confirm a license you are attesting",
+            chainless: true,
+            rows: attestationCardRows(a, urls),
+            cost: "none",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          fieldsCard("fl_collect_plan", ann, { license: a.license, statement: a.statement }, `attest ${a.license} for pages that state no license`),
+        );
+        if (ok !== "approved") attestation = null;
+      }
       let plan: FlCollectPlan | null = null;
       try {
-        plan = await flCollect.plan(String(args.dataset || ""), Number(args.baseVersion), urls, attestationFrom(args));
+        plan = await flCollect.plan(String(args.dataset || ""), Number(args.baseVersion), urls, attestation);
       } catch (e) {
         result = "couldn't plan the collection: " + (e instanceof Error ? e.message : String(e));
       }
