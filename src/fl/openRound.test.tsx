@@ -9,7 +9,7 @@ import type { Group } from "../bridge/domains";
 import { readFlNetworkState, type FlNetworkState } from "./networkState";
 import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
 import { OpenRoundView } from "./OpenRound";
-import { BLANK_DRAFT, clearRoundDraft, draftProblems, leasesCovered, loadRoundDraft, openParamsOf, setRoundDraft, type RoundDraft } from "./roundDraft";
+import { BLANK_DRAFT, clearRoundDraft, draftProblems, leasesCovered, loadRoundDraft, openParamsOf, publishRequirements, requirementsOf, setRoundDraft, type RoundDraft } from "./roundDraft";
 import type { TxOutcome } from "./CeremonySheet";
 
 const WM = "0x" + "ab".repeat(20);
@@ -164,5 +164,9 @@ describe("round drafts", () => {
     expect(loadRoundDraft()).toMatchObject({ dataClass: "photos", source: "hermes" });
     clearRoundDraft();
     expect(loadRoundDraft()).toBeNull();
+  });
+  it("the requirements file is the read model's version 1 shape; publishing needs the desktop IPFS node", async () => {
+    expect(requirementsOf(ready)).toEqual({ v: 1, dataClasses: ["support-tickets"], architectures: [], minVramGb: 16, estHours: 2 });
+    await expect(publishRequirements(requirementsOf(ready))).rejects.toThrow("publishing needs the desktop app's IPFS node");
   });
 });

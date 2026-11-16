@@ -90,6 +90,8 @@ export interface PayoutsViewProps {
   ovError: string | null;
   go: (route: string) => void;
   save: (name: string, text: string) => Promise<string>;
+  /** Why a dispute cannot be filed from this device, when it cannot (shown instead of Dispute). */
+  disputeBlocker?: string;
   /** Hand a claim, withdraw or dispute to the wallet review. Only reachable when payouts are open. */
   act: (kind: "claim" | "withdraw" | "dispute", r?: Receipt) => Promise<void>;
 }
@@ -191,16 +193,26 @@ export function PayoutsView(p: PayoutsViewProps) {
                     actions={
                       open ? (
                         <>
-                          {r.status === "claimable" && (
-                            <button type="button" className="btn btn-primary btn-sm" onClick={() => setSheet({ kind: "claim", r })}>
-                              Claim
-                            </button>
-                          )}
-                          {r.status === "waiting" && (
-                            <button type="button" className="btn btn-danger btn-sm" onClick={() => setSheet({ kind: "dispute", r })}>
-                              Dispute
-                            </button>
-                          )}
+                          {r.status === "claimable" &&
+                            (r.line.units !== null ? (
+                              <button type="button" className="btn btn-primary btn-sm" onClick={() => setSheet({ kind: "claim", r })}>
+                                Claim
+                              </button>
+                            ) : (
+                              <span className="fl-faint" style={{ fontSize: 12 }} data-testid="claim-blocked">
+                                Claiming needs your leaf from the coordinator's payout list, which the app does not read yet.
+                              </span>
+                            ))}
+                          {r.status === "waiting" &&
+                            (p.disputeBlocker ? (
+                              <span className="fl-faint" style={{ fontSize: 12 }} data-testid="dispute-blocked">
+                                {p.disputeBlocker}
+                              </span>
+                            ) : (
+                              <button type="button" className="btn btn-danger btn-sm" onClick={() => setSheet({ kind: "dispute", r })}>
+                                Dispute
+                              </button>
+                            ))}
                         </>
                       ) : undefined
                     }
@@ -299,7 +311,7 @@ export function PayoutsView(p: PayoutsViewProps) {
                 <KV
                   rows={[
                     { k: "Round", v: sheet.r.line.round },
-                    { k: "Amount", v: `${sheet.r.line.units} units × ${saltFromWei(sheet.r.line.rateWei)} SALT = ${saltFromWei(sheet.r.line.amountWei)} SALT`, mono: true },
+                    { k: "Amount", v: sheet.r.line.units !== null && sheet.r.line.amountWei !== null ? `${sheet.r.line.units} units × ${saltFromWei(sheet.r.line.rateWei)} SALT = ${saltFromWei(sheet.r.line.amountWei)} SALT` : <Unknown reason="your units are in the coordinator's payout list" />, mono: true },
                     { k: "Goes to", v: "Your WorkMarket pull balance, with your join bond released, then withdraw to your wallet" },
                     { k: "Network fee", v: <Unknown reason="the wallet review reads gas before you sign" /> },
                   ]}

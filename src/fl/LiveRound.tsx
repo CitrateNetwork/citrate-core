@@ -20,7 +20,7 @@ import { EscrowBar, type Escrow } from "./EscrowBar";
 import { saltFromWei } from "./format";
 import { LeaseDots, leaseCounts, leaseSentence, orderLeases, type Lease } from "./LeaseDots";
 import { NOT_AVAILABLE, PAYOUTS_DARK, type PayoutsState } from "./networkState";
-import { Card, Chip, Eyebrow, Hex, KV, Note, Unknown, type Tone } from "./primitives";
+import { Card, Chip, Eyebrow, Hex, KV, Unknown, type Tone } from "./primitives";
 import { RoundRing, type RingOutcome, type RingStage } from "./RoundRing";
 
 export type LiveState = "pending" | "running" | "verifying" | "accepted" | "rejected" | "disputed" | "expired";
@@ -242,7 +242,7 @@ export function LiveRoundView({ r, go }: { r: LiveRound; go: (route: string) => 
   );
 }
 
-/** WorkMarket is deployed but this build cannot read your round (no per-lease read model yet). */
+/** WorkMarket is deployed and your wallet has joined no round in the newest offers. */
 export function NoLiveRound({ go }: { go: (route: string) => void }) {
   return (
     <section className="fl-main" data-testid="live-none">
@@ -250,9 +250,8 @@ export function NoLiveRound({ go }: { go: (route: string) => void }) {
         No live round to show
       </h1>
       <p className="fl-muted" style={{ margin: 0, fontSize: 13 }}>
-        You are not in a round on this device. A round you join appears here.
+        Your wallet has not joined a round in the newest offers on WorkMarket. A round you join appears here.
       </p>
-      <Note>This build reads offers, not the leases inside a round, so a round's ring, leases and receipts appear once that read model ships.</Note>
       <button type="button" className="btn btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => go("groups/rounds")}>
         See matches
       </button>

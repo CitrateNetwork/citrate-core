@@ -186,3 +186,33 @@ export function openParamsOf(d: RoundDraft, b: OpenBinding): { params: OpenParam
     },
   };
 }
+
+// ---------------------------------------------------------------- the requirements file (core)
+
+/** The requirements file every member's offers read model checks (fl_market.rs, version 1). */
+export interface RequirementsFile {
+  v: 1;
+  dataClasses: string[];
+  architectures: string[];
+  minVramGb: number;
+  estHours: number;
+}
+
+export function requirementsOf(d: RoundDraft): RequirementsFile {
+  return { v: 1, dataClasses: [d.dataClass.trim()], architectures: [], minVramGb: d.minVramGb, estHours: d.estHours };
+}
+
+export interface PublishedRequirements {
+  cid: string;
+  requirementsHash: string;
+  bytes: number;
+}
+
+/** Add and pin the requirements file on the bundled IPFS node (core fl_publish.rs). Its CID and
+ *  keccak256 go into OpenParams (requirementsCid, requirementsHash). */
+export async function publishRequirements(r: RequirementsFile): Promise<PublishedRequirements> {
+  const { BRIDGE_MODE } = await import("../bridge/mode");
+  if (BRIDGE_MODE !== "tauri") throw new Error("publishing needs the desktop app's IPFS node");
+  const { invoke } = await import("../bridge/tauri/invoke");
+  return invoke<PublishedRequirements>("fl_requirements_publish", { requirements: r });
+}
