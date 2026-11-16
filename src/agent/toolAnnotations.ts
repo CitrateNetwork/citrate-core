@@ -60,6 +60,10 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // 0.5.4 WP-H5: chain reads of numbers, addresses and fixed enum words, plus the coordinator's
+  // typed counts (as fl_round_plan); no free text anyone else writes reaches the model.
+  fl_round_status: { effect: "none", trust: "trusted" },
+  fl_lease_explain: { effect: "none", trust: "trusted" },
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

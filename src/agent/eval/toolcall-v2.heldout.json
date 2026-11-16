@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 90,
+  "count": 94,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -213,12 +213,28 @@
       "sha256": "d3b1984c7ff70643caeb159359a9661551947d3101c7b0964fa186066b636b69"
     },
     {
+      "id": "tc-fl-lease-explain",
+      "sha256": "1ef0434d19b241c74e47b612f7c1e79db7f7ccc7b0adb947d4e2c5a902840463"
+    },
+    {
       "id": "tc-fl-plan-explain",
       "sha256": "93b55a89f71675090798ac10fc0e241d18f29f995dd97b08b81402de97d3d908"
     },
     {
       "id": "tc-fl-plan-probe",
       "sha256": "e0f1f459eb8faea4209c73e1e81f7a0239df94f1a33c6f5d0cd3905d619f82d1"
+    },
+    {
+      "id": "tc-fl-round-status-network",
+      "sha256": "23967dd9fd6aa4153c96f459088e45b8cf903dde12f1d4ca60b6da1d0ea1e076"
+    },
+    {
+      "id": "tc-fl-round-status-offer",
+      "sha256": "5b56115ba086c3e1a988b59df45fb4ab0e776b815700c855ecc7e19c847d94dd"
+    },
+    {
+      "id": "tc-fl-round-status-round",
+      "sha256": "25f5aabffa731dfb03be36ab5d4937e3c846a0e80acb0f616b6c01dfd420baa6"
     },
     {
       "id": "tc-fl-start-explicit",

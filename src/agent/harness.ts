@@ -765,6 +765,38 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── federated round reads (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_status",
+      description:
+        "Read a federated training round's state, each value tagged by its source: a WorkMarket offer (offerId) with its escrow, workers and rate, a FederatedRoundLedger round record (roundId) with its status, challenge window and fault, and the configured coordinator's own lease counts. With neither id, lists which FL contracts this network has. Read-only. When WorkMarket is not on this network it says group rounds are not live yet; never invent a round, a count or an amount.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "number", description: "the WorkMarket offer id" },
+          roundId: { type: "string", description: "the FederatedRoundLedger round id, 0x followed by 64 hex characters" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_lease_explain",
+      description:
+        "Explain why a federated round, and so a lease in it, was rejected: reads the round ledger's recorded fault (output mismatch, row mismatch, rule violation, participant order) and says what it means. Read-only. Per-lease receipts are the coordinator's and are not read; say so rather than guessing which lease caused it.",
+      parameters: {
+        type: "object",
+        properties: {
+          roundId: { type: "string", description: "the round id, 0x followed by 64 hex characters" },
+          leaseIndex: { type: "number", description: "the lease the member asked about, from 0" },
+        },
+        required: ["roundId"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1271,6 +1303,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_round_status",
+  "fl_lease_explain",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

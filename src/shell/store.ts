@@ -37,8 +37,11 @@ import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
-import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
+import { approveAndStartRound, DEFAULT_PROPOSAL, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlRoundTool, runFlRoundTool } from "../agent/flRoundTools";
+import { readFlNetworkState } from "../fl/networkState";
+import flBook from "../../src-tauri/addresses/40204.json";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -4613,6 +4616,19 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlRoundTool(call.name)) {
+      // 0.5.4 WP-H5: reads only. Which contracts exist comes from the address book and eth_getCode;
+      // WorkMarket is read only once it is there; the coordinator's counts are labelled as its own.
+      const view = (address: string, data: string) => bridge.contracts.viewCall("citrate", address, data);
+      result = await runFlRoundTool(call.name, args as Record<string, unknown>, {
+        networkState: () => readFlNetworkState(flBook, { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: view }),
+        call: view,
+        coordinator: async () => {
+          const ov = await bridge.flRounds.overview();
+          if (!ov.config.url) return null;
+          return (await bridge.flRounds.plan(DEFAULT_PROPOSAL)).coordinator;
+        },
+      });
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.
