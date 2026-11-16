@@ -2220,6 +2220,9 @@ export interface ContractsDomain {
   deployRecordSave(projectDir: string, txHash: string): Promise<DeployRecordSavedView>;
   /** CORE-A3 — this project's saved deploy records, oldest first (from its sealed file). */
   deployRecords(projectDir: string): Promise<DeployRecordSummaryView[]>;
+  /** CORE-A3 — one saved record in full (ABI, constructor arguments, compiler settings,
+   *  standard-JSON input, gate record) by contract address; null when none is saved. */
+  deployRecordGet(projectDir: string, address: string): Promise<DeployRecordView | null>;
   /** HUP-S6.2 / US-6.4 — the bundled contract templates with their parameter forms, the tier in
    *  effect and its Medusa budget. Read-only. */
   templateList(): Promise<TemplateCatalog>;
@@ -2296,6 +2299,25 @@ export interface DeployRecordSummaryView {
   standardJsonNote: string | null;
   gateVerdict: "READY" | "NOT_READY";
   gateEvaluatedAtMs: number;
+  recordedAtMs: number;
+}
+
+/** CORE-A3 — one saved deploy record in full; mirrors Rust `deploy_records::DeployRecord`. */
+export interface DeployRecordView {
+  chainId: number;
+  address: string;
+  txHash: string;
+  blockNumber: number;
+  deployer: string;
+  initcodeHash: string;
+  contractName: string;
+  /** The forge artifact's ABI, as it is. */
+  abi: unknown;
+  constructorArgsHex: string;
+  compiler: DeployGateRecord["compiler"];
+  standardJsonInput: string | null;
+  standardJsonNote: string | null;
+  gate: DeployGateRecord;
   recordedAtMs: number;
 }
 
