@@ -39,7 +39,7 @@ import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
-import { createSidecarProvider, localSessionStore, STEER_NOT_TAKEN } from "../agent/sidecarProvider";
+import { createSidecarProvider, localSessionStore, STEER_NOT_TAKEN, type SessionSeed } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
@@ -941,6 +941,8 @@ export class Store {
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
     this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [], chatQueue: [] });
+    // Its earlier turns came from sessions this run never traced (Matr0xshka on #109).
+    this.untraceableThread(thread.id);
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -1389,7 +1391,20 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
-        const sessionStore = localSessionStore();
+        // Matr0xshka on #109: every Hermes session a conversation uses is traced to it, so a branch
+        // can name the sessions its earlier turns came from (the sidecar carries their taint).
+        const savedSession = localSessionStore();
+        const sessionStore: typeof savedSession = {
+          load: () => {
+            const v = savedSession.load();
+            if (v) this.traceHermesSession(v.id);
+            return v;
+          },
+          save: (v) => {
+            if (v) this.traceHermesSession(v.id);
+            savedSession.save(v);
+          },
+        };
         const firstSidecarBuild = !this.sidecarReattachTried;
         this.sidecarReattachTried = true;
         if (!firstSidecarBuild) sessionStore.save(null);
@@ -1401,18 +1416,18 @@ export class Store {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
             // #693 review: a branch's earlier turns ride as session history (never the prompt).
-            open: (p, t, persona, history) =>
+            open: (p, t, persona, history, branchOf) =>
               cloudChoice
                 ? history && history.length > 0
-                  ? h.sessionOpenCloud(p, t, persona ?? null, history)
+                  ? h.sessionOpenCloud(p, t, persona ?? null, history, branchOf ?? [])
                   : h.sessionOpenCloud(p, t, persona ?? null)
                 : history && history.length > 0
-                  ? h.sessionOpen(p, t, persona ?? null, history)
+                  ? h.sessionOpen(p, t, persona ?? null, history, branchOf ?? [])
                   : persona
                     ? h.sessionOpen(p, t, persona)
                     : h.sessionOpen(p, t),
             // #691: a member message for the running turn, taken at its next step boundary.
-            steer: (id, text) => h.sessionSteer(id, text),
+            steer: (id, runId, text) => h.sessionSteer(id, runId, text),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
@@ -3192,13 +3207,33 @@ export class Store {
    *  sidecar session holds its own history, so a fresh one would otherwise start blank). Given to
    *  the session open as `history` only while that branch is the conversation on screen; never
    *  put in the system prompt (#693 review). */
-  private branchSeed: { threadId: string; msgs: SessionSeedTurn[] } | null = null;
+  private branchSeed: { threadId: string; seed: SessionSeed } | null = null;
 
   /** The seed for a session opened now, or null. */
-  branchHistory(): SessionSeedTurn[] | null {
+  branchHistory(): SessionSeed | null {
     const seed = this.branchSeed;
     if (!seed || seed.threadId !== this.state.chatThreadId) return null;
-    return seed.msgs;
+    return seed.seed;
+  }
+
+  /** Matr0xshka on #109: the Hermes sidecar sessions each conversation used, in order. `null` = a
+   *  conversation whose earlier sessions are not known (reopened from History): a branch of it
+   *  names none, so the sidecar starts the branch tainted (fail closed). */
+  private threadSessions = new Map<string, string[] | null>();
+
+  /** Record that the conversation on screen uses Hermes session `id`. */
+  traceHermesSession(id: string): void {
+    const t = this.state.chatThreadId;
+    const cur = this.threadSessions.get(t);
+    if (cur === null) return;
+    const ids = cur ?? [];
+    if (!ids.includes(id)) ids.push(id);
+    this.threadSessions.set(t, ids.slice(-16));
+  }
+
+  /** The conversation `threadId`'s earlier sessions are not known (reopened from History). */
+  untraceableThread(threadId: string): void {
+    this.threadSessions.set(threadId, null);
   }
 
   /**
@@ -3225,7 +3260,10 @@ export class Store {
       .filter((m) => !m.error && m.text.trim() !== "" && (m.who === "You" || m.who === "Agent" || m.who === "Hermes"))
       .slice(-40)
       .map((m) => ({ role: m.who === "You" ? ("user" as const) : ("assistant" as const), content: m.text.length > 4000 ? m.text.slice(0, 3999) + "…" : m.text }));
-    this.branchSeed = turns.length > 0 ? { threadId, msgs: turns } : null;
+    // The sessions those turns came from (none when not traceable): the sidecar reads their taint.
+    const branchOf = this.threadSessions.get(fromThread) ?? [];
+    this.branchSeed = turns.length > 0 ? { threadId, seed: { turns, branchOf: branchOf.slice() } } : null;
+    this.threadSessions.set(threadId, []);
     // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
     this.setState({
       chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid, ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}) })),

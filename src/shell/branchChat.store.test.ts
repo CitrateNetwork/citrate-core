@@ -46,7 +46,7 @@ describe("board 01: edit and branch", () => {
     expect(record).toHaveBeenCalled();
     // The new Hermes session opens with the earlier messages as normal earlier turns (the
     // provider's open gets them as `history`, sidecarProvider.steer.test.ts), never in the prompt.
-    expect(store.branchHistory()).toEqual([
+    expect(store.branchHistory()?.turns).toEqual([
       { role: "user", content: "Network status" },
       { role: "assistant", content: "Synced at block 10." },
     ]);
@@ -55,6 +55,28 @@ describe("board 01: edit and branch", () => {
     // Another conversation on screen gets no seed.
     store.setState({ chatThreadId: "tother" });
     expect(store.branchHistory()).toBeNull();
+  });
+
+  it("a branch names the Hermes sessions its earlier turns came from; a reopened chat names none", async () => {
+    // Matr0xshka on #109: the sidecar starts the branch with those sessions' taint, and starts it
+    // tainted when they cannot be traced (a conversation reopened from History).
+    store.setState({ chatThreadId: "ttraced-" + Math.random().toString(36).slice(2) });
+    store.traceHermesSession("s1-ab");
+    store.traceHermesSession("s2-cd");
+    store.traceHermesSession("s1-ab");
+    await store.branchChat("a1", { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual(["s1-ab", "s2-cd"]);
+    // The branch's own sessions are traced too (a branch of a branch carries them).
+    const branch = store.state.chatThreadId;
+    store.traceHermesSession("s3-ef");
+    await store.branchChat(store.state.chatMsgs[1].id, { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual(["s3-ef"]);
+    expect(branch).not.toBe(store.state.chatThreadId);
+    // A chat reopened from History: its earlier sessions are not known, so none are named.
+    store.untraceableThread(store.state.chatThreadId);
+    store.traceHermesSession("s4-gh");
+    await store.branchChat(store.state.chatMsgs[1].id, { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual([]);
   });
 
   it("Retry sends the answer's member message again in a branch", async () => {

@@ -15,10 +15,12 @@ import type { WorkflowRunView } from "./learn";
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
   /** `persona` is passed only when the member chose one (HUP-S3.3). */
-  open(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice, history?: SessionSeedTurn[]): Promise<string>;
+  open(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice, history?: SessionSeedTurn[], branchOf?: string[]): Promise<string>;
   /** #691 — add a member message to the session's running turn (absent = steering unsupported). */
-  steer?(id: string, text: string): Promise<number>;
-  send(id: string, text: string): Promise<void>;
+  steer?(id: string, runId: string, text: string): Promise<number>;
+  /** Resolves with the run id the sidecar gave the turn (a steer must name it), or null/undefined
+   *  from an older sidecar. */
+  send(id: string, text: string): Promise<string | null | void>;
   events(id: string, after: number, waitMs: number): Promise<{ events: { seq: number; event: Record<string, unknown> }[]; lastSeq: number; busy: boolean; pendingCoreCalls?: string[] }>;
   toolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   stop(id: string): Promise<void>;
@@ -116,7 +118,7 @@ export interface SidecarProviderOptions {
   cloud?: { name: string; model: string };
   /** #693 review: earlier turns a new session opens with (a branched conversation); null or empty
    *  = a fresh conversation. Read each time a session is opened. */
-  history?: () => SessionSeedTurn[] | null;
+  history?: () => SessionSeed | null;
 }
 
 /** #693 review: said when the bundled Hermes refuses a branch's earlier turns (it is too old to
@@ -126,6 +128,14 @@ export const BRANCH_HISTORY_REFUSED =
 
 /** #691 — said when a steer cannot be taken mid-run and the run is stopped so it can go next. */
 export const STEER_NOT_TAKEN = "Hermes could not take your message mid-run";
+
+/** #693 review: a branch's earlier turns, and (Matr0xshka on #109) the sidecar sessions they came
+ *  from, so the sidecar starts the branch with their taint. Empty `branchOf` = not traceable,
+ *  which the sidecar treats as tainted. */
+export interface SessionSeed {
+  turns: SessionSeedTurn[];
+  branchOf: string[];
+}
 
 /** An open the sidecar refused because it does not know the `history` key (an older build). */
 export function historyRefused(e: unknown): boolean {
@@ -301,9 +311,9 @@ export function createSidecarProvider(
       const seed = options.history?.() ?? null;
       const prompt = systemPrompt();
       const toolsJson = JSON.stringify(tools());
-      if (seed && seed.length > 0) {
+      if (seed && seed.turns.length > 0) {
         try {
-          sessionId = await api.open(prompt, toolsJson, p, seed);
+          sessionId = await api.open(prompt, toolsJson, p, seed.turns, seed.branchOf);
         } catch (e) {
           if (!historyRefused(e)) throw e;
           // An older sidecar: open without them, and say so (never in the system prompt).
@@ -324,7 +334,7 @@ export function createSidecarProvider(
     openNotice = null;
   };
   // #691: the session a chat turn is running in right now (null between turns), for steering.
-  let liveTurn: string | null = null;
+  let liveTurn: { id: string; runId: string | null } | null = null;
 
   /**
    * Long-poll the session's events and act on them until the work ends: a chat turn ends at its
@@ -715,19 +725,21 @@ export function createSidecarProvider(
       lastSeq = await catchUp(id, callbacks);
       if (sessionId === null) id = await ensureSession();
     }
+    // #691: the id the sidecar gave this turn's run; a steer names it (Matr0xshka on #109).
+    let runId: string | null = null;
     try {
-      await api.send(id, text);
+      runId = (await api.send(id, text)) || null;
     } catch (e) {
       if (!isSessionGone(e)) throw e;
       // HUP-S1.1: Hermes restarted since the last turn. Say so, and continue in a new session.
       dropSession(id);
       callbacks.onActivity?.({ kind: "notice", text: SESSION_GONE_NOTICE });
       id = await ensureSession();
-      await api.send(id, text);
+      runId = (await api.send(id, text)) || null;
     }
     persist();
     sayOpenNotice(callbacks);
-    liveTurn = id;
+    liveTurn = { id, runId };
     let driven: Awaited<ReturnType<typeof drive>>;
     try {
       driven = await drive(id, opts, null);
@@ -888,10 +900,11 @@ export function createSidecarProvider(
       const t = text.trim();
       if (!t) return { ok: false, reason: "the message is empty" };
       if (!api.steer) return { ok: false, reason: "this chat's Hermes cannot take messages mid-run" };
-      const id = liveTurn;
-      if (!id) return { ok: false, reason: "no run is live" };
+      const live = liveTurn;
+      if (!live) return { ok: false, reason: "no run is live" };
+      if (!live.runId) return { ok: false, reason: "the bundled Hermes is too old to take messages mid-run" };
       try {
-        return { ok: true, waiting: await api.steer(id, t) };
+        return { ok: true, waiting: await api.steer(live.id, live.runId, t) };
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         if (/returned 409\b/.test(m)) return { ok: false, reason: "the run was already finishing" };

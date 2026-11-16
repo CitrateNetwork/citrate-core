@@ -13,7 +13,7 @@ function liveApi(pages: Page[]) {
   const gate = new Promise<void>((r) => (release = r));
   const api: SidecarSessionApi = {
     open: vi.fn(async () => "s1"),
-    send: vi.fn(async () => undefined),
+    send: vi.fn(async () => "t-1" as string | null),
     events: vi.fn(async () => {
       if (i === 0) await gate;
       return pages[Math.min(i++, pages.length - 1)];
@@ -47,7 +47,8 @@ describe("sidecar provider: steering the running turn", () => {
     const turn = p.send({ messages: [{ role: "user", content: "nights?" }], callbacks: cb(seen) });
     await vi.waitFor(() => expect(api.events).toHaveBeenCalled());
     expect(await p.steer!("  also skip Fridays ")).toEqual({ ok: true, waiting: 1 });
-    expect(api.steer).toHaveBeenCalledWith("s1", "also skip Fridays");
+    // Bound to the run the sidecar named for this turn (Matr0xshka on #109).
+    expect(api.steer).toHaveBeenCalledWith("s1", "t-1", "also skip Fridays");
     release();
     await turn;
     expect(seen).toContainEqual({ kind: "steered", step: 2, text: "also skip Fridays" });
@@ -71,20 +72,34 @@ describe("sidecar provider: steering the running turn", () => {
     delete old.steer;
     expect((await createSidecarProvider(old, () => "p", () => []).steer!("a")).ok).toBe(false);
   });
+
+  it("a sidecar that names no run for the turn cannot be steered: nothing is posted", async () => {
+    const { api, release } = liveApi([answered]);
+    (api.send as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const p = createSidecarProvider(api, () => "p", () => []);
+    const turn = p.send({ messages: [{ role: "user", content: "x" }], callbacks: cb([]) });
+    await vi.waitFor(() => expect(api.events).toHaveBeenCalled());
+    expect(await p.steer!("a")).toEqual({ ok: false, reason: "the bundled Hermes is too old to take messages mid-run" });
+    expect(api.steer).not.toHaveBeenCalled();
+    release();
+    await turn;
+  });
 });
 
 describe("sidecar provider: a branch opens with its earlier turns", () => {
-  const seed = [
+  const turns = [
     { role: "user" as const, content: "Network status" },
     { role: "assistant" as const, content: "Synced at block 10." },
   ];
+  // The sessions those turns came from, so the sidecar carries their taint (Matr0xshka on #109).
+  const seed = { turns, branchOf: ["s0-parent"] };
 
   it("passes them to the session open as history, and the prompt stays as composed", async () => {
     const { api, release } = liveApi([answered]);
     const p = createSidecarProvider(api, () => "base prompt", () => [], () => null, { history: () => seed });
     release();
     await p.send({ messages: [{ role: "user", content: "and peers?" }], callbacks: cb([]) });
-    expect(api.open).toHaveBeenCalledWith("base prompt", "[]", undefined, seed);
+    expect(api.open).toHaveBeenCalledWith("base prompt", "[]", undefined, turns, ["s0-parent"]);
   });
 
   it("an older Hermes that refuses the history key: the branch opens without it and says so", async () => {
