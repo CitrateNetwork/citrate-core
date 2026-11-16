@@ -60,6 +60,12 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // 0.5.4 WP-H6: dataset rows can come from collected web pages and names can quote them, so both
+  // reads are untrusted. The two writes run only after the member's card; core re-checks.
+  fl_dataset_list: { effect: "none", trust: "untrusted" },
+  fl_dataset_sample: { effect: "none", trust: "untrusted" },
+  fl_dataset_create: { effect: "write", trust: "trusted" }, // a granted folder or the verified conversations, sealed locally
+  fl_dataset_clean_propose: { effect: "write", trust: "trusted" }, // version N+1 bound to the approved diff
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

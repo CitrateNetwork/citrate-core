@@ -18,6 +18,7 @@ import { bridge } from "../bridge";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
+import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -129,6 +130,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
+      vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
+      vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -145,6 +149,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           rows: [["a", 1]],
           title: "Weekly review",
           start: "2099-01-05T09:00",
+          // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
+          dataClass: "orchard-notes",
+          folder: "/home/m/notes",
+          dataset: DATASET_ID,
+          ops: [{ op: "dedupe" }],
         }),
         "m1",
         noop,
