@@ -54,7 +54,7 @@
 //! tuning of an existing, already-modelled parameter, not a new transition.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -446,6 +446,32 @@ pub struct NodeManager {
     /// CORE-D2: the liveness watch's last restart (or refused restart) and its reason, shown on the
     /// node's `sidecars_health` row.
     liveness_note: Mutex<Option<String>>,
+    /// Settings › Node "Resource cap · CPU" (`config.cpuCap`, percent): the share of this
+    /// computer's cores the node's worker threads may use, applied at each node start. 0 or 100 and
+    /// above = no cap.
+    cpu_cap_percent: AtomicU32,
+}
+
+/// The node's worker thread count under a CPU cap: `percent` of `cores`, rounded up, at least one.
+/// `None` = no cap (0, 100 or more, or no cores known).
+pub(crate) fn capped_worker_threads(cores: usize, percent: u32) -> Option<usize> {
+    if percent == 0 || percent >= 100 || cores == 0 {
+        return None;
+    }
+    let n = (cores * percent as usize).div_ceil(100);
+    Some(n.clamp(1, cores))
+}
+
+/// The environment that holds the node's worker threads to a CPU cap: tokio's runtime (the node
+/// builds a default multi-thread runtime, which reads `TOKIO_WORKER_THREADS`) and any rayon pool.
+pub(crate) fn cpu_cap_env(cores: usize, percent: u32) -> Vec<(String, String)> {
+    match capped_worker_threads(cores, percent) {
+        Some(n) => vec![
+            ("TOKIO_WORKER_THREADS".to_string(), n.to_string()),
+            ("RAYON_NUM_THREADS".to_string(), n.to_string()),
+        ],
+        None => Vec::new(),
+    }
 }
 
 /// How long a node start waits for the startup cleanup barrier (SCL-S8.5a). The cleanup runs
@@ -491,6 +517,7 @@ impl NodeManager {
             node_ports: None,
             key_runtime_dir: key_runtime_dir(),
             liveness_note: Mutex::new(None),
+            cpu_cap_percent: AtomicU32::new(0),
         }
         .with_network(crate::network_profile::active_ready())
     }
@@ -511,6 +538,17 @@ impl NodeManager {
             .unwrap_or_default();
         self.network = network;
         self
+    }
+
+    /// Set the CPU cap (percent of cores) the next node start applies. A running node keeps the
+    /// threads it started with.
+    pub fn set_cpu_cap(&self, percent: u32) {
+        self.cpu_cap_percent.store(percent, Ordering::Relaxed);
+    }
+
+    /// The CPU cap the next node start applies (percent; 0 = none).
+    pub fn cpu_cap(&self) -> u32 {
+        self.cpu_cap_percent.load(Ordering::Relaxed)
     }
 
     /// Tests: use this runtime directory for the storage key file (`None` = the fallback).
@@ -938,6 +976,11 @@ impl NodeManager {
         ];
         spec.env
             .extend(node_consensus_env(self.network.as_ref().ok()));
+        // Settings › Node CPU cap: the node's worker threads are held to that share of the cores.
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0);
+        spec.env.extend(cpu_cap_env(cores, self.cpu_cap()));
         // DAG pruning is deliberately NOT set — see `NODE_DAG_PRUNE_RETAIN_ENV`.
         debug_assert!(
             !spec.env.iter().any(|(k, _)| k == NODE_DAG_PRUNE_RETAIN_ENV),
@@ -1655,9 +1698,15 @@ pub fn node_status_sync(state: State<'_, NodeState>) -> std::result::Result<Node
 
 #[tauri::command]
 pub async fn node_start(
+    app: tauri::AppHandle,
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<(), String> {
+    // Settings › Node CPU cap, read fresh so a change applies at this start (a running node
+    // keeps its threads). An unreadable config keeps the cap set at app start.
+    if let Ok(cfg) = crate::config::config_read_sync(app.clone()) {
+        state.0.set_cpu_cap(cfg.cpu_cap);
+    }
     // W1.5 — arm the producer with a coinbase when the vault is unlocked.
     // Best-effort: a locked or absent wallet just starts a plain follower.
     if let Ok(info) = crate::wallet::address_auto_unlocked(&custody.0) {

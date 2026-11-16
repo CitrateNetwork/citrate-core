@@ -2111,3 +2111,42 @@ fn the_node_config_genesis_check_is_honest_and_fails_closed() {
     assert_eq!(check_node_config_genesis("[chain]\n", &alpha), Ok(()), "absent on r1005");
     assert!(check_node_config_genesis("[chain]\ngenesis_profile = \"r1006\"\n", &alpha).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// 0.5.4 — Settings › Node CPU cap reaches the node at start
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_cpu_cap_is_a_share_of_the_cores_rounded_up_and_at_least_one() {
+    assert_eq!(capped_worker_threads(8, 25), Some(2));
+    assert_eq!(capped_worker_threads(8, 50), Some(4));
+    assert_eq!(capped_worker_threads(8, 75), Some(6));
+    assert_eq!(capped_worker_threads(10, 25), Some(3), "rounded up");
+    assert_eq!(capped_worker_threads(1, 25), Some(1), "never zero threads");
+    assert_eq!(capped_worker_threads(8, 0), None, "no cap");
+    assert_eq!(capped_worker_threads(8, 100), None, "no cap");
+    assert_eq!(capped_worker_threads(0, 50), None, "cores unknown");
+}
+
+#[test]
+fn the_node_spec_carries_the_cpu_cap_set_before_start() {
+    let (mgr, _fake, _data) = stub_manager("cpu-cap");
+    let threads = |spec: &crate::supervisor::SidecarSpec| {
+        spec.env
+            .iter()
+            .find(|(k, _)| k == "TOKIO_WORKER_THREADS")
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(threads(&mgr.build_spec()), None, "no cap until one is set");
+    mgr.set_cpu_cap(25);
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+    let want = capped_worker_threads(cores, 25).map(|n| n.to_string());
+    let spec = mgr.build_spec();
+    assert_eq!(threads(&spec), want);
+    assert_eq!(
+        spec.env.iter().find(|(k, _)| k == "RAYON_NUM_THREADS").map(|(_, v)| v.clone()),
+        want
+    );
+    mgr.set_cpu_cap(100);
+    assert_eq!(threads(&mgr.build_spec()), None);
+}

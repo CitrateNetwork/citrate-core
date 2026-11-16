@@ -527,7 +527,13 @@ pub fn run() {
             // storage master key lives in the OS keyring (never on disk clear)
             // and is handed to the spawned node in an owner-only key file (CITRATE_STORAGE_KEY_FILE).
             // node_status reads REAL height/peers from the node's local RPC.
-            app.manage(node::build_node_state(&app.handle().clone())?);
+            let node_state = node::build_node_state(&app.handle().clone())?;
+            // Settings › Node CPU cap, from the persisted config, for starts before the first
+            // `node_start` (which re-reads it).
+            if let Ok(cfg) = config::config_read_sync(app.handle().clone()) {
+                node_state.0.set_cpu_cap(cfg.cpu_cap);
+            }
+            app.manage(node_state);
             // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
             // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
             node::spawn_mining_watchdog(app.handle().clone());
