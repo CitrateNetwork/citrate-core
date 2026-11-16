@@ -82,7 +82,7 @@ describe("component-pins check", () => {
   // release at the build step. An x86_64 pin is an inline sha256 recorded by the Linux builder;
   // an aarch64 pin is the line of its runtime-deps asset (release.yml's Linux aarch64 job stages
   // those bytes, as the macOS job does).
-  it("pins every cargo sidecar for both Linux triples, except a node target the network cut does not build", () => {
+  it("pins every cargo sidecar for both Linux triples, except a target the owner marked not built", () => {
     const m = JSON.parse(read(repo, "release/components.json"));
     const pins = parsePins(read(repo, "src-tauri/runtime-deps.sha256"));
     // release/network-cut.json notBuilt (0.5.3, owner 2026-11-12: no Linux aarch64 node): such a
@@ -94,6 +94,9 @@ describe("component-pins check", () => {
     for (const c of m.components.filter((x) => x.build && x.build.kind === "cargo")) {
       for (const t of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {
         if (c.id === "citrate-node" && notBuilt[t]) continue;
+        // 0.5.4 (owner 2026-11-16, as 0.5.3): a sidecar whose rev moved this release and has no
+        // builder for a Linux triple is pending with an owner "not built" reason, never pinned.
+        if (/^not built for this release: owner /.test(c.pending?.[t] ?? "")) continue;
         let d = "";
         try {
           d = pinnedDigest(m, pins, c.id, t);
@@ -140,8 +143,8 @@ describe("component-pins check", () => {
 
   it("refuses an artifact whose runtime-deps asset has no pin", () => {
     const r = fixture();
-    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-05243c72bd52", "  hermes-aarch64-apple-darwin-renamed");
-    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-05243c72bd52 is pinned 0 times/);
+    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-367ad79e3f4c", "  hermes-aarch64-apple-darwin-renamed");
+    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-367ad79e3f4c is pinned 0 times/);
   });
 
   it("refuses an asset pinned twice (ambiguous)", () => {
@@ -188,7 +191,7 @@ describe("component-pins check", () => {
 
   it("refuses release.yml that does not stage a pinned sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-05243c72bd52\n", "");
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-367ad79e3f4c\n", "");
     expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar'/);
   });
 
@@ -208,8 +211,8 @@ describe("component-pins check", () => {
   // pinned runtime-deps asset, Kubo through the pinned engine, requirements verified.
   it("refuses release.yml that does not stage a pinned Linux aarch64 sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-unknown-linux-gnu-05243c72bd52\n", "");
-    expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar' for aarch64-unknown-linux-gnu \(hermes-aarch64-unknown-linux-gnu-05243c72bd52\)/);
+    edit(r, ".github/workflows/release.yml", "              cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260\n", "");
+    expect(errorsOf(r)).toMatch(/release.yml does not stage 'cluster-daemon' for aarch64-unknown-linux-gnu \(cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260\)/);
   });
 
   it("refuses release.yml that stages the Linux aarch64 llama-server outside its pin", () => {

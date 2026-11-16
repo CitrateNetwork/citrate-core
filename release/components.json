@@ -213,12 +213,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-agent-runtime",
         "checkout": "citrate-agent-runtime",
-        "rev": "05243c72bd521a55bc38333eaf6ae6efacee3816"
+        "rev": "367ad79e3f4c2e752111d725d440e8f2ec0fc0bc"
       },
       "federation": {
-        "rev": "05243c72bd521a55bc38333eaf6ae6efacee3816",
+        "rev": "367ad79e3f4c2e752111d725d440e8f2ec0fc0bc",
         "status": "match",
-        "note": "citrate-federation#408 (Rule 12, merges before this) pins [repos.citrate-agent-runtime] and the citrate-core externalBin:hermes row at 05243c72: main with #101 (a session on core's model proxy, D-11) and #102. Shipped in 0.5.0 and 0.5.1: 626486b8 (#72)."
+        "note": "citrate-federation#611 (Rule 12, merges before this) pins [repos.citrate-agent-runtime] and the citrate-core externalBin:hermes row at 367ad79e: main with #106, #110 (RUSTSEC-2026-0387 to 2027-01-31) and #107 (V1 per-project opt-in). Shipped in 0.5.2 and 0.5.3: 05243c72 (#101, #102)."
       },
       "build": {
         "kind": "cargo",
@@ -231,17 +231,16 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "hermes-aarch64-apple-darwin-05243c72bd52",
-          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-10-27 (rustc 1.96.0, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root; uploaded to runtime-deps 2026-10-27 (owner-approved, WP-S1-REPIN, new asset name), download-back sha256 matches the pin"
+          "runtime_deps_asset": "hermes-aarch64-apple-darwin-367ad79e3f4c",
+          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-11-16 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root (f90bfc03... both builds); uploaded to runtime-deps 2026-11-16 under a new asset name (owner-approved), download-back sha256 matches the pin"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "4268f3d12f9f7027a2f74ad844c9142ee16831ae5b3521968b2dea72fa471af5",
-          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), x86_64 on citrate-core-linux-build (O-17), 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "runtime_deps_asset": "hermes-aarch64-unknown-linux-gnu-05243c72bd52",
-          "evidence": "DGX lane build at 05243c72 with scripts/build-hermes.sh --print-digest (rustc 1.96.0, --locked), aarch64 on the DGX spark-2e01, 2026-10-27; digest posted by DGX for the 0.5.2 pins (core#580 review, relayed on fed#331)"
+          "sha256": "015e7b04136a4994eaf8de9484cba81289e7ceab11ea2052e8c47d9b634e792d",
+          "evidence": "scripts/build-hermes.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-16; same bytes from a second build after removing the target dir. Replaces the 0.5.2 pin 4268f3d1 (05243c72)"
         }
+      },
+      "pending": {
+        "aarch64-unknown-linux-gnu": "not built for this release: owner 2026-11-16 (as 0.5.3): 0.5.4 ships macOS and Linux x86_64 only; with the DGX sold, an aarch64 hermes pin is first built by release.yml's release-linux-aarch64 dry run (docs/RELEASE_LINUX.md)"
       }
     },
     {
