@@ -185,6 +185,7 @@ mod services;
 // CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
 mod sidecar_logs;
 // #613 review: the secret shapes kept off the disk and out of the diagnostics bundle.
+mod fl_collect;
 mod fl_dataset_gate;
 mod pii_scan;
 mod secret_shapes;
@@ -1021,6 +1022,12 @@ pub fn run() {
             fl_dataset_gate::fl_dataset_pii_scan,
             fl_dataset_gate::fl_dataset_license_check,
             fl_dataset_gate::fl_dataset_publish_check,
+            // WP-H8 (0.5.4): the compliant collector.
+            fl_collect::fl_collect_policy,
+            fl_collect::fl_collect_source_check,
+            fl_collect::fl_collect_plan,
+            fl_collect::fl_collect_plan_decide,
+            fl_collect::fl_collect_run,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).

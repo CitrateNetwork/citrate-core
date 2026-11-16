@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "updated": "2026-11-16",
+  "curator": "Citrate (owner decision 2026-11-16: Citrate curates the allow and deny lists; changes ship in the bundle under a new version)",
+  "allow": [
+    {
+      "host": "en.wikipedia.org",
+      "license": "CC-BY-SA-4.0",
+      "evidence": "https://en.wikipedia.org/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License"
+    }
+  ],
+  "deny": [
+    { "host": "facebook.com", "reason": "its terms forbid automated collection, and its pages are personal profiles" },
+    { "host": "instagram.com", "reason": "its terms forbid automated collection, and its pages are personal profiles" },
+    { "host": "linkedin.com", "reason": "its terms forbid automated collection, and its pages are personal profiles" },
+    { "host": "x.com", "reason": "its terms forbid automated collection without a written agreement" },
+    { "host": "twitter.com", "reason": "its terms forbid automated collection without a written agreement" },
+    { "host": "tiktok.com", "reason": "its terms forbid automated collection" },
+    { "host": "reddit.com", "reason": "its terms forbid automated collection without a data agreement" },
+    { "host": "quora.com", "reason": "its terms forbid automated collection" },
+    { "host": "medium.com", "reason": "paywalled articles; its terms forbid automated collection" },
+    { "host": "nytimes.com", "reason": "paywalled; its terms forbid automated collection" },
+    { "host": "wsj.com", "reason": "paywalled; its terms forbid automated collection" },
+    { "host": "ft.com", "reason": "paywalled; its terms forbid automated collection" },
+    { "host": "bloomberg.com", "reason": "paywalled; its terms forbid automated collection" },
+    { "host": "spokeo.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "whitepages.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "beenverified.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "truepeoplesearch.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "fastpeoplesearch.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "intelius.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "peoplefinders.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "radaris.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "mylife.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "pipl.com", "reason": "people-search results about individuals are never collected" },
+    { "host": "haveibeenpwned.com", "reason": "breach lookups about individuals are never collected" },
+    { "host": "shodan.io", "reason": "OSINT results are never collected" },
+    { "host": "mail.google.com", "reason": "private messages are never collected" },
+    { "host": "outlook.live.com", "reason": "private messages are never collected" },
+    { "host": "discord.com", "reason": "private messages and group chats are never collected" },
+    { "host": "slack.com", "reason": "private messages and group chats are never collected" },
+    { "host": "web.whatsapp.com", "reason": "private messages are never collected" },
+    { "host": "messenger.com", "reason": "private messages are never collected" },
+    { "host": "web.telegram.org", "reason": "private messages are never collected" },
+    { "host": "t.me", "reason": "private messages and group chats are never collected" },
+    { "host": "drive.google.com", "reason": "files behind a sign-in are never collected" },
+    { "host": "docs.google.com", "reason": "files behind a sign-in are never collected" },
+    { "host": "dropbox.com", "reason": "files behind a sign-in are never collected" }
+  ]
+}
