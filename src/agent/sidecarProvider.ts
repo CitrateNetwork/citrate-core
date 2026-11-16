@@ -247,6 +247,9 @@ export function createSidecarProvider(
   // #643: every sidecar-hosted call of the current turn (call id -> tool name), so each result is
   // reported as a `tool_output` for the final-answer check.
   const sidecarHostedCalls = new Map<string, string>();
+  // Board 01 (run timeline): calls the loop refused to dispatch (call id -> tool name), so their
+  // result closes the refused step.
+  const refusedCalls = new Map<string, string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -426,6 +429,8 @@ export function createSidecarProvider(
       let idle = 0;
       for (;;) {
         const page = await api.events(id, lastSeq, POLL_WAIT_MS);
+        // Board 01 (run timeline): the events of this page arrived together, at this time.
+        if (page.events.some((e) => e.seq > lastSeq)) callbacks.onActivity?.({ kind: "page", at: Date.now() });
         const seen = lastSeq;
         lastSeq = Math.max(lastSeq, page.lastSeq);
         // Events at or below what this provider already processed are re-deliveries: skip them.
@@ -457,6 +462,11 @@ export function createSidecarProvider(
             inFlight.delete(callId);
             // #643: a sidecar-hosted tool's result (node MCP tools among them) is reported, even
             // while a stopped turn drains, so the final answer is checked against it.
+            const refusedTool = refusedCalls.get(callId);
+            if (refusedTool !== undefined) {
+              refusedCalls.delete(callId);
+              callbacks.onActivity?.({ kind: "tool_end", callId, tool: refusedTool, status: String(ev.status ?? ""), content: String(ev.content ?? "") });
+            }
             const hostedTool = sidecarHostedCalls.get(callId);
             if (hostedTool !== undefined) {
               sidecarHostedCalls.delete(callId);
@@ -476,6 +486,15 @@ export function createSidecarProvider(
               if (change) callbacks.onActivity?.({ kind: "file_change", change });
             }
             continue;
+          }
+          if (type === "tool_call" && ev.host !== "core") {
+            // Board 01 (run timeline): a call core does not run is still a step Hermes took.
+            const c = ev.call as { id?: unknown; name?: unknown } | undefined;
+            if (c && typeof c.id === "string" && typeof c.name === "string") {
+              const host = ev.host === "sidecar" ? "sidecar" : "refused";
+              if (host === "refused") refusedCalls.set(c.id, c.name);
+              callbacks.onActivity?.({ kind: "tool_start", callId: c.id, tool: c.name, host });
+            }
           }
           if (type === "tool_call" && ev.host === "sidecar") {
             const c = ev.call as { id?: unknown; name?: unknown } | undefined;
@@ -657,6 +676,7 @@ export function createSidecarProvider(
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
     sidecarHostedCalls.clear();
+    refusedCalls.clear();
     const reused = sessionId !== null;
     let id = await ensureSession();
     // Start from the session's current end: a turn sent from elsewhere (the CLI, an MCP client)
@@ -738,6 +758,7 @@ export function createSidecarProvider(
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
     sidecarHostedCalls.clear();
+    refusedCalls.clear();
     const fresh = page.events.filter((e) => e.seq > saved.lastSeq);
     // The sidecar keeps a bounded event log: if events after the saved point were dropped while
     // the view was away, say so instead of skipping them silently.
@@ -789,6 +810,7 @@ export function createSidecarProvider(
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
     sidecarHostedCalls.clear();
+    refusedCalls.clear();
     const start = api.trackWorkflowRun.bind(api);
     const {
       id,

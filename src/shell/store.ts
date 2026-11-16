@@ -129,6 +129,9 @@ import {
   usageReported,
   verifierReported,
 } from "./slices/turnActivity";
+import { modelsSlice } from "./slices/models";
+import { routerChoicesFor } from "../agent/modelRouterSources";
+import { newRun, runDraft, runEnd, runModelTime, runThink, runToolEnd, runToolStart, type RunOutcome, type RunRecord } from "../agent/runTimeline";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { agentSlice } from "./slices/agent";
@@ -928,7 +931,8 @@ export class Store {
       return false;
     }
     this.archiveChat();
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    // A follow-up queued in the old conversation belongs to it: it is dropped, never sent here.
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -951,7 +955,7 @@ export class Store {
     }
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatQueue: [] });
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -982,7 +986,7 @@ export class Store {
     }
     const ok = await forgetAllThreads();
     if (!ok) return false;
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -1495,7 +1499,7 @@ export class Store {
         : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
-    this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
+    this.setState({ chatProviderLabel: p.label, chatProviderKind: kind, chatHermesDown: this.sidecarDown });
   }
 
   /**
@@ -3868,6 +3872,8 @@ export class Store {
         if (this.turnAbort === ac) this.turnAbort = null;
         this.scrollChat();
         this.save();
+        // Board 01: a Steer now that stopped the held message goes next (it is never left stuck).
+        this.drainChatQueue("stopped");
         return;
       }
       provider = routed.provider;
@@ -3878,14 +3884,28 @@ export class Store {
     const toolOutputs: TurnToolOutput[] = [];
     // #681: whether the sidecar's `node` MCP server is core's own node entry.
     const nodeIsCore = await this.nodeMcpTrusted();
+    // Board 01: the reply's run timeline. The model is named as the header showed it at the start.
+    const turnModel = this.routerActive(routerChoicesFor(modelsSlice.get(), this.state.chatRoute)).label;
     let started = false;
     const ensure = () => {
       if (started) return;
       started = true;
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: asstId, who: "Agent", text: "", chips: [], streaming: true }]) }));
+      this.setState((s) => ({
+        chatMsgs: s.chatMsgs.concat([{ id: asstId, who: "Agent", text: "", chips: [], streaming: true, run: newRun(Date.now()), model: turnModel }]),
+      }));
     };
     const patch = (fn: (m: ChatMsg) => ChatMsg) =>
       this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? fn(m) : m)) }));
+    // Board 01: events of one provider page arrived together, at `clock`; core-run calls are timed
+    // by core itself, so a core call clears the clock until the next page.
+    let clock: number | null = null;
+    const evNow = () => clock ?? Date.now();
+    const runPatch = (fn: (r: RunRecord) => RunRecord) => {
+      ensure();
+      patch((m) => ({ ...m, run: fn(m.run ?? newRun(Date.now())) }));
+    };
+    ensure();
+    let turnOutcome: RunOutcome = "failed";
     // HUP-S0.6: coalesce streamed tokens — one render per ~frame instead of one full-app render
     // per token (Root subscribes to the whole state).
     let pending = "";
@@ -3922,6 +3942,8 @@ export class Store {
             if (stopped()) return;
             notePhase(st);
             if (st === "streaming") ensure();
+            if (st === "thinking") runPatch((r) => runThink(r, evNow()));
+            else if (st === "streaming") runPatch((r) => runDraft(r, evNow()));
             this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
           },
           onToken: (tk) => {
@@ -3947,13 +3969,17 @@ export class Store {
             if (stopped()) return "stopped by the member before this ran; nothing was done.";
             flush();
             toolStarted(call.id, call.name);
+            clock = null;
+            runPatch((r) => runToolStart(r, call.id, call.name, Date.now(), "core"));
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
               toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
+              runPatch((r) => runToolEnd(r, call.id, call.name, this.takeCallOutcome(call.id), result, Date.now()));
               return result;
             } catch (e) {
               toolFinished(call.id, false);
+              runPatch((r) => runToolEnd(r, call.id, call.name, "error", e instanceof Error ? e.message : String(e), Date.now()));
               throw e;
             }
           },
@@ -3961,6 +3987,19 @@ export class Store {
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
+            // Board 01: the run timeline, from the provider's own reports.
+            if (ev.kind === "page") {
+              clock = ev.at;
+              return;
+            }
+            if (ev.kind === "tool_start") {
+              if (!stopped()) runPatch((r) => runToolStart(r, ev.callId, ev.tool, evNow(), "events"));
+              return;
+            }
+            if (ev.kind === "tool_end") {
+              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow()));
+              return;
+            }
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
@@ -3987,6 +4026,7 @@ export class Store {
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
               toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
+              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow()));
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
@@ -3995,8 +4035,14 @@ export class Store {
               return;
             }
             if (stopped()) return;
-            if (ev.kind === "step") noteStep(ev.step);
-            else if (ev.kind === "usage") usageReported(ev);
+            if (ev.kind === "step") {
+              noteStep(ev.step);
+              runPatch((r) => runThink(r, evNow(), ev.step));
+            } else if (ev.kind === "usage") {
+              usageReported(ev);
+              // The model server's own time for the call is the think step's duration.
+              if (ev.generationMs !== null) runPatch((r) => runModelTime(r, (ev.promptMs ?? 0) + (ev.generationMs ?? 0)));
+            }
             else if (ev.kind === "plan") planReported(ev.steps, ev.source ?? "workflow");
             else if (ev.kind === "verifier") verifierReported(ev);
           },
@@ -4010,6 +4056,7 @@ export class Store {
       // #643: no deploy claim is kept unless this turn's tools confirmed it (receipt + code).
       await this.checkAnswerClaims(asstId, toolOutputs);
       endTurn("answered");
+      turnOutcome = "answered";
       // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
       this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
@@ -4020,6 +4067,7 @@ export class Store {
       if (e instanceof TurnStopped || stopped()) {
         patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
         endTurn("stopped");
+        turnOutcome = "stopped";
       } else {
         // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
         console.error(e);
@@ -4029,11 +4077,86 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
-    patch((m) => ({ ...m, streaming: false }));
+    patch((m) => ({ ...m, streaming: false, run: m.run ? runEnd(m.run, turnOutcome, Date.now()) : m.run }));
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
     this.save();
+    // Board 01: a follow-up typed during the run goes now (a steer, or the queue after a finish).
+    this.drainChatQueue(turnOutcome);
   }
+
+  /** Board 01: the structured outcome of core's last run of a call id: "denied" when the member's
+   *  decision (or the tool's own status) said no, "error" when the tool reported an error status,
+   *  "ok" otherwise. Read once by the run timeline. */
+  private callOutcomes = new Map<string, "ok" | "denied" | "error">();
+
+  /** Take (and forget) the structured outcome of the call `id` ("ok" when none was recorded). */
+  takeCallOutcome(id: string): "ok" | "denied" | "error" {
+    const r = this.callOutcomes.get(id) ?? "ok";
+    this.callOutcomes.delete(id);
+    return r;
+  }
+
+  /** Whether the call `id` was refused (and forget its outcome). */
+  takeCallRefusal(id: string): boolean {
+    return this.takeCallOutcome(id) === "denied";
+  }
+
+  // ---------- Board 01 — Stop, Steer now, Queue for after ----------
+  private queueSeq = 0;
+
+  /** Whether a run is live (a message typed now is a steer or a queued follow-up). */
+  chatRunLive(): boolean {
+    return this.state.chatStatus !== "ready" && this.turnAbort !== null;
+  }
+
+  /** Queue a follow-up to send when the live run finishes. Empty text is ignored. */
+  queueChat(text: string): void {
+    const t = (text || "").trim();
+    if (!t) return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, threadId: s.chatThreadId }]) }));
+    if (this.chatInputEl) this.chatInputEl.value = "";
+  }
+
+  /**
+   * Steer now: stop the live run and send this message as soon as it has ended. Hermes's loop takes
+   * no message in the middle of a run, so steering is Stop plus the next turn; what the run did
+   * before the stop stays in the transcript with its steps.
+   */
+  steerChat(text: string): void {
+    const t = (text || "").trim();
+    if (!t) return;
+    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId: s.chatThreadId }, ...s.chatQueue.filter((q) => !q.steer)] }));
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    if (this.chatRunLive()) this.stopAgentTurn();
+    else this.drainChatQueue("answered");
+  }
+
+  /** Take a queued follow-up back out (it is not sent). */
+  dropQueuedChat(id: string): void {
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((q) => q.id !== id) }));
+  }
+
+  /** After a run: a steer goes at once; queued follow-ups go one per finished run, and wait (for
+   *  the member to send or drop them) when the member stopped the run or it failed. */
+  private drainChatQueue(outcome: RunOutcome): void {
+    // Only this conversation's follow-ups: one typed elsewhere is never sent here.
+    const q = this.state.chatQueue.filter((x) => x.threadId === this.state.chatThreadId);
+    if (q.length === 0 || this.state.chatStatus !== "ready") return;
+    const next = q.find((x) => x.steer) ?? (outcome === "answered" ? q[0] : undefined);
+    if (!next) return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== next.id) }));
+    void this.sendChat(next.text);
+  }
+
+  /** Send a queued follow-up now (only when no run is live). */
+  sendQueuedNow(id: string): void {
+    const item = this.state.chatQueue.find((q) => q.id === id);
+    if (!item || item.threadId !== this.state.chatThreadId || this.state.chatStatus !== "ready") return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== id) }));
+    void this.sendChat(item.text);
+  }
+
   /** #643 — what each conversation (by thread id) has established about deploys. */
   private deployLedgers = new Map<string, DeployLedger>();
 
@@ -4226,9 +4349,12 @@ export class Store {
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
     // HUP-S7.6 (US-7.4 AC1): every approval this call asks for shows in the Activity monitor,
     // pending until the member decides. `signal`: a daemon run's; its cards close when the run ends.
+    // Board 01: the member's last decision on this call, the structured source of "refused".
+    let lastDecision: string | null = null;
     const tracked = async (decide: () => Promise<string>): Promise<string> => {
       approvalNoted(call.id, call.name, "pending");
       const r = await decide();
+      lastDecision = r;
       approvalNoted(call.id, call.name, r === "approved" ? "approved" : "declined");
       return r;
     };
@@ -4942,6 +5068,10 @@ export class Store {
     }
     // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
+    // Board 01: refused when the member's decision (or the tool's own structured status) said no.
+    const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
+    this.callOutcomes.set(call.id, refused ? "denied" : status === "error" || status === "failed" ? "error" : "ok");
+    if (this.callOutcomes.size > 64) this.callOutcomes.delete(this.callOutcomes.keys().next().value as string);
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +

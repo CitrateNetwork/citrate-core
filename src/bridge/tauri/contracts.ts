@@ -73,6 +73,9 @@ export const tauriContracts: ContractsDomain = {
   viewCall(target: string, address: string, calldata: string) {
     return invoke<string>("contract_view_call", { target, address, calldata });
   },
+  viewCallAt(target: string, address: string, calldata: string) {
+    return invoke<{ data: string; block: number; rpc: string }>("contract_view_call_at", { target, address, calldata });
+  },
   proposeWrite(address: string, calldata: string, valueWei: string) {
     return invoke<CeremonyView>("contract_write_propose", { address, calldata, valueWei });
   },

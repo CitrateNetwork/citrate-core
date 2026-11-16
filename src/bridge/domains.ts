@@ -2207,6 +2207,9 @@ export interface ContractsDomain {
   codeSize(target: string, address: string): Promise<number>;
   /** HUP-S6.7 — a read-only eth_call; resolves with the raw `0x` return data. */
   viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** Board 01 — the same eth_call pinned to the RPC's head block (`contract_view_call_at`): the
+   *  data, the block it ran at and the RPC host, so Hermes's answer names its block. */
+  viewCallAt(target: string, address: string, calldata: string): Promise<{ data: string; block: number; rpc: string }>;
   /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
   proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
   /** CORE-A1 — find a contract by name or address: the embedded 40204 book + on-chain registries. */

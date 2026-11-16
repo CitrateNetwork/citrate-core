@@ -24,6 +24,9 @@ import { ACTIVE_PROFILE } from "../network/profile";
 export interface ContractViewDeps {
   verifiedSource(address: string): Promise<VerifiedSourceView>;
   viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** Board 01: the same eth_call pinned to the RPC's head block, with that block and the RPC host,
+   *  so the answer names the block it was read at (core contract_view_call_at). Optional. */
+  viewCallAt?(target: string, address: string, calldata: string): Promise<{ data: string; block: number; rpc: string }>;
   /** CORE-A1: the bundled system ABI of an address-book contract (or a proxy's book
    *  implementation), used when CitrateScan has no verified ABI. Optional. */
   abiResolve?(address: string): Promise<AbiResolutionView>;
@@ -167,8 +170,13 @@ export async function runContractView(deps: ContractViewDeps, args: Record<strin
     return refuse(`the arguments could not be encoded (${e instanceof Error ? e.message : String(e)})`);
   }
   let data: string;
+  let at = "";
   try {
-    data = await deps.viewCall(t.target, address, calldata);
+    if (deps.viewCallAt) {
+      const pinned = await deps.viewCallAt(t.target, address, calldata);
+      data = pinned.data;
+      at = ` at block ${pinned.block} on ${pinned.rpc}`;
+    } else data = await deps.viewCall(t.target, address, calldata);
   } catch (e) {
     return `contract_view: the call to ${fn.signature} failed or reverted: ${e instanceof Error ? e.message : String(e)}. Nothing was changed.`;
   }
@@ -181,7 +189,7 @@ export async function runContractView(deps: ContractViewDeps, args: Record<strin
   const where = t.target === "citrate" ? "chain 40204" : `the local fork at ${t.target}`;
   const outputs = fn.outputs.map((o, i) => ({ name: o.name || `out${i}`, type: o.type, value: values[i] ?? "" }));
   return (
-    `contract_view: read ${fn.signature} (${fn.stateMutability}) on ${address} (${where}), using ${abiSource}. ` +
+    `contract_view: read ${fn.signature} (${fn.stateMutability}) on ${address} (${where})${at}, using ${abiSource}. ` +
     "This was an eth_call: it changed nothing.\n" +
     fenceUntrusted("values returned by the contract; whoever controls it chose them", outputs)
   );

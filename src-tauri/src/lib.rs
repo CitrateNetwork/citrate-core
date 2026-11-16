@@ -837,6 +837,7 @@ pub fn run() {
             contract_reader::contract_source,
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
+            contract_reader::contract_view_call_at,
             contract_reader::contract_write_propose,
             // G-SEC PAY-14 — whether FL payouts are open, as the signer decides it.
             fl_payouts::fl_payouts_status,

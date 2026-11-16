@@ -112,7 +112,16 @@ export type TurnActivityEvent =
   | { kind: "tool_output"; callId: string; tool: string; status: string; content: string }
   /** #681: the sidecar's final-answer check removed deploy claims no receipt or chain read
    *  supports; the next final answer is the corrected one. */
-  | { kind: "answer_check"; findings: string[] };
+  | { kind: "answer_check"; findings: string[] }
+  /** FL design board 01 (run timeline): the loop announced a call it runs itself (`sidecar`) or
+   *  runs nowhere (`refused`: no such tool, or one that needs an approval its host cannot ask
+   *  for). Core-hosted calls are reported through `onToolCall` instead. */
+  | { kind: "tool_start"; callId: string; tool: string; host: "sidecar" | "refused" }
+  /** The result of a `refused` call (sidecar-hosted results arrive as `tool_output`). */
+  | { kind: "tool_end"; callId: string; tool: string; status: string; content: string }
+  /** The provider received a page of events at `at` (ms since epoch). The events reported after
+   *  it, until the next page, arrived together, so the gap between two of them is not known. */
+  | { kind: "page"; at: number };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent

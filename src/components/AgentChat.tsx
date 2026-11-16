@@ -28,8 +28,23 @@ import { LocalModelAsk } from "./LocalModelAsk";
 import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
+import { RunReceipts, RunTimeline } from "./RunTimeline";
+import { ChatCommandBar, chatCommands, exactCommand, slashMatches, type ChatCommand } from "./ChatCommandBar";
+import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
+import { stepAnnouncement } from "../agent/runTimeline";
+import { useAuthority } from "../fl/authority";
+import { HicBadge } from "../fl/primitives";
+import { startRuntime } from "../shell/slices/agent";
+import { isMacPlatform } from "../shell/layoutShortcuts";
 
-const SUGGESTIONS = ["What is my staking position?", "Show my validator rewards", "Journal: node held through the night", "Network status"];
+/** FL design board 01: the new-chat starters. Each names what Hermes really does with it. Never
+ *  "earn" (owner Q7): the GPU starter is about rounds and the member's terms. */
+export const STARTERS: { t: string; d: string }[] = [
+  { t: "Put my GPU to work on rounds at night.", d: "Checks this machine and the network's rounds" },
+  { t: "Can this machine join group rounds?", d: "Reads the round coordinator and this device" },
+  { t: "What is my staking position?", d: "Reads ValidatorRegistry on this node" },
+  { t: "Network status", d: "Reads this node's height and peers" },
+];
 
 // The header dot colour reflects the LIVE provider kind (store.reflectProvider): green when a real
 // backend answers (local llama-server or the gateway), amber for the built-in demo. The label text
@@ -52,6 +67,17 @@ function PlanGlyph() {
       <path d="M9 4 V3 H15 V4 M8.5 10 L10 11.5 L12.5 9 M14 10.5 H16 M8.5 15.5 L10 17 L12.5 14.5 M14 16 H16"></path>
     </svg>
   );
+}
+
+/** Whether an Esc press is for this chat: the pane is on screen, no dialog is open, and focus is
+ *  inside the pane or on nothing in particular. */
+export function escTargetsChat(pane: HTMLElement | null): boolean {
+  if (!pane || !pane.isConnected || typeof document === "undefined") return false;
+  if (document.visibilityState === "hidden") return false;
+  if (pane.closest("[hidden],[aria-hidden='true']")) return false;
+  if (document.querySelector("[role='dialog'],[role='alertdialog'],[aria-modal='true'],dialog[open]")) return false;
+  const a = document.activeElement;
+  return !a || a === document.body || pane.contains(a);
 }
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
@@ -118,10 +144,114 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     return store.sendChat(text);
   };
 
-  const onSend = () => {
+  // Board 01: typing while a run is live offers Steer now or Queue for after (the text waits here).
+  const [followUp, setFollowUp] = useState<string | null>(null);
+  const runLive = chatBusy;
+  const submit = (raw: string) => {
+    const text = raw.trim();
+    if (!text) return;
     setBuildAsk(false);
-    void send(store.chatInputEl ? store.chatInputEl.value : "");
+    setSlashOpen(false);
+    if (runLive) {
+      setFollowUp(text);
+      return;
+    }
+    void send(text);
   };
+  const onSend = () => submit(store.chatInputEl ? store.chatInputEl.value : "");
+  const steer = () => {
+    if (followUp === null) return;
+    store.steerChat(followUp);
+    setFollowUp(null);
+  };
+  const queue = () => {
+    if (followUp === null) return;
+    store.queueChat(followUp);
+    setFollowUp(null);
+  };
+  useEffect(() => {
+    if (!runLive && followUp !== null) {
+      // The run ended before a choice: the text goes back in the composer, unsent.
+      const el = store.chatInputEl;
+      if (el && !el.value.trim()) el.value = followUp;
+      setFollowUp(null);
+    }
+  }, [runLive, followUp, store]);
+
+  // Board 01: Esc stops a live run (not while an approval sheet or the command bar is open: Esc
+  // declines or closes those). Cmd K (Ctrl K) opens the chat's command bar.
+  const [barOpen, setBarOpen] = useState(false);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashText, setSlashText] = useState("");
+  const sheetOpen = s.queue.length > 0 || s.walletReview !== null;
+  useEffect(() => {
+    const mac = isMacPlatform();
+    const onKey = (e: KeyboardEvent) => {
+      const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (mod && !e.altKey && !e.shiftKey && (e.code === "KeyK" || e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setBarOpen((v) => !v);
+        return;
+      }
+      // Esc stops only this chat's run: not a key repeat, no dialog open anywhere, this chat on
+      // screen, and focus in the chat (or nowhere in particular).
+      if (e.key === "Escape" && !e.repeat && !barOpen && !sheetOpen && runLive && escTargetsChat(paneRef.current)) {
+        e.preventDefault();
+        store.stopAgentTurn();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [barOpen, sheetOpen, runLive, store]);
+
+  const authority = useAuthority();
+  const down = s.chatHermesDown;
+  const [starting, setStarting] = useState(false);
+  const startHermes = async () => {
+    setStarting(true);
+    const err = await startRuntime("hermes");
+    setStarting(false);
+    if (err) store.toast("Hermes did not start: " + err);
+  };
+  const runAction = (a: FailureAction, msgId: string) => {
+    if (a === "retry") void store.retryChat(msgId);
+    else if (a === "pick_model") setPickerOpen(true);
+    else if (a === "start_hermes") void startHermes();
+    else store.go("hermes/controls");
+  };
+  const ACTION_WORD: Record<FailureAction, string> = { retry: "Retry", pick_model: "Pick a model", start_hermes: "Start Hermes", open_controls: "Open Hermes › Controls" };
+  const commands = chatCommands({
+    live: runLive,
+    stop: () => store.stopAgentTurn(),
+    newChat: () => {
+      if (store.newChat()) setHistoryOpen(false);
+    },
+    history: () => setHistoryOpen(true),
+    model: () => setPickerOpen(true),
+    plan: () => openPlan(),
+    monitor: () => void openPopout("monitor"),
+    focus: () => store.chatInputEl?.focus(),
+  });
+  const runCommand = (c: ChatCommand) => {
+    setBarOpen(false);
+    setSlashOpen(false);
+    if (c.insert !== undefined) {
+      const el = store.chatInputEl;
+      if (el) {
+        el.value = c.insert;
+        el.focus();
+      }
+      return;
+    }
+    if (store.chatInputEl && store.chatInputEl.value.trim().startsWith("/")) store.chatInputEl.value = "";
+    c.run();
+  };
+  // The latest live run, for the step announcement (spoken once per step, never per token).
+  const liveRun = [...s.chatMsgs].reverse().find((m) => m.run && m.run.outcome === null)?.run;
+  const announce = stepAnnouncement(liveRun ?? [...s.chatMsgs].reverse().find((m) => m.run)?.run);
+  const streamingNow = s.chatMsgs.some((m) => m.streaming);
+  // Only this conversation's queued follow-ups (they are only ever sent here).
+  const queued = s.chatQueue.filter((q) => q.threadId === s.chatThreadId);
 
   // WP4.1 — on-device browser dictation; honest fallback elsewhere.
   const dictation = useRef<Dictation | null>(null);
@@ -183,6 +313,19 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
           </span>
         )}
+        <button
+          type="button"
+          className="mono"
+          data-testid="open-command-bar"
+          aria-haspopup="dialog"
+          aria-expanded={barOpen}
+          aria-keyshortcuts={isMacPlatform() ? "Meta+K" : "Control+K"}
+          onClick={() => setBarOpen(true)}
+          title="Commands for this chat"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          {isMacPlatform() ? "⌘K" : "Ctrl K"}
+        </button>
         {/* 0.5.4: the way back to earlier conversations and projects, and a fresh conversation. */}
         <button
           type="button"
@@ -263,18 +406,63 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           That model was not chosen: {pickError}
         </span>
       )}
+      {barOpen && <ChatCommandBar commands={commands} onRun={runCommand} onClose={() => setBarOpen(false)} />}
+      {down && (() => {
+        const c = hermesDownCopy(down);
+        return (
+          <div role="alert" data-testid="hermes-down" data-why={down.why} style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", margin: "10px 16px 0", padding: "10px 14px", border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: 8, flexShrink: 0 }}>
+            <span style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={{ fontWeight: 600, color: "var(--danger)", fontSize: 13 }}>{c.title}</span>
+              <span style={{ fontSize: 12.5, color: "var(--tx-1)", lineHeight: 1.5 }}>{c.sentence}</span>
+            </span>
+            {c.action === "start_hermes" && (
+              <button type="button" className="btn btn-primary btn-sm" data-testid="start-hermes" disabled={starting} onClick={() => void startHermes()}>
+                {starting ? "Starting Hermes" : "Start Hermes"}
+              </button>
+            )}
+            {c.action === "open_settings" && (
+              <button type="button" className="btn btn-sm" onClick={() => store.go("hermes/controls")}>
+                Turn the loop on in Hermes › Controls
+              </button>
+            )}
+            {c.action === "open_controls" && (
+              <button type="button" className="btn btn-sm" onClick={() => store.go("hermes/controls")}>
+                Open Hermes › Controls
+              </button>
+            )}
+          </div>
+        );
+      })()}
+      {/* Board 01 a11y: each step change is spoken once (the text only changes with the step). */}
+      <div role="status" aria-live="polite" className="sr-only" data-testid="run-announce">
+        {announce}
+      </div>
       <div
         ref={(el) => { store.chatScrollEl = el; }}
         data-testid="chat-messages"
+        role="log"
+        aria-live="polite"
+        aria-busy={streamingNow}
+        aria-label="Conversation with Hermes"
         onScroll={(e) => { follow.current = shouldFollow(e.currentTarget); }}
         style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}
       >
+        {showSuggestions && (
+          <div data-testid="chat-empty" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 0 4px" }}>
+            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 500, color: "var(--tx-1)" }}>What should Hermes do on this machine?</h2>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)" }}>
+              Hermes runs on your device. It reads what you allow, drafts changes, and asks before anything is signed, spent or joined.
+            </p>
+          </div>
+        )}
         {s.chatMsgs.map((m) => (
-          <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <div key={m.id} data-testid={m.who === "You" ? "msg-you" : "msg-agent"} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
               {m.who}
+              {m.model && m.who !== "You" && <span style={{ color: "var(--tx-3)", letterSpacing: ".04em", textTransform: "none" }}> · {m.model}</span>}
             </span>
-            <div
+            {m.run && <RunTimeline run={m.run} onStop={m.run.outcome === null ? () => store.stopAgentTurn() : undefined} />}
+            {!(m.run && m.streaming && m.text === "") && <div
               data-testid={m.brief ? "brief-card" : undefined}
               style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", overflowWrap: "anywhere", ...(m.brief ? { border: "1px solid var(--line-2)", borderRadius: 8, padding: "10px 12px", background: "var(--srf-1)" } : {}) }}
             >
@@ -283,20 +471,29 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                   span: markdown is block content. */}
               {m.who !== "You" ? <Markdown text={m.text} /> : <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>}
               {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
-            </div>
-            {m.error && (
-              <span role="alert" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--danger)" }}>
-                <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-line" }}>The agent didn't finish this reply: {m.error}</span>
-                {m.toolchainHelp && (
-                  <button className="btn btn-sm" data-testid="open-toolchain-settings" onClick={() => store.openToolchainSettings()}>
-                    Open toolchain settings
-                  </button>
-                )}
-                <button className="btn btn-sm" onClick={() => void store.retryChat(m.id)}>
-                  Retry
-                </button>
-              </span>
-            )}
+            </div>}
+            {m.error && (() => {
+              // Board 01 "Honest failure": what failed in one sentence, and the fix.
+              const f = failureCopy(m.error);
+              return (
+                <span role="alert" data-testid="chat-failure" data-kind={f.kind} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: f.kind === "stopped" ? "var(--tx-2)" : "var(--danger)", flexWrap: "wrap" }}>
+                  <span style={{ flex: 1, minWidth: 200, whiteSpace: "pre-line" }}>
+                    {f.sentence} <span style={{ color: "var(--tx-2)" }}>{f.fix}</span>
+                  </span>
+                  {m.toolchainHelp && (
+                    <button className="btn btn-sm" data-testid="open-toolchain-settings" onClick={() => store.openToolchainSettings()}>
+                      Open toolchain settings
+                    </button>
+                  )}
+                  {f.actions.map((a) => (
+                    <button key={a} type="button" className="btn btn-sm" data-testid={"failure-" + a} disabled={a === "retry" && chatBusy} onClick={() => runAction(a, m.id)}>
+                      {ACTION_WORD[a]}
+                    </button>
+                  ))}
+                </span>
+              );
+            })()}
+            {m.who !== "You" && !m.streaming && <RunReceipts run={m.run} />}
             {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
             {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
               <LocalModelAsk phase={s.chatRouteHold.phase} options={s.chatRouteHold.options} onChoose={(c) => store.answerLocalModelAsk(c)} />
@@ -341,7 +538,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             )}
           </div>
         ))}
-        {chatThinking && (
+        {chatThinking && !liveRun && (
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ width: 34, height: 34, display: "inline-block", flexShrink: 0 }}>
               <LoaderMark size={34} />
@@ -356,14 +553,17 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           so a tall card can never push the composer out of the pane. */}
       <div data-testid="chat-extras" style={{ flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
       {showSuggestions && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 16px 10px" }}>
-          {SUGGESTIONS.map((label) => (
+        <div data-testid="chat-starters" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, padding: "0 16px 10px" }}>
+          {STARTERS.map((x) => (
             <button
-              key={label}
-              onClick={() => void send(label)}
-              style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--tx-2)", background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "5px 12px", cursor: "pointer" }}
+              key={x.t}
+              type="button"
+              data-testid="chat-starter"
+              onClick={() => void send(x.t)}
+              style={{ textAlign: "left", font: "inherit", display: "flex", flexDirection: "column", gap: 2, color: "var(--tx-1)", background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: 8, padding: "9px 12px", cursor: "pointer", minHeight: 36 }}
             >
-              {label}
+              <span style={{ fontSize: 13, fontWeight: 500 }}>{x.t}</span>
+              <span style={{ fontSize: 11.5, color: "var(--tx-2)" }}>{x.d}</span>
             </button>
           ))}
         </div>
@@ -388,6 +588,55 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       </div>
       {/* 0.5.4: the text area spans the composer's full width on its own row, and grows with its
           content; the compact icon actions and Send sit on the row below, so they never narrow it. */}
+      {followUp !== null && runLive && (
+        <div data-testid="steer-offer" role="group" aria-label="Your next message" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 16px 6px", padding: "6px 10px", background: "var(--srf-inset, var(--srf-1))", border: "1px solid var(--line-1)", borderRadius: 6, fontSize: 12.5, flexShrink: 0 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--warn)" }} aria-hidden></span>
+          <span style={{ flex: 1, minWidth: 180 }}>
+            Hermes is working. Your next message: <i>{followUp}</i>
+          </span>
+          <button type="button" className="btn btn-sm btn-primary" data-testid="steer-now" onClick={steer} title="Stops this run and sends your message now">
+            Steer now
+          </button>
+          <button type="button" className="btn btn-sm" data-testid="queue-after" onClick={queue} title="Sends when this run finishes">
+            Queue for after
+          </button>
+        </div>
+      )}
+      {queued.length > 0 && (
+        <div data-testid="chat-queue" style={{ display: "flex", flexDirection: "column", gap: 4, margin: "0 16px 6px", flexShrink: 0 }}>
+          <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+            Queued, sends after this run
+          </span>
+          <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+            {queued.map((q) => (
+              <li key={q.id} data-testid="queued-msg" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", border: "1px dashed var(--line-2)", borderRadius: 6 }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{q.text}</span>
+                {q.steer && <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>after the stop</span>}
+                {!runLive && !q.steer && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => store.sendQueuedNow(q.id)}>
+                    Send now
+                  </button>
+                )}
+                <button type="button" className="btn btn-ghost btn-sm" aria-label={"Remove queued message: " + q.text} onClick={() => store.dropQueuedChat(q.id)}>
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {slashOpen && slashMatches(commands, slashText).length > 0 && (
+        <ul data-testid="slash-menu" role="listbox" aria-label="Commands" style={{ listStyle: "none", margin: "0 16px 6px", padding: 4, border: "1px solid var(--line-2)", borderRadius: 6, background: "var(--srf-1)", flexShrink: 0 }}>
+          {slashMatches(commands, slashText).map((c) => (
+            <li key={c.id} role="option" aria-selected={false}>
+              <button type="button" className="btn btn-ghost btn-sm" style={{ width: "100%", justifyContent: "flex-start", gap: 8 }} onClick={() => runCommand(c)}>
+                <span className="mono">{c.slash}</span>
+                <span style={{ color: "var(--tx-2)" }}>{c.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div data-testid="chat-composer" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--line-1)", flexShrink: 0 }}>
         <div data-testid="chat-input-row" style={{ display: "flex", width: "100%" }}>
           <textarea
@@ -396,19 +645,39 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             className="input"
             rows={1}
             aria-label="Message Hermes"
-            placeholder={micOn ? (micInterim || "Listening…") : "Ask about your node, wallet, or memory…"}
+            placeholder={micOn ? (micInterim || "Listening…") : runLive ? "Hermes is working. Type to steer or queue a follow-up" : "Ask Hermes, or type / for commands"}
             onChange={(e) => {
               setBuildAsk(looksLikeBuildAsk(e.target.value));
+              // Board 01: a leading "/" lists the chat's commands.
+              const v = e.target.value;
+              setSlashOpen(v.startsWith("/") && !v.includes("\n"));
+              setSlashText(v);
               fitInput();
             }}
             onKeyDown={(e) => {
-              // Enter sends; Shift+Enter starts a new line (and an IME composition is never sent).
+              // Enter (or Cmd/Ctrl Enter) sends; Shift+Enter starts a new line (an IME composition
+              // is never sent). While a run is live, the text is offered as a steer or a queued
+              // follow-up instead.
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                setBuildAsk(false);
-                void send((e.target as HTMLTextAreaElement).value);
+                const v = (e.target as HTMLTextAreaElement).value;
+                if (v.trim().startsWith("/") && !/^\/run\b/.test(v.trim())) {
+                  // Enter runs a command only when its exact word was typed (the menu lists prefixes).
+                  const hit = exactCommand(commands, v);
+                  if (hit) {
+                    runCommand(hit);
+                    return;
+                  }
+                }
+                submit(v);
+              }
+              if (e.key === "Escape" && slashOpen) {
+                e.preventDefault();
+                e.stopPropagation();
+                setSlashOpen(false);
               }
             }}
+            aria-keyshortcuts="Enter Meta+Enter Control+Enter"
             style={{ flex: 1, minWidth: 0, width: "100%", minHeight: 36, maxHeight: inputMax, overflowY: "hidden" }}
           />
         </div>
@@ -437,12 +706,24 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             <PlanGlyph />
           </button>
           <span style={{ flex: 1 }}></span>
-          <span className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".06em", color: "var(--tx-3)", whiteSpace: "nowrap" }}>
-            Shift+Enter for a new line
+          {/* Board 01: who may act right now (shared with Settings › Work, src/fl/authority.ts). */}
+          <span
+            data-testid="authority-badge"
+            data-level={authority.level}
+            title={authority.level === "HIC-1" ? "HIC-1: Hermes proposes, and every action waits for your decision" : "HIC-2: Hermes may act inside this envelope's caps"}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "2px 8px 2px 3px", whiteSpace: "nowrap", maxWidth: "50%", overflow: "hidden", textOverflow: "ellipsis" }}
+          >
+            <HicBadge level={authority.level} />
+            {authority.level === "HIC-1"
+              ? "Every action asks you"
+              : `${authority.name}${authority.caps.length ? " · " + authority.caps.map((c) => `${c.left} ${c.label}`).join(" · ") : ""}`}
           </span>
-          <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
+          <button className="btn btn-primary" data-testid="chat-send" onClick={onSend}>
             Send
           </button>
+        </div>
+        <div className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)", textAlign: "center" }}>
+          Enter send · Shift Enter new line · Esc stop · / commands · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
         </div>
       </div>
     </div>
