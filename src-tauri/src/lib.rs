@@ -26,7 +26,7 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    abi_book, ceremony, config, custody, oidc, rpc, secret, supervisor, txdecode, wallet,
+    abi_book, ceremony, config, custody, oidc, payouts_gate, rpc, secret, supervisor, txdecode, wallet,
     wallet_link,
 };
 
@@ -66,6 +66,7 @@ mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
 mod faucet;
 mod fl_market;
+mod fl_payouts;
 mod fl_rounds;
 mod fl_trajectories;
 // HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
@@ -384,6 +385,9 @@ pub fn run() {
             // or when it commits to another chain id). Transaction sends additionally check the
             // RPC's chain id and block-0 hash against the profile before broadcasting.
             network_profile::install_network_gate();
+            // G-SEC PAY-10/11/14: the FL payouts gate, from the same profile, before anything can
+            // sign. Payouts are dark unless the profile opens them and the pinned code matches.
+            network_profile::install_payouts_gate();
             // CORE-D5: the sidecar log folder is set before any sidecar can start.
             if let Ok(dir) = app.path().app_log_dir() {
                 sidecar_logs::init(&dir);
@@ -792,6 +796,8 @@ pub fn run() {
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
             contract_reader::contract_write_propose,
+            // G-SEC PAY-14 — whether FL payouts are open, as the signer decides it.
+            fl_payouts::fl_payouts_status,
             // CORE-A1 / CORE-A2 — find, identify and decode contracts (read-only).
             contract_intel::contract_address_book_lookup,
             contract_intel::contract_get_code,

@@ -35,8 +35,20 @@ export type NetworkProfile = {
    *  the node refuses to start when they differ). Written by scripts/network-cut.py apply; absent
    *  = the template's section. */
   nodeCheckpoint?: NodeCheckpoint | null;
+  /** G-SEC PAY-14: whether FL payouts are open on this network; absent = false. Takes effect only
+   *  where `flCodePins` matches the live code, which Rust checks (kit payouts_gate.rs); the UI
+   *  reads the effective answer from core's `fl_payouts_status`. */
+  payoutsOpen?: boolean;
+  /** G-SEC PAY-11: each FL contract's address and keccak256 of its runtime code, from the
+   *  network's root book; a contract not on the network has null values and a `pending` reason. */
+  flCodePins?: FlCodePins;
   pending: Record<string, string>;
 };
+
+/** network_profile.rs `FL_CONTRACT_NAMES`: the contracts `flCodePins` names, exactly these. */
+export const FL_PIN_CONTRACTS = ["WorkMarket", "FLRoundVerifier", "FederatedRoundLedger", "DatasetRegistry", "PatronageLedger", "LoRAFactory"] as const;
+export type FlPin = { address: string | null; codeHash: string | null; pending?: string };
+export type FlCodePins = Record<(typeof FL_PIN_CONTRACTS)[number], FlPin>;
 
 /** network_profile.rs `NodeCheckpoint`: positive integers, exactly these keys. */
 export type NodeCheckpoint = { interval: number; committeeSize: number; voteDepth: number };
@@ -46,6 +58,26 @@ function isNodeCheckpoint(c: unknown): boolean {
   const keys = Object.keys(c).sort();
   if (keys.join(",") !== "committeeSize,interval,voteDepth") return false;
   return Object.values(c).every((v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0);
+}
+
+/** network_profile.rs `payouts_policy_checked`: each pin is an address and a code hash, or neither
+ *  with a pending reason. */
+function flPinProblems(pins: unknown): string[] {
+  if (typeof pins !== "object" || pins === null || Array.isArray(pins)) return ["flCodePins is not an object"];
+  const names = Object.keys(pins).sort();
+  if (names.join(",") !== [...FL_PIN_CONTRACTS].sort().join(",")) return [`flCodePins must name exactly ${FL_PIN_CONTRACTS.join(", ")}`];
+  const out: string[] = [];
+  for (const [name, pin] of Object.entries(pins as Record<string, FlPin>)) {
+    const a = pin?.address;
+    const h = pin?.codeHash;
+    if (a == null && h == null) {
+      if (typeof pin?.pending !== "string" || pin.pending.trim() === "") out.push(`flCodePins.${name} is not pinned and names no pending reason`);
+      continue;
+    }
+    if (typeof a !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(a) || /^0x0{40}$/.test(a)) out.push(`flCodePins.${name}.address is not an address`);
+    if (typeof h !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(h) || /^0x0{64}$/.test(h)) out.push(`flCodePins.${name}.codeHash is not a code hash`);
+  }
+  return out;
 }
 
 /** The undo window (ADR CV-7a): the fewest blocks a pruning member may keep (network_profile.rs). */
@@ -165,6 +197,8 @@ export function profileProblems(p: NetworkProfile | null): string[] {
   if (p.nodeCheckpoint != null && !isNodeCheckpoint(p.nodeCheckpoint)) {
     out.push("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers");
   }
+  if (p.payoutsOpen !== undefined && typeof p.payoutsOpen !== "boolean") out.push("payoutsOpen is not true or false");
+  if (p.flCodePins !== undefined) out.push(...flPinProblems(p.flCodePins));
   if (!Number.isSafeInteger(p.chainId) || (p.chainId as number) <= 0) out.push("chainId is not a chain id");
   if (expectedGenesis(p) === null) out.push("genesisHash is not a block hash");
   // network_profile.rs ready(): a name the bundled node does not build is refused (fail closed).

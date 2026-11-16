@@ -86,9 +86,11 @@ export function pinOf(book: FlBook, name: FlContractName): string | null {
   return ADDRESS.test(raw) && raw !== ZERO ? raw : null;
 }
 
-/** Payouts open only when the network profile says so (G-SEC). No shipped profile does. */
+/** Payouts open only when the network profile says so (G-SEC). No shipped profile does. This is
+ *  the profile flag only: Rust enforces it at the signer together with the code-hash pins, and
+ *  core's `fl_payouts_status` gives the effective answer. */
 export function payoutsEnabledBy(profile: NetworkProfile | null): boolean {
-  return (profile as (NetworkProfile & { payoutsOpen?: unknown }) | null)?.payoutsOpen === true;
+  return profile?.payoutsOpen === true;
 }
 
 function payoutsFor(work: ContractReading, profile: NetworkProfile | null): PayoutsState {
