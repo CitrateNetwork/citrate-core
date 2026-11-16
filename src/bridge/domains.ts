@@ -1494,7 +1494,8 @@ export interface FlRoundsDomain {
   gateAdapter(request: FlAdapterGateRequest): Promise<FlAdapterGateRecord>;
   /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
   loadAdapter(sha256: string): Promise<string>;
-  unloadAdapter(): Promise<void>;
+  /** Serve the base model alone. False when no adapter was loaded or remembered (nothing changed). */
+  unloadAdapter(): Promise<boolean>;
   /** Withdraw this device's consent for one round. Returns the rounds still consented. */
   revokeConsent(roundId: string): Promise<string[]>;
   /** HUP-S9.3: the "train on my verified conversations" switch (default off) and what is stored. */
