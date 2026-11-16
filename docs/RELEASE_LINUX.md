@@ -213,8 +213,29 @@ Run `check-staged-corpus.mjs` again immediately before `npx tauri build` if anyt
 ```bash
 cd citrate-core
 node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256   # fails closed (step 2b)
+# 0.5.4 release gate: every externalBin and resources glob of the Linux overlay is staged
+# (non-README files, pinned digests where pins exist, skills-bundle/ against skills.lock).
+node scripts/check-bundle.mjs staged --overlay src-tauri/tauri.bundle-linux.conf.json --target "$TRIPLE"
 npx tauri build --config src-tauri/tauri.bundle-linux.conf.json
 ```
+
+Then check what the build made, from the files only. The `.deb` is unpacked with `ar` and `tar`,
+and the AppImage's squashfs with `unsquashfs` (`apt install squashfs-tools`) at the offset its ELF
+header gives. Neither is run (never `--appimage-extract`). Each check needs every sidecar in
+`usr/bin/` and every staged resource in `usr/lib/<productName>/` with the staged bytes; it
+fails closed:
+
+```bash
+node scripts/check-bundle.mjs deb      --deb      src-tauri/target/release/bundle/deb/*.deb           --overlay src-tauri/tauri.bundle-linux.conf.json --target "$TRIPLE"
+node scripts/check-bundle.mjs appimage --appimage src-tauri/target/release/bundle/appimage/*.AppImage --overlay src-tauri/tauri.bundle-linux.conf.json --target "$TRIPLE"
+```
+
+Pending re-pin (0.5.4, Hermes lane HA): sherlock, unbroker and osint-investigation leave the bundled
+skills, so a new `skills-bundle.tar.gz` and its pin in `src-tauri/runtime-deps.sha256` will land
+together with the new `skills.lock`. The gate needs no change for that: it checks the staged
+`skills-bundle/` against whatever `skills.lock` says, file for file, and counts nothing. Until the
+new tarball and pin are both merged, staging refuses a mismatch either way (old tarball, new lock,
+or the reverse), which is the intended fail-closed behaviour.
 
 Artefacts land under `src-tauri/target/release/bundle/`:
 
