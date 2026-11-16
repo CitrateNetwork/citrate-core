@@ -456,6 +456,20 @@ impl<T: RpcTransport> RpcClient<T> {
             .map_err(|_| RpcError::MissingField(format!("eth_call: result not hex ({s})")))
     }
 
+    /// `eth_getCode(address, "latest")` → the runtime code at `address` (empty = no contract). The
+    /// FL payouts gate hashes it against the pinned build before an FL signature.
+    pub fn get_code(&self, address: &str) -> Result<Vec<u8>, RpcError> {
+        let result = self.request("eth_getCode", json!([address, "latest"]))?;
+        let s = result
+            .as_str()
+            .ok_or_else(|| RpcError::MissingField("eth_getCode: result not a string".into()))?;
+        let stripped = s
+            .strip_prefix("0x")
+            .ok_or_else(|| RpcError::MissingField("eth_getCode: missing 0x prefix".into()))?;
+        hex::decode(stripped)
+            .map_err(|_| RpcError::MissingField(format!("eth_getCode: result not hex ({s})")))
+    }
+
     /// `eth_getLogs([filter])` → the matching log entries (real values from the
     /// live 40204 RPC). `filter` is the pre-built filter object (caller-shaped so we
     /// stay transport-only), e.g.

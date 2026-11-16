@@ -87,8 +87,55 @@ struct RawProfile {
     retired: Option<String>,
     #[serde(default)]
     node_checkpoint: Option<RawNodeCheckpoint>,
+    /// G-SEC PAY-14: whether FL payouts are open on this network. Absent = false. Takes effect only
+    /// where the pinned code hashes match ([`crate::payouts_gate`]).
+    #[serde(default)]
+    payouts_open: bool,
+    /// G-SEC PAY-11: the FL contracts' addresses and runtime code hashes, from the network's root
+    /// book. Absent = none pinned.
+    #[serde(default)]
+    fl_code_pins: Option<RawFlCodePins>,
     #[serde(default)]
     pending: BTreeMap<String, String>,
+}
+
+/// `flCodePins`: one entry per FL contract, each named exactly as in the address book.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFlCodePins {
+    #[serde(rename = "WorkMarket")]
+    work_market: RawFlPin,
+    #[serde(rename = "FLRoundVerifier")]
+    fl_round_verifier: RawFlPin,
+    #[serde(rename = "FederatedRoundLedger")]
+    federated_round_ledger: RawFlPin,
+    #[serde(rename = "DatasetRegistry")]
+    dataset_registry: RawFlPin,
+    #[serde(rename = "PatronageLedger")]
+    patronage_ledger: RawFlPin,
+    #[serde(rename = "LoRAFactory")]
+    lora_factory: RawFlPin,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawFlPin {
+    address: Option<String>,
+    code_hash: Option<String>,
+    /// Why it is not pinned (required when it is not).
+    #[serde(default)]
+    pending: Option<String>,
+}
+
+/// One FL contract's pin as written in `flCodePins` (`None` = not set).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlCodePin {
+    /// The address-book name (`WorkMarket`, `LoRAFactory`).
+    pub name: &'static str,
+    pub address: Option<String>,
+    /// `keccak256(runtime code)` at `address`, `0x` + 64 hex.
+    pub code_hash: Option<String>,
+    pub pending: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -156,9 +203,24 @@ pub struct NetworkProfile {
     pub retired: Option<String>,
     /// The `[checkpoint]` values the node config repeats; `None` = the template's section.
     pub node_checkpoint: Option<NodeCheckpoint>,
+    /// G-SEC PAY-14: the profile's `payoutsOpen` (false when absent).
+    pub payouts_open: bool,
+    /// G-SEC PAY-11: the FL contract pins, one per contract in [`FL_CONTRACT_NAMES`] order; empty
+    /// when the profile has no `flCodePins`.
+    pub fl_code_pins: Vec<FlCodePin>,
     /// For each unset field: what sets it.
     pub pending: BTreeMap<String, String>,
 }
+
+/// The FL contracts `flCodePins` names, in its order.
+pub const FL_CONTRACT_NAMES: [&str; 6] = [
+    "WorkMarket",
+    "FLRoundVerifier",
+    "FederatedRoundLedger",
+    "DatasetRegistry",
+    "PatronageLedger",
+    "LoRAFactory",
+];
 
 /// A profile with every value set and checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +248,8 @@ pub struct ReadyNetwork {
     pub member_prune_retain: Option<u64>,
     /// The `[checkpoint]` values written into the node config, or `None` for the template's.
     pub node_checkpoint: Option<NodeCheckpoint>,
+    /// The FL payouts gate's policy for this network: `payoutsOpen` and the checked pins.
+    pub payouts: crate::payouts_gate::PayoutsPolicy,
 }
 
 /// Why a profile cannot be used.
@@ -344,10 +408,45 @@ fn parse(json: &str) -> Result<(String, Vec<NetworkProfile>), ProfileError> {
                 committee_size: c.committee_size,
                 vote_depth: c.vote_depth,
             }),
+            payouts_open: p.payouts_open,
+            fl_code_pins: p.fl_code_pins.map(fl_pins_in_order).unwrap_or_default(),
             pending: p.pending,
         })
         .collect();
     Ok((file.active, profiles))
+}
+
+fn fl_pins_in_order(p: RawFlCodePins) -> Vec<FlCodePin> {
+    let raw = [
+        p.work_market,
+        p.fl_round_verifier,
+        p.federated_round_ledger,
+        p.dataset_registry,
+        p.patronage_ledger,
+        p.lora_factory,
+    ];
+    FL_CONTRACT_NAMES
+        .iter()
+        .zip(raw)
+        .map(|(name, r)| FlCodePin {
+            name,
+            address: r.address,
+            code_hash: r.code_hash,
+            pending: r.pending,
+        })
+        .collect()
+}
+
+/// `0x` + 40 hex, not zero; returned lowercase.
+fn check_address(s: &str) -> Option<String> {
+    let hex = s.strip_prefix("0x")?;
+    if hex.len() != 40
+        || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        || hex.bytes().all(|b| b == b'0')
+    {
+        return None;
+    }
+    Some(format!("0x{}", hex.to_ascii_lowercase()))
 }
 
 /// Every profile this build knows.
@@ -575,6 +674,7 @@ impl NetworkProfile {
                 format!("{min_chain_rev:?} is not a commit (40 lowercase hex)"),
             ));
         }
+        let payouts = self.payouts_policy_checked()?;
         if let Some(c) = self.node_checkpoint {
             if c.interval == 0 || c.committee_size == 0 || c.vote_depth == 0 {
                 return Err(invalid(
@@ -602,7 +702,87 @@ impl NetworkProfile {
             min_chain_rev,
             member_prune_retain: self.member_prune_retain,
             node_checkpoint: self.node_checkpoint,
+            payouts,
         })
+    }
+
+    /// The payouts policy from `payoutsOpen` and `flCodePins`, every pin checked. A pin is either
+    /// set (an address and a code hash, both well formed) or unset (neither, with a `pending`
+    /// reason); an address without its code hash could not be checked, so it is refused, which
+    /// makes the profile not ready (nothing is signed on it).
+    fn payouts_policy_checked(&self) -> Result<crate::payouts_gate::PayoutsPolicy, ProfileError> {
+        use crate::payouts_gate::{FlContract, FlPin, PayoutsPolicy};
+        let invalid = |why: String| ProfileError::Invalid {
+            profile: self.id.clone(),
+            field: "flCodePins",
+            why,
+        };
+        let mut pins = Vec::new();
+        for p in &self.fl_code_pins {
+            let contract = FlContract::from_name(p.name)
+                .ok_or_else(|| invalid(format!("{} is not an FL contract", p.name)))?;
+            let pin = match (&p.address, &p.code_hash) {
+                (Some(a), Some(h)) => {
+                    let address = check_address(a).ok_or_else(|| {
+                        invalid(format!("{}.address {a:?} is not an address", p.name))
+                    })?;
+                    let code_hash = check_hash(h).ok_or_else(|| {
+                        invalid(format!("{}.codeHash {h:?} is not a code hash", p.name))
+                    })?;
+                    let mut addr = [0u8; 20];
+                    let mut hash = [0u8; 32];
+                    hex::decode_to_slice(&address[2..], &mut addr)
+                        .map_err(|e| invalid(format!("{}.address: {e}", p.name)))?;
+                    hex::decode_to_slice(&code_hash[2..], &mut hash)
+                        .map_err(|e| invalid(format!("{}.codeHash: {e}", p.name)))?;
+                    FlPin {
+                        contract,
+                        address: Some(addr),
+                        code_hash: Some(hash),
+                        pending: None,
+                    }
+                }
+                (None, None) => {
+                    let why = p
+                        .pending
+                        .clone()
+                        .filter(|w| !w.trim().is_empty())
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "{} is not pinned and names no pending reason",
+                                p.name
+                            ))
+                        })?;
+                    FlPin {
+                        contract,
+                        address: None,
+                        code_hash: None,
+                        pending: Some(why),
+                    }
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "{} needs both an address and a code hash, or neither",
+                        p.name
+                    )))
+                }
+            };
+            pins.push(pin);
+        }
+        Ok(PayoutsPolicy {
+            network: self.id.clone(),
+            payouts_open: self.payouts_open,
+            pins,
+        })
+    }
+
+    /// The payouts policy the signer checks for this profile: its own when the whole profile is
+    /// ready, otherwise closed (nothing pinned, payouts dark).
+    pub fn payouts_policy(&self) -> crate::payouts_gate::PayoutsPolicy {
+        match self.ready() {
+            Ok(r) => r.payouts,
+            Err(_) => crate::payouts_gate::PayoutsPolicy::closed(&self.id),
+        }
     }
 
     /// What the network gate checks for this profile: its chain id and genesis only when the
@@ -658,6 +838,22 @@ pub fn install_network_gate() {
     }
     if !crate::rpc::install_network_gate(expected) {
         eprintln!("[network] the network gate was already installed");
+    }
+}
+
+/// Install the process-wide FL payouts policy for the active profile (app startup, beside the
+/// network gate). A profile that cannot be read or is not ready installs the closed policy, so
+/// payouts stay dark and every distinctive FL call is refused.
+pub fn install_payouts_gate() {
+    let policy = match active() {
+        Ok(p) => p.payouts_policy(),
+        Err(e) => {
+            eprintln!("[network] {e}");
+            crate::payouts_gate::PayoutsPolicy::closed("unknown")
+        }
+    };
+    if !crate::payouts_gate::install_payouts_gate(policy) {
+        eprintln!("[network] the payouts gate was already installed");
     }
 }
 
@@ -782,4 +978,5 @@ fn set_table_keys(config: &str, table: &str, keys: &[(&str, String)]) -> String 
 #[cfg(test)]
 mod tests {
     include!("network_profile_tests.rs");
+    include!("network_profile_payouts_tests.rs");
 }

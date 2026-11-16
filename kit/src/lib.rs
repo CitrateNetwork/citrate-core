@@ -40,6 +40,7 @@ pub mod custody;
 pub mod eip712;
 pub mod fsutil;
 pub mod oidc;
+pub mod payouts_gate;
 pub mod rpc;
 pub mod secret;
 pub mod sidecar_log;

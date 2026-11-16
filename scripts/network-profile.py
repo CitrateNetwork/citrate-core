@@ -71,7 +71,11 @@ FIELDS = [
 # `nodeCheckpoint` (the [checkpoint] interval, committeeSize and voteDepth the node config repeats,
 # for a genesis that compiles them; written by scripts/network-cut.py apply from the cut's
 # chainParams; absent = the template's [checkpoint] section).
-OPTIONAL = ["memberPruneRetain", "retired", "nodeCheckpoint"]
+# G-SEC PAY-14 / PAY-11: `payoutsOpen` (a bool, absent = false) and `flCodePins` (each FL contract
+# by its address-book name: an address and keccak256 of its runtime code from the root book, or
+# both null with a `pending` reason), the same rule as network_profile.rs ready().
+OPTIONAL = ["memberPruneRetain", "retired", "nodeCheckpoint", "payoutsOpen", "flCodePins"]
+FL_PIN_CONTRACTS = {"WorkMarket", "FLRoundVerifier", "FederatedRoundLedger", "DatasetRegistry", "PatronageLedger", "LoRAFactory"}
 NODE_CHECKPOINT_KEYS = {"interval", "committeeSize", "voteDepth"}
 KNOWN = set(FIELDS) | {"label", "pending"} | set(OPTIONAL)
 # The undo window (ADR CV-7a): network_profile.rs MIN_MEMBER_PRUNE_RETAIN.
@@ -154,6 +158,30 @@ def optional_problems(p: dict) -> list:
     if c is not None and not (isinstance(c, dict) and set(c) == NODE_CHECKPOINT_KEYS and all(
             isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in c.values())):
         out.append("nodeCheckpoint is not {interval, committeeSize, voteDepth} of positive integers")
+    if "payoutsOpen" in p and not isinstance(p["payoutsOpen"], bool):
+        out.append("payoutsOpen is not true or false")
+    pins = p.get("flCodePins")
+    if pins is not None:
+        if not isinstance(pins, dict) or set(pins) != FL_PIN_CONTRACTS:
+            out.append(f"flCodePins must name exactly {sorted(FL_PIN_CONTRACTS)}")
+        else:
+            for name, pin in sorted(pins.items()):
+                out += [f"flCodePins.{name}: {e}" for e in fl_pin_problems(pin)]
+    return out
+
+
+def fl_pin_problems(pin) -> list:
+    if not isinstance(pin, dict) or not set(pin) <= {"address", "codeHash", "pending"} or not {"address", "codeHash"} <= set(pin):
+        return ["is not {address, codeHash, pending?}"]
+    a, h = pin["address"], pin["codeHash"]
+    if a is None and h is None:
+        why = pin.get("pending")
+        return [] if isinstance(why, str) and why.strip() else ["is not pinned and names no pending reason"]
+    out = []
+    if not (isinstance(a, str) and ADDR.fullmatch(a)) or set(a[2:]) == {"0"}:
+        out.append(f"address {a!r} is not an address")
+    if not (isinstance(h, str) and HASH.fullmatch(h)) or set(h[2:]) == {"0"}:
+        out.append(f"codeHash {h!r} is not a code hash")
     return out
 
 
