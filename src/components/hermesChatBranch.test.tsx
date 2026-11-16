@@ -8,6 +8,7 @@ import { store } from "../shell/store";
 import { freshState, type ChatMsg, type ChatProposal } from "../shell/state";
 import { annotatedAgentTools } from "../agent/toolAnnotations";
 import { setEnvelopeForAuthority } from "../fl/authority";
+import { bridge } from "../bridge";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -166,5 +167,44 @@ describe("board 01 Hermes chat, part 2", () => {
     expect(q("proposal-expired")?.textContent).toContain("can no longer be confirmed");
     expect(q("proposal-confirm")).toBeNull();
     expect(q("proposal-reopen")).toBeNull();
+  });
+
+  it("#690: a context row can be switched off for this chat", () => {
+    const set = vi.spyOn(store, "setChatContext");
+    vi.spyOn(store, "chatToolNames").mockReturnValue(annotatedAgentTools().map((t) => t.function.name));
+    vi.spyOn(store, "activeProviderKind").mockReturnValue("sidecar");
+    render();
+    act(() => q("open-context")!.click());
+    const box = q("context-toggle-groups") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    act(() => box.click());
+    expect(set).toHaveBeenCalledWith("groups", false);
+    // Folders and keys are not switched here.
+    expect(q("context-toggle-folders")).toBeNull();
+    expect(q("context-toggle-keys")).toBeNull();
+  });
+
+  it("#690: @ lists datasets, groups and journal pages from their sources, and attaches one", async () => {
+    vi.spyOn(bridge.flRounds, "datasetsList").mockResolvedValue([{ name: "1794800000000.jsonl", builtMs: 1794800000000, bytes: 1000, examples: 3, sha256: "cd".repeat(32) }]);
+    vi.spyOn(bridge.groups, "list").mockRejectedValue(new Error("comms daemon offline"));
+    const sendChat = vi.spyOn(store, "sendChat").mockResolvedValue();
+    store.setState({ jPages: [{ id: "j1", title: "Node log", kind: "page", pinned: false, blocks: ["held overnight"] }] });
+    render();
+    const input = q("chat-input") as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(input, "check @");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const items = qa("mention-item").map((b) => b.textContent);
+    expect(items).toEqual(["Dataset · 3 conversations, 2026-11-16", "Journal · Node log"]);
+    expect(q("mention-menu")?.textContent).toContain("Groups could not be read: comms daemon offline");
+    act(() => qa("mention-item")[0].click());
+    expect(q("composer-attachments")?.textContent).toContain("Dataset · 3 conversations");
+    expect(input.value).toBe("check ");
+    input.value = "check this one";
+    act(() => q("chat-send")!.click());
+    expect(sendChat).toHaveBeenCalledWith("check this one", { attachments: [expect.objectContaining({ kind: "dataset", id: "dataset:1794800000000.jsonl" })] });
+    expect(q("composer-attachments")).toBeNull();
   });
 });

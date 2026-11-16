@@ -127,7 +127,7 @@ describe("board 01 Hermes chat", () => {
     });
     expect(newChat).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("/ne");
+    expect(send).toHaveBeenCalledWith("/ne", {});
   });
 
   it("Running: typing mid-run offers Steer now or Queue for after", () => {
@@ -146,7 +146,7 @@ describe("board 01 Hermes chat", () => {
     input.value = "and Saturdays";
     act(() => q("chat-send")!.click());
     act(() => q("queue-after")!.click());
-    expect(queue).toHaveBeenCalledWith("and Saturdays");
+    expect(queue).toHaveBeenCalledWith("and Saturdays", []);
   });
 
   it("Running: queued follow-ups are listed and can be removed", () => {

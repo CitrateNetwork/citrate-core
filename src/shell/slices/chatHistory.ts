@@ -142,6 +142,7 @@ export function archivable(msgs: ChatMsg[]): ChatMsg[] {
       const run = m.run ? parseRun(m.run) : undefined;
       if (run) keep.run = run;
       if (typeof m.model === "string" && m.model) keep.model = m.model.slice(0, 120);
+      if (Array.isArray(m.attachments) && m.attachments.length > 0) keep.attachments = m.attachments.slice(0, 6);
       // A proposal that was still open is kept as expired: a card restored from history can never
       // be confirmed with terms proposed in another session (Hermes proposes again).
       if (m.proposal) keep.proposal = expireOpenProposal(m.proposal);
