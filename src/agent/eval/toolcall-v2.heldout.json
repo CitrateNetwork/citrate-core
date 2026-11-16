@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 90,
+  "count": 94,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -213,12 +213,28 @@
       "sha256": "d3b1984c7ff70643caeb159359a9661551947d3101c7b0964fa186066b636b69"
     },
     {
+      "id": "tc-fl-collect-plan-pages",
+      "sha256": "7ca539ac8a0b76781bae74362af177071788ec3d068414c73e75b4268455d1a0"
+    },
+    {
+      "id": "tc-fl-dataset-license-check",
+      "sha256": "a3b6f613b7a4699524199d8bcefe402cd9bd770290a02331bf07637fb5ae2130"
+    },
+    {
+      "id": "tc-fl-dataset-pii-scan",
+      "sha256": "dee1badd947a8ccf9abe90fa17542c4c8d926a248e7a10c1184e8fbfc8d439ae"
+    },
+    {
       "id": "tc-fl-plan-explain",
       "sha256": "93b55a89f71675090798ac10fc0e241d18f29f995dd97b08b81402de97d3d908"
     },
     {
       "id": "tc-fl-plan-probe",
       "sha256": "e0f1f459eb8faea4209c73e1e81f7a0239df94f1a33c6f5d0cd3905d619f82d1"
+    },
+    {
+      "id": "tc-fl-source-check-url",
+      "sha256": "c07048219e9b8621ed7b8e56268a0e566bc8dd489325ff72992fed868ab91ebe"
     },
     {
       "id": "tc-fl-start-explicit",

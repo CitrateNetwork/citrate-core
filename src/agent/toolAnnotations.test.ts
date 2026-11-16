@@ -8,6 +8,8 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
+import { flCollect } from "../fl/collect";
+import { collectPlan } from "../fl/fixtures/collect";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -64,6 +66,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // WP-H8: fl_collect_plan asks only about a plan core built with something to collect.
+      vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
+      vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan({ status: "declined" }));
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

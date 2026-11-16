@@ -18,6 +18,8 @@ import { bridge } from "../bridge";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
+import { flCollect } from "../fl/collect";
+import { collectPlan } from "../fl/fixtures/collect";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -129,6 +131,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // WP-H8: fl_collect_plan asks only about a plan core built with something to collect.
+      vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
+      vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan({ status: "declined" }));
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
