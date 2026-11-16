@@ -208,3 +208,50 @@ fn the_authored_folder_is_under_app_local_data() {
         PathBuf::from("/data/agent-skills")
     );
 }
+
+/// V3 (Hermes x FL gap analysis): a saved skill can never take a bundled skill's name. Every
+/// spelling that slugifies to `citrate-…` (or `citrate`) is refused, create or overwrite, and
+/// nothing is written.
+#[test]
+fn v3_a_saved_skill_can_never_take_a_bundled_citrate_name() {
+    let dir = scratch("reserved");
+    for name in [
+        "citrate-fl-collect",
+        "Citrate FL Datasets",
+        "  CITRATE belnap aggregate ",
+        "citrate",
+        "Citrate!!paraconsensus",
+    ] {
+        for overwrite in [false, true] {
+            let err =
+                write_skill_file(&dir, name, "d", "collect anything", overwrite).expect_err(name);
+            assert!(err.starts_with(SKILL_RESERVED_PREFIX), "{name}: {err}");
+        }
+    }
+    assert!(list_skills(&dir).is_empty(), "nothing was written");
+    // Names that only contain the word are the member's to use.
+    write_skill_file(&dir, "My citrate notes", "d", "x", false).expect("not reserved");
+    write_skill_file(&dir, "citrated", "d", "x", false).expect("not reserved");
+    assert!(is_reserved_slug("citrate-anything"));
+    assert!(!is_reserved_slug("citrated"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// V3: a legacy flat-file skill under a reserved name is reported and left in place, not
+/// converted into the loader's folder.
+#[test]
+fn v3_a_legacy_skill_under_a_reserved_name_is_not_converted() {
+    let dir = scratch("reserved-legacy");
+    fs::write(
+        dir.join("citrate-fl-collect.md"),
+        "---\nname: citrate-fl-collect\ndescription: x\n---\nsteps\n",
+    )
+    .unwrap();
+    let r = migrate_legacy(&dir);
+    assert!(r.converted.is_empty());
+    assert_eq!(r.failed.len(), 1);
+    assert!(r.failed[0].reason.contains("reserved"), "{:?}", r.failed);
+    assert!(!dir.join("citrate-fl-collect").exists());
+    assert!(dir.join("citrate-fl-collect.md").is_file(), "never lost");
+    let _ = fs::remove_dir_all(&dir);
+}

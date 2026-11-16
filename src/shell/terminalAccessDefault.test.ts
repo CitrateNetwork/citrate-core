@@ -59,9 +59,14 @@ describe("Hermes terminal commands reach core", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("the copy says every command asks first, sandboxed, shared folders only, without em-dashes", () => {
+  it("the copy says what runs without asking and what asks, sandboxed, shared folders only, without em-dashes", () => {
     expect(TERMINAL_ACCESS_LABEL).toBe("Let Hermes run terminal commands");
-    expect(TERMINAL_ACCESS_HINT).toMatch(/every command asks you first/i);
+    // V1 (owner decision 2026-11-16): the old "every command asks you first" was false while the
+    // auto-approve list was on. The copy names the list and the opt-in commands.
+    expect(TERMINAL_ACCESS_HINT).not.toMatch(/every command asks you first/i);
+    expect(TERMINAL_ACCESS_HINT).toMatch(/runs without asking/i);
+    expect(TERMINAL_ACCESS_HINT).toMatch(/node, npm run and git commit ask unless you turn them on for that project/);
+    expect(TERMINAL_ACCESS_HINT).toMatch(/every other command asks you first/i);
     expect(TERMINAL_ACCESS_HINT).toMatch(/sandbox/i);
     expect(TERMINAL_ACCESS_HINT).toMatch(/folders you've shared/i);
     expect(TERMINAL_ACCESS_HINT).not.toMatch(/—/);
@@ -71,6 +76,15 @@ describe("Hermes terminal commands reach core", () => {
   it("Hermes's prompt tells the model shell_run exists and needs a shared folder", () => {
     expect(AGENT_SYSTEM_PROMPT).toContain("shell_run");
     expect(AGENT_SYSTEM_PROMPT).toMatch(/shared a folder/);
-    expect(AGENT_SYSTEM_PROMPT).toMatch(/approves every command/);
+    // V1: the prompt tells the truth about the auto-approve list and the per-project opt-in.
+    expect(AGENT_SYSTEM_PROMPT).not.toMatch(/approves every command/);
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/node <file>, npm run and git commit ask unless the member turned them on for that project/);
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/after you read untrusted content, waits for the member/);
+  });
+
+  it("Hermes's prompt promises no staking tool it does not have (V8) and no button in a notification", () => {
+    expect(AGENT_SYSTEM_PROMPT).not.toMatch(/PROPOSE claiming rewards/);
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/no tool that claims rewards, adds stake or activates the validator bond/);
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/no notification ever carries an approve button/);
   });
 });

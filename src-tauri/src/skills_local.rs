@@ -284,6 +284,12 @@ fn migrate_legacy(dir: &Path) -> MigrationReport {
             continue;
         }
         let slug = slugify(&display);
+        if is_reserved_slug(&slug) {
+            report.failed.push(fail(format!(
+                "its name {slug} is reserved for Citrate's bundled skills"
+            )));
+            continue;
+        }
         match create_skill_md(dir, &slug, &display, &description, &body) {
             Ok(()) => {
                 let mut kept = path.clone().into_os_string();
@@ -395,6 +401,22 @@ pub async fn skills_local_migrate(app_h: tauri::AppHandle) -> Result<MigrationRe
 /// webview keys the member-approval prompt off this prefix.
 pub const SKILL_EXISTS_PREFIX: &str = "SKILL_EXISTS";
 
+/// V3 (Hermes x FL gap analysis, 0.5.4): the error prefix for a name reserved for Citrate's own
+/// bundled skills.
+pub const SKILL_RESERVED_PREFIX: &str = "SKILL_RESERVED";
+
+/// V3: skill names (slugs) starting with this belong to Citrate's bundled first-party skills
+/// (`src-tauri/skills/`: `citrate-belnap-aggregate`, `citrate-paraconsensus`, the `citrate-fl-*`
+/// skills). A saved skill may never take one: a Hermes-written playbook under such a name could
+/// otherwise stand in for Citrate's own guidance (the FL collection and dataset rules among it).
+pub const RESERVED_SLUG_PREFIX: &str = "citrate-";
+
+/// Whether `slug` is reserved for a bundled skill ([`RESERVED_SLUG_PREFIX`], or exactly
+/// `citrate`).
+pub fn is_reserved_slug(slug: &str) -> bool {
+    slug == "citrate" || slug.starts_with(RESERVED_SLUG_PREFIX)
+}
+
 /// Write a skill into `dir`. With `overwrite == false` an existing skill is NEVER replaced
 /// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
 /// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
@@ -414,6 +436,11 @@ fn write_skill_file(
         return Err("skill name/description/instructions exceed the allowed size".into());
     }
     let slug = slugify(name);
+    if is_reserved_slug(&slug) {
+        return Err(format!(
+            "{SKILL_RESERVED_PREFIX}: skill names starting {RESERVED_SLUG_PREFIX} belong to Citrate's bundled skills; choose another name"
+        ));
+    }
     let display = one_line(name);
     let desc = description_for(description, instructions);
     if overwrite {
