@@ -312,7 +312,7 @@ grep aarch64.deb SHA256SUMS-linux | sha256sum -c
 dpkg-deb -x Citrate-Core-linux-aarch64.deb deb
 mkdir rd
 for f in node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369 \
-  comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260 \
+  comms-member-daemon-aarch64-unknown-linux-gnu-f1753e81fc08 cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260 \
   hermes-aarch64-unknown-linux-gnu-05243c72bd52; do cp "deb/usr/bin/${f%-aarch64-unknown-linux-gnu-*}" "rd/$f"; done
 cp deb/usr/bin/llama-server rd/llama-server-aarch64-unknown-linux-gnu-b9438
 grep -E '  (node-agent|mem-mcp|comms-member-daemon|cluster-daemon|hermes|llama-server)-aarch64-unknown-linux-gnu-' \
