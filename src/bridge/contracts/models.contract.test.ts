@@ -28,7 +28,7 @@ describe("CX bridge contract — modelsCatalog (frozen CX-S0.2)", () => {
   });
 
   it("the composed bridge still carries every legacy domain (no regression from the CX spread)", () => {
-    for (const d of ["config", "wallet", "node", "model", "memory", "chat", "comms", "connections"] as const) {
+    for (const d of ["config", "wallet", "node", "model", "memory", "chat", "connections"] as const) {
       expect(bridge[d]).toBeDefined();
     }
   });

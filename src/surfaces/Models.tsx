@@ -118,21 +118,22 @@ export function Models({ store }: SurfaceProps) {
       <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 520 }}>On this machine</span>
-          {st.localPending && (
+          {st.localError !== null && (
             <span
               className="mono"
-              title="modelsCatalog.local() isn't wired yet — this list can't be read"
+              data-testid="models-local-read-failed"
+              title={"model_catalog_local: " + st.localError}
               style={{ fontSize: 9, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, border: "1px solid var(--warn)", color: "var(--warn)", background: "var(--warn-bg)" }}
             >
-              pending wire · local()
+              read failed
             </span>
           )}
         </div>
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
           {st.local.length === 0 ? (
-            st.localPending ? (
-              <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                Reading your installed models isn't wired in this build yet. When it lands, the models already on this machine show here — nothing is invented in the meantime. You can still search and download below.
+            st.localError !== null ? (
+              <div role="alert" data-testid="models-local-error" style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6 }}>
+                Read failed: {st.localError}. The models on this machine could not be listed (model_catalog_local), so none are shown. You can still search and download below.
               </div>
             ) : (
               <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
