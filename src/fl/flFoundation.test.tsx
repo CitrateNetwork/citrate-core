@@ -454,7 +454,7 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
   const { store } = await import("../shell/store");
   const { freshState } = await import("../shell/state");
   const html = (route: string) => renderToStaticMarkup(<PlaceView store={store} s={{ ...freshState("p1"), stage: "done", route }} />);
-  for (const route of ["groups/rounds/live", "groups/rounds/open", "groups/rounds/datasets", "groups/rounds/payouts"]) {
+  for (const route of ["groups/rounds/live", "groups/rounds/open", "groups/rounds/datasets"]) {
     it(`${route}: Group rounds not live yet, the contract table, no banned words`, () => {
       const h = html(route);
       expect(h).toContain("Group rounds not live yet");
@@ -466,7 +466,9 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     });
   }
   it("payouts says Not available yet on this network while WorkMarket is absent", () => {
-    expect(html("groups/rounds/payouts")).toContain("Payouts: Not available yet on this network");
+    const h = html("groups/rounds/payouts");
+    expect(h).toContain("Not available yet on this network");
+    expect(h).toContain("WorkMarket is not deployed on this network, so there are no payouts to show.");
   });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");

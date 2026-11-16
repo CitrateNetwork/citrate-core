@@ -18,13 +18,14 @@ import { JOIN_SIGNATURE, joinCalldata, MatchesView, useMarket } from "./Matches"
 import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { NoLiveRound } from "./LiveRound";
+import { PayoutsView, usePayoutsRecords } from "./Payouts";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
 import { FlBand } from "./FlBand";
 import { RoundsNotLive } from "./RoundsNotLive";
 import { useFlNetworkState } from "./useFlNetworkState";
-import { NOT_AVAILABLE, PAYOUTS_DARK } from "./networkState";
+import type { FlNetworkState } from "./networkState";
 
 export const ROUNDS_ROUTES = {
   matches: "groups/rounds",
@@ -83,6 +84,27 @@ function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
+function PayoutsRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+  const { ov, error } = usePayoutsRecords(bridge.flRounds);
+  return (
+    <PayoutsView
+      state={state}
+      receipts={null}
+      receiptsReason="this build has no settled-lines read model yet"
+      pullWei={null}
+      pullReason="this build does not read the WorkMarket pull balance yet"
+      wallet={s.walletAddr}
+      ov={ov}
+      ovError={error}
+      go={go}
+      save={(name, text) => downloadText(name, text)}
+      act={async () => {
+        throw new Error("claims, withdrawals and disputes need the settled-lines read model, which is not in this build");
+      }}
+    />
+  );
+}
+
 function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: string) => void }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
@@ -120,15 +142,8 @@ function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: s
         />
       );
     case ROUNDS_ROUTES.payouts:
-      return (
-        <RoundsNotLive
-          testid="rounds-payouts-not-live"
-          state={state}
-          contracts={["WorkMarket", "PatronageLedger"]}
-          headline={state.payouts === "not-deployed" ? `Payouts: ${NOT_AVAILABLE}` : PAYOUTS_DARK}
-          lead="Payouts are paid by WorkMarket in SALT. Nothing here is claimable until rounds run and the security review opens payouts."
-        />
-      );
+      // Board 10: receipts (dark or not deployed in this build) and the device's history.
+      return <PayoutsRoute state={state} s={s} go={go} />;
     default:
       return null;
   }
