@@ -502,6 +502,12 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
     expect(el.textContent ?? "").not.toMatch(BANNED);
   });
+  it("the Datasets page passes the banned-words check", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/datasets");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");
   });
