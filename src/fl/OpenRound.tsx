@@ -14,7 +14,8 @@ import { CeremonySheet, outcomeWords, type TxOutcome } from "./CeremonySheet";
 import type { Group } from "../bridge/domains";
 import { NOT_AVAILABLE, ROUNDS_NOT_LIVE, type FlNetworkState } from "./networkState";
 import { Chip, HicBadge, KV, Note, Unknown } from "./primitives";
-import { draftProblems, leasesCovered, saveRoundDraft, type RoundDraft, type RoundTemplate, type WhoMayJoin } from "./roundDraft";
+import { draftProblems, leasesCovered, saveRoundDraft, weiOf, type RoundDraft, type RoundTemplate, type WhoMayJoin } from "./roundDraft";
+import { saltExact } from "./format";
 
 export const STEPS = ["Template", "Budget and rate", "Who and coordinator", "Preview and sign"] as const;
 
@@ -44,6 +45,12 @@ export interface OpenRoundViewProps {
 }
 
 const field: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5 };
+
+/** A typed SALT amount as the exact wei it signs (G-SEC PAY-19), or "—" when it is not one. */
+export function moneyWords(typed: string): string {
+  const w = weiOf(typed);
+  return w === null ? "— (not a SALT amount)" : `${saltExact(w)} SALT (${w} wei)`;
+}
 
 export function OpenRoundView(p: OpenRoundViewProps) {
   const [step, setStep] = useState(0);
@@ -76,7 +83,9 @@ export function OpenRoundView(p: OpenRoundViewProps) {
   };
   const group = p.groups.find((g) => g.id === d.groupId);
   const tpl = TEMPLATES.find((t) => t[0] === d.template)!;
-  const canSign = live && admin && problems.length === 0;
+  // G-SEC (PAY-10): opening escrows SALT, so it signs only once the profile opens payouts.
+  const moneyOpen = p.state.payouts === "open";
+  const canSign = live && admin && moneyOpen && problems.length === 0;
 
   return (
     <div className="fl-cols" data-testid="open-round" data-live={live}>
@@ -146,7 +155,17 @@ export function OpenRoundView(p: OpenRoundViewProps) {
               Data class members train on
               <input className="input" value={d.dataClass} placeholder="support-tickets" onChange={(e) => set("dataClass", e.target.value)} />
             </label>
-            <Note>Members' data stays on their machines. The round reads only datasets each member adds, locally.</Note>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px 24px", maxWidth: 720 }}>
+              <label style={field}>
+                Minimum GPU memory (GB)
+                <input className="input mono" type="number" min={1} value={d.minVramGb} onChange={(e) => set("minVramGb", Number(e.target.value))} />
+              </label>
+              <label style={field}>
+                Estimated hours per lease
+                <input className="input mono" type="number" min={1} value={d.estHours} onChange={(e) => set("estHours", Number(e.target.value))} />
+              </label>
+            </div>
+            <Note>Members' data stays on their machines. The round reads only datasets each member adds, locally. These requirements are published with the round so each member's app can check its own machine.</Note>
           </>
         )}
 
@@ -158,14 +177,27 @@ export function OpenRoundView(p: OpenRoundViewProps) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px 24px", maxWidth: 720 }}>
               <label style={field}>
                 Budget (SALT, held in escrow)
-                <input className="input mono" inputMode="decimal" value={d.budgetSalt} onChange={(e) => set("budgetSalt", e.target.value)} />
+                <input className="input mono" inputMode="decimal" placeholder="enter an amount" value={d.budgetSalt} onChange={(e) => set("budgetSalt", e.target.value)} />
               </label>
               <label style={field}>
                 Rate per lease (SALT)
-                <input className="input mono" inputMode="decimal" value={d.rateSalt} onChange={(e) => set("rateSalt", e.target.value)} />
+                <input className="input mono" inputMode="decimal" placeholder="enter an amount" value={d.rateSalt} onChange={(e) => set("rateSalt", e.target.value)} />
                 <span className="fl-faint" style={{ fontSize: 11.5 }}>
                   No comparable rounds on this network yet (n = 0), so there is no suggested rate.
                 </span>
+              </label>
+              <label style={field}>
+                Join bond each worker posts (SALT)
+                <input className="input mono" inputMode="decimal" placeholder="0 for none" value={d.joinBondSalt} onChange={(e) => set("joinBondSalt", e.target.value)} />
+                <span className="fl-faint" style={{ fontSize: 11.5 }}>Returned to the worker when they settle.</span>
+              </label>
+              <label style={field}>
+                Coordinator bond (SALT)
+                <input className="input mono" inputMode="decimal" placeholder="empty: WorkMarket's default" value={d.coordinatorBondSalt} onChange={(e) => set("coordinatorBondSalt", e.target.value)} />
+              </label>
+              <label style={field}>
+                Dispute window (hours, at least 24)
+                <input className="input mono" type="number" min={24} value={d.disputeWindowHours} onChange={(e) => set("disputeWindowHours", Number(e.target.value))} />
               </label>
               <label style={field}>
                 Max workers
@@ -223,8 +255,11 @@ export function OpenRoundView(p: OpenRoundViewProps) {
               rows={[
                 { k: "Group", v: group ? group.name : <Unknown reason="no group chosen" /> },
                 { k: "Template", v: `${tpl[1]}${d.dataClass ? " · " + d.dataClass : ""}` },
-                { k: "Budget, into escrow", v: `${d.budgetSalt} SALT`, mono: true },
-                { k: "Rate", v: `${d.rateSalt} SALT per lease`, mono: true },
+                { k: "Budget, into escrow", v: moneyWords(d.budgetSalt), mono: true },
+                { k: "Rate", v: moneyWords(d.rateSalt) + " per lease", mono: true },
+                { k: "Join bond", v: moneyWords(d.joinBondSalt), mono: true },
+                { k: "Coordinator bond", v: d.coordinatorBondSalt.trim() === "" ? "WorkMarket's default" : moneyWords(d.coordinatorBondSalt), mono: true },
+                { k: "Dispute window", v: `${d.disputeWindowHours} hours` },
                 { k: "Covers", v: leases === null ? <Unknown reason="not a SALT amount" /> : `${leases} leases · up to ${d.maxWorkers} workers` },
                 { k: "Who may join", v: WHO.find((w) => w[0] === d.who)![1] },
                 { k: "Coordinator", v: d.coordinator ?? <Unknown reason="none chosen" /> },
@@ -258,7 +293,12 @@ export function OpenRoundView(p: OpenRoundViewProps) {
               Continue
             </button>
           )}
-          {step === 3 && live && admin && (
+          {step === 3 && live && admin && !moneyOpen && (
+            <span className="fl-faint" style={{ fontSize: 12 }} data-testid="open-waits-gsec">
+              Opening escrows SALT, so it opens with payouts after the security review. You can save this draft.
+            </span>
+          )}
+          {step === 3 && live && admin && moneyOpen && (
             <button type="button" className="btn btn-primary" disabled={!canSign} onClick={() => setSheet({ step: "review" })}>
               <HicBadge level="HIC-1" style={{ background: "var(--on-accent)", color: "var(--accent)" }} />
               Sign escrow and open
@@ -278,12 +318,13 @@ export function OpenRoundView(p: OpenRoundViewProps) {
           onSign={() => void sign()}
           onDecline={() => setSheet(null)}
           outcome={sheet.outcome}
-          successLine={sheet.outcome ? `The round is open. Escrow holds ${d.budgetSalt} SALT.` : undefined}
+          successLine={sheet.outcome ? `The round is open. Escrow holds ${moneyWords(d.budgetSalt)}.` : undefined}
           review={
             <KV
               rows={[
-                { k: "Escrow", v: `${d.budgetSalt} SALT leaves your wallet into WorkMarket`, mono: true },
-                { k: "Rate", v: `${d.rateSalt} SALT per lease, ${leases ?? "—"} leases`, mono: true },
+                { k: "Escrow", v: `${moneyWords(d.budgetSalt)} leaves your wallet into WorkMarket`, mono: true },
+                { k: "Rate", v: `${moneyWords(d.rateSalt)} per lease, ${leases ?? "—"} leases`, mono: true },
+                { k: "Join bond", v: moneyWords(d.joinBondSalt), mono: true },
                 { k: "Network fee", v: <Unknown reason="the wallet review reads gas before you sign" /> },
               ]}
             />
