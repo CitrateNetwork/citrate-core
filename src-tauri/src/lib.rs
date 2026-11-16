@@ -1172,6 +1172,8 @@ pub fn run() {
             update_policy::update_policy_refresh,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
+            // One service's log file, read back for Node › Advanced (scrubbed again).
+            sidecar_logs::sidecar_logs_tail,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
