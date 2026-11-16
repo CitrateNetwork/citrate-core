@@ -42,6 +42,8 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
 import { isFlPayoutTool, runFlPayoutTool } from "../agent/flPayoutTools";
+import { FL_ROUND_OPEN_TOOL, runFlRoundOpen } from "../agent/flRoundOpenTool";
+import { loadRoundDraft, type OpenBinding } from "../fl/roundDraft";
 import { latestBlockTime } from "../fl/chainTime";
 import { readFlNetworkState, type FlNetworkState, type PayoutsGateStatus } from "../fl/networkState";
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
@@ -136,7 +138,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_join_propose", "fl_withdraw_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4070,6 +4072,13 @@ export class Store {
     });
   }
 
+  /** 0.5.4 Hermes x FL: the coordinator's round binding for WorkMarket.open. No source publishes one
+   *  yet (the training coordinator does not), so there is none; openIntent then says so. A method
+   *  so a source can be added in one place and the gate tripwires can stand one in. */
+  async flRoundBinding(): Promise<OpenBinding | null> {
+    return null;
+  }
+
   /** 0.5.4 Hermes x FL: core's WorkMarket offers read model (fl_market_offers). */
   flMarketOffers(): Promise<MarketView> {
     return readMarket();
@@ -4644,6 +4653,17 @@ export class Store {
       // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
       // re-checks the gate), and unloading (lowers authority, no card).
       const out = await runFlAdapterTool(call.name, args as Record<string, unknown>, ann, { fl: bridge.flRounds, ask });
+      status = out.status;
+      result = out.result;
+    } else if (call.name === FL_ROUND_OPEN_TOOL) {
+      // 0.5.4 WP-H5: the saved draft through lane 1's openIntent; the member signs the escrow in
+      // the wallet review (HIC-1, never an envelope). Core's payouts gate runs before the card.
+      const out = await runFlRoundOpen({
+        loadDraft: () => loadRoundDraft(),
+        networkState: () => this.flNetworkState(),
+        binding: () => this.flRoundBinding(),
+        propose: (intent) => this.proposeContractCall(intent),
+      });
       status = out.status;
       result = out.result;
     } else if (isFlPayoutTool(call.name)) {

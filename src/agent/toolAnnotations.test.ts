@@ -9,7 +9,8 @@ import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
-import { VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
+import { FILLED_DRAFT, ROUND_BINDING, VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
+import { saveRoundDraft } from "../fl/roundDraft";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -75,6 +76,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
       vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
       vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
+      // 0.5.4 WP-H5: fl_round_open_propose reaches the wallet review with a draft and a binding (test-only).
+      vi.spyOn(store, "flRoundBinding").mockResolvedValue(ROUND_BINDING);
+      saveRoundDraft({ ...FILLED_DRAFT });
       vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
       // 0.5.4 WP-H10: fl_withdraw_propose reaches the wallet review once payouts are open and the pull balance is not 0.
       vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue("0x" + (10n ** 18n).toString(16).padStart(64, "0"));

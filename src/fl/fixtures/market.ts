@@ -37,3 +37,14 @@ export function oneOfferMarket(): MarketView {
 
 /** A tier report whose facts give this machine 24 GB of VRAM. */
 export const VRAM_24GB_REPORT = { facts: { gpuVramBytes: 24 * 1024 ** 3, unifiedMemory: false, totalRamBytes: 64 * 1024 ** 3 } } as never;
+
+/** A complete Open a round draft and a round binding (test-only shapes of roundDraft.ts). */
+export const FILLED_DRAFT = {
+  groupId: "0x" + "ab".repeat(16), template: "tune" as const, dataClass: "support-tickets", minVramGb: 16, estHours: 2,
+  budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", coordinatorBondSalt: "", disputeWindowHours: 24,
+  maxWorkers: 8, deadline: "2026-11-22", who: "members" as const, coordinator: null, source: "member" as const,
+};
+export const ROUND_BINDING = {
+  verifier: "0x" + "22".repeat(20), bindRef: "0x" + "3e".repeat(32), jobSpecHash: "0x" + "44".repeat(32), requirementsHash: "0x" + "55".repeat(32),
+  requirementsCid: "bafkreifixture", groupHash: "0x" + "66".repeat(32), coordinator: "0x" + "cd".repeat(20),
+};

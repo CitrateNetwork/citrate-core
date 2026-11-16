@@ -1,0 +1,13 @@
+{
+  "added": "2026-11-16",
+  "by": "0.5.4 Hermes x FL WP-H5 (fl_round_open_propose; lane HC)",
+  "note": "Items for the open-a-round proposal over lane 1's openIntent (src/agent/flRoundOpenTool.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-round-open-propose",
+      "prompt": "My round draft is ready. Open the round so members can join.",
+      "expect": { "tool": "fl_round_open_propose" },
+      "tags": ["tool-choice", "write"]
+    }
+  ]
+}

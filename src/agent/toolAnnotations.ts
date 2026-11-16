@@ -67,6 +67,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   fl_adapter_unload: { effect: "write", trust: "trusted" }, // lowers authority: base model alone
   fl_offers_list: { effect: "none", trust: "untrusted" }, // 0.5.4 WP-H5: offer text is written by its poster
   fl_join_propose: { effect: "spend", trust: "trusted" }, // the join bond; the member signs it in the wallet review
+  fl_round_open_propose: { effect: "spend", trust: "trusted" }, // the escrow; the member signs WorkMarket.open in the wallet review
   fl_payouts_list: { effect: "none", trust: "trusted" }, // 0.5.4 WP-H10: numbers and fixed status words from WorkMarket
   fl_withdraw_propose: { effect: "spend", trust: "trusted" }, // the member signs WorkMarket.withdraw() in the wallet review
   // Named-blocked in 0.5.4: no card, no call built (see flPayoutTools.ts). A card makes them "spend".

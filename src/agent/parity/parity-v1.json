@@ -59,6 +59,7 @@
     { "name": "fl_adapter_unload", "host": "core", "read_only": false },
     { "name": "fl_offers_list", "host": "core", "read_only": true },
     { "name": "fl_join_propose", "host": "core", "read_only": false },
+    { "name": "fl_round_open_propose", "host": "core", "read_only": false },
     { "name": "fl_payouts_list", "host": "core", "read_only": true },
     { "name": "fl_withdraw_propose", "host": "core", "read_only": false },
     { "name": "fl_claim_propose", "host": "core", "read_only": true },

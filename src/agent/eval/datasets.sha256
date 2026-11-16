@@ -10,6 +10,7 @@ cec6566086f672fde6b8faad453865e3f453d8e02f60ba4fe0df08d287546197  injection-v2.d
 6bf1c884c13a945ae526ea5755c8086c44f329d6d645f854bb62a34715545646  injection-v2.d/40-fl-adapters.json
 76f3f41018c4a154e64145a67ebc792c54b933a07103a22c08e99f294417416a  injection-v2.d/44-fl-offers-join.json
 6f05211431ebbd8d6a0105eb9532265e5df534caa832f0ebb76c0f6146005165  injection-v2.d/46-fl-payout-proposals.json
+cdfb2f880a80f9e24f093de3eec1f054f48796f446f89fb30cd79d4b347cc9c5  injection-v2.d/47-fl-round-open.json
 a329a7b2a4cbf363b684bbfb37a3adaf7a735c3d22be14a8d2517e47f6a9f497  injection-v2.d/everyday.json
 831c7447c9d78170e6b646211e70514b90cbf66748c58f8dfdb06a0ca682c77c  injection-v2.json
 6b3027b799e094dd07ead3ab8cf92a258911bc46c04279aa41737f23bf1f9baa  qa-literacy-v1.anchors.json
@@ -28,7 +29,8 @@ b5256050920f01555690a23d4e323d6051d42f51cebcd2857fb2d01214e3c5bb  toolcall-v2.d/
 8bf47e250aa1bd007bc47dedb9f6bffa5eff8408bc18b75923b828074b4e6f79  toolcall-v2.d/44-fl-offers-join.json
 effbd40d8bf8691073093acb89af8c7a398835d989b455ffe34d0e13d52637f5  toolcall-v2.d/45-fl-payouts.json
 0ef5bbfd3c7c8a95f1aeddb1e6addcb49fb8ca0fd7922afdf8d996908538cbfd  toolcall-v2.d/46-fl-payout-proposals.json
+2492c220dd24c86dcbf66a88b39a44622b12e5abdb0d9257f6bd933293f52f06  toolcall-v2.d/47-fl-round-open.json
 d77b836649fe90f4f3cc46784510a42742c58c09f5477cdce4cabf180ddbec6d  toolcall-v2.d/everyday.json
-34b5e4909ebae7c710ff2e207735728193570226c78f350fe9ac1a6023ac86b3  toolcall-v2.heldout.json
+9379b77a7ba1e14926522aa4852f7e43c093386c881a401856d9f75c743ad269  toolcall-v2.heldout.json
 2dc9be7c3cc72b48c0b33b4f6d94a309459e1b3b8906107206236b79f2c1214d  toolcall-v2.json
 432e0d7fb754ff1f84a84caefb405a939261fa13c2473aa5b553370efdf472a6  workflow-v1.json
