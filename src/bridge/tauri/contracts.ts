@@ -17,6 +17,7 @@ import type {
   VercelExportView,
   DeployRecordSavedView,
   DeployRecordSummaryView,
+  DeployRecordView,
   VerifyOutcomeView,
 } from "../domains";
 import type {
@@ -122,6 +123,9 @@ export const tauriContracts: ContractsDomain = {
   },
   deployRecords(projectDir: string) {
     return invoke<DeployRecordSummaryView[]>("deploy_records_list", { projectDir });
+  },
+  deployRecordGet(projectDir: string, address: string) {
+    return invoke<DeployRecordView | null>("deploy_record_get", { projectDir, address });
   },
   // HUP-S6.2 / US-6.4 — contract templates (core renders; parameters are validated in Rust).
   templateList() {

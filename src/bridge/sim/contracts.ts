@@ -81,6 +81,9 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async deployRecords() {
       throw new Error("deploy records need the desktop node (no keychain in web/dev)");
     },
+    async deployRecordGet() {
+      throw new Error("deploy records need the desktop node (no keychain in web/dev)");
+    },
     async templateList() {
       throw new Error("the contract templates are bundled with the desktop node (not in web/dev)");
     },
