@@ -48,15 +48,15 @@ describe("held-out normalization", () => {
 // trainer rows name the 35 parity-v1 tools, so a renamed or added tool fails one side until both
 // are updated. CORE-A1/A2 (2026-11-04) added six read-only contract tools (29 -> 35); compute-pool
 // follows in its own PR. 0.5.4 WP-H3 added five terms, consent and eligibility tools (35 -> 40);
-// compute-pool follows in its own PR.
-const PARITY_V1_TOOL_NAMES_SHA256 = "9da2cfaf091d411a7d509dd69653ce76f2fb382ac0392bdeebf3907e94e957d8";
+// compute-pool follows in its own PR. WP-H4 added the two envelope tools (40 -> 42).
+const PARITY_V1_TOOL_NAMES_SHA256 = "46a9100c6eae698a4f8b038554da78d40d4f18c85c9913bf7399ce67e0ce8707";
 
 describe("parity-v1 tool names (the trainer's tool schema)", () => {
-  it("are the 40 names compute-pool trains against", () => {
+  it("are the 42 names compute-pool trains against", () => {
     const parity = JSON.parse(readFileSync(resolve(process.cwd(), "src/agent/parity/parity-v1.json"), "utf8")) as {
       tools: { name: string }[];
     };
-    expect(parity.tools).toHaveLength(40);
+    expect(parity.tools).toHaveLength(42);
     expect(sha(parity.tools.map((t) => t.name).join("\n"))).toBe(PARITY_V1_TOOL_NAMES_SHA256);
   });
 });

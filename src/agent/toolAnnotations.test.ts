@@ -55,6 +55,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         // 0.5.4 WP-H3: terms a card can show.
         floorSaltPerUnit: "1.20",
         hours: "any",
+        enabled: true,
+        joinsPerWeek: 3,
+        maxHoursPerRound: 8,
       }),
     });
     for (const n of names) {
@@ -69,6 +72,12 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
       // 0.5.4 WP-H3: no terms saved yet; the probe answers.
       vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null, save: async () => ({}) } as never);
+      // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
+      vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
+        status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
+        approve: async () => ({}) as never,
+        off: async () => null,
+      });
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

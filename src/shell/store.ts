@@ -40,6 +40,8 @@ import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
 import { isFlWorkTool, runFlWorkTool } from "../agent/flWorkTools";
+import { isFlEnvelopeTool, runFlEnvelopeTool, type FlEnvelopeApi, type FlEnvelopeStatus } from "../agent/flEnvelopeTools";
+import { approveEnvelope, envelopeOff, ENVELOPE_NEEDS_DESKTOP } from "../fl/authority";
 import { loadWorkerTerms, saveWorkerTerms } from "../fl/workerTerms";
 import flAddressBook from "../../src-tauri/addresses/40204.json";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
@@ -129,7 +131,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_terms_propose"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_terms_propose", "fl_envelope_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4051,6 +4053,19 @@ export class Store {
     return r === "approved";
   }
 
+  /** 0.5.4 WP-H4 — the envelope in core: fl_envelope.rs status, fl_work.rs approve and off. */
+  flEnvelopeApi(): FlEnvelopeApi {
+    return {
+      status: async () => {
+        if (BRIDGE_MODE !== "tauri") throw new Error(ENVELOPE_NEEDS_DESKTOP);
+        const { invoke } = await import("../bridge/tauri/invoke");
+        return invoke<FlEnvelopeStatus>("fl_envelope_status", {});
+      },
+      approve: approveEnvelope,
+      off: envelopeOff,
+    };
+  }
+
   /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
   flWorkTerms(): { load: typeof loadWorkerTerms; save: typeof saveWorkerTerms } {
     return { load: loadWorkerTerms, save: saveWorkerTerms };
@@ -4621,6 +4636,16 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlEnvelopeTool(call.name)) {
+      // 0.5.4 WP-H4: the HIC-2 envelope. Turning one on asks on a card; off applies at once. Core
+      // enforces the caps (fl_envelope.rs); on a network without WorkMarket it authorizes nothing.
+      const out = await runFlEnvelopeTool(call.name, args as Record<string, unknown>, ann, {
+        api: this.flEnvelopeApi(),
+        ask,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
     } else if (isFlWorkTool(call.name)) {
       // 0.5.4 WP-H3: worker terms (sealed in core by fl_work.rs), consent and eligibility. New terms
       // ask on a card; withdrawing a consent lowers authority and applies at once; reads read.

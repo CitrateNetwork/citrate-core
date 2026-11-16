@@ -67,6 +67,9 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   fl_consent_list: { effect: "none", trust: "trusted" },
   fl_consent_withdraw: { effect: "write", trust: "trusted" }, // lowers authority; no card
   fl_eligibility: { effect: "none", trust: "trusted" },
+  // 0.5.4 WP-H4 (src/agent/flEnvelopeTools.ts): core's own words over the member's sealed envelope.
+  fl_envelope_read: { effect: "none", trust: "trusted" },
+  fl_envelope_propose: { effect: "write", trust: "trusted" }, // on after the member's card; off at once
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.
