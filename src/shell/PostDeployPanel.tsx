@@ -10,15 +10,16 @@
 // CORE-A3 (0.5.3): once the contract is found, core keeps a durable deploy record (address,
 // init-code hash, compiler settings, standard-JSON input, ABI, gate record), encrypted on this
 // computer per project (src-tauri deploy_records.rs). The panel says whether it was saved and
-// lists the project's saved deploys.
+// lists the project's saved deploys; "Open record" shows one in full (deploy_record_get) with
+// its ABI and compiler input to copy.
 // =====================================================================
 import { useState, type CSSProperties } from "react";
-import type { ContractsDomain, DeployRecordSavedView, DeployRecordSummaryView, VerifyOutcomeView } from "../bridge/domains";
+import type { ContractsDomain, DeployRecordSavedView, DeployRecordSummaryView, DeployRecordView, VerifyOutcomeView } from "../bridge/domains";
 import { CHAIN_ID_TEXT } from "../network/profile";
 
 export type PostDeployOps = Pick<
   ContractsDomain,
-  "postdeployStatus" | "postdeployReceipt" | "postdeployVerify" | "postdeploySwitchSite" | "postdeployPinSite" | "postdeployVercelExport" | "deployRecordSave" | "deployRecords"
+  "postdeployStatus" | "postdeployReceipt" | "postdeployVerify" | "postdeploySwitchSite" | "postdeployPinSite" | "postdeployVercelExport" | "deployRecordSave" | "deployRecords" | "deployRecordGet"
 >;
 
 type Out = { ok: boolean; text: string } | null;
@@ -62,6 +63,51 @@ export function recordsText(rs: DeployRecordSummaryView[]): Out {
   };
 }
 
+/** The rows of one saved record, in the order a verifier reads them. */
+export function recordRows(r: DeployRecordView): [string, string][] {
+  const c = r.compiler;
+  const failing = r.gate.items.filter((i) => !i.pass).map((i) => i.label);
+  const abi = Array.isArray(r.abi) ? `${r.abi.length} entries` : "not a list";
+  return [
+    ["Contract", `${r.contractName} at ${r.address}`],
+    ["Chain", String(r.chainId)],
+    ["Deploy transaction", `${r.txHash}, block ${r.blockNumber}`],
+    ["Deployer", r.deployer],
+    ["Init code hash", r.initcodeHash],
+    ["Compiler", `solc ${c.solcVersion}, optimizer ${c.optimizer ? `on (${c.optimizerRuns} runs)` : "off"}, EVM ${c.evmVersion}${c.viaIr ? ", via IR" : ""}`],
+    ["Constructor arguments", r.constructorArgsHex === "0x" ? "none" : r.constructorArgsHex],
+    ["ABI", abi],
+    ["Compiler input", r.standardJsonInput != null ? `standard-JSON, ${r.standardJsonInput.length.toLocaleString("en-US")} characters` : `not kept: ${r.standardJsonNote ?? "forge did not produce it"}`],
+    ["Deploy gate", `${r.gate.verdict === "READY" ? "ready" : "not ready"}${failing.length ? ` (failing: ${failing.join(", ")})` : ""}, checked ${new Date(r.gate.evaluatedAtMs).toISOString().slice(0, 16).replace("T", " ")} UTC`],
+    ["Recorded", new Date(r.recordedAtMs).toISOString().slice(0, 16).replace("T", " ") + " UTC"],
+  ];
+}
+
+function RecordDetail({ r, onCopy }: { r: DeployRecordView; onCopy: (what: string, text: string) => void }) {
+  return (
+    <div data-testid="pd-record-detail" style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 10px", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)" }}>
+      <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "3px 12px", margin: 0 }}>
+        {recordRows(r).map(([k, v]) => (
+          <div key={k} style={{ display: "contents" }}>
+            <dt style={{ ...note, color: "var(--tx-3)" }}>{k}</dt>
+            <dd className="mono" style={{ ...mono, margin: 0, wordBreak: "break-all" }}>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="btn btn-ghost btn-sm" data-testid="pd-copy-abi" onClick={() => onCopy("ABI", JSON.stringify(r.abi, null, 2))}>
+          Copy ABI
+        </button>
+        {r.standardJsonInput != null && (
+          <button className="btn btn-ghost btn-sm" data-testid="pd-copy-sj" onClick={() => onCopy("compiler input", r.standardJsonInput as string)}>
+            Copy compiler input
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--line-1)" }}>
@@ -93,6 +139,9 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
   const [exp, setExp] = useState<Out>(null);
   const [saved, setSaved] = useState<Out>(null);
   const [records, setRecords] = useState<Out>(null);
+  const [recordList, setRecordList] = useState<DeployRecordSummaryView[]>([]);
+  const [detail, setDetail] = useState<DeployRecordView | null>(null);
+  const [detailOut, setDetailOut] = useState<Out>(null);
   const [busy, setBusy] = useState(false);
 
   const dir = project.trim();
@@ -224,10 +273,59 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
 
       <Step n={6} title="Saved deploys">
         <span style={note}>Records of this project's deploys, kept encrypted on this computer. The key is in your keychain and in your recovery kit.</span>
-        <button className="btn btn-sm btn-secondary" data-testid="pd-records" disabled={!dir || busy} onClick={() => void run(async () => recordsText(await ops.deployRecords(dir)), setRecords)}>
+        <button
+          className="btn btn-sm btn-secondary"
+          data-testid="pd-records"
+          disabled={!dir || busy}
+          onClick={() =>
+            void run(async () => {
+              const rs = await ops.deployRecords(dir);
+              setRecordList([...rs].reverse());
+              setDetail(null);
+              return recordsText(rs);
+            }, setRecords)
+          }
+        >
           Show
         </button>
         <Output id="pd-records-out" out={records} />
+        {recordList.length > 0 && (
+          <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {recordList.map((r) => (
+              <button
+                key={r.address + r.txHash}
+                className="btn btn-ghost btn-sm"
+                data-testid="pd-open-record"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    const full = await ops.deployRecordGet(dir, r.address);
+                    setDetail(full);
+                    return full ? null : { ok: false, text: `No saved record for ${r.address} was found; it may have been removed.` };
+                  }, setDetailOut)
+                }
+              >
+                Open record · {r.contractName} {r.address.slice(0, 8)}…
+              </button>
+            ))}
+          </span>
+        )}
+        <Output id="pd-record-detail-out" out={detailOut} />
+        {detail && (
+          <RecordDetail
+            r={detail}
+            onCopy={(what, text) => {
+              void (async () => {
+                try {
+                  await navigator.clipboard.writeText(text);
+                  setDetailOut({ ok: true, text: `Copied the ${what}.` });
+                } catch (e) {
+                  setDetailOut({ ok: false, text: `Could not copy the ${what}: ${msg(e)}` });
+                }
+              })();
+            }}
+          />
+        )}
       </Step>
     </div>
   );
