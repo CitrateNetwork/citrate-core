@@ -29,6 +29,8 @@ import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 import { RunReceipts, RunTimeline } from "./RunTimeline";
+import { PolicyProposalCard } from "./PolicyProposalCard";
+import { contextRows, contextSummary } from "../agent/hermesContext";
 import { ChatCommandBar, chatCommands, slashMatches, type ChatCommand } from "./ChatCommandBar";
 import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
 import { stepAnnouncement } from "../agent/runTimeline";
@@ -133,6 +135,48 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     return store.sendChat(text);
   };
 
+  // Board 01: editing a past message branches the chat (the original stays in History).
+  const [editing, setEditing] = useState<string | null>(null);
+  const startEdit = (id: string) => {
+    const m = s.chatMsgs.find((x) => x.id === id);
+    const el = store.chatInputEl;
+    if (!m || !el) return;
+    setEditing(id);
+    el.value = m.text;
+    fitComposer(el, inputMax);
+    el.focus();
+  };
+  const cancelEdit = () => {
+    setEditing(null);
+    if (store.chatInputEl) store.chatInputEl.value = "";
+    fitInput();
+  };
+  const copyText = (t: string) => {
+    try {
+      void navigator.clipboard.writeText(t).then(
+        () => store.toast("Copied"),
+        () => store.toast("Copying is not available here"),
+      );
+    } catch {
+      store.toast("Copying is not available here");
+    }
+  };
+  // Board 01: retry an answer on another model, as a branch (the original stays in History).
+  const [retryPick, setRetryPick] = useState<string | null>(null);
+  const retryWith = async (answerId: string, modelId: string) => {
+    setRetryPick(null);
+    const chosen = routerChoices.find((c) => c.id === modelId);
+    const err = await store.selectModel(modelId, routerChoices);
+    if (err) {
+      setPickError(err);
+      return;
+    }
+    if (chosen?.source === "local") await sliceSelectModel(modelId);
+    await store.retryAsBranch(answerId);
+  };
+  const [contextOpen, setContextOpen] = useState(false);
+  const ctxInput = { toolNames: store.chatToolNames(), providerKind: store.activeProviderKind(), hermesDown: !!s.chatHermesDown, modelLabel: activeModel.label };
+
   // Board 01: typing while a run is live offers Steer now or Queue for after (the text waits here).
   const [followUp, setFollowUp] = useState<string | null>(null);
   const runLive = chatBusy;
@@ -143,6 +187,13 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     setSlashOpen(false);
     if (runLive) {
       setFollowUp(text);
+      return;
+    }
+    if (editing) {
+      const id = editing;
+      setEditing(null);
+      follow.current = true;
+      void store.branchChat(id, { text });
       return;
     }
     void send(text);
@@ -218,6 +269,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     plan: () => openPlan(),
     monitor: () => void openPopout("monitor"),
     focus: () => store.chatInputEl?.focus(),
+    context: () => setContextOpen(true),
   });
   const runCommand = (c: ChatCommand) => {
     setBarOpen(false);
@@ -311,6 +363,22 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         >
           {isMacPlatform() ? "⌘K" : "Ctrl K"}
         </button>
+        <button
+          type="button"
+          className="mono"
+          data-testid="open-context"
+          aria-expanded={contextOpen}
+          aria-controls="hermes-context"
+          onClick={() => {
+            setContextOpen((v) => !v);
+            setHistoryOpen(false);
+            setPickerOpen(false);
+          }}
+          title="What Hermes can see in this chat"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: contextOpen ? "var(--srf-2)" : "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          Can see
+        </button>
         {/* 0.5.4: the way back to earlier conversations and projects, and a fresh conversation. */}
         <button
           type="button"
@@ -370,6 +438,27 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         <div style={{ flexShrink: 0 }}>
           <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />
         </div>
+      )}
+      {contextOpen && (
+        <section id="hermes-context" data-testid="hermes-context" aria-labelledby="hermes-context-h" style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+          <h3 id="hermes-context-h" className="eyebrow" style={{ margin: 0, fontSize: 10 }}>
+            What Hermes can see here
+          </h3>
+          <span style={{ fontSize: 12, color: "var(--tx-2)" }}>{contextSummary(ctxInput)}</span>
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            {contextRows(ctxInput).map((r) => (
+              <li key={r.id} data-testid="context-row" data-can={String(r.can)} style={{ display: "grid", gridTemplateColumns: "40px minmax(0,1fr)", gap: 8, fontSize: 12.5 }}>
+                <span className="mono" style={{ fontSize: 10.5, color: r.can ? "var(--ok)" : "var(--tx-3)" }}>
+                  {r.can ? "Yes" : "No"}
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <span>{r.title}</span>
+                  <span style={{ fontSize: 11, color: "var(--tx-3)" }}>{r.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
       {historyOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
@@ -478,6 +567,57 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 </span>
               );
             })()}
+            {m.proposal && (
+              <PolicyProposalCard
+                proposal={m.proposal}
+                onConfirm={() => void store.confirmProposal(m.proposal!.id)}
+                onDecline={() => store.declineProposal(m.proposal!.id)}
+                onReopen={() => store.reopenProposal(m.proposal!.id)}
+                onEdit={() => store.go("settings/work")}
+              />
+            )}
+            {m.who === "You" && !chatBusy && m.text.trim() !== "" && (
+              <span style={{ display: "flex", gap: 2, alignSelf: "flex-start" }}>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-edit" onClick={() => startEdit(m.id)} title="Edit to branch; the original stays in History">
+                  Edit
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => copyText(m.text)}>
+                  Copy
+                </button>
+              </span>
+            )}
+            {m.who !== "You" && !m.streaming && !m.error && m.text.trim() !== "" && (
+              <span style={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => copyText(m.text)}>
+                  Copy
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-retry" disabled={chatBusy} onClick={() => void store.retryAsBranch(m.id)} title="Ask again in a new branch; this answer stays in History">
+                  Retry
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-retry-with" disabled={chatBusy} aria-expanded={retryPick === m.id} onClick={() => setRetryPick((v) => (v === m.id ? null : m.id))}>
+                  Retry with another model
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-branch" disabled={chatBusy} onClick={() => void store.branchChat(m.id, { includeFrom: true })}>
+                  Branch from here
+                </button>
+              </span>
+            )}
+            {retryPick === m.id && (
+              <ul data-testid="retry-models" aria-label="Retry with" style={{ listStyle: "none", margin: 0, padding: 4, border: "1px solid var(--line-1)", borderRadius: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                {routerChoices
+                  .filter((c) => c.ready && c.id !== store.routerActiveId())
+                  .map((c) => (
+                    <li key={c.id}>
+                      <button type="button" className="btn btn-ghost btn-sm" data-testid="retry-model" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => void retryWith(m.id, c.id)}>
+                        {c.label}
+                      </button>
+                    </li>
+                  ))}
+                {routerChoices.filter((c) => c.ready && c.id !== store.routerActiveId()).length === 0 && (
+                  <li style={{ fontSize: 12, color: "var(--tx-3)", padding: "4px 8px" }}>No other model is ready. Connect one in Hermes › Controls › Details › Models.</li>
+                )}
+              </ul>
+            )}
             {m.who !== "You" && !m.streaming && <RunReceipts run={m.run} />}
             {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
             {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
@@ -573,6 +713,14 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       </div>
       {/* 0.5.4: the text area spans the composer's full width on its own row, and grows with its
           content; the compact icon actions and Send sit on the row below, so they never narrow it. */}
+      {editing && (
+        <div data-testid="editing-banner" role="status" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 16px 6px", padding: "6px 10px", border: "1px solid var(--line-1)", borderRadius: 6, fontSize: 12.5, flexShrink: 0 }}>
+          <span style={{ flex: 1 }}>Editing a past message starts a branch. The original stays in History.</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={cancelEdit}>
+            Cancel
+          </button>
+        </div>
+      )}
       {followUp !== null && runLive && (
         <div data-testid="steer-offer" role="group" aria-label="Your next message" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 16px 6px", padding: "6px 10px", background: "var(--srf-inset, var(--srf-1))", border: "1px solid var(--line-1)", borderRadius: 6, fontSize: 12.5, flexShrink: 0 }}>
           <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--warn)" }} aria-hidden></span>
@@ -655,6 +803,19 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 }
                 submit(v);
               }
+              // Board 01: Up in an empty composer edits your last message (as a branch).
+              if (e.key === "ArrowUp" && !runLive && !editing && (e.target as HTMLTextAreaElement).value === "") {
+                const last = [...s.chatMsgs].reverse().find((x) => x.who === "You" && x.text.trim() !== "");
+                if (last) {
+                  e.preventDefault();
+                  startEdit(last.id);
+                }
+              }
+              if (e.key === "Escape" && editing) {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelEdit();
+              }
               if (e.key === "Escape" && slashOpen) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -707,7 +868,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </button>
         </div>
         <div className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)", textAlign: "center" }}>
-          Enter send · Shift Enter new line · Esc stop · / commands · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
+          Enter send · Shift Enter new line · Esc stop · Up edit last · / commands · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
         </div>
       </div>
     </div>

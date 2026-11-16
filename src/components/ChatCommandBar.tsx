@@ -23,6 +23,8 @@ export interface CommandDeps {
   plan: () => void;
   monitor: () => void;
   focus: () => void;
+  /** Open "What Hermes can see" (absent = not offered). */
+  context?: () => void;
 }
 
 /** The chat's commands; Stop is listed only while a run is live. */
@@ -35,6 +37,7 @@ export function chatCommands(d: CommandDeps): ChatCommand[] {
     { id: "monitor", slash: "/monitor", label: "Open the Activity monitor", run: d.monitor },
     { id: "run", slash: "/run", label: "Run a track workflow (/run <workflow>)", run: d.focus, insert: "/run " },
   ];
+  if (d.context) list.splice(3, 0, { id: "context", slash: "/see", label: "What Hermes can see here", run: d.context });
   if (d.live) list.unshift({ id: "stop", slash: "/stop", label: "Stop this run (Esc)", run: d.stop });
   return list;
 }

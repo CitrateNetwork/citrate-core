@@ -129,6 +129,8 @@ export function archivable(msgs: ChatMsg[]): ChatMsg[] {
       const run = m.run ? parseRun(m.run) : undefined;
       if (run) keep.run = run;
       if (typeof m.model === "string" && m.model) keep.model = m.model.slice(0, 120);
+      // A proposal saved mid-save did not finish saving: it comes back to be decided again.
+      if (m.proposal) keep.proposal = m.proposal.state === "saving" ? { ...m.proposal, state: "pending" } : m.proposal;
       return keep;
     });
 }

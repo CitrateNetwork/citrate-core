@@ -22,6 +22,7 @@ import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import type { RunRecord } from "../agent/runTimeline";
+import type { WorkerTerms } from "../fl/workerTerms";
 import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -159,6 +160,19 @@ export interface ChatMsg {
   run?: RunRecord;
   /** Board 01: the model this reply ran on, as the chat header named it when the turn began. */
   model?: string;
+  /** Board 01: a proposal core renders in the transcript for the member to decide (HIC-1). */
+  proposal?: ChatProposal;
+}
+/** Board 01: a worker-terms proposal card. Only core writes it; Hermes can only ask for one. */
+export interface ChatProposal {
+  id: string;
+  kind: "worker_terms";
+  terms: WorkerTerms;
+  state: "pending" | "saving" | "confirmed" | "declined" | "failed";
+  /** When the member decided (ms since epoch). */
+  at?: number;
+  /** Why saving failed (shown with "Save failed, nothing changed"). */
+  error?: string;
 }
 /** Board 01: a message the member typed while Hermes was working. `steer`: it goes as soon as the
  *  stopped run has ended; otherwise it waits for the run to finish. Never persisted. */
