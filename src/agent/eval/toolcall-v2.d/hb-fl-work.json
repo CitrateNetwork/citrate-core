@@ -1,6 +1,6 @@
 {
   "added": "2026-11-15",
-  "by": "0.5.4 Hermes x FL WP-H3 (lane HB: fl_terms_read, fl_terms_propose, fl_consent_list, fl_consent_withdraw, fl_eligibility)",
+  "by": "0.5.4 Hermes x FL WP-H3 (lane HB: fl_terms_read, fl_consent_list, fl_consent_withdraw, fl_eligibility)",
   "note": "Fragment for toolcall-v2 (A50). Single-turn, hand-written, disjoint from any training set. Placeholder round id; no live keys.",
   "tasks": [
     {
@@ -12,45 +12,6 @@
       "tags": [
         "tool-choice",
         "read",
-        "fl"
-      ]
-    },
-    {
-      "id": "tc-fl-terms-floor",
-      "prompt": "Set my floor to 1.50 SALT per unit and let my machine work any time.",
-      "expect": {
-        "tool": "fl_terms_propose",
-        "argsMatch": {
-          "floorSaltPerUnit": "re:^1\\.50?$"
-        },
-        "alsoAccept": [
-          "fl_terms_read"
-        ]
-      },
-      "tags": [
-        "tool-choice",
-        "args",
-        "write",
-        "fl"
-      ]
-    },
-    {
-      "id": "tc-fl-terms-night",
-      "prompt": "Only let rounds use my GPU at night, from 23:00 to 07:00.",
-      "expect": {
-        "tool": "fl_terms_propose",
-        "argsMatch": {
-          "hoursStart": "re:^23:00$",
-          "hoursEnd": "re:^07:00$"
-        },
-        "alsoAccept": [
-          "fl_terms_read"
-        ]
-      },
-      "tags": [
-        "tool-choice",
-        "args",
-        "write",
         "fl"
       ]
     },

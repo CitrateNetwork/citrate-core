@@ -777,26 +777,6 @@ export const AGENT_TOOLS = [
   {
     type: "function",
     function: {
-      name: "fl_terms_propose",
-      description:
-        "PROPOSE worker terms. Fields not given keep their saved value. The member decides on a card (HIC-1) and the terms are sealed on this device only after Approve; you never save them yourself. Never suggest a floor from memory: with no comparable offers on this network, say so.",
-      parameters: {
-        type: "object",
-        properties: {
-          floorSaltPerUnit: { type: "string", description: "the floor, a SALT amount like 1.20" },
-          hours: { type: "string", enum: ["any"], description: "\"any\" for any time; otherwise give hoursStart and hoursEnd" },
-          hoursStart: { type: "string", description: "daily window start, HH:MM (24 h)" },
-          hoursEnd: { type: "string", description: "daily window end, HH:MM (24 h); may be earlier than the start for an overnight window" },
-          weekdaysOnly: { type: "boolean", description: "work on weekdays only" },
-          mainsOnly: { type: "boolean", description: "work only on mains power" },
-          dataClasses: { type: "array", items: { type: "string" }, description: "local data classes rounds may read; empty for none" },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "fl_consent_list",
       description: "List the member's federated-learning consents: per-round consents the device worker reads, withdrawn ones, and whether training on verified conversations is on. Read-only.",
       parameters: { type: "object", properties: {} },
@@ -869,6 +849,44 @@ export const AGENT_TOOLS = [
         },
         required: ["enabled"],
       },
+    },
+  },
+  // ── LoRA adapters and the eval gate (0.5.4 Hermes x FL, WP-H9) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_gate_read",
+      description:
+        "Read the LoRA adapter eval gate records on this device: for one adapter (sha256) or every adapter from one round (roundId), the ACCEPT or REJECT verdict, the six checks, each metric base to candidate, and what the local model serves now. With neither, lists every adapter's newest decision. Read-only. Running the gate needs files the member picks on Rounds › Adapters; never invent a verdict or a score.",
+      parameters: {
+        type: "object",
+        properties: {
+          sha256: { type: "string", description: "the adapter file's SHA-256, 64 hex characters" },
+          roundId: { type: "string", description: "the round the adapter came from, 0x followed by 64 hex characters" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_load_propose",
+      description:
+        "PROPOSE loading one LoRA adapter into the member's local model. The member decides on an approval card (HIC-1); you never load it yourself. Core loads only an adapter whose newest eval gate decision is ACCEPT on the base model being served, re-hashes the file, and refuses otherwise.",
+      parameters: {
+        type: "object",
+        properties: { sha256: { type: "string", description: "the adapter file's SHA-256, from fl_adapter_gate_read" } },
+        required: ["sha256"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_unload",
+      description:
+        "Unload the LoRA adapter from the member's local model so the base model serves alone, and stop it being put back after a restart. Needs no approval card because it only removes an adapter; say what you did.",
+      parameters: { type: "object", properties: {} },
     },
   },
   // ── paraconsensus (US-9.2 AC2) ──
@@ -1381,6 +1399,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_consent_list",
   "fl_eligibility",
   "fl_envelope_read",
+  "fl_adapter_gate_read",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
@@ -1396,4 +1415,5 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
  */
 export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_settings_set(false): consent only goes down
+  "fl_adapter_unload", // core fl_adapter_unload: serve the base model alone and forget the remembered adapter
 ]);

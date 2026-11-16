@@ -63,13 +63,17 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // 0.5.4 WP-H3 (src/agent/flWorkTools.ts): the member's own sealed terms and consents, and this
   // machine's local probe. Nothing another person writes reaches these results.
   fl_terms_read: { effect: "none", trust: "trusted" },
-  fl_terms_propose: { effect: "write", trust: "trusted" }, // sealed only after the member's card
   fl_consent_list: { effect: "none", trust: "trusted" },
   fl_consent_withdraw: { effect: "write", trust: "trusted" }, // lowers authority; no card
   fl_eligibility: { effect: "none", trust: "trusted" },
   // 0.5.4 WP-H4 (src/agent/flEnvelopeTools.ts): core's own words over the member's sealed envelope.
   fl_envelope_read: { effect: "none", trust: "trusted" },
   fl_envelope_propose: { effect: "write", trust: "trusted" }, // on after the member's card; off at once
+  // 0.5.4 WP-H9: gate records are core's, but their reasons can quote the model and dataset names
+  // in scorecard files, which may come from someone else, so the read is untrusted.
+  fl_adapter_gate_read: { effect: "none", trust: "untrusted" },
+  fl_adapter_load_propose: { effect: "write", trust: "trusted" }, // after the member's approval card; core re-checks the gate
+  fl_adapter_unload: { effect: "write", trust: "trusted" }, // lowers authority: base model alone
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

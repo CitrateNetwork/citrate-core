@@ -2,7 +2,7 @@
 // Each tool runs through runFlWorkTool with its seams spied; the store-level cases drive
 // store.handleTool, the entry point a Hermes turn uses.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { FL_WORK_TOOL_NAMES, checkRequirements, proposedTerms, runFlWorkTool, type FlWorkDeps } from "./flWorkTools";
+import { FL_WORK_TOOL_NAMES, checkRequirements, runFlWorkTool, type FlWorkDeps } from "./flWorkTools";
 import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { annotationFor } from "./toolAnnotations";
 import { store } from "../shell/store";
@@ -44,11 +44,10 @@ function report(facts: Partial<TierReport["facts"]> = {}): TierReport {
   };
 }
 
-function deps(over: { saved?: WorkerTerms | null; decision?: string; book?: FlWorkDeps["book"] } = {}) {
+function deps(over: { saved?: WorkerTerms | null; book?: FlWorkDeps["book"] } = {}) {
   const d = {
     terms: {
       load: vi.fn(async () => (over.saved === undefined ? SAVED : over.saved)),
-      save: vi.fn(async () => ({ savedAt: 1, termsHash: "f".repeat(64), sealed: true })),
     },
     flRounds: {
       overview: vi.fn(async () => overview({ consentedRounds: [ROUND] })),
@@ -58,7 +57,6 @@ function deps(over: { saved?: WorkerTerms | null; decision?: string; book?: FlWo
     },
     tier: { recommend: vi.fn(async (): Promise<TierReport | null> => report()) },
     book: over.book ?? NO_WORKMARKET,
-    ask: vi.fn(async () => over.decision ?? "approved"),
     toast: vi.fn(),
   };
   return d satisfies FlWorkDeps;
@@ -77,8 +75,8 @@ describe("WP-H3: every terms, consent and eligibility tool is offered and classi
     }
     for (const n of ["fl_terms_read", "fl_consent_list", "fl_eligibility"]) expect(READ_ONLY_AGENT_TOOLS.has(n), n).toBe(true);
     expect(AUTHORITY_LOWERING_AGENT_TOOLS.has("fl_consent_withdraw")).toBe(true);
-    expect(READ_ONLY_AGENT_TOOLS.has("fl_terms_propose")).toBe(false);
-    expect(AUTHORITY_LOWERING_AGENT_TOOLS.has("fl_terms_propose")).toBe(false);
+    // The one terms write path is lane 3's worker_terms_propose (#693); this lane only reads terms.
+    expect(AGENT_TOOLS.map((t) => t.function.name as string)).not.toContain("fl_terms_propose");
   });
 });
 
@@ -94,59 +92,6 @@ describe("fl_terms_read", () => {
     const d = deps();
     d.terms.load.mockRejectedValueOnce(new Error("the keychain is not reachable; your work settings stay closed"));
     expect((await run("fl_terms_read", {}, d)).result).toBe("The worker terms could not be read: the keychain is not reachable; your work settings stay closed");
-  });
-});
-
-describe("fl_terms_propose", () => {
-  it("merges the call over the saved terms", () => {
-    const p = proposedTerms({ floorSaltPerUnit: "1.50" }, SAVED);
-    expect(p).toEqual({ terms: { ...SAVED, floorSaltPerUnit: "1.50" } });
-    expect(proposedTerms({ hours: "any", dataClasses: "text, code" }, SAVED)).toEqual({ terms: { ...SAVED, hours: "any", dataClasses: ["text", "code"] } });
-  });
-
-  it("with no saved terms, a floor and hours are required; nothing is asked", async () => {
-    const d = deps({ saved: null });
-    expect((await run("fl_terms_propose", { hours: "any" }, d)).result).toMatch(/Ask the member for a floor/);
-    expect((await run("fl_terms_propose", { floorSaltPerUnit: "1.20" }, d)).result).toMatch(/Ask the member for hours/);
-    expect(d.ask).not.toHaveBeenCalled();
-  });
-
-  it("refuses malformed terms before any card", async () => {
-    const d = deps();
-    expect((await run("fl_terms_propose", { floorSaltPerUnit: "one" }, d)).result).toMatch(/^The floor must be a SALT amount like 1.20/);
-    expect((await run("fl_terms_propose", { hoursStart: "25:00", hoursEnd: "07:00" }, d)).result).toMatch(/^Hours must be times like 23:00/);
-    expect(d.ask).not.toHaveBeenCalled();
-    expect(d.terms.save).not.toHaveBeenCalled();
-  });
-
-  it("shows every field and what changes; with no WorkMarket there are no comparables", async () => {
-    const d = deps({ decision: "declined" });
-    const out = await run("fl_terms_propose", { floorSaltPerUnit: "1.50", mainsOnly: false }, d);
-    const spec = d.ask.mock.calls[0][0] as unknown as { title: string; rows: { k: string; v: string }[] };
-    expect(spec.title).toBe("Change your worker terms");
-    const row = (k: string) => spec.rows.find((r) => r.k === k)?.v;
-    expect(row("Floor")).toBe("1.20 SALT per unit → 1.50 SALT per unit");
-    expect(row("Only on mains power")).toBe("yes → no");
-    expect(row("Hours")).toBe("23:00 to 07:00");
-    expect(row("Comparable offers")).toMatch(/WorkMarket is not deployed on this network/);
-    expect(d.terms.save).not.toHaveBeenCalled();
-    expect(out.result).toBe("The member declined; the terms did not change.");
-  });
-
-  it("saves exactly the terms on the card, only after Approve", async () => {
-    const d = deps({ book: WITH_WORKMARKET });
-    const out = await run("fl_terms_propose", { floorSaltPerUnit: "2", weekdaysOnly: "true" }, d);
-    expect(d.terms.save).toHaveBeenCalledWith({ ...SAVED, floorSaltPerUnit: "2", weekdaysOnly: true });
-    expect(out.result).toMatch(/^Saved the worker terms, sealed on this device \(terms hash ffffffffffff\)/);
-    const spec = d.ask.mock.calls[0][0] as unknown as { rows: { k: string; v: string }[] };
-    expect(spec.rows.find((r) => r.k === "Comparable offers")?.v).toMatch(/fl_offers_list/);
-  });
-
-  it("core's refusal on save is passed on", async () => {
-    const d = deps();
-    d.terms.save.mockRejectedValueOnce(new Error("A data class must be letters, digits, dots, dashes or underscores"));
-    const out = await run("fl_terms_propose", { dataClasses: ["bad class!"] }, d);
-    expect(out.result).toBe("The terms were not saved: A data class must be letters, digits, dots, dashes or underscores");
   });
 });
 
@@ -177,7 +122,6 @@ describe("fl_consent_withdraw", () => {
   it("withdraws one round's consent at once, with no card", async () => {
     const d = deps();
     const out = await run("fl_consent_withdraw", { scope: "round", roundId: ROUND }, d);
-    expect(d.ask).not.toHaveBeenCalled();
     expect(d.flRounds.revokeConsent).toHaveBeenCalledWith(ROUND);
     expect(out.result).toMatch(/Rounds still consented: none/);
     expect(d.toast).toHaveBeenCalledWith(expect.not.stringMatching(/approve/i));
@@ -187,7 +131,6 @@ describe("fl_consent_withdraw", () => {
     await run("fl_consent_withdraw", { scope: "conversations" }, d);
     expect(d.flRounds.setTrajectoryConsent).toHaveBeenCalledWith(false, false);
     expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalledWith(true, expect.anything());
-    expect(d.ask).not.toHaveBeenCalled();
   });
   it("while Hermes is starting, the conversation switch write is held and says so", async () => {
     const d = deps();
@@ -212,6 +155,11 @@ describe("fl_consent_withdraw", () => {
 });
 
 describe("fl_eligibility", () => {
+  it("with WorkMarket in the book, an offer id asks for a requirements object instead of guessing", async () => {
+    const out = await run("fl_eligibility", { offerId: "7" }, deps({ book: WITH_WORKMARKET }));
+    expect(out.result).toMatch(/Pass one\.$/);
+  });
+
   it("an offer id on a network without WorkMarket says Not available yet, from the book", async () => {
     const d = deps();
     const out = await run("fl_eligibility", { offerId: "7" }, d);
@@ -249,15 +197,6 @@ describe("fl_eligibility", () => {
 
 describe("store.handleTool routes the WP-H3 tools", () => {
   const call = (name: string, args: Record<string, unknown>): ToolCall => ({ id: "c1", name, arguments: JSON.stringify(args) });
-
-  it("fl_terms_propose asks once and saves only on Approve", async () => {
-    const save = vi.fn(async () => ({ savedAt: 1, termsHash: "a".repeat(64), sealed: true }));
-    vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => SAVED, save } as never);
-    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
-    await store.handleTool(call("fl_terms_propose", { floorSaltPerUnit: "3" }), "m1", () => {}, { hic: "required", hicReason: "read untrusted" });
-    expect(sig).toHaveBeenCalledTimes(1);
-    expect(save).not.toHaveBeenCalled();
-  });
 
   it("fl_consent_withdraw opens no approval and calls only the revoke", async () => {
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");

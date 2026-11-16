@@ -20,6 +20,7 @@ import { NOT_AVAILABLE, PAYOUTS_DARK, type FlNetworkState } from "./networkState
 import { PayoutReceipt, type PayoutLine, type PayoutStatus } from "./PayoutReceipt";
 import { Card, Chip, Eyebrow, Hex, KV, Note, shortHex, Unknown } from "./primitives";
 import { TOKENOMICS_NOTICE } from "./FlBand";
+import { windowWords } from "./chainTime";
 
 export type HistoryKind = "Round" | "Consent" | "Gate" | "Adapter" | "Payout";
 
@@ -69,8 +70,9 @@ export function historyCsv(rows: HistoryRow[]): string {
 export interface Receipt {
   line: PayoutLine;
   status: Exclude<PayoutStatus, "dark" | "not-deployed">;
-  /** Block the dispute window ends at, when waiting. */
-  disputeEndBlock?: number;
+  /** When the dispute window ends, in chain seconds: the later of payoutPostedAt + disputeWindow
+   *  and answerGraceUntil (WorkMarket getOffer). */
+  disputeEndsAt?: number;
 }
 
 export interface PayoutsViewProps {
@@ -82,6 +84,8 @@ export interface PayoutsViewProps {
   pullWei: bigint | null;
   pullReason?: string;
   wallet: string;
+  /** The latest block's timestamp (seconds); null when not read. */
+  chainNow: number | null;
   ov: FlOverview | null;
   ovError: string | null;
   go: (route: string) => void;
@@ -94,19 +98,23 @@ export function PayoutsView(p: PayoutsViewProps) {
   const [pane, setPane] = useState<"receipts" | "history">("receipts");
   const [filter, setFilter] = useState("all");
   const [saved, setSaved] = useState("");
-  const [sheet, setSheet] = useState<{ kind: "claim" | "withdraw" | "dispute"; r?: Receipt; error?: string } | null>(null);
+  const [sheet, setSheet] = useState<{ kind: "claim" | "withdraw" | "dispute"; r?: Receipt; error?: string; signing?: boolean } | null>(null);
   const open = p.state.payouts === "open";
   const nd = p.state.payouts === "not-deployed";
   const rows = p.ov ? historyRows(p.ov) : [];
   const shown = filterRows(rows, filter);
 
   const sign = async () => {
-    if (!sheet) return;
+    // PAY-15: one hand-off per review. The sheet leaves the review step at once, so a second
+    // press has no button; the store refuses a second proposal while one is in flight.
+    if (!sheet || sheet.signing) return;
+    const s0 = sheet;
+    setSheet({ ...s0, signing: true, error: undefined });
     try {
-      await p.act(sheet.kind, sheet.r);
+      await p.act(s0.kind, s0.r);
       setSheet(null);
     } catch (e) {
-      setSheet({ ...sheet, error: e instanceof Error ? e.message : String(e) });
+      setSheet({ ...s0, signing: false, error: e instanceof Error ? e.message : String(e) });
     }
   };
 
@@ -158,6 +166,11 @@ export function PayoutsView(p: PayoutsViewProps) {
                 <span className="fl-muted" style={{ fontSize: 12.5 }}>
                   Claim turns on with a network profile update after the security review. Nothing here can be signed yet.
                 </span>
+                {p.state.payoutsReason && (
+                  <span className="fl-faint" style={{ fontSize: 12 }} data-testid="payouts-reason">
+                    {p.state.payoutsReason}
+                  </span>
+                )}
               </Card>
             )}
             {p.state.payouts === "unknown" && (
@@ -280,7 +293,8 @@ export function PayoutsView(p: PayoutsViewProps) {
           id="fl-pay"
           title={sheet.kind === "claim" ? `Claim round ${sheet.r?.line.round}` : sheet.kind === "withdraw" ? "Withdraw to your wallet" : `Dispute the round ${sheet.r?.line.round} payout list`}
           hic="HIC-1"
-          step="review"
+          step={sheet.signing ? "signing" : "review"}
+          signed={1}
           signLabel="Sign"
           onSign={() => void sign()}
           onDecline={() => setSheet(null)}
@@ -291,7 +305,7 @@ export function PayoutsView(p: PayoutsViewProps) {
                   rows={[
                     { k: "Round", v: sheet.r.line.round },
                     { k: "Amount", v: `${sheet.r.line.units} units × ${saltFromWei(sheet.r.line.rateWei)} SALT = ${saltFromWei(sheet.r.line.amountWei)} SALT`, mono: true },
-                    { k: "Goes to", v: "Your WorkMarket pull balance, then withdraw to your wallet" },
+                    { k: "Goes to", v: "Your WorkMarket pull balance, with your join bond released, then withdraw to your wallet" },
                     { k: "Network fee", v: <Unknown reason="the wallet review reads gas before you sign" /> },
                   ]}
                 />
@@ -308,8 +322,8 @@ export function PayoutsView(p: PayoutsViewProps) {
               {sheet.kind === "dispute" && (
                 <KV
                   rows={[
-                    { k: "Effect", v: "The round's payout freezes. If your receipt holds, the coordinator bond can be slashed." },
-                    { k: "Window", v: sheet.r?.disputeEndBlock !== undefined ? `ends at block ${sheet.r.disputeEndBlock.toLocaleString("en-US")}` : <Unknown reason="not read" /> },
+                    { k: "Effect", v: "The round's payout freezes. If your receipt holds, the coordinator bond can be slashed. A dispute pays the disputer nothing." },
+                    { k: "Window", v: sheet.r?.disputeEndsAt !== undefined ? windowWords(sheet.r.disputeEndsAt, p.chainNow) : <Unknown reason="not read" /> },
                   ]}
                 />
               )}

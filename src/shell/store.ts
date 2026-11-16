@@ -42,8 +42,9 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { isFlWorkTool, runFlWorkTool } from "../agent/flWorkTools";
 import { isFlEnvelopeTool, runFlEnvelopeTool, type FlEnvelopeApi, type FlEnvelopeStatus } from "../agent/flEnvelopeTools";
 import { approveEnvelope, envelopeOff, ENVELOPE_NEEDS_DESKTOP } from "../fl/authority";
-import { loadWorkerTerms, saveWorkerTerms } from "../fl/workerTerms";
+import { loadWorkerTerms } from "../fl/workerTerms";
 import flAddressBook from "../../src-tauri/addresses/40204.json";
+import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -131,7 +132,8 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_terms_propose", "fl_envelope_propose"]);
+/** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_envelope_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4067,8 +4069,8 @@ export class Store {
   }
 
   /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
-  flWorkTerms(): { load: typeof loadWorkerTerms; save: typeof saveWorkerTerms } {
-    return { load: loadWorkerTerms, save: saveWorkerTerms };
+  flWorkTerms(): { load: typeof loadWorkerTerms } {
+    return { load: loadWorkerTerms };
   }
 
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
@@ -4647,16 +4649,21 @@ export class Store {
       status = out.status;
       result = out.result;
     } else if (isFlWorkTool(call.name)) {
-      // 0.5.4 WP-H3: worker terms (sealed in core by fl_work.rs), consent and eligibility. New terms
-      // ask on a card; withdrawing a consent lowers authority and applies at once; reads read.
+      // 0.5.4 WP-H3: worker terms (read; sealed in core by fl_work.rs), consent and eligibility.
+      // Withdrawing a consent lowers authority and applies at once; reads read.
       const out = await runFlWorkTool(call.name, args as Record<string, unknown>, ann, {
         terms: this.flWorkTerms(),
         flRounds: bridge.flRounds,
         tier: bridge.tier,
         book: flAddressBook,
-        ask,
         toast: (text) => this.toast(text),
       });
+      status = out.status;
+      result = out.result;
+    } else if (isFlAdapterTool(call.name)) {
+      // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
+      // re-checks the gate), and unloading (lowers authority, no card).
+      const out = await runFlAdapterTool(call.name, args as Record<string, unknown>, ann, { fl: bridge.flRounds, ask });
       status = out.status;
       result = out.result;
     } else if (isEverydayTool(call.name)) {
@@ -5488,6 +5495,20 @@ export class Store {
    */
   async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // FL G-SEC PAY-15: one proposal at a time. A second call while core is still opening the
+    // first ceremony (before walletReview is set) is refused, so a double press signs nothing twice.
+    if (this.contractCallInFlight) throw new Error("a contract call is already being prepared; wait for its review");
+    this.contractCallInFlight = true;
+    try {
+      return await this.proposeContractCallOnce(input);
+    } finally {
+      this.contractCallInFlight = false;
+    }
+  }
+
+  private contractCallInFlight = false;
+
+  private async proposeContractCallOnce(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     // The label becomes the review's title, so the main window checks it against the calldata
     // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
     let selector = "";

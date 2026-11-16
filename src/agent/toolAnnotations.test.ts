@@ -8,6 +8,7 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
+import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -52,12 +53,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
-        // 0.5.4 WP-H3: terms a card can show.
-        floorSaltPerUnit: "1.20",
-        hours: "any",
+        // 0.5.4 WP-H4: the envelope switch and caps.
         enabled: true,
         joinsPerWeek: 3,
         maxHoursPerRound: 8,
+        sha256: ADAPTER_SHA,
       }),
     });
     for (const n of names) {
@@ -70,14 +70,17 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
-      // 0.5.4 WP-H3: no terms saved yet; the probe answers.
-      vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null, save: async () => ({}) } as never);
+      // 0.5.4 WP-H3: no terms saved yet.
+      vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null });
       // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
       vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
         status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
         approve: async () => ({}) as never,
         off: async () => null,
       });
+      // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
+      vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
+      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"
