@@ -936,6 +936,15 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "fl_round_open_propose",
+      description:
+        "PROPOSE opening the group round in the member's saved Open a round draft. It opens the member's wallet review for WorkMarket.open with the budget escrowed from their wallet; the member reads the decoded call and signs it (HIC-1). You never sign it. Refused, with the reason, when there is no draft, WorkMarket is not on this network, payouts are not open after the security review, the coordinator's round binding is not published, or the draft is incomplete.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   // ── FL payouts, shipped dark (0.5.4 Hermes x FL, WP-H10) ──
   {
     type: "function",
