@@ -92,7 +92,8 @@ export function encodeReply(to: string, text: string): string {
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4, useGrouping: false });
 
-function draftLines(d: RoundDraft): string[] {
+/** The lines a round draft adds to a posted Hermes answer (shown on the send card verbatim). */
+export function draftLines(d: RoundDraft): string[] {
   const v = (x: number | null, unit: string) => (x === null ? "not proposed" : `${fmt(x)}${unit}`);
   return [
     `Round draft: ${line(d.title)} (no SALT moved)`,
