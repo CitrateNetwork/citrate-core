@@ -380,7 +380,11 @@ pub fn view_call_at<T: crate::rpc::RpcTransport>(
         .and_then(|h| u64::from_str_radix(h, 16).ok())
         .ok_or_else(|| "the RPC's eth_blockNumber answer is not 0x hex".to_string())?;
     let call = serde_json::json!({ "to": to, "data": format!("0x{}", hex::encode(data)) });
-    let out = rpc_raw(client, "eth_call", serde_json::json!([call, format!("0x{head:x}")]))?;
+    let out = rpc_raw(
+        client,
+        "eth_call",
+        serde_json::json!([call, format!("0x{head:x}")]),
+    )?;
     let s = out
         .as_str()
         .ok_or_else(|| "the node's eth_call result is not a string".to_string())?;
@@ -556,7 +560,11 @@ pub fn contract_view_call_at_sync(
     let address = normalize_address(&address)?;
     let data = parse_calldata(&calldata)?;
     let (data, block) = view_call_at(&client_for(&target), &address, &data)?;
-    Ok(PinnedViewCall { data, block, rpc: rpc_host(&target.rpc_url()) })
+    Ok(PinnedViewCall {
+        data,
+        block,
+        rpc: rpc_host(&target.rpc_url()),
+    })
 }
 
 /// **contract_write_propose** — open a PENDING SignatureCeremony for a write call on 40204. The

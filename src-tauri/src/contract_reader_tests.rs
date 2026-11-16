@@ -313,7 +313,11 @@ fn a_pinned_view_call_with_an_unreadable_head_is_not_run() {
     )]));
     let e = view_call_at(&rpc, ADDR, &[1, 2, 3, 4]).unwrap_err();
     assert!(e.contains("eth_blockNumber"), "{e}");
-    assert_eq!(rpc.transport().seen.borrow().len(), 1, "no eth_call without a block");
+    assert_eq!(
+        rpc.transport().seen.borrow().len(),
+        1,
+        "no eth_call without a block"
+    );
 }
 
 #[test]
