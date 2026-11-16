@@ -174,13 +174,17 @@ pub struct DatasetSummary {
     pub over_cap: u32,
 }
 
-/// Assemble the newest verified, redacted turns (at most `max`) into one new training file for
-/// a round. Refuses, before reading or writing anything, when the switch is off.
-pub fn build_round_dataset(
-    hermes_dir: &Path,
-    max: u32,
-    now_ms: u64,
-) -> Result<DatasetSummary, String> {
+/// The newest verified, redacted turns (at most `max`), read from the recorded exports. Refused,
+/// before reading anything, when the switch is off. Shared by the round training file below and
+/// the dataset store's conversation ingest (`fl_datasets.rs`).
+pub(crate) struct Verified {
+    pub lines: Vec<String>,
+    pub files_read: u32,
+    pub skipped_lines: u32,
+    pub over_cap: u32,
+}
+
+pub(crate) fn collect_verified(hermes_dir: &Path, max: u32) -> Result<Verified, String> {
     if !enabled(hermes_dir) {
         return Err(
             "training on your conversations is off; turn it on first. Nothing was read or written."
@@ -224,6 +228,27 @@ pub fn build_round_dataset(
                 .into(),
         );
     }
+    Ok(Verified {
+        lines,
+        files_read,
+        skipped_lines: skipped,
+        over_cap,
+    })
+}
+
+/// Assemble the newest verified, redacted turns (at most `max`) into one new training file for
+/// a round. Refuses, before reading or writing anything, when the switch is off.
+pub fn build_round_dataset(
+    hermes_dir: &Path,
+    max: u32,
+    now_ms: u64,
+) -> Result<DatasetSummary, String> {
+    let Verified {
+        lines,
+        files_read,
+        skipped_lines: skipped,
+        over_cap,
+    } = collect_verified(hermes_dir, max)?;
     let mut body = lines.join("\n");
     body.push('\n');
     let out_dir = hermes_dir.join(DATASETS_DIR);
