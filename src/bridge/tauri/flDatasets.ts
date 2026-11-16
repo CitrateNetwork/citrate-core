@@ -15,7 +15,7 @@ import type {
   FlManifestView,
   FlPrivacyLabel,
   FlPublication,
-  FlPublishCheck,
+  FlPublishPreview,
   FlPublished,
 } from "../../fl/datasetTypes";
 
@@ -47,8 +47,8 @@ export const tauriFlDatasets: FlDatasetsDomain = {
   async delete(dataset: string) {
     await invoke("fl_dataset_delete", { dataset });
   },
-  publishCheck(dataset: string, version: number, license: string, privacy: FlPrivacyLabel) {
-    return invoke<FlPublishCheck>("fl_dataset_publish_check", { dataset, version, license, privacy });
+  publishPreview(dataset: string, version: number, license: string, privacy: FlPrivacyLabel) {
+    return invoke<FlPublishPreview>("fl_dataset_publish_preview", { dataset, version, license, privacy });
   },
   publish(dataset: string, version: number, license: string, privacy: FlPrivacyLabel, contentHash: string) {
     return invoke<FlPublished>("fl_dataset_publish", { dataset, version, license, privacy, contentHash });

@@ -1059,10 +1059,12 @@ fn publish_is_refused_until_every_gate_passes() {
     let (id, out) = make(&s, "pubgatessrc");
     let v1 = out.version;
     let c = s
-        .publish_check(&id, 1, "MIT", PrivacyLabel::Public)
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
         .unwrap();
     assert!(
-        c.refusals.iter().any(|r| r.contains("No PII scan")),
+        c.refusals
+            .iter()
+            .any(|r| r.contains("has not been scanned")),
         "{:?}",
         c.refusals
     );
@@ -1071,19 +1073,17 @@ fn publish_is_refused_until_every_gate_passes() {
     found.counts.insert("email".into(), 3);
     s.record_pii_scan(&id, 1, &found).unwrap();
     let c = s
-        .publish_check(&id, 1, "MIT", PrivacyLabel::Public)
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
         .unwrap();
     assert!(
-        c.refusals
-            .iter()
-            .any(|r| r.contains("found personal data (3 email)")),
+        c.refusals.iter().any(|r| r.contains("scan found 3 email")),
         "{:?}",
         c.refusals
     );
     s.record_pii_scan(&id, 1, &passing_scan(&v1.content_hash))
         .unwrap();
     assert!(s
-        .publish_check(&id, 1, "MIT", PrivacyLabel::Public)
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
         .unwrap()
         .refusals
         .is_empty());
@@ -1091,8 +1091,11 @@ fn publish_is_refused_until_every_gate_passes() {
         ("unknown", "not a license"),
         ("NOASSERTION", "not a license"),
         ("", "empty"),
+        ("LicenseRef-orchard-1", "not on the list"),
     ] {
-        let c = s.publish_check(&id, 1, lic, PrivacyLabel::Public).unwrap();
+        let c = s
+            .publish_preview(&id, 1, lic, PrivacyLabel::Public)
+            .unwrap();
         assert!(
             c.refusals.iter().any(|r| r.contains(why)),
             "{lic}: {:?}",
@@ -1106,7 +1109,7 @@ fn publish_is_refused_until_every_gate_passes() {
         PrivacyLabel::Private,
     ] {
         assert!(
-            !s.publish_check(&id, 1, "MIT", p)
+            !s.publish_preview(&id, 1, "MIT", p)
                 .unwrap()
                 .refusals
                 .is_empty(),
@@ -1138,7 +1141,8 @@ fn publish_is_refused_until_every_gate_passes() {
 }
 
 #[test]
-fn an_unknown_source_license_blocks_publishing() {
+fn an_unknown_collected_license_blocks_publishing_but_the_members_own_files_do_not() {
+    // The member's own folder with no license file: theirs to license at publish (WP-H7).
     let root = tmp("public-nolic").join("plain");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.txt"), "hello").unwrap();
@@ -1152,9 +1156,115 @@ fn an_unknown_source_license_blocks_publishing() {
     s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash))
         .unwrap();
     let c = s
-        .publish_check(&v.dataset, 1, "MIT", PrivacyLabel::Public)
+        .publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public)
         .unwrap();
-    assert_eq!(c.refusals, vec!["License unknown for 1 source".to_string()]);
+    assert!(c.refusals.is_empty(), "{:?}", c.refusals);
+    // A connected agent's output with no license is not the member's to license.
+    let mut it = web_item("mcp://agent/notes", "agent text");
+    it.kind = SourceKind::ConnectedAgent;
+    it.license = LicenseRecord::unknown();
+    let consent = ConsentInput::New {
+        source_kind: SourceKind::ConnectedAgent,
+        scope: "agent".into(),
+        statement: "Add the agent's notes.".into(),
+    };
+    let v2 = s.append(&v.dataset, 1, consent, vec![it], 2).unwrap();
+    s.record_pii_scan(&v.dataset, 2, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 2, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals.iter().any(|r| r.contains("no license is known")),
+        "{:?}",
+        c.refusals
+    );
+}
+
+/// Review of #732 (P1): publish goes through WP-H7's gate, so a ShareAlike source can never reach
+/// IPFS under another license (a CID cannot be recalled).
+#[test]
+fn a_share_alike_source_refuses_publishing_under_another_license() {
+    let d = tmp("pubsa");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, _) = make(&s, "pubsasrc");
+    let mut it = web_item("https://docs.example.org/sa", "shared alike");
+    it.license.id = Some("CC-BY-SA-4.0".into());
+    let v2 = s.append(&id, 1, new_web_consent(), vec![it], 2).unwrap();
+    s.record_pii_scan(&id, 2, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&id, 2, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals
+            .iter()
+            .any(|r| r.contains("must be published under CC-BY-SA-4.0")),
+        "{:?}",
+        c.refusals
+    );
+    let sink = MemSink::default();
+    let e = s
+        .publish(
+            &id,
+            2,
+            "MIT",
+            PrivacyLabel::Public,
+            &v2.content_hash,
+            &sink,
+            3,
+        )
+        .unwrap_err();
+    assert!(e.contains("must be published under CC-BY-SA-4.0"), "{e}");
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
+    assert_eq!(
+        s.list().unwrap().datasets[0].versions.len(),
+        2,
+        "no publish version"
+    );
+    // Under the same ShareAlike license it publishes.
+    let p = s
+        .publish(
+            &id,
+            2,
+            "CC-BY-SA-4.0",
+            PrivacyLabel::Public,
+            &v2.content_hash,
+            &sink,
+            4,
+        )
+        .unwrap();
+    assert_eq!(p.publication.license, "CC-BY-SA-4.0");
+}
+
+#[test]
+fn a_personal_data_scan_or_label_never_publishes_public() {
+    let d = tmp("pubpd");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, v1) = publishable(&s, "pubpdsrc");
+    let mut found = passing_scan(&v1.content_hash);
+    found.pass = false;
+    found.counts.insert("street-address".into(), 2);
+    s.record_pii_scan(&id, 1, &found).unwrap();
+    let sink = MemSink::default();
+    let e = s
+        .publish(
+            &id,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &sink,
+            5,
+        )
+        .unwrap_err();
+    assert!(e.contains("2 street-address"), "{e}");
+    assert!(sink.added.lock().unwrap().is_empty());
 }
 
 #[test]

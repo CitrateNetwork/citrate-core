@@ -20,7 +20,7 @@ import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } fr
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
-import { DATASET_ID, cleanPreview, datasetList, publishCheck } from "../fl/fixtures/datasets";
+import { DATASET_ID, cleanPreview, datasetList, publishPreview } from "../fl/fixtures/datasets";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -139,7 +139,7 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
       vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
       vi.spyOn(bridge.flDatasets, "published").mockResolvedValue([]);
-      vi.spyOn(bridge.flDatasets, "publishCheck").mockResolvedValue(publishCheck());
+      vi.spyOn(bridge.flDatasets, "publishPreview").mockResolvedValue(publishPreview());
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);

@@ -100,7 +100,7 @@ export const FL_DATASET_AGENT_TOOLS = [
     function: {
       name: "fl_dataset_publish_propose",
       description:
-        "PROPOSE publishing the latest version of a dataset to IPFS as Public, under a license (an SPDX id such as CC-BY-4.0, or LicenseRef-…). Core refuses unless every source has a license, the on-device PII scan of exactly these rows passed, and the license is not unknown or NOASSERTION; you cannot override that. The member decides on a card (HIC-1, never inside an envelope) that says publishing cannot be undone: a CID cannot be recalled. The DatasetRegistry record follows only where this network has DatasetRegistry; otherwise say it is not available on this network yet.",
+        "PROPOSE publishing the latest version of a dataset to IPFS as Public, under a license (an SPDX id such as CC-BY-4.0, or LicenseRef-…). Core refuses unless its publish gate passes: the on-device PII scan of exactly these rows passed, every collected source has a publishable license, the dataset license is on the publishable list, and a ShareAlike source means the dataset takes that same license. You cannot override it. The member decides on a card (HIC-1, never inside an envelope) that says publishing cannot be undone: a CID cannot be recalled. The DatasetRegistry record follows only where this network has DatasetRegistry; otherwise say it is not available on this network yet.",
       parameters: {
         type: "object",
         properties: {
