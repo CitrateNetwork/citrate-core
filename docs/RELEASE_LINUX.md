@@ -157,11 +157,11 @@ exactly as `.github/workflows/release.yml` does:
 
 ```bash
 DL="$(mktemp -d)"
-for a in skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf; do
+for a in skills-bundle-35b4451bbd52.tar.gz bge-base-en-v1.5-f16.gguf; do
   gh release download runtime-deps -R CitrateNetwork/citrate-core -p "$a" -D "$DL" --clobber
 done
-scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf
-node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle-35b4451bbd52.tar.gz bge-base-en-v1.5-f16.gguf
+node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
 mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
 cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
 ```

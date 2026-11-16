@@ -60,6 +60,11 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // 0.5.4 WP-H9: gate records are core's, but their reasons can quote the model and dataset names
+  // in scorecard files, which may come from someone else, so the read is untrusted.
+  fl_adapter_gate_read: { effect: "none", trust: "untrusted" },
+  fl_adapter_load_propose: { effect: "write", trust: "trusted" }, // after the member's approval card; core re-checks the gate
+  fl_adapter_unload: { effect: "write", trust: "trusted" }, // lowers authority: base model alone
   // 0.5.4 WP-H6: dataset rows can come from collected web pages and names can quote them, so both
   // reads are untrusted. The two writes run only after the member's card; core re-checks.
   fl_dataset_list: { effect: "none", trust: "untrusted" },

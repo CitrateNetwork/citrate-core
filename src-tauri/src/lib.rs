@@ -67,6 +67,7 @@ mod deploy_gate_toolchain;
 mod faucet;
 // 0.5.4 WP-H6 — the member's local FL dataset store (sealed, hash-chained manifests).
 mod fl_datasets;
+mod fl_market;
 mod fl_rounds;
 mod fl_trajectories;
 // HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
@@ -759,6 +760,7 @@ pub fn run() {
             template_forge::template_render,
             fork_dry_run::deploy_gate_fork_dry_run,
             // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
+            fl_market::fl_market_offers,
             fl_rounds::fl_overview,
             fl_rounds::fl_coordinator_set,
             fl_rounds::fl_round_plan,
