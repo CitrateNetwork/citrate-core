@@ -22,6 +22,8 @@ import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import type { RunRecord } from "../agent/runTimeline";
+import type { WorkerTerms, WorkerTermsReceipt } from "../fl/workerTerms";
+import type { ChatAttachment } from "../agent/chatAttachments";
 import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -159,6 +161,25 @@ export interface ChatMsg {
   run?: RunRecord;
   /** Board 01: the model this reply ran on, as the chat header named it when the turn began. */
   model?: string;
+  /** Board 01: a proposal core renders in the transcript for the member to decide (HIC-1). */
+  proposal?: ChatProposal;
+  /** #690: what the member attached to this message with @ (shown as chips; told to Hermes). */
+  attachments?: ChatAttachment[];
+}
+/** Board 01: a worker-terms proposal card. Only core writes it; Hermes can only ask for one. */
+export interface ChatProposal {
+  id: string;
+  kind: "worker_terms";
+  terms: WorkerTerms;
+  /** `expired`: restored from history or carried into a branch; it can no longer be confirmed
+   *  (its terms were proposed in another session), so Hermes must propose again. */
+  state: "pending" | "saving" | "confirmed" | "declined" | "failed" | "expired";
+  /** The receipt core's storage returned on Confirm (what "Stored" may say comes only from it). */
+  receipt?: WorkerTermsReceipt;
+  /** When the member decided (ms since epoch). */
+  at?: number;
+  /** Why saving failed (shown with "Save failed, nothing changed"). */
+  error?: string;
 }
 /** Board 01: a message the member typed while Hermes was working. `steer`: it goes as soon as the
  *  stopped run has ended; otherwise it waits for the run to finish. Never persisted. */
@@ -166,6 +187,8 @@ export interface QueuedChat {
   id: string;
   text: string;
   steer: boolean;
+  /** #690: what was attached with @ when it was typed. */
+  attachments?: ChatAttachment[];
   /** The conversation it was typed in. It is only ever sent there. */
   threadId: string;
 }
@@ -576,6 +599,9 @@ export interface AppState {
   chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
   /** Board 01: follow-ups typed while a run was live, in send order. Not persisted. */
   chatQueue: QueuedChat[];
+  /** #690: the context kinds (hermesContext.ts row ids) the member turned off for this chat.
+   *  Core refuses their tools here. Kept with the chat on screen; a new chat starts with none. */
+  chatContextOff: string[];
   /** Board 01: why chat is on the no-tools fallback (sidecarLiveness.ts), null when Hermes answers.
    *  Set each time the provider is rebuilt. Not persisted. */
   chatHermesDown: SidecarDownReason | null;
@@ -976,6 +1002,7 @@ export function freshState(pid: string): AppState {
     chatRouteHold: null,
     chatQueue: [],
     chatHermesDown: null,
+    chatContextOff: [],
     chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",

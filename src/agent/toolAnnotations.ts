@@ -113,6 +113,8 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   schedule_list: { effect: "none", trust: "trusted" },
   schedule_add: { effect: "write", trust: "trusted" }, // after the member's approval card
   calendar_list: { effect: "none", trust: "untrusted" },
+  // Board 01: only renders a card core checked; the member's Confirm on it is the write (HIC-1).
+  worker_terms_propose: { effect: "none", trust: "trusted" },
 };
 
 /** The annotation for a tool name, or null for a name core does not offer. */

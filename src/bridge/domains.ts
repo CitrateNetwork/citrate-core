@@ -1518,6 +1518,17 @@ export interface FlRoundsDomain {
   /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
    *  Core refuses when the switch is off. */
   buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;
+  /** Board 01: the assembled training sets on this device, newest first (names, sizes, example
+   *  counts, sha256; never their lines), for attaching to a Hermes chat. */
+  datasetsList(): Promise<FlDatasetFile[]>;
+}
+/** Board 01 (core fl_trajectories.rs DatasetFile). */
+export interface FlDatasetFile {
+  name: string;
+  builtMs: number;
+  bytes: number;
+  examples: number;
+  sha256: string;
 }
 /** HUP-S9.3 (core fl_trajectories.rs TrajectoryStatus). */
 export interface FlTrajectoryStatus {

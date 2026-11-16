@@ -8,7 +8,10 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
-import { chatHistory, forgetAllThreads, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
+import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
+import { dataClassProblem, newProposalId } from "../agent/workerProposal";
+import { contextPreamble, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
+import { contextKindOf, offTitles } from "../agent/hermesContext";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -16,6 +19,7 @@ import {
   AppState,
   CerSpec,
   ChatMsg,
+  ChatProposal,
   LogLine,
   Persona,
   PERSONAS,
@@ -34,7 +38,7 @@ import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, DEFAULT_PROPOSAL, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -130,6 +134,7 @@ import {
   verifierReported,
 } from "./slices/turnActivity";
 import { modelsSlice } from "./slices/models";
+import { saveWorkerTerms, termsProblem, type WorkerTerms } from "../fl/workerTerms";
 import { routerChoicesFor } from "../agent/modelRouterSources";
 import { newRun, runDraft, runEnd, runModelTime, runThink, runToolEnd, runToolStart, type RunOutcome, type RunRecord } from "../agent/runTimeline";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
@@ -663,6 +668,11 @@ export function cloudModelFor(
   return choice;
 }
 
+/** Board 01: the function names of a tool list (OpenAI wrapper shape). */
+function toolNamesOf(tools: readonly unknown[]): string[] {
+  return tools.map((t) => (t as { function?: { name?: unknown } }).function?.name).filter((n): n is string => typeof n === "string" && n !== "");
+}
+
 /** The states in which a local model is set up but its server is not running. */
 const LOCAL_STOPPED_STATES = new Set(["local-stopped", "local-fallback", "local-only-stopped"]);
 
@@ -912,8 +922,11 @@ export class Store {
   archiveChat(): void {
     const s = this.state;
     if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
-    recordThread(s.chatThreadId, s.chatMsgs);
+    recordThread(s.chatThreadId, s.chatMsgs, Date.now(), this.threadParents.get(s.chatThreadId));
   }
+
+  /** Board 01: which thread (and message) each branch of this session came from. */
+  private threadParents = new Map<string, ThreadParent>();
 
   /** Why the thread can't be switched right now, or null. A running turn writes into the current
    *  thread, so it is never swapped from under it. */
@@ -932,7 +945,7 @@ export class Store {
     }
     this.archiveChat();
     // A follow-up queued in the old conversation belongs to it: it is dropped, never sent here.
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -955,7 +968,7 @@ export class Store {
     }
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatQueue: [] });
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [], chatQueue: [] });
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -986,7 +999,7 @@ export class Store {
     }
     const ok = await forgetAllThreads();
     if (!ok) return false;
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -1408,6 +1421,9 @@ export class Store {
         const firstSidecarBuild = !this.sidecarReattachTried;
         this.sidecarReattachTried = true;
         if (!firstSidecarBuild) sessionStore.save(null);
+        const sessionTools = withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady);
+        // Board 01: what Hermes can see in this chat is read from the tools its session is given.
+        this.sessionToolNames = toolNamesOf(sessionTools);
         this.provider = createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
@@ -1438,7 +1454,7 @@ export class Store {
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
-          () => withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady),
+          () => sessionTools,
           () => this.sidecarPersonaChoice(),
           cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
         );
@@ -1499,6 +1515,8 @@ export class Store {
         : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
+    // Board 01: only the sidecar loop and the gateway agent loop run tools; the others run none.
+    if (p.kind !== "sidecar" && p.kind !== "sidecar-cloud") this.sessionToolNames = p.kind === "agent" ? toolNamesOf(AGENT_TOOLS) : [];
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind, chatHermesDown: this.sidecarDown });
   }
 
@@ -3191,6 +3209,119 @@ export class Store {
     return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
+  // ---------- Board 01 — edit, retry and branch ----------
+  /**
+   * Branch the conversation into a new thread. The original stays in History unchanged. The new
+   * thread keeps the messages before `fromMsgId` (`includeFrom` keeps that message too), and when
+   * `text` is given it is sent there as the next message. Returns false when no switch is allowed
+   * (a run is live) or the message is not in this thread.
+   */
+  async branchChat(fromMsgId: string, opts: { text?: string; includeFrom?: boolean; attachments?: ChatAttachment[] } = {}): Promise<boolean> {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    const msgs = this.state.chatMsgs;
+    const idx = msgs.findIndex((m) => m.id === fromMsgId);
+    if (idx < 0) return false;
+    this.archiveChat();
+    const fromThread = this.state.chatThreadId;
+    const kept = msgs.slice(0, opts.includeFrom ? idx + 1 : idx).filter((m) => !m.streaming);
+    const threadId = newThreadId();
+    // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
+    this.setState({
+      chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid, ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}) })),
+      chatThreadId: threadId,
+      chatQueue: [],
+    });
+    // The sealed history records where this branch came from.
+    this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    await this.rebuildProvider();
+    // Earlier messages are never put in the system prompt. The in-app loops send them as earlier
+    // turns; a Hermes sidecar session starts the branch without them (core #731 passes them as
+    // session history once the bundled sidecar accepts it), and the member is told so.
+    const sidecar = this.activeProviderKind() === "sidecar" || this.activeProviderKind() === "sidecar-cloud";
+    this.toast(
+      sidecar && kept.some((m) => m.who === "You")
+        ? "Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages."
+        : "Branched into a new chat. The original stays in History.",
+    );
+    // An edited or retried message keeps what was attached to the original (unless given anew).
+    const from = msgs[idx];
+    const attachments = opts.attachments ?? (from.who === "You" ? from.attachments : undefined);
+    if (opts.text !== undefined) await this.sendChat(opts.text, attachments?.length ? { attachments } : {});
+    return true;
+  }
+
+  // ---------- Board 01 — the worker-terms proposal card (core-rendered, HIC-1) ----------
+
+  /**
+   * Put a worker-terms proposal card in the transcript, under reply `msgId` (or as its own Hermes
+   * message). Core checks the terms first; malformed terms are refused with the reason and no card
+   * is shown. Returns what the caller (the proposal tool, once it ships) tells Hermes.
+   * Hermes never confirms: only the card's Confirm calls saveWorkerTerms. The tool that calls this
+   * ships with core's worker-policy storage (core #689).
+   */
+  proposeWorkerTerms(terms: WorkerTerms, msgId?: string): string {
+    const bad = termsProblem(terms) ?? dataClassProblem(terms.dataClasses);
+    if (bad) return `refused: ${bad}. Nothing was shown to the member.`;
+    // Unique across launches, so a card restored from history never shares an id with a new one.
+    const proposal: ChatProposal = { id: newProposalId(), kind: "worker_terms", terms, state: "pending" };
+    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, proposal } : m)) }));
+    } else {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, proposal }]) }));
+    }
+    return "The proposal is on a card in the chat. Nothing changes until the member confirms it there.";
+  }
+
+  private patchProposal(id: string, patch: Partial<ChatProposal>): void {
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.proposal?.id === id ? { ...m, proposal: { ...m.proposal, ...patch } } : m)) }));
+  }
+
+  /** The member pressed Confirm on the card (HIC-1): save the terms, then show the outcome. */
+  async confirmProposal(id: string): Promise<void> {
+    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
+    if (!p || (p.state !== "pending" && p.state !== "failed")) return;
+    this.patchProposal(id, { state: "saving", error: undefined });
+    try {
+      const receipt = await saveWorkerTerms(p.terms);
+      this.patchProposal(id, { state: "confirmed", at: receipt.savedAt || Date.now(), receipt });
+    } catch (e) {
+      this.patchProposal(id, { state: "failed", error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  declineProposal(id: string): void {
+    this.patchProposal(id, { state: "declined", at: Date.now() });
+  }
+
+  reopenProposal(id: string): void {
+    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
+    // An expired card stays expired: only a new proposal can be confirmed.
+    if (!p || p.state === "expired") return;
+    this.patchProposal(id, { state: "pending", at: undefined, error: undefined });
+  }
+
+  /** Retry an answer as a branch: its member message is sent again, on the current model. */
+  async retryAsBranch(answerId: string): Promise<boolean> {
+    const msgs = this.state.chatMsgs;
+    const idx = msgs.findIndex((m) => m.id === answerId);
+    if (idx < 0) return false;
+    const user = [...msgs.slice(0, idx)].reverse().find((m) => m.who === "You");
+    if (!user) return false;
+    return this.branchChat(user.id, { text: user.text, attachments: user.attachments ?? [] });
+  }
+
+  /** The tools this chat's Hermes session was given (core-hosted), and whether the sidecar
+   *  loop (which also runs its own file, command and MCP tools) is the one answering. */
+  chatToolNames(): string[] {
+    return this.sessionToolNames;
+  }
+  private sessionToolNames: string[] = [];
+
   /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
   sidecarPersonaChoice(): SessionPersonaChoice | null {
     return personaChoice(this.state.hermesPersona);
@@ -3504,8 +3635,10 @@ export class Store {
     if (idx < 0) return;
     const text = msgs[idx].retryText ?? "";
     const userIdx = idx - 1 >= 0 && msgs[idx - 1].who === "You" && msgs[idx - 1].text === text ? idx - 1 : -1;
+    // The retried message keeps its attachments.
+    const attachments = userIdx >= 0 ? msgs[userIdx].attachments : undefined;
     this.setState({ chatMsgs: msgs.filter((_, i) => i !== idx && i !== userIdx) });
-    await this.sendChat(text);
+    await this.sendChat(text, attachments?.length ? { attachments } : {});
   }
 
   /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
@@ -3832,8 +3965,9 @@ export class Store {
     });
   }
 
-  async sendChat(text: string): Promise<void> {
+  async sendChat(text: string, opts: { attachments?: ChatAttachment[] } = {}): Promise<void> {
     text = (text || "").trim();
+    const attachments = (opts.attachments ?? []).slice(0, MAX_ATTACHMENTS);
     if (!text || this.state.chatStatus !== "ready") return;
     // HUP-S3.3: `/run <workflow>` runs a track workflow instead of a chat turn.
     const cmd = parseRunCommand(text);
@@ -3852,7 +3986,7 @@ export class Store {
     const ac = new AbortController();
     this.turnAbort = ac;
     const stopped = () => ac.signal.aborted;
-    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
+    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false, ...(attachments.length ? { attachments } : {}) };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
     // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
@@ -3931,8 +4065,9 @@ export class Store {
         messages: withPersonaMessage(
           this.state.chatMsgs
             .filter((m) => !m.streaming && !m.error)
-            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
-            .concat([{ role: "user", content: text }]),
+            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: (m.attachments ? contextPreamble(m.attachments, []) : "") + m.text }))
+            // #690: what the member attached, and what they turned off here, go in front of the message.
+            .concat([{ role: "user", content: contextPreamble(attachments, offTitles(this.state.chatContextOff)) + text }]),
           this.state.hermesPersona,
         ),
         signal: ac.signal,
@@ -4097,6 +4232,11 @@ export class Store {
     return r;
   }
 
+  /** #690: switch a context kind off (or back on) for the chat on screen. */
+  setChatContext(id: string, on: boolean): void {
+    this.setState((s) => ({ chatContextOff: on ? s.chatContextOff.filter((x) => x !== id) : [...new Set([...s.chatContextOff, id])] }));
+  }
+
   /** Whether the call `id` was refused (and forget its outcome). */
   takeCallRefusal(id: string): boolean {
     return this.takeCallOutcome(id) === "denied";
@@ -4111,17 +4251,17 @@ export class Store {
   }
 
   /** Queue a follow-up to send when the live run finishes. Empty text is ignored. */
-  queueChat(text: string): void {
+  queueChat(text: string, attachments: ChatAttachment[] = []): void {
     const t = (text || "").trim();
     if (!t) return;
-    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, threadId: s.chatThreadId }]) }));
+    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, threadId: s.chatThreadId, ...(attachments.length ? { attachments } : {}) }]) }));
     if (this.chatInputEl) this.chatInputEl.value = "";
   }
 
   /**
    * Steer now: stop the live run and send this message as soon as it has ended. Hermes's loop takes
-   * no message in the middle of a run, so steering is Stop plus the next turn; what the run did
-   * before the stop stays in the transcript with its steps.
+   * no message in the middle of a run (core #691), so steering is Stop plus the next turn; what the
+   * run did before the stop stays in the transcript with its steps.
    */
   steerChat(text: string): void {
     const t = (text || "").trim();
@@ -4146,7 +4286,7 @@ export class Store {
     const next = q.find((x) => x.steer) ?? (outcome === "answered" ? q[0] : undefined);
     if (!next) return;
     this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== next.id) }));
-    void this.sendChat(next.text);
+    void this.sendChat(next.text, { attachments: next.attachments });
   }
 
   /** Send a queued follow-up now (only when no run is live). */
@@ -4154,7 +4294,7 @@ export class Store {
     const item = this.state.chatQueue.find((q) => q.id === id);
     if (!item || item.threadId !== this.state.chatThreadId || this.state.chatStatus !== "ready") return;
     this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== id) }));
-    void this.sendChat(item.text);
+    void this.sendChat(item.text, { attachments: item.attachments });
   }
 
   /** #643 — what each conversation (by thread id) has established about deploys. */
@@ -4360,8 +4500,11 @@ export class Store {
     };
     const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> =>
       tracked(() => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal));
-    let held = false;
-    if (hic && !SELF_GATED_TOOLS.has(call.name)) {
+    // #690: a context kind the member turned off for this chat is refused before anything runs.
+    const kind = contextKindOf(call.name);
+    const contextOff = kind && this.state.chatContextOff.includes(kind.id) ? kind : null;
+    let held = contextOff !== null;
+    if (!held && hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
         {
           origin: "chat agent",
@@ -4806,6 +4949,21 @@ export class Store {
     } else if (call.name === "belnap_codec") {
       // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
       result = belnapCodecTool(args as Record<string, unknown>);
+    } else if (call.name === "worker_terms_propose") {
+      // Board 01: core checks the terms and renders the card; only the member's Confirm saves.
+      const a = args as Record<string, unknown>;
+      const hm = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+      const start = hm(a.hoursStart);
+      const end = hm(a.hoursEnd);
+      const terms: WorkerTerms = {
+        floorSaltPerUnit: typeof a.floorSaltPerUnit === "number" ? String(a.floorSaltPerUnit) : hm(a.floorSaltPerUnit),
+        hours: start === "" && end === "" ? "any" : { start, end },
+        weekdaysOnly: a.weekdaysOnly === true,
+        mainsOnly: a.mainsOnly === true,
+        dataClasses: Array.isArray(a.dataClasses) ? a.dataClasses.map((c) => (typeof c === "string" ? c.trim() : "")) : [],
+      };
+      ensure();
+      result = this.proposeWorkerTerms(terms, asstId);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
@@ -5068,6 +5226,11 @@ export class Store {
     }
     // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
+    if (contextOff) {
+      // #690: the member turned this kind of context off for this chat; nothing was read or run.
+      status = "declined";
+      result = `declined: the member turned off ${contextOff.title} for this chat, so ${call.name} was not run. Nothing was read or changed.`;
+    }
     // Board 01: refused when the member's decision (or the tool's own structured status) said no.
     const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
     this.callOutcomes.set(call.id, refused ? "denied" : status === "error" || status === "failed" ? "error" : "ok");

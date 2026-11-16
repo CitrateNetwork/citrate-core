@@ -807,6 +807,7 @@ pub fn run() {
             fl_datasets::fl_dataset_publish_preview,
             fl_datasets::fl_dataset_publish,
             fl_datasets::fl_dataset_published,
+            fl_trajectories::trajectories_datasets_list,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,

@@ -29,6 +29,9 @@ import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 import { RunReceipts, RunTimeline } from "./RunTimeline";
+import { PolicyProposalCard, SETTINGS_WORK_ROUTE } from "./PolicyProposalCard";
+import { contextRows, contextSummary } from "../agent/hermesContext";
+import { datasetAttachment, groupAttachment, journalAttachment, matchAttachments, mentionAt, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
 import { ChatCommandBar, chatCommands, exactCommand, slashMatches, type ChatCommand } from "./ChatCommandBar";
 import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
 import { stepAnnouncement } from "../agent/runTimeline";
@@ -57,6 +60,13 @@ function MicGlyph() {
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
       <rect x="9" y="3" width="6" height="11" rx="3"></rect>
       <path d="M5 11 A7 7 0 0 0 19 11 M12 18 V21 M9 21 H15"></path>
+    </svg>
+  );
+}
+function AttachGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <path d="M20 11.5 L12.5 19 A5 5 0 0 1 5.5 12 L13 4.5 A3.3 3.3 0 0 1 17.7 9.2 L10.3 16.6 A1.6 1.6 0 0 1 8 14.3 L15 7.3"></path>
     </svg>
   );
 }
@@ -139,9 +149,92 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const fitInput = useCallback(() => fitComposer(store.chatInputEl, inputMax), [store, inputMax]);
   // Follow new messages unless the member scrolled up; sending always jumps back to the latest.
   const follow = useRef(true);
+  // #690: what the member attached with @ (or the attach button) to the message being typed.
+  const [attached, setAttached] = useState<ChatAttachment[]>([]);
+  const [mention, setMention] = useState<{ query: string } | null>(null);
+  const [mentionItems, setMentionItems] = useState<ChatAttachment[] | null>(null);
+  const [mentionErrors, setMentionErrors] = useState<string[]>([]);
   const send = (text: string) => {
     follow.current = true;
-    return store.sendChat(text);
+    const att = attached;
+    setAttached([]);
+    return store.sendChat(text, att.length ? { attachments: att } : {});
+  };
+  // The items are read when the menu opens, each from its real source; a failed read is said.
+  const openMention = (query: string) => {
+    setMention({ query });
+    if (mentionItems !== null) return;
+    void (async () => {
+      const items: ChatAttachment[] = [];
+      const errs: string[] = [];
+      const [ds, gs] = await Promise.allSettled([bridge.flRounds.datasetsList(), bridge.groups.list()]);
+      if (ds.status === "fulfilled") items.push(...ds.value.map(datasetAttachment));
+      else errs.push("Datasets could not be read: " + (ds.reason instanceof Error ? ds.reason.message : String(ds.reason)));
+      if (gs.status === "fulfilled") items.push(...gs.value.map(groupAttachment));
+      else errs.push("Groups could not be read: " + (gs.reason instanceof Error ? gs.reason.message : String(gs.reason)));
+      items.push(...(store.state.jPages || []).map(journalAttachment));
+      setMentionItems(items);
+      setMentionErrors(errs);
+    })();
+  };
+  const pickAttachment = (a: ChatAttachment) => {
+    setAttached((cur) => (cur.some((x) => x.id === a.id) || cur.length >= MAX_ATTACHMENTS ? cur : [...cur, a]));
+    const el = store.chatInputEl;
+    if (el) {
+      const at = mentionAt(el.value);
+      if (at) el.value = el.value.slice(0, at.start).replace(/\s$/, "") + (at.start > 0 ? " " : "");
+      el.focus();
+    }
+    setMention(null);
+  };
+
+  // Board 01: editing a past message branches the chat (the original stays in History).
+  const [editing, setEditing] = useState<string | null>(null);
+  const startEdit = (id: string) => {
+    const m = s.chatMsgs.find((x) => x.id === id);
+    const el = store.chatInputEl;
+    if (!m || !el) return;
+    setEditing(id);
+    el.value = m.text;
+    fitComposer(el, inputMax);
+    el.focus();
+  };
+  const cancelEdit = () => {
+    setEditing(null);
+    if (store.chatInputEl) store.chatInputEl.value = "";
+    fitInput();
+  };
+  const copyText = (t: string) => {
+    try {
+      void navigator.clipboard.writeText(t).then(
+        () => store.toast("Copied"),
+        () => store.toast("Copying is not available here"),
+      );
+    } catch {
+      store.toast("Copying is not available here");
+    }
+  };
+  // Board 01: retry an answer on another model, as a branch (the original stays in History).
+  const [retryPick, setRetryPick] = useState<string | null>(null);
+  const retryWith = async (answerId: string, modelId: string) => {
+    setRetryPick(null);
+    const chosen = routerChoices.find((c) => c.id === modelId);
+    const err = await store.selectModel(modelId, routerChoices);
+    if (err) {
+      setPickError(err);
+      return;
+    }
+    if (chosen?.source === "local") await sliceSelectModel(modelId);
+    await store.retryAsBranch(answerId);
+  };
+  const [contextOpen, setContextOpen] = useState(false);
+  const ctxInput = {
+    toolNames: store.chatToolNames(),
+    providerKind: store.activeProviderKind(),
+    hermesDown: !!s.chatHermesDown,
+    modelLabel: activeModel.label,
+    off: s.chatContextOff,
+    datasetsAttached: new Set(s.chatMsgs.flatMap((m) => (m.attachments ?? []).filter((a) => a.kind === "dataset").map((a) => a.id))).size,
   };
 
   // Board 01: typing while a run is live offers Steer now or Queue for after (the text waits here).
@@ -156,6 +249,13 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       setFollowUp(text);
       return;
     }
+    if (editing) {
+      const id = editing;
+      setEditing(null);
+      follow.current = true;
+      void store.branchChat(id, { text });
+      return;
+    }
     void send(text);
   };
   const onSend = () => submit(store.chatInputEl ? store.chatInputEl.value : "");
@@ -166,7 +266,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   };
   const queue = () => {
     if (followUp === null) return;
-    store.queueChat(followUp);
+    store.queueChat(followUp, attached);
+    setAttached([]);
     setFollowUp(null);
   };
   useEffect(() => {
@@ -231,6 +332,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     plan: () => openPlan(),
     monitor: () => void openPopout("monitor"),
     focus: () => store.chatInputEl?.focus(),
+    context: () => setContextOpen(true),
   });
   const runCommand = (c: ChatCommand) => {
     setBarOpen(false);
@@ -326,6 +428,22 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         >
           {isMacPlatform() ? "⌘K" : "Ctrl K"}
         </button>
+        <button
+          type="button"
+          className="mono"
+          data-testid="open-context"
+          aria-expanded={contextOpen}
+          aria-controls="hermes-context"
+          onClick={() => {
+            setContextOpen((v) => !v);
+            setHistoryOpen(false);
+            setPickerOpen(false);
+          }}
+          title="What Hermes can see in this chat"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: contextOpen ? "var(--srf-2)" : "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          Can see
+        </button>
         {/* 0.5.4: the way back to earlier conversations and projects, and a fresh conversation. */}
         <button
           type="button"
@@ -385,6 +503,38 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         <div style={{ flexShrink: 0 }}>
           <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />
         </div>
+      )}
+      {contextOpen && (
+        <section id="hermes-context" data-testid="hermes-context" aria-labelledby="hermes-context-h" style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+          <h3 id="hermes-context-h" className="eyebrow" style={{ margin: 0, fontSize: 10 }}>
+            What Hermes can see here
+          </h3>
+          <span style={{ fontSize: 12, color: "var(--tx-2)" }}>{contextSummary(ctxInput)}</span>
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            {contextRows(ctxInput).map((r) => (
+              <li key={r.id} data-testid="context-row" data-can={String(r.can)} style={{ display: "grid", gridTemplateColumns: "40px minmax(0,1fr)", gap: 8, fontSize: 12.5, alignItems: "start" }}>
+                {r.toggle ? (
+                  <input
+                    type="checkbox"
+                    data-testid={"context-toggle-" + r.id}
+                    id={"ctx-" + r.id}
+                    checked={!r.off}
+                    onChange={(e) => store.setChatContext(r.id, e.target.checked)}
+                    style={{ marginTop: 2, accentColor: "var(--ok)" }}
+                  />
+                ) : (
+                  <span className="mono" style={{ fontSize: 10.5, color: r.can ? "var(--ok)" : "var(--tx-3)" }}>
+                    {r.can ? "Yes" : "No"}
+                  </span>
+                )}
+                <label htmlFor={r.toggle ? "ctx-" + r.id : undefined} style={{ display: "flex", flexDirection: "column", gap: 1, cursor: r.toggle ? "pointer" : "default" }}>
+                  <span>{r.title}</span>
+                  <span style={{ fontSize: 11, color: "var(--tx-3)" }}>{r.detail}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
       {historyOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", flexShrink: 0, maxHeight: "45%", overflow: "auto" }}>
@@ -470,6 +620,15 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                   end; finished messages are memoized). Never restyle what the user typed. A div, not a
                   span: markdown is block content. */}
               {m.who !== "You" ? <Markdown text={m.text} /> : <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>}
+              {m.attachments && m.attachments.length > 0 && (
+                <span data-testid="msg-attachments" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                  {m.attachments.map((a) => (
+                    <span key={a.id} className="fl-chip" title={a.context}>
+                      {a.label}
+                    </span>
+                  ))}
+                </span>
+              )}
               {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
             </div>}
             {m.error && (() => {
@@ -493,6 +652,57 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 </span>
               );
             })()}
+            {m.proposal && (
+              <PolicyProposalCard
+                proposal={m.proposal}
+                onConfirm={() => void store.confirmProposal(m.proposal!.id)}
+                onDecline={() => store.declineProposal(m.proposal!.id)}
+                onReopen={() => store.reopenProposal(m.proposal!.id)}
+                onEdit={() => store.go(SETTINGS_WORK_ROUTE)}
+              />
+            )}
+            {m.who === "You" && !chatBusy && m.text.trim() !== "" && (
+              <span style={{ display: "flex", gap: 2, alignSelf: "flex-start" }}>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-edit" onClick={() => startEdit(m.id)} title="Edit to branch; the original stays in History">
+                  Edit
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => copyText(m.text)}>
+                  Copy
+                </button>
+              </span>
+            )}
+            {m.who !== "You" && !m.streaming && !m.error && m.text.trim() !== "" && (
+              <span style={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => copyText(m.text)}>
+                  Copy
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-retry" disabled={chatBusy} onClick={() => void store.retryAsBranch(m.id)} title="Ask again in a new branch; this answer stays in History">
+                  Retry
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-retry-with" disabled={chatBusy} aria-expanded={retryPick === m.id} onClick={() => setRetryPick((v) => (v === m.id ? null : m.id))}>
+                  Retry with another model
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" data-testid="msg-branch" disabled={chatBusy} onClick={() => void store.branchChat(m.id, { includeFrom: true })}>
+                  Branch from here
+                </button>
+              </span>
+            )}
+            {retryPick === m.id && (
+              <ul data-testid="retry-models" aria-label="Retry with" style={{ listStyle: "none", margin: 0, padding: 4, border: "1px solid var(--line-1)", borderRadius: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                {routerChoices
+                  .filter((c) => c.ready && c.id !== store.routerActiveId())
+                  .map((c) => (
+                    <li key={c.id}>
+                      <button type="button" className="btn btn-ghost btn-sm" data-testid="retry-model" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => void retryWith(m.id, c.id)}>
+                        {c.label}
+                      </button>
+                    </li>
+                  ))}
+                {routerChoices.filter((c) => c.ready && c.id !== store.routerActiveId()).length === 0 && (
+                  <li style={{ fontSize: 12, color: "var(--tx-3)", padding: "4px 8px" }}>No other model is ready. Connect one in Hermes › Controls › Details › Models.</li>
+                )}
+              </ul>
+            )}
             {m.who !== "You" && !m.streaming && <RunReceipts run={m.run} />}
             {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
             {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
@@ -588,6 +798,14 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
       </div>
       {/* 0.5.4: the text area spans the composer's full width on its own row, and grows with its
           content; the compact icon actions and Send sit on the row below, so they never narrow it. */}
+      {editing && (
+        <div data-testid="editing-banner" role="status" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 16px 6px", padding: "6px 10px", border: "1px solid var(--line-1)", borderRadius: 6, fontSize: 12.5, flexShrink: 0 }}>
+          <span style={{ flex: 1 }}>Editing a past message starts a branch. The original stays in History.</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={cancelEdit}>
+            Cancel
+          </button>
+        </div>
+      )}
       {followUp !== null && runLive && (
         <div data-testid="steer-offer" role="group" aria-label="Your next message" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 16px 6px", padding: "6px 10px", background: "var(--srf-inset, var(--srf-1))", border: "1px solid var(--line-1)", borderRadius: 6, fontSize: 12.5, flexShrink: 0 }}>
           <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--warn)" }} aria-hidden></span>
@@ -637,7 +855,35 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           ))}
         </ul>
       )}
+      {mention && (
+        <div data-testid="mention-menu" role="listbox" aria-label="Attach for context" style={{ margin: "0 16px 6px", padding: 4, border: "1px solid var(--line-2)", borderRadius: 6, background: "var(--srf-1)", flexShrink: 0, maxHeight: 220, overflow: "auto" }}>
+          {mentionItems === null && <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--tx-3)" }}>Reading datasets, groups and journal pages on this device</div>}
+          {mentionErrors.map((e) => (
+            <div key={e} role="alert" style={{ padding: "4px 10px", fontSize: 12, color: "var(--warn)" }}>
+              {e}
+            </div>
+          ))}
+          {mentionItems !== null && matchAttachments(mentionItems, mention.query).length === 0 && (
+            <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--tx-3)" }}>Nothing on this device matches. Datasets come from Groups › Rounds › Datasets.</div>
+          )}
+          {mentionItems !== null &&
+            matchAttachments(mentionItems, mention.query).map((a) => (
+              <button key={a.id} type="button" role="option" aria-selected={false} data-testid="mention-item" className="btn btn-ghost btn-sm" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => pickAttachment(a)}>
+                {a.label}
+              </button>
+            ))}
+        </div>
+      )}
       <div data-testid="chat-composer" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--line-1)", flexShrink: 0 }}>
+        {attached.length > 0 && (
+          <div data-testid="composer-attachments" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {attached.map((a) => (
+              <button key={a.id} type="button" className="fl-chip" title={a.context} aria-label={"Remove attachment " + a.label} onClick={() => setAttached((cur) => cur.filter((x) => x.id !== a.id))}>
+                {a.label} ×
+              </button>
+            ))}
+          </div>
+        )}
         <div data-testid="chat-input-row" style={{ display: "flex", width: "100%" }}>
           <textarea
             ref={(el) => { store.chatInputEl = el; }}
@@ -650,6 +896,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               setBuildAsk(looksLikeBuildAsk(e.target.value));
               // Board 01: a leading "/" lists the chat's commands.
               const v = e.target.value;
+              // #690: "@" at the start of a word lists what can be attached for context.
+              const at = mentionAt(v);
+              if (at) openMention(at.query);
+              else if (mention) setMention(null);
               setSlashOpen(v.startsWith("/") && !v.includes("\n"));
               setSlashText(v);
               fitInput();
@@ -670,6 +920,24 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                   }
                 }
                 submit(v);
+              }
+              // Board 01: Up in an empty composer edits your last message (as a branch).
+              if (e.key === "ArrowUp" && !runLive && !editing && (e.target as HTMLTextAreaElement).value === "") {
+                const last = [...s.chatMsgs].reverse().find((x) => x.who === "You" && x.text.trim() !== "");
+                if (last) {
+                  e.preventDefault();
+                  startEdit(last.id);
+                }
+              }
+              if (e.key === "Escape" && editing) {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelEdit();
+              }
+              if (e.key === "Escape" && mention) {
+                e.preventDefault();
+                e.stopPropagation();
+                setMention(null);
               }
               if (e.key === "Escape" && slashOpen) {
                 e.preventDefault();
@@ -693,6 +961,17 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
           >
             <MicGlyph />
+          </button>
+          <button
+            type="button"
+            className="btn btn-icon btn-ghost"
+            data-testid="chat-attach"
+            aria-label="Attach a dataset, group or journal page"
+            data-tip="Attach a dataset, group or journal page (or type @)"
+            aria-expanded={mention !== null}
+            onClick={() => (mention ? setMention(null) : openMention(""))}
+          >
+            <AttachGlyph />
           </button>
           <button
             type="button"
@@ -723,7 +1002,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </button>
         </div>
         <div className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)", textAlign: "center" }}>
-          Enter send · Shift Enter new line · Esc stop · / commands · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
+          Enter send · Shift Enter new line · Esc stop · Up edit last · / commands · @ context · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
         </div>
       </div>
     </div>

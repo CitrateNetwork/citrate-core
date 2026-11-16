@@ -407,6 +407,10 @@
     {
       "id": "tc-widget-create-explicit",
       "sha256": "de2720279ddabf1d445453a85e44a460c146207db90abd059a0b0f281f96e822"
+    },
+    {
+      "id": "tc-worker-terms-gpu-night",
+      "sha256": "048bad0ef5fc81ce88c61a03cb9d803e58c5082ae0b65d5d9b76d81cb47e4cf2"
     }
   ]
 }

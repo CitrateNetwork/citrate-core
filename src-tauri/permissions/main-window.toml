@@ -135,6 +135,7 @@ commands.allow = [
   "fl_dataset_publish_preview",
   "fl_dataset_publish",
   "fl_dataset_published",
+  "trajectories_datasets_list",
   "postdeploy_status",
   "postdeploy_receipt",
   "postdeploy_verify",

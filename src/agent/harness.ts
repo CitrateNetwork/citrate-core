@@ -1131,6 +1131,27 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── FL design board 01: worker terms, proposed on a card core renders ──
+  {
+    type: "function",
+    function: {
+      name: "worker_terms_propose",
+      description:
+        "PROPOSE the member's worker terms for group rounds (when this machine may take round work): the floor in SALT per unit, the hours, weekdays only, mains power only, and the data classes rounds may read. Core checks the terms and shows them on a card in the chat; only the member can confirm it there (HIC-1), and nothing is saved until they do. You never confirm or save terms yourself. Propose only terms the member asked for; use dataClasses [] unless they named a dataset kind this device has (\"hermes-conversations\").",
+      parameters: {
+        type: "object",
+        properties: {
+          floorSaltPerUnit: { type: "string", description: "the lowest rate the member accepts, decimal SALT per unit, e.g. \"1.20\"" },
+          hoursStart: { type: "string", description: "start of the hours rounds may run, HH:MM in 24 h, e.g. \"23:00\"; omit both hours for any time" },
+          hoursEnd: { type: "string", description: "end of those hours, HH:MM in 24 h, e.g. \"07:00\"" },
+          weekdaysOnly: { type: "boolean", description: "true for Monday to Friday only" },
+          mainsOnly: { type: "boolean", description: "true to run only on mains power and pause on battery" },
+          dataClasses: { type: "array", items: { type: "string" }, description: "data classes rounds may read on this device; [] for none" },
+        },
+        required: ["floorSaltPerUnit"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1660,6 +1681,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_dataset_license_check",
   // WP-H8: reads the host's robots.txt only; no page, no write.
   "fl_source_check",
+  // Board 01: renders a card core checked; nothing changes until the member confirms it there.
+  "worker_terms_propose",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
