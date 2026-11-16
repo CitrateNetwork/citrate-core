@@ -65,6 +65,8 @@ mod hermes_history;
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
 mod faucet;
+// 0.5.4 WP-H6 — the member's local FL dataset store (sealed, hash-chained manifests).
+mod fl_datasets;
 mod fl_market;
 mod fl_rounds;
 mod fl_trajectories;
@@ -771,6 +773,16 @@ pub fn run() {
             fl_trajectories::trajectories_settings_get,
             fl_trajectories::trajectories_settings_set,
             fl_trajectories::trajectories_dataset_build,
+            // 0.5.4 WP-H6 — the local dataset store (create, versions, sample, clean, consent).
+            fl_datasets::fl_dataset_list,
+            fl_datasets::fl_dataset_manifest,
+            fl_datasets::fl_dataset_create,
+            fl_datasets::fl_dataset_sample,
+            fl_datasets::fl_dataset_clean_preview,
+            fl_datasets::fl_dataset_clean_apply,
+            fl_datasets::fl_dataset_consent_list,
+            fl_datasets::fl_dataset_consent_withdraw,
+            fl_datasets::fl_dataset_delete,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,
@@ -833,6 +845,8 @@ pub fn run() {
             escalation::escalation_confirm_prepare,
             escalation::escalation_run,
             hic_records::hic_record_decision,
+            // The decision records read back, newest first (Hermes › Controls › Records).
+            hic_records::hic_records_list,
             escalation::escalation_registry_status,
             inference_router::escalation_registry_quote,
             inference_router::escalation_registry_request,
@@ -1158,6 +1172,8 @@ pub fn run() {
             update_policy::update_policy_refresh,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
+            // One service's log file, read back for Node › Advanced (scrubbed again).
+            sidecar_logs::sidecar_logs_tail,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
             // removal. Every catalog command refuses until the catalog key is issued.
             store_catalog::store_catalog,
