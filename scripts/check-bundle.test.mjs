@@ -10,13 +10,112 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkStaged, checkLayout, expandGlob, expectedFromStaged, effectiveBundle, elfEnd } from "./check-bundle.mjs";
+import { checkStaged, checkLayout, codeIdentity, expandGlob, expectedFromStaged, effectiveBundle, elfEnd } from "./check-bundle.mjs";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "check-bundle.mjs");
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const TRIPLE = "aarch64-apple-darwin";
-const MACHO = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 1, 2, 3, 4]);
+// ---- minimal real-format executables (test fixtures; never run) ------------------------------
+const ARM64 = 0x0100000c;
+const X86_64 = 0x01000007;
+/** A thin 64-bit Mach-O: LC_UUID (unless uuid is null) and a __TEXT,__text section. */
+function machO({ cpu = ARM64, uuid = "11".repeat(16), text = "code" } = {}) {
+  const textBuf = Buffer.from(text);
+  const cmds = [];
+  if (uuid !== null) {
+    const c = Buffer.alloc(24);
+    c.writeUInt32LE(0x1b, 0);
+    c.writeUInt32LE(24, 4);
+    Buffer.from(uuid, "hex").copy(c, 8);
+    cmds.push(c);
+  }
+  const seg = Buffer.alloc(72 + 80);
+  seg.writeUInt32LE(0x19, 0);
+  seg.writeUInt32LE(152, 4);
+  seg.write("__TEXT", 8);
+  seg.writeUInt32LE(1, 64); // nsects
+  seg.write("__text", 72);
+  seg.write("__TEXT", 88);
+  cmds.push(seg);
+  const sizeofcmds = cmds.reduce((n, c) => n + c.length, 0);
+  const textOff = 32 + sizeofcmds;
+  seg.writeBigUInt64LE(BigInt(textBuf.length), 72 + 40); // size
+  seg.writeUInt32LE(textOff, 72 + 48); // offset
+  const h = Buffer.alloc(32);
+  h.writeUInt32LE(0xfeedfacf, 0);
+  h.writeUInt32LE(cpu, 4);
+  h.writeUInt32LE(2, 12); // MH_EXECUTE
+  h.writeUInt32LE(cmds.length, 16);
+  h.writeUInt32LE(sizeofcmds, 20);
+  return Buffer.concat([h, ...cmds, textBuf]);
+}
+/** A fat (universal) Mach-O of `slices`. */
+function fat(slices) {
+  const head = Buffer.alloc(8 + 20 * slices.length);
+  head.writeUInt32BE(0xcafebabe, 0);
+  head.writeUInt32BE(slices.length, 4);
+  let off = head.length;
+  slices.forEach((s, i) => {
+    head.writeUInt32BE(s.readUInt32LE(4), 8 + 20 * i);
+    head.writeUInt32BE(off, 8 + 20 * i + 8);
+    head.writeUInt32BE(s.length, 8 + 20 * i + 12);
+    off += s.length;
+  });
+  return Buffer.concat([head, ...slices]);
+}
+/** A 64-bit little-endian ELF with .shstrtab, an optional .note.gnu.build-id, and .text. */
+function elf({ machine = 0x3e, buildId = "ab".repeat(20), text = "elf code" } = {}) {
+  const names = Buffer.from("\0.shstrtab\0.note.gnu.build-id\0.text\0");
+  const idx = (n) => names.indexOf(Buffer.from(n + "\0"));
+  const parts = [];
+  let off = 64;
+  const place = (b) => {
+    const o = off;
+    parts.push(b);
+    off += b.length;
+    return o;
+  };
+  const strOff = place(names);
+  let note = null;
+  if (buildId !== null) {
+    const id = Buffer.from(buildId, "hex");
+    note = Buffer.alloc(16 + id.length);
+    note.writeUInt32LE(4, 0);
+    note.writeUInt32LE(id.length, 4);
+    note.writeUInt32LE(3, 8);
+    note.write("GNU\0", 12, "latin1");
+    id.copy(note, 16);
+  }
+  const noteOff = note ? place(note) : 0;
+  const textBuf = Buffer.from(text);
+  const textOff = place(textBuf);
+  const sh = (name, type, o, size) => {
+    const s = Buffer.alloc(64);
+    s.writeUInt32LE(name, 0);
+    s.writeUInt32LE(type, 4);
+    s.writeBigUInt64LE(BigInt(o), 24);
+    s.writeBigUInt64LE(BigInt(size), 32);
+    return s;
+  };
+  const shdrs = [Buffer.alloc(64), sh(idx(".shstrtab"), 3, strOff, names.length)];
+  if (note) shdrs.push(sh(idx(".note.gnu.build-id"), 7, noteOff, note.length));
+  shdrs.push(sh(idx(".text"), 1, textOff, textBuf.length));
+  const shoff = off;
+  const h = Buffer.alloc(64);
+  h.write("\x7fELF", 0, "latin1");
+  h[4] = 2;
+  h[5] = 1;
+  h[6] = 1;
+  h.writeUInt16LE(2, 16);
+  h.writeUInt16LE(machine, 18);
+  h.writeBigUInt64LE(BigInt(shoff), 0x28);
+  h.writeUInt16LE(64, 0x3a);
+  h.writeUInt16LE(shdrs.length, 0x3c);
+  h.writeUInt16LE(1, 0x3e); // e_shstrndx
+  return Buffer.concat([h, ...parts, ...shdrs]);
+}
+const MACHO = machO();
 
 let root; // a stand-in repo: <root>/src-tauri, <root>/templates
 const tmp = [];
@@ -213,7 +312,7 @@ describe("the built bundle (filesystem only)", () => {
 
   it("an ELF library may be rewritten by the AppImage (RPATH), but must still be there", () => {
     stageComplete();
-    const ELF = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]);
+    const ELF = elf();
     w("src-tauri/llama/libllama.dylib", ELF);
     const root2 = path.join(root, "appdir");
     bundleLike(path.join(root2, "usr/bin"), path.join(root2, "usr/lib/Citrate Core"), { change: { "llama/libllama.dylib": Buffer.concat([ELF, Buffer.from("patched")]) } });
@@ -298,5 +397,86 @@ describe("release paths run the gate", () => {
     const execs = [...src.matchAll(/execFileSync\(\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(new Set(execs)).toEqual(new Set(["ar", "tar", "unsquashfs"]));
     expect(src).not.toMatch(/--appimage-extract|\b(spawn|spawnSync|exec|execSync)\(/);
+  });
+});
+
+describe("code identity, read from the file (#707 review P2)", () => {
+  it("Mach-O: per-slice CPU type and LC_UUID, kept by code signing", () => {
+    const a = machO();
+    expect(codeIdentity(a)).toEqual({ kind: "macho", slices: [`cpu ${ARM64} uuid ${"11".repeat(16)}`] });
+    expect(codeIdentity(Buffer.concat([a, Buffer.from("code signature blob")]))).toEqual(codeIdentity(a));
+    expect(codeIdentity(machO({ uuid: "22".repeat(16) }))).not.toEqual(codeIdentity(a));
+    const u = fat([machO({ cpu: X86_64, uuid: "33".repeat(16) }), machO()]);
+    expect(codeIdentity(u).slices).toEqual([`cpu ${X86_64} uuid ${"33".repeat(16)}`, `cpu ${ARM64} uuid ${"11".repeat(16)}`]);
+    // No LC_UUID: the __TEXT,__text bytes stand in.
+    expect(codeIdentity(machO({ uuid: null })).slices[0]).toMatch(new RegExp(`^cpu ${ARM64} text [0-9a-f]{64}$`));
+  });
+
+  it("ELF: e_machine and the GNU build-id, kept by RPATH patching; else the .text bytes", () => {
+    const e = elf();
+    expect(codeIdentity(e)).toEqual({ kind: "elf", slices: [`machine 62 build-id ${"ab".repeat(20)}`] });
+    expect(codeIdentity(elf({ buildId: "cd".repeat(20) }))).not.toEqual(codeIdentity(e));
+    const noId = codeIdentity(elf({ buildId: null }));
+    expect(noId.slices[0]).toMatch(/^machine 62 text [0-9a-f]{64}$/);
+    expect(codeIdentity(elf({ buildId: null, text: "other code" }))).not.toEqual(noId);
+  });
+
+  it("a file that only starts like executable code has no identity (an error, not a pass)", () => {
+    expect(() => codeIdentity(Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 1, 2]))).toThrow(/cannot read/);
+    expect(() => codeIdentity(Buffer.from("\x7fELF\x02\x01", "latin1"))).toThrow(/cannot read/);
+  });
+});
+
+describe("a wrong sidecar never passes the post-build check (#707 review P2)", () => {
+  const app = () => path.join(root, "out/Citrate Core.app/Contents");
+  it(".app: another build of a sidecar (other UUID) or another CPU type is refused; a signed copy passes", () => {
+    stageComplete();
+    bundleLike(path.join(app(), "MacOS"), path.join(app(), "Resources"));
+    fs.writeFileSync(path.join(app(), "MacOS/hermes"), Buffer.concat([MACHO, Buffer.from("signature")]));
+    expect(checkLayout(opts(), path.join(app(), "MacOS"), path.join(app(), "Resources")).problems).toEqual([]);
+    fs.writeFileSync(path.join(app(), "MacOS/hermes"), machO({ uuid: "99".repeat(16) }));
+    expect(checkLayout(opts(), path.join(app(), "MacOS"), path.join(app(), "Resources")).problems.join("\n")).toMatch(/MacOS\/hermes is not the staged build/);
+    fs.writeFileSync(path.join(app(), "MacOS/hermes"), machO({ cpu: X86_64 }));
+    expect(checkLayout(opts(), path.join(app(), "MacOS"), path.join(app(), "Resources")).problems.join("\n")).toMatch(/MacOS\/hermes is not the staged build/);
+  });
+
+  it("a non-code sidecar must be byte-identical", () => {
+    stageComplete();
+    bundleLike(path.join(app(), "MacOS"), path.join(app(), "Resources"));
+    fs.writeFileSync(path.join(app(), "MacOS/llama-server"), "another llama");
+    expect(checkLayout(opts(), path.join(app(), "MacOS"), path.join(app(), "Resources")).problems.join("\n")).toMatch(/MacOS\/llama-server differs from the staged file/);
+  });
+
+  it("AppImage: an ELF library with the same build-id passes after patching; another build is refused", () => {
+    stageComplete();
+    w("src-tauri/llama/libllama.dylib", elf());
+    const r = path.join(root, "appdir");
+    bundleLike(path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core"), { change: { "llama/libllama.dylib": Buffer.concat([elf(), Buffer.from("rpath")]) } });
+    expect(checkLayout(opts(), path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core")).problems).toEqual([]);
+    fs.writeFileSync(path.join(r, "usr/lib/Citrate Core/llama/libllama.dylib"), elf({ buildId: "ee".repeat(20) }));
+    expect(checkLayout(opts(), path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core")).problems.join("\n")).toMatch(/llama\/libllama\.dylib is not the staged build/);
+  });
+
+  it(".deb: no exception, every file is compared byte for byte, sidecars included", () => {
+    stageComplete();
+    const r = path.join(root, "debroot2");
+    bundleLike(path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core"));
+    expect(checkLayout(opts(), path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core"), { exact: true }).problems).toEqual([]);
+    fs.writeFileSync(path.join(r, "usr/bin/hermes"), Buffer.concat([MACHO, Buffer.from("x")]));
+    fs.writeFileSync(path.join(r, "usr/lib/Citrate Core/llama/libllama.dylib"), Buffer.concat([MACHO, Buffer.from("x")]));
+    const p = checkLayout(opts(), path.join(r, "usr/bin"), path.join(r, "usr/lib/Citrate Core"), { exact: true }).problems.join("\n");
+    expect(p).toMatch(/bin\/hermes differs from the staged file/);
+    expect(p).toMatch(/llama\/libllama\.dylib differs from the staged file/);
+  });
+});
+
+describe("the pins file is required (#707 review P2)", () => {
+  it("a missing runtime-deps.sha256 is refused, never treated as no pins", () => {
+    stageComplete();
+    fs.rmSync(opts().pins);
+    expect(checkStaged(opts()).problems.join("\n")).toMatch(/runtime-deps\.sha256 is missing/);
+    const r = spawnSync("node", [SCRIPT, "staged", "--src-tauri", path.join(root, "src-tauri"), "--overlay", opts().overlay, "--target", TRIPLE, "--skills-lock", opts().skillsLock], { encoding: "utf8" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/runtime-deps\.sha256 is missing/);
   });
 });
