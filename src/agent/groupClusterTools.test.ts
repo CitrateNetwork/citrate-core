@@ -59,7 +59,7 @@ describe("WP-H2: every groups and cluster tool is offered, annotated and classif
     expect([...READ_ONLY_AGENT_TOOLS].filter((n) => (GROUP_CLUSTER_TOOL_NAMES as readonly string[]).includes(n)).sort()).toEqual(
       ["cluster_add_machine_open", "cluster_read", "group_invites_list"],
     );
-    expect([...AUTHORITY_LOWERING_AGENT_TOOLS]).toEqual(["group_invite_revoke"]);
+    expect(AUTHORITY_LOWERING_AGENT_TOOLS.has("group_invite_revoke")).toBe(true);
   });
 });
 

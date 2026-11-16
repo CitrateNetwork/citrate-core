@@ -8,6 +8,7 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
+import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -57,6 +58,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         member: "0x" + "1".repeat(40),
         role: "admin",
         enabled: true,
+        sha256: ADAPTER_SHA,
       }),
     });
     for (const n of names) {
@@ -74,6 +76,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.invites, "revoke").mockResolvedValue({ notified: false });
       vi.spyOn(bridge.groups, "roster").mockResolvedValue([{ address: "0x" + "1".repeat(40), role: "member" }]);
       vi.spyOn(bridge.cluster, "meshStatus").mockResolvedValue({ on: false, source: "off", signedOff: true, note: "" });
+      // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
+      vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
+      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"
