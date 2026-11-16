@@ -37,16 +37,18 @@ describe("board 01: edit and branch", () => {
   it("editing a past message branches: the earlier messages are kept, the edit is sent, the original stays", async () => {
     const orig = store.state.chatThreadId;
     const record = vi.spyOn(chatHistory, "set");
+    const toast = vi.spyOn(store, "toast");
     expect(await store.branchChat("u2", { text: "Put my GPU to work on rounds, weeknights only." })).toBe(true);
     expect(store.state.chatThreadId).not.toBe(orig);
     expect(store.state.chatMsgs.map((m) => m.text).slice(0, 3)).toEqual(["Network status", "Synced at block 10.", "Put my GPU to work on rounds, weeknights only."]);
     expect(sent).toEqual(["Put my GPU to work on rounds, weeknights only."]);
     // The original thread was archived before the switch.
     expect(record).toHaveBeenCalled();
-    // The new Hermes session hears the earlier messages as context.
-    expect(store.sidecarSystemPrompt()).toContain("Member: Network status");
-    expect(store.sidecarSystemPrompt()).toContain("Hermes: Synced at block 10.");
-    expect(store.sidecarSystemPrompt()).not.toContain("Put my GPU to work on rounds at night.");
+    // The branch's history never goes in the system prompt (core #731 sends it as session history).
+    expect(store.sidecarSystemPrompt()).not.toContain("Network status");
+    expect(store.sidecarSystemPrompt()).not.toContain("Synced at block 10.");
+    // A sidecar session starts the branch without the earlier messages, and the member is told.
+    expect(toast).toHaveBeenCalledWith("Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages.");
   });
 
   it("Retry sends the answer's member message again in a branch", async () => {
