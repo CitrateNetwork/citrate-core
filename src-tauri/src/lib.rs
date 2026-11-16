@@ -177,6 +177,8 @@ mod services;
 // CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
 mod sidecar_logs;
 // #613 review: the secret shapes kept off the disk and out of the diagnostics bundle.
+mod fl_dataset_gate;
+mod pii_scan;
 mod secret_shapes;
 mod shell;
 mod skill_registry;
@@ -980,6 +982,12 @@ pub fn run() {
             chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            // WP-H7 / V6 (0.5.4): the on-device private-information scanner.
+            pii_scan::pii_scan_text,
+            // WP-H7 (0.5.4): the dataset PII scan, license check and publish gate.
+            fl_dataset_gate::fl_dataset_pii_scan,
+            fl_dataset_gate::fl_dataset_license_check,
+            fl_dataset_gate::fl_dataset_publish_check,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
