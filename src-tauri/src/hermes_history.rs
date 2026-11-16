@@ -113,6 +113,16 @@ const PENDING_FILE: &str = "rotate.pending";
 /// The AAD name the erase marker is sealed under (not a file stem, so it can't pose as one).
 const PENDING_STEM: &str = "rotate.pending";
 const MAGIC: &[u8; 8] = b"CITRHHS\0";
+/// 0.5.4 FL datasets (`fl_datasets.rs`) seal their files with this same envelope, under their own
+/// magic, HKDF info and keyring account, through [`SealDomain`].
+pub(crate) struct SealDomain {
+    pub magic: &'static [u8; 8],
+    pub hkdf_info: &'static [u8],
+}
+const HISTORY: SealDomain = SealDomain {
+    magic: MAGIC,
+    hkdf_info: HKDF_INFO,
+};
 const FORMAT_VERSION: u8 = 1;
 const HEADER_LEN: usize = 8 + 1 + 4;
 const NONCE_LEN: usize = 12;
@@ -173,13 +183,13 @@ pub struct SaveOutcome {
 }
 
 /// One generation of the history key: the ML-KEM-768 seed.
-struct KeyGen {
-    gen: u32,
+pub(crate) struct KeyGen {
+    pub(crate) gen: u32,
     seed: Zeroizing<[u8; SEED_LEN]>,
 }
 
 impl KeyGen {
-    fn mint(gen: u32) -> Self {
+    pub(crate) fn mint(gen: u32) -> Self {
         let mut seed = Zeroizing::new([0u8; SEED_LEN]);
         OsRng.fill_bytes(&mut seed[..]);
         KeyGen { gen, seed }
@@ -198,13 +208,13 @@ impl KeyGen {
 }
 
 /// The keyring record: the current key, and the previous one while an erase is finishing.
-struct KeySet {
-    cur: KeyGen,
-    prev: Option<KeyGen>,
+pub(crate) struct KeySet {
+    pub(crate) cur: KeyGen,
+    pub(crate) prev: Option<KeyGen>,
 }
 
 impl KeySet {
-    fn encode(&self) -> Zeroizing<Vec<u8>> {
+    pub(crate) fn encode(&self) -> Zeroizing<Vec<u8>> {
         let mut out = Zeroizing::new(Vec::with_capacity(KEY_TWO_LEN));
         out.extend_from_slice(KEY_MAGIC);
         out.extend_from_slice(&self.cur.gen.to_be_bytes());
@@ -220,7 +230,7 @@ impl KeySet {
         out
     }
 
-    fn decode(b: &[u8]) -> Result<Self, String> {
+    pub(crate) fn decode(b: &[u8]) -> Result<Self, String> {
         let bad = || "the history key in the keychain is malformed".to_string();
         if (b.len() != KEY_ONE_LEN && b.len() != KEY_TWO_LEN) || &b[..4] != KEY_MAGIC {
             return Err(bad());
@@ -288,10 +298,10 @@ fn aead_open(key: &[u8; 32], aad: &[u8], blob: &[u8]) -> Option<Zeroizing<Vec<u8
         .map(Zeroizing::new)
 }
 
-fn kek_from_shared(ss: &[u8]) -> Zeroizing<[u8; 32]> {
+fn kek_from_shared(info: &[u8], ss: &[u8]) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, ss);
     let mut kek = Zeroizing::new([0u8; 32]);
-    hk.expand(HKDF_INFO, &mut kek[..])
+    hk.expand(info, &mut kek[..])
         .expect("32 bytes is a valid HKDF-SHA256 output length");
     kek
 }
@@ -310,9 +320,9 @@ fn take_part<'b>(b: &'b [u8], i: &mut usize) -> Option<&'b [u8]> {
     Some(part)
 }
 
-fn header(gen: u32) -> Vec<u8> {
+fn header(magic: &[u8; 8], gen: u32) -> Vec<u8> {
     let mut h = Vec::with_capacity(HEADER_LEN);
-    h.extend_from_slice(MAGIC);
+    h.extend_from_slice(magic);
     h.push(FORMAT_VERSION);
     h.extend_from_slice(&gen.to_be_bytes());
     h
@@ -327,14 +337,24 @@ fn aad(head: &[u8], stem: &str) -> Vec<u8> {
 
 /// Seal `plaintext` as the file `stem` under `key`.
 fn seal_file(key: &KeyGen, stem: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    seal_in(&HISTORY, key, stem, plaintext)
+}
+
+/// Seal `plaintext` as the file `stem` under `key`, in `dom`'s format.
+pub(crate) fn seal_in(
+    dom: &SealDomain,
+    key: &KeyGen,
+    stem: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
     let (_, ek) = key.pair();
     let (kem_ct, shared) = ek
         .encapsulate(&mut OsRng)
         .map_err(|_| "the history could not be sealed".to_string())?;
-    let kek = kek_from_shared(shared.as_slice());
+    let kek = kek_from_shared(dom.hkdf_info, shared.as_slice());
     let mut dek = Zeroizing::new([0u8; DEK_LEN]);
     OsRng.fill_bytes(&mut dek[..]);
-    let head = header(key.gen);
+    let head = header(dom.magic, key.gen);
     let aad = aad(&head, stem);
     let payload = aead_seal(&dek, &aad, plaintext)?;
     let wrapped = aead_seal(&kek, &aad, &dek[..])?;
@@ -347,7 +367,12 @@ fn seal_file(key: &KeyGen, stem: &str, plaintext: &[u8]) -> Result<Vec<u8>, Stri
 
 /// The key generation a sealed file names, or `None` when it is not a history file.
 fn file_gen(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC || bytes[8] != FORMAT_VERSION {
+    file_gen_in(&HISTORY, bytes)
+}
+
+/// The key generation a sealed file of `dom` names.
+pub(crate) fn file_gen_in(dom: &SealDomain, bytes: &[u8]) -> Option<u32> {
+    if bytes.len() < HEADER_LEN || &bytes[..8] != dom.magic || bytes[8] != FORMAT_VERSION {
         return None;
     }
     Some(u32::from_be_bytes([
@@ -357,7 +382,17 @@ fn file_gen(bytes: &[u8]) -> Option<u32> {
 
 /// Open the file `stem`. `None` for any failure: wrong key, wrong name, or a changed byte.
 fn open_sealed(keys: &KeySet, stem: &str, bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    let key = keys.by_gen(file_gen(bytes)?)?;
+    open_in(&HISTORY, keys, stem, bytes)
+}
+
+/// Open the file `stem` of `dom`. `None` for any failure.
+pub(crate) fn open_in(
+    dom: &SealDomain,
+    keys: &KeySet,
+    stem: &str,
+    bytes: &[u8],
+) -> Option<Zeroizing<Vec<u8>>> {
+    let key = keys.by_gen(file_gen_in(dom, bytes)?)?;
     let head = &bytes[..HEADER_LEN];
     let mut i = HEADER_LEN;
     let kem_ct = take_part(bytes, &mut i)?;
@@ -369,7 +404,7 @@ fn open_sealed(keys: &KeySet, stem: &str, bytes: &[u8]) -> Option<Zeroizing<Vec<
     let ct = ml_kem::Ciphertext::<MlKem768>::try_from(kem_ct).ok()?;
     let (dk, _) = key.pair();
     let shared = dk.decapsulate(&ct).ok()?;
-    let kek = kek_from_shared(shared.as_slice());
+    let kek = kek_from_shared(dom.hkdf_info, shared.as_slice());
     let aad = aad(head, stem);
     let mut dek_vec = aead_open(&kek, &aad, wrapped)?;
     if dek_vec.len() != DEK_LEN {
