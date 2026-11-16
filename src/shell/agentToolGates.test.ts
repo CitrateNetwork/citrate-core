@@ -174,7 +174,8 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   const LOWERING_ALLOWED_CALLS: Record<string, string[]> = {
     fl_adapter_unload: ["flRounds.unloadAdapter"],
     // 0.5.4 WP-H3: one round's consent off, or conversation training off (re-read under the start lock).
-    fl_consent_withdraw: ["flRounds.revokeConsent", "flRounds.trajectoryStatus", "flRounds.setTrajectoryConsent"],
+    // Both are turn-off-only by construction: neither command takes a switch (#712 review).
+    fl_consent_withdraw: ["flRounds.revokeConsent", "flRounds.trajectoryStatus", "flRounds.revokeTrajectoryConsent"],
   };
 
   it("the authority-lowering set is exactly the reviewed one and overlaps no other gate list", () => {
@@ -207,7 +208,10 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       }) as never);
       const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
       const review = vi.spyOn(store, "openWalletReview").mockImplementation(() => {});
-      await store.handleTool(call(name, { group: "g", scope: "round", sha256: "b".repeat(64), roundId: "0x" + "c".repeat(64) }), "m1", noop);
+      // Every scope a lowering tool takes (fl_consent_withdraw: a round, or conversation training).
+      for (const scope of ["round", "conversations"]) {
+        await store.handleTool(call(name, { group: "g", scope, sha256: "b".repeat(64), roundId: "0x" + "c".repeat(64) }), "m1", noop);
+      }
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must not ask or sign`).toBe(0);
       expect(calls.length, `tool ${name} calls its lowering command`).toBeGreaterThan(0);
       for (const c of calls) expect(LOWERING_ALLOWED_CALLS[name], `tool ${name} called ${c}`).toContain(c);

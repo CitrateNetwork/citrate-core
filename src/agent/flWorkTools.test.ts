@@ -54,6 +54,7 @@ function deps(over: { saved?: WorkerTerms | null; book?: FlWorkDeps["book"] } = 
       revokeConsent: vi.fn(async () => [] as string[]),
       trajectoryStatus: vi.fn(async () => ({ settings: { enabled: true, changedAtMs: 1 }, recordedFiles: 4, datasets: 1, appliesOnRestart: true, loadError: null })),
       setTrajectoryConsent: vi.fn(async () => ({ settings: { enabled: false, changedAtMs: 2 }, recordedFiles: 4, datasets: 0, appliesOnRestart: true, loadError: null })),
+      revokeTrajectoryConsent: vi.fn(async () => ({ settings: { enabled: false, changedAtMs: 2 }, recordedFiles: 4, datasets: 0, appliesOnRestart: true, loadError: null })),
     },
     tier: { recommend: vi.fn(async (): Promise<TierReport | null> => report()) },
     book: over.book ?? NO_WORKMARKET,
@@ -126,11 +127,20 @@ describe("fl_consent_withdraw", () => {
     expect(out.result).toMatch(/Rounds still consented: none/);
     expect(d.toast).toHaveBeenCalledWith(expect.not.stringMatching(/approve/i));
   });
-  it("turns conversation training off and never on", async () => {
+  it("turns conversation training off through the revoke-only command, never the on/off switch", async () => {
     const d = deps();
-    await run("fl_consent_withdraw", { scope: "conversations" }, d);
-    expect(d.flRounds.setTrajectoryConsent).toHaveBeenCalledWith(false, false);
-    expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalledWith(true, expect.anything());
+    const out = await run("fl_consent_withdraw", { scope: "conversations" }, d);
+    expect(d.flRounds.revokeTrajectoryConsent).toHaveBeenCalledTimes(1);
+    expect(d.flRounds.revokeTrajectoryConsent).toHaveBeenCalledWith();
+    expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalled();
+    expect(out.result).toMatch(/^Turned off training on verified conversations/);
+  });
+
+  it("the withdraw tool's deps cannot reach the on/off switch at all (#712 review)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(process.cwd(), "src/agent/flWorkTools.ts"), "utf8");
+    expect(src).not.toMatch(/setTrajectoryConsent/);
   });
   it("while Hermes is starting, the conversation switch write is held and says so", async () => {
     const d = deps();
@@ -139,7 +149,7 @@ describe("fl_consent_withdraw", () => {
     try {
       const out = await run("fl_consent_withdraw", { scope: "conversations" }, d);
       expect(out.result.startsWith(HELD_DURING_START)).toBe(true);
-      expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalled();
+      expect(d.flRounds.revokeTrajectoryConsent).not.toHaveBeenCalled();
     } finally {
       hermesRunningSlice.set(before);
     }
