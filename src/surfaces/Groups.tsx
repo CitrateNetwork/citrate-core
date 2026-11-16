@@ -5,7 +5,8 @@
 // and a selected group with three tabs: Conversation, Roster, Cluster. RBAC is enforced at the
 // RELAY, not the client (ADR-001) — the surface offers controls and shows the relay's honest error
 // if you are not authorized; it never fakes success (Rule 1). Offboard stops at the Signature
-// Ceremony. Role changes are not available until role grants are signed (#495, groupRoles.ts).
+// Ceremony. Role changes send a signed grantRole request (#637); the bundled comms daemon is older
+// than 0.6.0 and refuses them with the reason in groupRoles.ts until its pin moves.
 // The Cluster tab shares FILES (drag / Browse / pick from your files), never a hand-typed CID —
 // normal people don't have a CID to paste.
 // =====================================================================

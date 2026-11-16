@@ -10,8 +10,8 @@
 //! spawn → loopback `/health` liveness → bounded-backoff restart) plus `agent.rs`'s bearer scheme:
 //! a fresh 256-bit token is minted per start, written to a `0600` file (the file IS the IPC channel
 //! — the child adopts it), and the file PATH is handed to the child via ENV (never the token in
-//! argv/env — argv/env leak to `ps`). The control surface + skills are S6.2–S6.4; the `hermes_*`
-//! commands stay honest `not wired` until then. Managed as a process-wide singleton in this module,
+//! argv/env — argv/env leak to `ps`). The control surface and skills (S6.2–S6.4) are the
+//! `hermes_*` commands below. Managed as a process-wide singleton in this module,
 //! so no state wiring in the (s0-owned) `lib.rs` — Lane D stays race-free.
 //
 use std::collections::{BTreeMap, HashMap};

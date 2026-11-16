@@ -1,12 +1,11 @@
 // =====================================================================
 // citrate-core — TAURI ADAPTER · CORE-A1 · A1.3 + A1.4
 //
-// Invokes the Rust commands registered in src-tauri. The `config` domain is
-// wired end-to-end for real (A1.4): it round-trips through a genuine on-disk
-// Tauri store plus an OS-keyring status read. Every OTHER domain throws
-// `Unavailable` (Rule 1) — in the real desktop app an unwired domain says so,
-// it never shows sim data dressed as live. Each later phase replaces one of
-// these throws with a real invoke, copying the config shape exactly.
+// Invokes the Rust commands registered in src-tauri. Every op here calls a real
+// command; a failure comes back as the command's error (Rule 1), never sim data
+// dressed as live. The seam stubs that only threw `Unavailable` and that nothing
+// called (chat.backend, membership.entitlement, commissary, comms) were removed
+// in 0.5.4 along with their Rust commands.
 // =====================================================================
 import { invoke } from "./invoke";
 import type {
@@ -42,12 +41,8 @@ import type {
   ChatRoute,
   ChatRouteStatus,
 } from "../domains";
-import { SignedTxExpired, Unavailable } from "../types";
+import { SignedTxExpired } from "../types";
 import { tauriImportKnowledge } from "./knowledge";
-
-function unavailable(domain: string, op: string): never {
-  throw new Unavailable(domain, op);
-}
 
 export function createTauriBridge(): Omit<BridgeContract, "mode"> {
   return {
@@ -396,12 +391,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     // @rule8: setProvider seals {baseURL,model,apiKey} in the OS keyring;
     // providerStatus returns metadata ONLY (never the key); infer reads the STORED
     // baseURL for the given id and POSTs /v1/chat/completions from Rust — the
-    // webview picks WHICH provider, never the URL (exfil-binding). backend stays
-    // Unavailable (the demo/real selection is done in the store, not here).
+    // webview picks WHICH provider, never the URL (exfil-binding). The demo/real
+    // selection is done in the store, not here.
     chat: {
-      async backend() {
-        return unavailable("chat", "backend");
-      },
       async setProvider(providerId: string, baseURL: string, model: string, apiKey: string): Promise<void> {
         // camelCase JS keys map to the Rust snake_case args (base_url/api_key).
         await invoke("ai_set_provider", { providerId, baseUrl: baseURL, model, apiKey });
@@ -457,9 +449,6 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
     },
     membership: {
-      async entitlement() {
-        return unavailable("membership", "entitlement");
-      },
       // CORE-D3.C — open the REAL core-membership checkout popup. Resolves once
       // the popup is opened; the money + grant are server-side. The store then
       // polls auth.userinfo() until the entitlement lands (no fabricated settle).
@@ -489,16 +478,6 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // PURE READ; signs nothing.
       async sbtArt(sub: string): Promise<string | null> {
         return invoke<string | null>("sbt_token_uri", { sub });
-      },
-    },
-    commissary: {
-      async catalog() {
-        return unavailable("commissary", "catalog");
-      },
-    },
-    comms: {
-      async connections() {
-        return unavailable("comms", "connections");
       },
     },
 

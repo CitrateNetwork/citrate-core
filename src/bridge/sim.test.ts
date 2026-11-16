@@ -179,14 +179,6 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     await expect(bridge.membership.checkout()).resolves.toBeUndefined();
   });
 
-  it("membership.entitlement still reflects the live host entitlement/tier", async () => {
-    const { host } = fakeHost({ entitlement: "active", tier: "pilot" } as Partial<AppState>);
-    const bridge = createSimBridge(host);
-    const e = await bridge.membership.entitlement();
-    expect(e.status).toBe("active");
-    expect(e.tier).toBe("pilot");
-  });
-
   // BC-1.3 — the sim grantStatus is an HONEST stand-in derived from the persona/
   // AppState (NEVER a fabricated real 40204 read): granted (32,000-SALT stake + SBT)
   // ONLY for a paid+active sim member; 0 stake / no SBT otherwise. This lets the sim
@@ -261,14 +253,6 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     await expect(bridge.chat.setRoute("local_only")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
-  it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {
-    const { host } = fakeHost();
-    const bridge = createSimBridge(host);
-    const b = await bridge.chat.backend();
-    expect(b.kind).toBe("demo");
-    expect(b.label).toBe("built-in demo agent");
-    expect(b.label).not.toContain("infer.citrate.ai");
-  });
 });
 
 // CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no

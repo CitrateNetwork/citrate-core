@@ -1,6 +1,7 @@
 // Vault slot reservation tripwire.
 //
-// The webview can write vault slots through `custody_put`, which refuses every backend-owned
+// The kit's invoke-path `custody_put` (citrate-core no longer registers it; citrate-quorum, which
+// shares the kit, may) refuses every backend-owned
 // namespace (`custody::BACKEND_SLOT_PREFIXES`). This scan lists every in-process vault write in
 // the production sources of the app and kit crates, and each one must be in the allowlist below
 // with a slot that the invoke path refuses. A new backend write site fails here until its slot

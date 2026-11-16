@@ -1688,48 +1688,6 @@ pub async fn node_start(
     state.0.start().map_err(|e| e.to_string())
 }
 
-/// W1.1 (WP-11) — the node's on-chain proposer identity: the `coinbase` (the
-/// member's wallet address the node mines to) and the ed25519 `proposer_pubkey`
-/// READ from the node's minted `proposer.key`. The pubkey is a persisted secret's
-/// public half — the value registered in `ValidatorRegistry` and the key for
-/// `validatorInfo`/reward reads — NOT derivable from the coinbase (WP-11). The
-/// coinbase needs an unlocked vault; the pubkey needs the node to have started once
-/// (mint-on-first-run) — either leg errors honestly.
-#[derive(serde::Serialize)]
-pub struct ProposerIdentity {
-    pub coinbase: String,
-    #[serde(rename = "proposerPubkey")]
-    pub proposer_pubkey: String,
-}
-
-#[tauri::command]
-pub async fn node_proposer_identity(
-    app_h: tauri::AppHandle,
-) -> std::result::Result<ProposerIdentity, String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        node_proposer_identity_sync(st0, st1)
-    })
-    .await
-}
-
-/// Blocking body of [`node_proposer_identity`]; reached only through [`crate::blocking::off_main`].
-pub fn node_proposer_identity_sync(
-    state: State<'_, NodeState>,
-    custody: State<'_, crate::custody::CustodyState>,
-) -> std::result::Result<ProposerIdentity, String> {
-    let info = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let proposer_pubkey = state.0.proposer_pubkey()?;
-    Ok(ProposerIdentity {
-        coinbase: info.address,
-        proposer_pubkey,
-    })
-}
-
 /// The REAL validator earnings — `(total, claimable)` SALT wei from
 /// `ValidatorRegistry.rewardsOf(bytes32 pubkey)` on 40204 (citrate-chain
 /// `contracts/src/ValidatorRegistry.sol:542`, a view keyed by any 32-byte key), read with

@@ -644,12 +644,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
     // store then falls back to the built-in demo agent. Guarded out of packaged
     // builds by assertSimAllowed.
     chat: {
-      async backend() {
-        assertSimAllowed("chat.backend");
-        // Honest (Rule 1): web-dev chat runs on the built-in demo agent, not a
-        // gateway — the label must not claim a remote proxy it does not call.
-        return { kind: "demo", label: "built-in demo agent" };
-      },
       async setProvider() {
         assertSimAllowed("chat.setProvider");
         // No OS keyring on the web shim — a provider key cannot be sealed here.
@@ -712,11 +706,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
     },
 
     membership: {
-      async entitlement() {
-        assertSimAllowed("membership.entitlement");
-        const st = s();
-        return { status: st.entitlement, tier: st.tier, expiresAt: "2027-07-11" };
-      },
       // CORE-D3.C — SIM: no real popup + no real checkout. The web-dev onboarding
       // keeps its OWN fake settle in the Store (onS3Pay's sim branch). This just
       // resolves so the sim S3 flow proceeds; guarded out of packaged builds.
@@ -784,19 +773,6 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
     },
 
-    commissary: {
-      async catalog() {
-        assertSimAllowed("commissary.catalog");
-        return [];
-      },
-    },
-
-    comms: {
-      async connections() {
-        assertSimAllowed("comms.connections");
-        return s().connections;
-      },
-    },
 
     // ---- connections: SIM is honestly disconnected (no backend, no token flow).
     // status returns all-disconnected (true, not fabricated); start is desktop-only.

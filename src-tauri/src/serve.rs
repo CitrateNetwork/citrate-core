@@ -730,28 +730,6 @@ pub fn model_serve_stop_sync(serve: State<'_, ServeState>) -> std::result::Resul
     Ok(())
 }
 
-/// **Command — model_serve_status.** The supervisor state + the local baseURL +
-/// a coarse healthy flag.
-#[tauri::command]
-pub async fn model_serve_status(
-    app_h: tauri::AppHandle,
-) -> std::result::Result<ServeStatus, String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st0 = tauri::Manager::try_state::<ServeState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        model_serve_status_sync(st0)
-    })
-    .await
-}
-
-/// Blocking body of [`model_serve_status`]; reached only through [`crate::blocking::off_main`].
-pub fn model_serve_status_sync(
-    serve: State<'_, ServeState>,
-) -> std::result::Result<ServeStatus, String> {
-    Ok(serve.0.status())
-}
-
 /// **Command — model_inference_state.** The HONEST inference-routing state the
 /// frontend renders: LOCAL (`ready`) → ask first (`local-stopped`, SCL-S7.5a) → gateway
 /// (`gateway-only`, no local model) →

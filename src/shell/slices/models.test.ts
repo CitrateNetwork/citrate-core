@@ -56,3 +56,15 @@ describe("HUP-S0.3b gated Hugging Face repos", () => {
     expect(modelsSlice.get().downloadingId).toBeNull();
   });
 });
+
+describe("0.5.4: a failed read of this machine's models says why", () => {
+  it("keeps the real reason, not a 'not wired' label, and clears it on the next good read", async () => {
+    vi.spyOn(bridge.modelsCatalog, "partials").mockResolvedValue([]);
+    const local = vi.spyOn(bridge.modelsCatalog, "local").mockRejectedValueOnce(new Error("models folder unreadable: permission denied"));
+    await refreshLocalModels();
+    expect(modelsSlice.get().localError).toBe("models folder unreadable: permission denied");
+    local.mockResolvedValue([]);
+    await refreshLocalModels();
+    expect(modelsSlice.get().localError).toBeNull();
+  });
+});
