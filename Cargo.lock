@@ -848,7 +848,7 @@ dependencies = [
 [[package]]
 name = "citrate-commd"
 version = "0.1.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=a53bac644665a992bf871831250af7354fd69512#a53bac644665a992bf871831250af7354fd69512"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=b2e91167bda2b81d52658c58f6327063a25cbedc#b2e91167bda2b81d52658c58f6327063a25cbedc"
 dependencies = [
  "ark-bn254",
  "ark-crypto-primitives",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "citrate-core"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -973,7 +973,7 @@ dependencies = [
 [[package]]
 name = "citrate-wallet-core"
 version = "0.4.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=a53bac644665a992bf871831250af7354fd69512#a53bac644665a992bf871831250af7354fd69512"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=b2e91167bda2b81d52658c58f6327063a25cbedc#b2e91167bda2b81d52658c58f6327063a25cbedc"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

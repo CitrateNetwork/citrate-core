@@ -1162,7 +1162,7 @@ fn r1007_is_the_active_profile_after_the_genesis_cut() {
         "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631"
     );
     assert_eq!(r.node_genesis.name, "r1007");
-    assert_eq!(r.min_chain_rev, "a53bac644665a992bf871831250af7354fd69512");
+    assert_eq!(r.min_chain_rev, "b2e91167bda2b81d52658c58f6327063a25cbedc");
     assert_eq!(crate::addresses::genesis_hash(), r.genesis_hash);
     let gate = p.expected_network();
     assert_eq!(gate.chain_id, Some(40204));
