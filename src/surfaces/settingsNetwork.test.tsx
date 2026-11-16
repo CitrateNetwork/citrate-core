@@ -32,9 +32,11 @@ describe("Settings › Network on the profile (K6-3)", () => {
     expect(html).toContain(ACTIVE_PROFILE!.explorerUrl!);
   });
 
-  it("the network button names the profile's node network and chain id", () => {
+  it("the network row names the profile's node network and chain id, read-only", () => {
     const html = settings("node");
-    expect(html).toContain(`${ACTIVE_PROFILE!.nodeNetwork} · ${ACTIVE_PROFILE!.chainId}`);
+    expect(html).toContain(`${ACTIVE_PROFILE!.nodeNetwork} · chain ${ACTIVE_PROFILE!.chainId}`);
+    // 0.5.4: no network switch that nothing reads (#705).
+    expect(html).not.toContain(">local devnet<");
   });
 
   it("API endpoints: the public RPC is the profile's RPC host", () => {
