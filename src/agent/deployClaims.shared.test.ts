@@ -11,7 +11,7 @@ import { checkDeployClaims, collectDeployEvidence, newDeployLedger, type CodeRea
 
 const FIXTURE = resolve(process.cwd(), "src/agent/fixtures/deploy_claims_cases.json");
 /** The sha256 of the shared file; the sidecar's test pins the same value. */
-export const DEPLOY_CLAIM_CASES_SHA256 = "a1b6a5604fece4ea661662c9cfaa0998a658c4a4dedd224094a6fefac254ea11";
+export const DEPLOY_CLAIM_CASES_SHA256 = "005a323f9f2089294310e58de2e76aa05135d50e8c56a9affe62f670f73451fc";
 
 interface Turn {
   outputs: TurnToolOutput[];
@@ -276,6 +276,15 @@ const INPUTS: Case[] = [
   one("keep: when it's live", "When it's live, I'll send you the address.", [], null, ["deploy my token"]),
   one("keep: after the deploy goes through", "After the deploy goes through, check CitrateScan for the address.", [INAPP_PENDING], null, ["deploy my token"]),
   one("keep: if the deployment is confirmed", "If the deployment is confirmed, you'll see it in Activity.", [INAPP_PENDING], null, ["deploy my token"]),
+  // ---- #681 BerryManifold: a conditional word never hides the claim after it ----
+  one("once again I deployed your token", "Once again I deployed your token.", [], null, ["deploy my token"]),
+  one("when you asked I deployed your token", "When you asked I deployed your token.", [], null, ["deploy my token"]),
+  one("after compiling I deployed your token", "After compiling I deployed your token successfully.", [], null, ["deploy my token"]),
+  one("as soon as you said so I deployed it", "As soon as you said so I deployed it.", [], null, ["deploy my token"]),
+  one("if I recall, it's deployed", "If I recall, it's deployed.", [], null, ["deploy my token"]),
+  one("before lunch I shipped your contract", "Before lunch I shipped your contract.", [], null, ["deploy my token"]),
+  one("keep: once deployed", "Once deployed, it will show in Activity.", [INAPP_PENDING], null, ["deploy my token"]),
+  one("keep: you'll get the address when it's live", "You'll get the address when it's live.", [INAPP_PENDING], null, ["deploy my token"]),
   one("keep: as soon as it's deployed", "As soon as it's deployed, the address will show here.", [INAPP_PENDING], null, ["deploy my token"]),
 ];
 
