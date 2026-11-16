@@ -309,6 +309,7 @@ commands.allow = [
   "chat_route_set",
   "hermes_terminal_get",
   "hermes_terminal_set",
+  "pii_scan_text",
   "node_status",
   "node_start",
   "node_stop",
