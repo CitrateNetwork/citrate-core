@@ -1,0 +1,68 @@
+/* =====================================================================
+   citrate-core — Groups boards layout (0.5.4 FL design, boards 02 and 03).
+   Layout only, for the three-column chat board and the members table. Chips, cards, key-value
+   lists, tables and the HIC badge are Lane 1's shared FL classes (src/styles/fl.css,
+   src/fl/primitives.tsx). Colours come from the register tokens (no new tokens).
+   StateMatrix a11y: a contained grid, each column scrolls on its own, nothing scrolls sideways.
+   Below 1240 px the chat's details rail folds away; below 1040 px the group list folds above the
+   thread. Reduced motion: no transitions at all.
+   ===================================================================== */
+.grp-page { display: grid; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden; }
+.grp-cols-3 { grid-template-columns: 260px minmax(0, 1fr) 300px; }
+.grp-col { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 18px 22px; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; }
+.grp-col + .grp-col { border-left: 1px solid var(--line-1); }
+.grp-rail { background: var(--srf-1); }
+.grp-list-col { background: var(--srf-1); padding: 14px; gap: 8px; }
+.grp-thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.grp-thread-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 22px; display: flex; flex-direction: column; gap: 14px; }
+.grp-thread-head { padding: 14px 22px 10px; border-bottom: 1px solid var(--line-1); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grp-composer { padding: 10px 22px 14px; border-top: 1px solid var(--line-1); display: flex; flex-direction: column; gap: 6px; }
+
+@media (max-width: 1240px) {
+  .grp-cols-3 { grid-template-columns: 240px minmax(0, 1fr); }
+  .grp-cols-3 > .grp-rail { display: none; }
+}
+@media (max-width: 1040px) {
+  .grp-cols-3 { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .grp-cols-3 > .grp-list-col { max-height: 220px; border-bottom: 1px solid var(--line-1); }
+  .grp-cols-3 > .grp-col + .grp-col { border-left: none; }
+}
+
+.grp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.grp-h1 { margin: 0; font-family: var(--font-display); font-weight: 420; font-size: 24px; color: var(--tx-1); }
+.grp-h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--tx-1); }
+.grp-spacer { flex: 1; }
+.grp-inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.grp-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.grp-muted { color: var(--tx-2); }
+.grp-faint { color: var(--tx-3); font-size: 11px; }
+.grp-note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--tx-3); }
+.grp-alert { font-size: 12px; line-height: 1.5; color: var(--danger); background: var(--danger-bg); border-radius: var(--r-1); padding: 8px 10px; }
+.grp-pad { padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.grp-tbl { table-layout: fixed; }
+.grp-tbl td { vertical-align: middle; overflow-wrap: anywhere; }
+.grp-tbl th:nth-child(1) { width: 26%; } .grp-tbl th:nth-child(2) { width: 15%; } .grp-tbl th:nth-child(3) { width: 13%; } .grp-tbl th:nth-child(4) { width: 16%; }
+.grp-row-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.grp-row-actions .btn-sm { min-height: 30px; }
+.grp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.grp-list-row { display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
+.grp-details > summary { cursor: pointer; font-size: 12px; color: var(--tx-2); padding: 4px 0; }
+.grp-group-btn { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border-radius: var(--r-1); border: 1px solid transparent; background: transparent; color: var(--tx-1); cursor: pointer; }
+.grp-group-btn[aria-current="page"] { background: var(--srf-2); border-color: var(--line-1); }
+.grp-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 999px; border: 1px solid var(--line-2); background: var(--srf-2); color: var(--tx-2); display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 10px; font-weight: 600; }
+.grp-avatar-agent { border-style: dashed; border-color: var(--info); color: var(--info); }
+.grp-msg { display: flex; gap: 10px; }
+.grp-msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.grp-msg-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.grp-replies { margin: 4px 0 0; padding: 6px 0 0 12px; border-left: 2px solid var(--line-1); display: flex; flex-direction: column; gap: 6px; }
+.grp-dialog-scrim { position: fixed; inset: 0; background: rgba(14, 15, 12, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.grp-dialog { width: min(520px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--srf-1); color: var(--tx-1); border: 1px solid var(--line-1); border-radius: var(--r-2); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.grp-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--tx-2); }
+.grp-seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.grp-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; }
+.grp-stat-v { font-family: var(--font-mono); font-size: 18px; color: var(--tx-1); }
+.grp-typing { font-size: 11.5px; color: var(--tx-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .grp-page *, .grp-dialog * { transition: none !important; animation: none !important; }
+}

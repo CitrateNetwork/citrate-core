@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Groups } from "./Groups";
+import { GroupMembers } from "./groups/GroupMembers";
 import { bridge } from "../bridge";
 import { freshState } from "../shell/state";
 import { groupsSlice, offboardMember, addMemberToGroup } from "../shell/slices/groups";
@@ -52,11 +52,12 @@ afterEach(async () => {
   groupsSlice.set({ groups: [], selectedId: null, roster: [], names: {}, busyMember: null, error: null });
 });
 
-/** Render Groups on the People tab with group A selected; approvals are captured, not run. */
+/** Render Groups › Members with group A selected; approvals are captured, not run. */
 async function openPeopleTab(): Promise<void> {
   const store = {
     toast: (m: string) => toasts.push(m),
-    identity: () => ({ wallet: "" }),
+    go: () => {},
+    identity: () => ({ wallet: "", name: "" }),
     refreshPeople: async () => {},
     requestSig: vi.fn(async (spec: CerSpec) => {
       proposals.push(spec);
@@ -64,10 +65,7 @@ async function openPeopleTab(): Promise<void> {
     }),
   } as unknown as Store;
   const s = { ...freshState("p1"), commsAddr: ME };
-  await act(async () => root.render(<Groups store={store} s={s} />));
-  const tab = [...host.querySelectorAll("button")].find((b) => b.textContent === "People");
-  expect(tab, "the People tab").toBeDefined();
-  await act(async () => tab!.click());
+  await act(async () => root.render(<GroupMembers store={store} s={s} />));
 }
 const offboardButton = () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Offboard") as HTMLButtonElement | undefined;
 
@@ -150,13 +148,14 @@ describe("tripwire: member actions take an explicit group", () => {
     }
   });
 
-  it("every Groups call of a member action passes a group id first", () => {
-    const src = read("src/surfaces/Groups.tsx");
+  it("every Groups › Members call of a member action passes a group id first", () => {
+    // 0.5.4 FL design: the member actions moved from the Groups People tab to Groups › Members.
+    const src = read("src/surfaces/groups/GroupMembers.tsx");
     const calls = [...src.matchAll(/\b(offboardMember|assignRole|addMemberToGroup|doOffboard|doRole)\(([^()]*)\)/g)].filter(
       (m) => !/^\s*groupId: string/.test(m[2]),
     );
-    // 7 since D-12: the two claim-approval adds moved into Rust (group_invite_approve takes the group).
-    expect(calls.length).toBeGreaterThanOrEqual(7);
+    // offboard, assign, and the people-picker and directory adds (the address add trims its input inline).
+    expect(calls.length).toBeGreaterThanOrEqual(4);
     for (const m of calls) expect(m[2].split(",").length, m[0]).toBeGreaterThanOrEqual(2);
   });
 });
