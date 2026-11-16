@@ -1502,6 +1502,9 @@ export interface FlRoundsDomain {
   trajectoryStatus(): Promise<FlTrajectoryStatus>;
   /** Turn the switch on or off. Off deletes assembled training sets now (and, if asked, recordings). */
   setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+  /** Turn the switch off, and only off (core trajectories_consent_revoke: no switch argument).
+   *  Deletes assembled training sets now and keeps recordings. Hermes's consent withdraw uses this. */
+  revokeTrajectoryConsent(): Promise<FlTrajectoryStatus>;
   /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
    *  Core refuses when the switch is off. */
   buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;

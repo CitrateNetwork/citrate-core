@@ -1414,6 +1414,6 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
  * calls only its lowering command. A tool lands here only with a reviewed reason.
  */
 export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
-  "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_settings_set(false): consent only goes down
+  "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_consent_revoke: both turn-off-only, no switch argument
   "fl_adapter_unload", // core fl_adapter_unload: serve the base model alone and forget the remembered adapter
 ]);

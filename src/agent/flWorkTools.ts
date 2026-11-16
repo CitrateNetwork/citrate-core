@@ -11,7 +11,8 @@
 //    under the work key in the OS keyring, through src/fl/workerTerms.ts. Read only here: the one
 //    terms write path is lane 3's worker_terms_propose and its save-receipt card (#693).
 //  - consent: core's fl_rounds.rs (fl_overview: the device worker's `fl_consent.json` and the start
-//    records; fl_round_consent_revoke) and fl_trajectories.rs (trajectories_settings_get/_set). The
+//    records; fl_round_consent_revoke) and fl_trajectories.rs (trajectories_settings_get, and the
+//    turn-off-only trajectories_consent_revoke, which takes no switch argument). The
 //    conversation switch is a setting Hermes reads at start, so it is written under the start lock.
 //  - eligibility: core's tier.rs (tier_recommend, a local probe: RAM, unified memory, NVIDIA VRAM,
 //    free disk; no network). An offer's requirements come from WorkMarket (`requirementsHash`, the
@@ -41,7 +42,8 @@ export interface FlWorkDeps {
     overview(): Promise<FlOverview>;
     revokeConsent(roundId: string): Promise<string[]>;
     trajectoryStatus(): Promise<FlTrajectoryStatus>;
-    setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+    /** Core's turn-off-only command (trajectories_consent_revoke); there is no way to turn it on here. */
+    revokeTrajectoryConsent(): Promise<FlTrajectoryStatus>;
   };
   tier: { recommend(): Promise<TierReport | null> };
   /** The shipped address book (src-tauri/addresses/40204.json). */
@@ -152,7 +154,7 @@ async function consentWithdraw(args: Record<string, unknown>, d: FlWorkDeps): Pr
       const s = await writeStartSettingUnlessStarting(async () => {
         const fresh = await d.flRounds.trajectoryStatus();
         noteRunning("learn", fresh.settings.enabled);
-        return d.flRounds.setTrajectoryConsent(false, false);
+        return d.flRounds.revokeTrajectoryConsent();
       });
       if (!s) return { status: "ok", result: HELD_DURING_START + " Conversation training was not changed; try again once Hermes is up." };
       d.toast("Training on your conversations is off.");

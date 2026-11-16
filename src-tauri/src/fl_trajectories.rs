@@ -328,6 +328,13 @@ pub fn set(
     Ok(status(hermes_dir))
 }
 
+/// Turn training on verified conversations off, and only off: deletes the assembled round files
+/// and keeps the recordings (the member deletes those in Settings). Has no switch argument, so the
+/// only effect any caller can have through it is lowering consent (0.5.4 WP-H3, #712 review).
+pub fn revoke(hermes_dir: &Path, now_ms: u64) -> Result<TrajectoryStatus, String> {
+    set(hermes_dir, false, false, now_ms)
+}
+
 fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     use tauri::Manager;
     app.path()
@@ -366,6 +373,16 @@ pub async fn trajectories_settings_set(
         )
     })
     .await
+}
+
+/// **trajectories_consent_revoke**: turn training on verified conversations off. Takes no switch,
+/// so it can only lower consent; Hermes's fl_consent_withdraw reaches this and never
+/// trajectories_settings_set. Applies to recording at the next Hermes start.
+#[tauri::command]
+pub async fn trajectories_consent_revoke(
+    app: tauri::AppHandle,
+) -> Result<TrajectoryStatus, String> {
+    crate::blocking::off_main(move || revoke(&hermes_dir(&app)?, now_ms())).await
 }
 
 /// **trajectories_dataset_build**: assemble the newest verified turns into one training file

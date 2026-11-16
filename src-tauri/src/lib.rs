@@ -773,6 +773,7 @@ pub fn run() {
             // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
             fl_trajectories::trajectories_settings_get,
             fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_consent_revoke,
             fl_trajectories::trajectories_dataset_build,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
