@@ -22,9 +22,9 @@ export interface ChallengeClockProps {
 
 /** The clock's sentence (also its text equivalent). */
 export function clockSentence({ state, endBlock, head, blockSeconds }: ChallengeClockProps): string {
+  if (state === "ended-early") return "Challenge window ended early: a challenge was proven";
   if (state === "not-open" || endBlock === undefined) return "The challenge window opens when the merge is committed";
   if (state === "closed") return `Challenge window closed at block ${blockText(endBlock)} with no successful challenge`;
-  if (state === "ended-early") return "Challenge window ended early: a challenge was proven";
   if (head === null) return `Challenge window ends at block ${blockText(endBlock)}; the current block was not read`;
   const left = Math.max(0, endBlock - head);
   const when = blockSeconds !== null && blockSeconds > 0 ? `, in ${aboutDuration(left * blockSeconds)}` : `, ${blockText(left)} blocks from now`;

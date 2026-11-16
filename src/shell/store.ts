@@ -5727,6 +5727,20 @@ export class Store {
    */
   async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // FL G-SEC PAY-15: one proposal at a time. A second call while core is still opening the
+    // first ceremony (before walletReview is set) is refused, so a double press signs nothing twice.
+    if (this.contractCallInFlight) throw new Error("a contract call is already being prepared; wait for its review");
+    this.contractCallInFlight = true;
+    try {
+      return await this.proposeContractCallOnce(input);
+    } finally {
+      this.contractCallInFlight = false;
+    }
+  }
+
+  private contractCallInFlight = false;
+
+  private async proposeContractCallOnce(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     // The label becomes the review's title, so the main window checks it against the calldata
     // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
     let selector = "";
