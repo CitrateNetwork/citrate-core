@@ -1348,14 +1348,11 @@ export interface RewardInfo {
   weight: string;
   salt: string;
 }
+/** PatronageLedger reads. V5 (0.5.4): no start, contribute or claim here; those were stubs that
+ *  always failed. Rounds are joined and claimed through the WorkMarket tools once deployed. */
 export interface TrainingDomain {
-  start(groupId: string): Promise<void>;
   status(groupId: string): Promise<RoundStatus>;
-  /** Lease -> local DiLoCo train -> submit a Q16 pseudo-gradient. */
-  contribute(groupId: string): Promise<void>;
   reward(groupId: string): Promise<RewardInfo>;
-  /** Claim the member's SALT reward — ceremony-gated (D-18/D-23). */
-  claim(groupId: string): Promise<void>;
 }
 
 // ── HUP-S9.4: Hermes plans, explains and starts federated rounds; LoRA eval gate ──
