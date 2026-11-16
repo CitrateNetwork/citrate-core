@@ -52,6 +52,7 @@ function api(over: Partial<FleetApi>): FleetApi {
     createLink: unused,
     inspectLink: unused,
     joinLink: vi.fn(unused),
+    forget: unused,
     tailscale: unused,
     ...over,
   };

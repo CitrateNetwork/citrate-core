@@ -5,16 +5,20 @@
 // re-read, and a machine that joins appears with the six-digit code both screens show. The other
 // device ("join"): the member pastes the link, core reads it (`fleet_pair_inspect`, sends nothing),
 // and only "Pair with this machine" joins (`fleet_pair_join`); every outcome is said in plain words.
-// A group link (`citrate-cluster://…`, from `cluster_group_seed`) pasted on the join side dials the
-// group's machines instead (`cluster_add_group_seed`); the roster still decides who is admitted.
+// A group link (`citrate-cluster://…`, from `cluster_group_seed`) pasted on the join side is shown
+// for what it is and dials the group's machines (`cluster_add_group_seed`) only on an explicit
+// confirm, and not at all while the cross-machine mesh is off; the roster still decides who is
+// admitted. Before pairing, core says which six-digit code pairing will show (`fleet_pair_inspect`);
+// if the codes on the two machines differ, either side removes the other from its record
+// (`fleet_forget`: changes nothing on the other machine and revokes no device key).
 // The sheet is a real modal: focus starts on Close (the safe choice) and Escape closes it.
 import { useEffect, useRef, useState } from "react";
 import { ModalDialog } from "../shell/ModalDialog";
 import { QrCode } from "../fleet/FleetWizard";
 import { expiresIn, roleLabel } from "../fleet/wizard";
 import type { FleetApi, FleetDevice, PairClaim, PairOffer } from "../bridge/tauri/fleet";
-import type { ClusterGroupSeed } from "../bridge/domains";
-import { isGroupSeed, joinOutcome, newlyPaired } from "./clusterBoard";
+import type { ClusterGroupSeed, MeshStatus } from "../bridge/domains";
+import { CODE_MISMATCH, isGroupSeed, joinOutcome, joinedThisOffer } from "./clusterBoard";
 
 /** How often the roster is re-read while this device waits for the other machine. */
 export const ROSTER_POLL_MS = 3000;
@@ -35,6 +39,8 @@ export interface AddMachineSheetProps {
   onPaired?: () => void;
   /** Seconds clock (tests pin it). */
   nowSecs?: () => number;
+  /** The cross-machine mesh status: a group link can't reach anyone while it is off. */
+  mesh?: MeshStatus | null;
 }
 
 export function AddMachineSheet(p: AddMachineSheetProps) {
@@ -58,18 +64,53 @@ export function AddMachineSheet(p: AddMachineSheetProps) {
   );
 }
 
+/** "Remove this machine": forget a paired machine on this side, after a code mismatch. */
+function RemoveMachine({ api, id, label, onRemoved }: { api: FleetApi; id: string; label: string; onRemoved?: () => void }) {
+  const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done" } | { kind: "error"; text: string }>({ kind: "idle" });
+  if (state.kind === "done") return <span role="status" data-testid="machine-removed" style={note}>{label} is removed from this machine's paired machines. Its device key, if it has one, stays until you remove it under Your devices.</span>;
+  return (
+    <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <button
+        type="button"
+        className="btn btn-sm btn-danger"
+        disabled={state.kind === "busy"}
+        onClick={async () => {
+          setState({ kind: "busy" });
+          try {
+            await api.forget(id);
+            setState({ kind: "done" });
+            onRemoved?.();
+          } catch (e) {
+            setState({ kind: "error", text: msg(e) });
+          }
+        }}
+      >
+        Remove this machine
+      </button>
+      {state.kind === "error" && <span role="alert" style={{ fontSize: 12, color: "var(--danger)" }}>Couldn't remove it: {state.text}</span>}
+    </span>
+  );
+}
+
 function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }: AddMachineSheetProps) {
-  const [offer, setOffer] = useState<PairOffer | null>(null);
+  const [offer, setOffer] = useState<{ o: PairOffer; issuedAt: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [joined, setJoined] = useState<FleetDevice[]>([]);
   const [copied, setCopied] = useState(false);
   const [seed, setSeed] = useState<ClusterGroupSeed | null>(null);
   const [seedErr, setSeedErr] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
   const before = useRef<Set<string> | null>(null);
+  const clock = useRef(nowSecs);
+  clock.current = nowSecs;
   const [, tick] = useState(0);
 
   useEffect(() => {
     let live = true;
+    setOffer(null);
+    setErr(null);
+    setJoined([]);
+    setCopied(false);
     void (async () => {
       try {
         before.current = new Set((await api.roster()).map((d) => d.id));
@@ -77,8 +118,11 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
         before.current = new Set();
       }
       try {
+        // The offer's issue time bounds which new roster entry redeemed it. Taken a few seconds
+        // early so clock rounding never drops the machine that really used it.
+        const issuedAt = Math.floor(clock.current()) - 5;
         const o = await api.createLink();
-        if (live) setOffer(o);
+        if (live) setOffer({ o, issuedAt });
       } catch (e) {
         if (live) setErr(msg(e));
       }
@@ -86,17 +130,21 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
     return () => {
       live = false;
     };
-  }, [api]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, round]);
 
-  // Waiting for the other machine: re-read the roster; a new machine is the "joined" outcome.
+  const expired = !!offer && offer.o.expiresAt <= nowSecs();
+
+  // Waiting for the other machine: re-read the roster; the machine that used THIS offer is "joined".
   useEffect(() => {
-    if (!offer) return;
+    if (!offer || joined.length > 0) return;
     const t = setInterval(() => {
       tick((n) => n + 1);
+      if (offer.o.expiresAt <= clock.current()) return;
       void api
         .roster()
         .then((now) => {
-          const fresh = before.current ? newlyPaired(before.current, now) : [];
+          const fresh = before.current ? joinedThisOffer(before.current, now, { issuedAt: offer.issuedAt, expiresAt: offer.o.expiresAt }) : [];
           if (fresh.length) {
             setJoined(fresh);
             onPaired?.();
@@ -105,29 +153,29 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
         .catch(() => {});
     }, ROSTER_POLL_MS);
     return () => clearInterval(t);
-  }, [offer, api, onPaired]);
+  }, [offer, joined.length, api, onPaired]);
 
   return (
     <>
       {err && <div role="alert" style={{ fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}>Couldn't make a pairing link: {err}</div>}
       {!offer && !err && <p role="status" style={note}>Making a pairing link…</p>}
-      {offer && (
+      {offer && !expired && joined.length === 0 && (
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <QrCode qr={offer.qr} px={3} testId="add-machine-qr" label="QR code with the pairing link" />
+          <QrCode qr={offer.o.qr} px={3} testId="add-machine-qr" label="QR code with the pairing link" />
           <div style={{ flex: "1 1 260px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
             <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
               <li>On the other machine, open Citrate Core › Groups › Cluster.</li>
               <li>Choose Join with a link and scan this code, or paste the link.</li>
               <li>Pair on the other machine. Both machines then show the same six-digit code; check they match.</li>
             </ol>
-            <div className="mono" data-testid="add-machine-link" style={{ fontSize: 11, wordBreak: "break-all", background: "var(--srf-inset)", padding: "6px 8px", borderRadius: "var(--r-1)" }}>{offer.link}</div>
+            <div className="mono" data-testid="add-machine-link" style={{ fontSize: 11, wordBreak: "break-all", background: "var(--srf-inset)", padding: "6px 8px", borderRadius: "var(--r-1)" }}>{offer.o.link}</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button
                 type="button"
                 className="btn btn-sm"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard?.writeText(offer.link);
+                    await navigator.clipboard?.writeText(offer.o.link);
                     setCopied(true);
                   } catch {
                     setCopied(false);
@@ -136,21 +184,35 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
               >
                 {copied ? "Link copied" : "Copy link"}
               </button>
-              <span style={note}>Single use, {expiresIn(offer.expiresAt, nowSecs())}.</span>
+              <span style={note}>Single use, {expiresIn(offer.o.expiresAt, nowSecs())}.</span>
             </div>
           </div>
         </div>
       )}
-      {offer && joined.length === 0 && (
+      {offer && !expired && joined.length === 0 && (
         <p role="status" data-testid="add-machine-waiting" style={note}>Waiting for the other machine. It appears here when it pairs.</p>
       )}
+      {offer && expired && joined.length === 0 && (
+        <div role="status" data-testid="add-machine-expired" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13 }}>This link has expired, so no machine can pair with it now.</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => setRound((n) => n + 1)}>Make a new link</button>
+        </div>
+      )}
       {joined.map((d) => (
-        <div key={d.id} role="status" data-testid="add-machine-joined" className="surface" style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+        <div key={d.id} role="status" data-testid="add-machine-joined" className="surface" style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
           <b style={{ fontWeight: 500 }}>{d.label} joined</b>
           <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>
             {d.tier ? `Tier ${d.tier}` : "Tier not reported"} · {roleLabel(d.role)}
-            {d.code ? ` · code ${d.code}` : ""}
           </span>
+          {d.code ? (
+            <span data-testid="add-machine-code" style={{ fontSize: 13 }}>
+              This machine shows code <b className="mono">{d.code}</b>. Codes match when the other machine shows the same six digits.
+            </span>
+          ) : (
+            <span style={note}>This pairing carries no code to compare (the other machine runs an older Citrate Core).</span>
+          )}
+          <span style={note}>{CODE_MISMATCH}</span>
+          <RemoveMachine api={api} id={d.id} label={d.label} onRemoved={onPaired} />
         </div>
       ))}
       {groupSeed && (
@@ -185,17 +247,25 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
   );
 }
 
+/** Group links can't reach other machines while the cross-machine mesh is off on this machine. */
+export const GROUP_LINK_MESH_OFF = "The cross-machine mesh is off on this machine, so a group link can't reach other machines.";
+
 type JoinStage =
   | { kind: "idle" }
   | { kind: "reading" }
-  | { kind: "read"; claim: PairClaim }
-  | { kind: "pairing"; claim: PairClaim }
-  | { kind: "done"; ok: boolean; text: string };
+  /** A pairing link read and verified by core; `link` is exactly the text that was read. */
+  | { kind: "read"; link: string; claim: PairClaim }
+  | { kind: "pairing"; link: string; claim: PairClaim }
+  /** A group link: shown for what it is; dials only on confirm. */
+  | { kind: "seed"; link: string }
+  | { kind: "dialing"; link: string }
+  | { kind: "done"; ok: boolean; text: string; issuer?: { id: string; label: string } };
 
-function JoinSide({ api, addGroupSeed, onPaired, nowSecs = () => Date.now() / 1000 }: AddMachineSheetProps) {
+function JoinSide({ api, addGroupSeed, onPaired, mesh, nowSecs = () => Date.now() / 1000 }: AddMachineSheetProps) {
   const [link, setLink] = useState("");
   const [stage, setStage] = useState<JoinStage>({ kind: "idle" });
   const [err, setErr] = useState<string | null>(null);
+  const meshOff = !!mesh && !mesh.on;
 
   const read = async () => {
     const l = link.trim();
@@ -206,30 +276,36 @@ function JoinSide({ api, addGroupSeed, onPaired, nowSecs = () => Date.now() / 10
         setErr("Pick a group first: a group link joins that group's machines.");
         return;
       }
-      setStage({ kind: "reading" });
-      try {
-        const n = await addGroupSeed(l);
-        setStage({ kind: "done", ok: true, text: `Reaching ${n} address${n === 1 ? "" : "es"} from the group link. Each machine is still admitted only by the group's roster.` });
-      } catch (e) {
-        setStage({ kind: "done", ok: false, text: `The group link could not be used: ${msg(e)}` });
-      }
+      setStage({ kind: "seed", link: l });
       return;
     }
     setStage({ kind: "reading" });
     try {
-      setStage({ kind: "read", claim: await api.inspectLink(l) });
+      setStage({ kind: "read", link: l, claim: await api.inspectLink(l) });
     } catch (e) {
       setStage({ kind: "idle" });
       setErr(`That link could not be read: ${msg(e)}`);
     }
   };
 
-  const pair = async (claim: PairClaim) => {
-    setStage({ kind: "pairing", claim });
+  const dial = async (l: string) => {
+    if (!addGroupSeed || meshOff) return;
+    setStage({ kind: "dialing", link: l });
     try {
-      const r = await api.joinLink(link.trim());
+      const n = await addGroupSeed(l);
+      setStage({ kind: "done", ok: true, text: `Reaching ${n} address${n === 1 ? "" : "es"} from the group link. Each machine is still admitted only by the group's roster.` });
+    } catch (e) {
+      setStage({ kind: "done", ok: false, text: `The group link could not be used: ${msg(e)}` });
+    }
+  };
+
+  // Pair with exactly the link that was read and shown, never whatever the field holds now.
+  const pair = async (read: Extract<JoinStage, { kind: "read" }>) => {
+    setStage({ kind: "pairing", link: read.link, claim: read.claim });
+    try {
+      const r = await api.joinLink(read.link);
       const o = joinOutcome(r);
-      setStage({ kind: "done", ...o });
+      setStage({ kind: "done", ...o, ...(o.ok && r.device ? { issuer: { id: r.device.id, label: r.device.label } } : {}) });
       if (o.ok) onPaired?.();
     } catch (e) {
       setStage({ kind: "done", ok: false, text: `The pairing did not finish (${msg(e)}).` });
@@ -240,7 +316,17 @@ function JoinSide({ api, addGroupSeed, onPaired, nowSecs = () => Date.now() / 10
     <>
       <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5 }}>
         Pairing link or group link
-        <input className="input mono" value={link} placeholder="citrate://pair?…" onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void read()} />
+        <input
+          className="input mono"
+          value={link}
+          placeholder="citrate://pair?…"
+          onChange={(e) => {
+            setLink(e.target.value);
+            // A changed link is a new link: what was read no longer applies.
+            if (stage.kind !== "pairing" && stage.kind !== "dialing" && stage.kind !== "reading") setStage({ kind: "idle" });
+          }}
+          onKeyDown={(e) => e.key === "Enter" && void read()}
+        />
       </label>
       {(stage.kind === "idle" || stage.kind === "reading") && (
         <span>
@@ -256,17 +342,50 @@ function JoinSide({ api, addGroupSeed, onPaired, nowSecs = () => Date.now() / 10
           <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>
             {stage.claim.issuerTier ? `Tier ${stage.claim.issuerTier}` : "Tier not reported"} · link {expiresIn(stage.claim.expiresAt, nowSecs())}
           </span>
+          {stage.claim.code ? (
+            <span data-testid="join-code" style={{ fontSize: 13 }}>
+              Pairing will show code <b className="mono">{stage.claim.code}</b> on both machines. Check the other machine shows the same code after you pair.
+            </span>
+          ) : (
+            <span style={note}>After you pair, both machines show a six-digit code; check they match.</span>
+          )}
           <span style={{ display: "flex", gap: 8 }}>
-            <button type="button" className="btn btn-primary btn-sm" disabled={stage.kind === "pairing"} onClick={() => void pair(stage.claim)}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={stage.kind === "pairing"} onClick={() => stage.kind === "read" && void pair(stage)}>
               {stage.kind === "pairing" ? "Pairing…" : "Pair with this machine"}
             </button>
             <button type="button" className="btn btn-sm" disabled={stage.kind === "pairing"} onClick={() => setStage({ kind: "idle" })}>Decline</button>
           </span>
         </div>
       )}
+      {(stage.kind === "seed" || stage.kind === "dialing") && (
+        <div role="status" data-testid="join-seed" className="surface" style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <b style={{ fontWeight: 500 }}>This is a group link</b>
+          <span style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.5 }}>
+            It says where a member's machines can be reached. Reaching them pairs nothing: each machine is still admitted only by the group's roster.
+          </span>
+          {meshOff ? (
+            <span data-testid="join-seed-mesh-off" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+              {GROUP_LINK_MESH_OFF} {mesh?.note} Turn on Private mesh on the cluster screen first.
+            </span>
+          ) : (
+            <span style={{ display: "flex", gap: 8 }}>
+              <button type="button" className="btn btn-primary btn-sm" disabled={stage.kind === "dialing"} onClick={() => void dial(stage.link)}>
+                {stage.kind === "dialing" ? "Reaching…" : "Reach this group's machines"}
+              </button>
+              <button type="button" className="btn btn-sm" disabled={stage.kind === "dialing"} onClick={() => setStage({ kind: "idle" })}>Cancel</button>
+            </span>
+          )}
+        </div>
+      )}
       {stage.kind === "done" && (
-        <div role={stage.ok ? "status" : "alert"} data-testid="join-outcome" data-ok={stage.ok ? "yes" : "no"} style={{ fontSize: 13, lineHeight: 1.55, color: stage.ok ? "var(--tx-1)" : "var(--danger)" }}>
-          {stage.text}
+        <div role={stage.ok ? "status" : "alert"} data-testid="join-outcome" data-ok={stage.ok ? "yes" : "no"} style={{ fontSize: 13, lineHeight: 1.55, color: stage.ok ? "var(--tx-1)" : "var(--danger)", display: "flex", flexDirection: "column", gap: 8 }}>
+          <span>{stage.text}</span>
+          {stage.issuer && (
+            <>
+              <span style={note}>{CODE_MISMATCH}</span>
+              <RemoveMachine api={api} id={stage.issuer.id} label={stage.issuer.label} onRemoved={onPaired} />
+            </>
+          )}
         </div>
       )}
     </>

@@ -15,9 +15,9 @@ import { ROUNDS_NOT_LIVE, type FlPhase } from "../fl/networkState";
 
 export const GIB = 2 ** 30;
 
-/** Whole gigabytes, as the design writes them ("24 GB"). */
+/** Whole gibibytes ("24 GiB"): the probe reports bytes and this divides by 2^30. */
 export function gb(bytes: number): string {
-  return `${Math.round(bytes / GIB)} GB`;
+  return `${Math.round(bytes / GIB)} GiB`;
 }
 
 /** The probe of this machine: still running, read, or failed with its reason. */
@@ -126,20 +126,21 @@ export interface Capacity {
   accelerator: string;
   /** RAM reported, as text. */
   ram: string;
-  /** Machines in the cluster that have not reported. */
-  notReported: number;
+  /** Machines in the cluster that have not reported; null when the cluster has not been read. */
+  notReported: number | null;
   /** Your paired machines, with the tier class each reported when it paired. */
   paired: { id: string; label: string; tier: string }[];
 }
 
-export function capacityModel(probe: ProbeReading, peerCount: number, paired: FleetDevice[]): Capacity {
+/** `peerCount` is null while the cluster read is loading or failed: unknown, never zero. */
+export function capacityModel(probe: ProbeReading, peerCount: number | null, paired: FleetDevice[]): Capacity {
   const facts = probe.kind === "ok" ? probe.facts : null;
   const acc = facts ? acceleratorBytes(facts) : null;
   return {
     reported: facts ? 1 : 0,
     accelerator: acc != null ? gb(acc) : "—",
     ram: facts?.totalRamBytes != null ? gb(facts.totalRamBytes) : "—",
-    notReported: peerCount + (facts ? 0 : 1),
+    notReported: peerCount === null ? null : peerCount + (facts ? 0 : 1),
     paired: paired.map((d) => ({ id: d.id, label: d.label, tier: d.tier ? `tier ${d.tier}` : "tier not reported" })),
   };
 }
@@ -176,4 +177,27 @@ export function isGroupSeed(link: string): boolean {
 /** Machines that appeared in the roster since the sheet opened (the other machine joined). */
 export function newlyPaired(before: ReadonlySet<string>, now: FleetDevice[]): FleetDevice[] {
   return now.filter((d) => !before.has(d.id));
+}
+
+/**
+ * The machines that paired by redeeming THIS offer: new since the sheet opened, recorded as issued
+ * by this machine, and paired no earlier than the offer was made (and no later than it expired).
+ * A machine that paired through another link (the wizard, an older offer) is not this one.
+ */
+export function joinedThisOffer(before: ReadonlySet<string>, now: FleetDevice[], offer: { issuedAt: number; expiresAt: number }): FleetDevice[] {
+  return newlyPaired(before, now).filter((d) => d.via === "issued" && d.pairedAt >= offer.issuedAt && d.pairedAt <= offer.expiresAt + 5);
+}
+
+/** What to do when the two six-digit codes differ (both sides say it the same way). */
+export const CODE_MISMATCH = "If the codes differ, a different machine used the link. Remove it here, and make a new link.";
+
+/** What the cluster read says about other machines: read, or unknown and why. */
+export type PeersRead = { kind: "read" } | { kind: "unknown"; reason: string };
+
+export function peersRead(st: { selectedId: string | null; loading: boolean; error: string | null; status: unknown }): PeersRead {
+  if (!st.selectedId) return { kind: "unknown", reason: "no group selected" };
+  if (st.loading) return { kind: "unknown", reason: "reading the cluster" };
+  if (st.error) return { kind: "unknown", reason: `the cluster read failed: ${st.error}` };
+  if (!st.status) return { kind: "unknown", reason: "the cluster daemon has not answered" };
+  return { kind: "read" };
 }

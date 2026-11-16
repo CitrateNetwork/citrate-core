@@ -90,6 +90,29 @@ describe("Groups › Cluster board (StateMatrix: Cluster)", () => {
     expect(host.querySelector("svg[role=img]")?.getAttribute("aria-label")).toBe("Cluster map: 1 device, this machine, no peers yet.");
   });
 
+  it("a failed cluster read is unknown with its reason, never an empty cluster", async () => {
+    stubBridge([], MESH_ON);
+    vi.spyOn(bridge.cluster, "status").mockRejectedValue(new Error("cluster daemon not running"));
+    await mount(fleet());
+    expect(byTest("cluster-empty")).toBeNull();
+    expect(host.querySelector('svg[role="img"]')).toBeNull();
+    const reason = "the cluster read failed: cluster daemon not running";
+    expect(byTest("cluster-unread")?.getAttribute("aria-label")).toBe(`Cluster map: unknown, ${reason}.`);
+    expect(byTest("cluster-unread")?.textContent).toContain("—");
+    expect(byTest("devices-unread")?.textContent).toContain(reason);
+    expect(byTest("cap-not-reported")?.textContent).toContain("other machines unknown");
+    expect(byTest("cap-unread")?.textContent).toContain(reason);
+    expect(text()).not.toContain("No other machines in this group yet");
+  });
+
+  it("a cluster read still loading is unknown, never an empty cluster", async () => {
+    stubBridge([], MESH_ON);
+    vi.spyOn(bridge.cluster, "status").mockReturnValue(new Promise(() => {}));
+    await mount(fleet());
+    expect(byTest("cluster-empty")).toBeNull();
+    expect(byTest("cluster-unread")?.textContent).toContain("reading the cluster");
+  });
+
   it("Running: mesh on draws solid and dashed links and the switch is usable", async () => {
     stubBridge([{ address: "0xaa", online: true, link: "direct" }, { address: "0xbb", online: true, link: "relayed" }], MESH_ON);
     await mount(fleet());
@@ -146,8 +169,8 @@ describe("Groups › Cluster board (StateMatrix: Cluster)", () => {
     expect(e.getAttribute("data-kind")).toBe("unknown");
     expect(e.textContent).toContain(NO_ROUNDS_REASON);
     expect(byTest("cap-reported")?.textContent).toContain("1");
-    expect(byTest("cap-accel")?.textContent).toContain("24 GB");
-    expect(byTest("cluster-selected")?.textContent).toContain("GPU, 24 GB memory, 128 GB RAM");
+    expect(byTest("cap-accel")?.textContent).toContain("24 GiB");
+    expect(byTest("cluster-selected")?.textContent).toContain("GPU, 24 GiB memory, 128 GiB RAM");
   });
 
   it("0.6.0 fixture: a round's requirements give Eligible or a why-not per miss", async () => {
@@ -155,7 +178,7 @@ describe("Groups › Cluster board (StateMatrix: Cluster)", () => {
     const store = { toast: () => {}, linkThisDevice: vi.fn(), clearPendingPairLink: vi.fn() } as unknown as Store;
     await act(async () => root.render(<Cluster store={store} s={freshState("p1")} fleet={fleet()} desktop requirements={{ round: "round 16", minAcceleratorBytes: 48 * GIB }} />));
     for (let i = 0; i < 4; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
-    expect(byTest("cluster-eligibility")?.textContent).toContain("needs 48 GB GPU memory for round 16 (this machine has 24 GB)");
+    expect(byTest("cluster-eligibility")?.textContent).toContain("needs 48 GiB GPU memory for round 16 (this machine has 24 GiB)");
   });
 
   it("0.6.0 fixture: with WorkMarket on the network and no requirements read, it does not say rounds are not live", async () => {

@@ -45,7 +45,7 @@ import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevi
 import { peerStateLabel } from "./clusterReachability";
 import { ClusterMap, THIS_MACHINE } from "./ClusterMap";
 import { AddMachineSheet } from "./AddMachineSheet";
-import { capacityModel, eligibilityModel, hardwareLine, type ProbeReading, type RoundRequirements } from "./clusterBoard";
+import { capacityModel, eligibilityModel, hardwareLine, peersRead, type ProbeReading, type RoundRequirements } from "./clusterBoard";
 import { Card, Chip, Eyebrow, KV, Note, Unknown, type KVRow } from "../fl/primitives";
 import { useFlNetworkState, type UseFlNetworkStateOptions } from "../fl/useFlNetworkState";
 import { meshSwitchModel } from "./meshSwitch";
@@ -296,7 +296,10 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
   const label = group ? clusterGroupLabel(group) : null;
   const meshOn = st.mesh?.on ?? false;
   const sw = meshSwitchModel(st.mesh);
-  const cap = capacityModel(probe, st.peers.length, paired);
+  // A loading or failed cluster read is unknown, never an empty cluster (st.peers is [] then).
+  const read = peersRead(st);
+  const known = read.kind === "read";
+  const cap = capacityModel(probe, known ? st.peers.length : null, paired);
   const elig = eligibilityModel(probe, requirements, { phase: fl.phase, reason: fl.phaseReason });
   const peer = st.peers.find((p) => p.address === selected) ?? null;
   const sel = selected === THIS_MACHINE || !peer ? THIS_MACHINE : peer.address;
@@ -384,19 +387,32 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
           <Eyebrow style={{ padding: "10px 16px 0" }}>
             {st.status ? `${st.status.online} of ${st.status.total} peers online · ${st.status.sharedFiles.length} shared files` : st.loading ? "Reading the cluster…" : "Cluster map"}
           </Eyebrow>
-          {st.peers.length === 0 && (
-            <p data-testid="cluster-empty" style={{ margin: 0, padding: "8px 16px 0", fontSize: 12.5, color: "var(--tx-2)" }}>
-              One machine, no peers yet. Other members' machines appear here as the group's roster admits them.
+          {read.kind === "unknown" ? (
+            <p data-testid="cluster-unread" role="img" aria-label={`Cluster map: unknown, ${read.reason}.`} style={{ margin: 0, padding: "8px 16px 14px", fontSize: 12.5, color: "var(--tx-2)" }}>
+              Other machines: <Unknown reason={read.reason} />
             </p>
+          ) : (
+            <>
+              {st.peers.length === 0 && (
+                <p data-testid="cluster-empty" style={{ margin: 0, padding: "8px 16px 0", fontSize: 12.5, color: "var(--tx-2)" }}>
+                  One machine, no peers yet. Other members' machines appear here as the group's roster admits them.
+                </p>
+              )}
+              <ClusterMap peers={st.peers} meshOn={meshOn} selected={sel} labels={memberOfDevice} />
+            </>
           )}
-          <ClusterMap peers={st.peers} meshOn={meshOn} selected={sel} labels={memberOfDevice} />
         </div>
 
         <div role="group" aria-label="Devices" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button type="button" className={"btn btn-sm" + (sel === THIS_MACHINE ? " btn-secondary" : "")} aria-pressed={sel === THIS_MACHINE} onClick={() => setSelected(THIS_MACHINE)}>
             This machine
           </button>
-          {st.peers.map((p) => (
+          {read.kind === "unknown" && (
+            <span data-testid="devices-unread" style={{ fontSize: 12.5, color: "var(--tx-2)", alignSelf: "center" }}>
+              Other machines: <Unknown reason={read.reason} />
+            </span>
+          )}
+          {known && st.peers.map((p) => (
             <button key={p.address} type="button" className={"btn btn-sm" + (sel === p.address ? " btn-secondary" : "")} aria-pressed={sel === p.address} onClick={() => setSelected(p.address)}>
               {memberOfDevice.get(p.address) ?? shortAddr(p.address)} · {meshOn ? peerStateLabel(p) : "mesh off"}
             </button>
@@ -429,7 +445,7 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
             <Tile value={String(cap.reported)} label="machines reported" testId="cap-reported" />
             <Tile value={cap.accelerator} label="GPU memory reported" testId="cap-accel" />
             <Tile value={cap.ram} label="RAM reported" />
-            <Tile value="—" label={`${cap.notReported} not reported`} testId="cap-not-reported" />
+            <Tile value="—" label={cap.notReported === null ? "other machines unknown" : `${cap.notReported} not reported`} testId="cap-not-reported" />
           </div>
           {cap.paired.length > 0 && (
             <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6 }}>
@@ -439,6 +455,11 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
                 </li>
               ))}
             </ul>
+          )}
+          {read.kind === "unknown" && (
+            <span data-testid="cap-unread" style={{ fontSize: 12 }}>
+              Other machines: <Unknown reason={read.reason} />
+            </span>
           )}
           <Note>Only devices that reported are counted. Unknown is not zero.</Note>
         </Card>
@@ -470,6 +491,7 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
           addGroupSeed={st.selectedId ? (seed) => bridge.cluster.addGroupSeed(st.selectedId!, seed) : undefined}
           onClose={() => setSheet(null)}
           onPaired={loadPaired}
+          mesh={st.mesh}
         />
       )}
     </div>

@@ -1,7 +1,7 @@
 // 0.5.4 FL design, board 04: the cluster board's pure models. The 0.6.0 states (a live round's
 // requirements) are fixtures here only; the app passes no requirements while Group rounds are not live.
 import { describe, expect, it } from "vitest";
-import { GIB, NO_ROUNDS_REASON, noRequirementsReason, acceleratorBytes, capacityModel, eligibilityModel, hardwareLine, isGroupSeed, joinOutcome, newlyPaired } from "./clusterBoard";
+import { GIB, NO_ROUNDS_REASON, noRequirementsReason, gb, joinedThisOffer, peersRead, acceleratorBytes, capacityModel, eligibilityModel, hardwareLine, isGroupSeed, joinOutcome, newlyPaired } from "./clusterBoard";
 import type { HardwareFacts } from "../bridge/domains";
 import type { FleetDevice, JoinResult } from "../bridge/tauri/fleet";
 
@@ -16,8 +16,8 @@ describe("hardware receipts", () => {
     expect(acceleratorBytes(gpu24)).toBe(24 * GIB);
     expect(acceleratorBytes(m16)).toBe(16 * GIB);
     expect(acceleratorBytes(noGpu)).toBeNull();
-    expect(hardwareLine(gpu24)).toBe("GPU, 24 GB memory, 128 GB RAM, 500 GB disk free");
-    expect(hardwareLine(m16)).toBe("Apple silicon, 16 GB unified memory, 100 GB disk free");
+    expect(hardwareLine(gpu24)).toBe("GPU, 24 GiB memory, 128 GiB RAM, 500 GiB disk free");
+    expect(hardwareLine(m16)).toBe("Apple silicon, 16 GiB unified memory, 100 GiB disk free");
   });
 });
 
@@ -27,7 +27,7 @@ describe("eligibilityModel", () => {
     expect(e.kind).toBe("unknown");
     expect(e.word).toBe("Not known");
     expect(e.lines[0]).toBe(NO_ROUNDS_REASON);
-    expect(e.lines[1]).toContain("24 GB memory");
+    expect(e.lines[1]).toContain("24 GiB memory");
     expect(e.reprobe).toBe(false);
   });
 
@@ -42,21 +42,21 @@ describe("eligibilityModel", () => {
   it("fixture requirements met: Eligible with one line per requirement", () => {
     const e = eligibilityModel({ kind: "ok", facts: gpu24 }, { round: "round 15", minAcceleratorBytes: 16 * GIB, minRamBytes: 32 * GIB });
     expect(e.kind).toBe("eligible");
-    expect(e.lines).toEqual(["24 GB GPU memory meets the 16 GB minimum of round 15", "128 GB RAM meets the 32 GB minimum of round 15"]);
+    expect(e.lines).toEqual(["24 GiB GPU memory meets the 16 GiB minimum of round 15", "128 GiB RAM meets the 32 GiB minimum of round 15"]);
   });
 
   it("fixture requirements missed: Not eligible with a why-not per miss", () => {
     const e = eligibilityModel({ kind: "ok", facts: m16 }, { round: "round 16", minAcceleratorBytes: 24 * GIB, minDiskFreeBytes: 50 * GIB });
     expect(e.kind).toBe("not-eligible");
     expect(e.word).toBe("Not eligible right now");
-    expect(e.lines).toContain("needs 24 GB GPU memory for round 16 (this machine has 16 GB)");
-    expect(e.lines).toContain("100 GB free disk meets the 50 GB minimum of round 16");
+    expect(e.lines).toContain("needs 24 GiB GPU memory for round 16 (this machine has 16 GiB)");
+    expect(e.lines).toContain("100 GiB free disk meets the 50 GiB minimum of round 16");
   });
 
   it("fixture requirement this machine did not report: Not known, not a miss", () => {
     const e = eligibilityModel({ kind: "ok", facts: noGpu }, { round: "round 15", minAcceleratorBytes: 16 * GIB });
     expect(e.kind).toBe("unknown");
-    expect(e.lines[0]).toBe("GPU memory not reported, so the 16 GB minimum of round 15 can't be checked");
+    expect(e.lines[0]).toBe("GPU memory not reported, so the 16 GiB minimum of round 15 can't be checked");
   });
 
   it("the Today reason uses the required wording and follows the network's phase", () => {
@@ -79,7 +79,7 @@ describe("capacityModel", () => {
   it("counts only machines that reported; peers are not reported", () => {
     const c = capacityModel({ kind: "ok", facts: gpu24 }, 4, [dev("a", "Studio"), dev("b", "Laptop", null)]);
     expect(c.reported).toBe(1);
-    expect(c.accelerator).toBe("24 GB");
+    expect(c.accelerator).toBe("24 GiB");
     expect(c.notReported).toBe(4);
     expect(c.paired).toEqual([
       { id: "a", label: "Studio", tier: "tier T2" },
@@ -111,6 +111,34 @@ describe("joinOutcome", () => {
     expect(o.ok).toBe(false);
     expect(o.text).toContain(words);
     expect(o.text).not.toMatch(/!|—/);
+  });
+});
+
+describe("review fixes", () => {
+  it("labels binary sizes GiB (the probe's bytes divide by 2^30)", () => {
+    expect(gb(24 * GIB)).toBe("24 GiB");
+  });
+
+  it("an unread cluster is unknown, not an empty cluster", () => {
+    const base = { selectedId: "g", loading: false, error: null, status: { online: 0 } };
+    expect(peersRead(base)).toEqual({ kind: "read" });
+    expect(peersRead({ ...base, loading: true })).toEqual({ kind: "unknown", reason: "reading the cluster" });
+    expect(peersRead({ ...base, error: "daemon down" })).toEqual({ kind: "unknown", reason: "the cluster read failed: daemon down" });
+    expect(peersRead({ ...base, status: null })).toEqual({ kind: "unknown", reason: "the cluster daemon has not answered" });
+    expect(peersRead({ ...base, selectedId: null }).kind).toBe("unknown");
+    expect(capacityModel({ kind: "ok", facts: gpu24 }, null, []).notReported).toBeNull();
+  });
+
+  it("only the machine that redeemed this offer counts as joined", () => {
+    const offer = { issuedAt: 1000, expiresAt: 1600 };
+    const now = [
+      { ...dev("a", "this offer"), pairedAt: 1100 },
+      { ...dev("b", "older link"), pairedAt: 900 },
+      { ...dev("c", "joined elsewhere"), pairedAt: 1100, via: "joined" as const },
+      { ...dev("d", "after expiry"), pairedAt: 2000 },
+    ];
+    expect(joinedThisOffer(new Set(), now, offer).map((d) => d.id)).toEqual(["a"]);
+    expect(joinedThisOffer(new Set(["a"]), now, offer)).toEqual([]);
   });
 });
 
