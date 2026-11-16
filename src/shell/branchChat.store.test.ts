@@ -79,14 +79,16 @@ describe("board 01: the worker-terms proposal card", () => {
     expect(store.state.chatMsgs.some((m) => m.proposal)).toBe(false);
   });
 
-  it("Confirm in this build: saving is refused, so the card says nothing changed", async () => {
+  // 0.5.4 integration: board 11 (#700) made saving real in the desktop app (fl_work.rs); off it,
+  // saving is refused with TERMS_NEED_DESKTOP, which replaced this card's old "not in this build".
+  it("Confirm off the desktop app: saving is refused, so the card says nothing changed", async () => {
     store.proposeWorkerTerms(TERMS, "a2");
     const p = store.state.chatMsgs.find((m) => m.id === "a2")!.proposal!;
     expect(p.state).toBe("pending");
     await store.confirmProposal(p.id);
     const after = store.state.chatMsgs.find((m) => m.id === "a2")!.proposal!;
     expect(after.state).toBe("failed");
-    expect(after.error).toBe(terms.TERMS_SAVE_UNAVAILABLE);
+    expect(after.error).toBe(terms.TERMS_NEED_DESKTOP);
   });
 
   it("Confirm once storage saves: confirmed by you, with the time", async () => {
