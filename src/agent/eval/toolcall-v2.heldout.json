@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 90,
+  "count": 93,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -95,6 +95,10 @@
     {
       "id": "nw-fl-howto",
       "sha256": "a0415026280cc2e53ef71e424290aa63b9414f3ee362845bec312e8b4e0a0803"
+    },
+    {
+      "id": "nw-fl-round-open-not-draft",
+      "sha256": "dc27540798be2ce910ce8089941f382196f5833ed100054f4b95bfe79aacc102"
     },
     {
       "id": "nw-group-idea",
@@ -219,6 +223,14 @@
     {
       "id": "tc-fl-plan-probe",
       "sha256": "e0f1f459eb8faea4209c73e1e81f7a0239df94f1a33c6f5d0cd3905d619f82d1"
+    },
+    {
+      "id": "tc-fl-round-draft-read",
+      "sha256": "85ac83e272d87949a5b6a7ddfd5f313d82e9d0293cc24ab8859e9325d8ce276d"
+    },
+    {
+      "id": "tc-fl-round-draft-save",
+      "sha256": "3099cb6f327edcbb00215d161525e4a219e9bb38266768f0d4e731b62520521d"
     },
     {
       "id": "tc-fl-start-explicit",

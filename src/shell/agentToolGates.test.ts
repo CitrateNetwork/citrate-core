@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { store } from "./store";
 import { rejectApproval } from "./slices/agent";
 import { bridge } from "../bridge";
-import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
+import { AGENT_TOOLS, DRAFT_ONLY_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
 import fs from "node:fs";
@@ -116,7 +116,8 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   // stop at a member approval (requestSig or the wallet-review ceremony) when invoked.
   it("tripwire: every non-read agent tool reaches a member approval gate", async () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
-    const writeTools = names.filter((n) => !READ_ONLY_AGENT_TOOLS.has(n));
+    const writeTools = names.filter((n) => !READ_ONLY_AGENT_TOOLS.has(n) && !DRAFT_ONLY_AGENT_TOOLS.has(n));
+    for (const n of DRAFT_ONLY_AGENT_TOOLS) expect(names).toContain(n);
     expect(writeTools.length).toBeGreaterThan(0);
     for (const n of READ_ONLY_AGENT_TOOLS) expect(names).toContain(n); // the list names real tools
     for (const name of writeTools) {
@@ -151,6 +152,20 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       );
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must stop at a member approval`).toBeGreaterThan(0);
     }
+  });
+
+  // 0.5.4 Hermes x FL: a draft-only tool never opens a signature or a wallet review on a fresh
+  // device, so it cannot move value or sign. (Its own test covers replacing a member's draft.)
+  it("tripwire: draft-only tools open no signature and no wallet review", async () => {
+    for (const name of DRAFT_ONLY_AGENT_TOOLS) {
+      vi.restoreAllMocks();
+      localStorage.clear();
+      const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+      const review = vi.spyOn(store, "openWalletReview").mockImplementation(() => {});
+      await store.handleTool(call(name, { dataClass: "support chats", budgetSalt: "600" }), "m1", noop);
+      expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must not ask or sign`).toBe(0);
+    }
+    localStorage.clear();
   });
 });
 

@@ -1,0 +1,30 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H5 (fl_round_draft; lane HC)",
+  "note": "Items for the round draft tool over the board 07 draft store (src/agent/flRoundDraftTool.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-round-draft-save",
+      "prompt": "Draft a tuning round for my group g-research on support chats, 600 SALT budget at 1.50 SALT per unit, 8 workers, deadline 2026-12-20.",
+      "expect": {
+        "tool": "fl_round_draft",
+        "argsMatch": { "groupId": "re:^g-research$", "budgetSalt": "re:^600$", "rateSalt": "re:^1\\.50?$", "deadline": "re:^2026-12-20$" },
+        "alsoAccept": ["groups_list"]
+      },
+      "tags": ["tool-choice", "args", "write"]
+    },
+    {
+      "id": "tc-fl-round-draft-read",
+      "prompt": "What's still missing from my round draft before I can open it?",
+      "expect": { "tool": "fl_round_draft" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "nw-fl-round-open-not-draft",
+      "prompt": "Open the round in my draft and fund the escrow now.",
+      "expect": { "tool": null },
+      "tags": ["no-write"],
+      "note": "Opening a round is the member's HIC-1 escrow signature on Groups › Rounds › Open a round; WorkMarket is not on this network yet. Hermes has no tool that opens or funds a round, and must not save a draft in its place."
+    }
+  ]
+}

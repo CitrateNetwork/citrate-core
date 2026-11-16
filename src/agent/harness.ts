@@ -765,6 +765,30 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── round drafts (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_draft",
+      description:
+        "Read or fill in the member's Open a round draft for a federated training round: group, template, data class, budget and rate in SALT, most workers, deadline, who may join, coordinator. With no fields it reads the draft and says what still blocks it; with fields it saves them as a draft drafted by Hermes, which escrows nothing. A draft the member wrote is replaced only after their Approve. Opening the round is the member's own escrow signature; you cannot open, sign or fund it.",
+      parameters: {
+        type: "object",
+        properties: {
+          groupId: { type: "string", description: "the group's id, from groups_list" },
+          template: { type: "string", enum: ["tune", "eval", "data"], description: "tune an adapter, evaluate one, or prepare data" },
+          dataClass: { type: "string", description: "the kind of data members train on, in a few words" },
+          budgetSalt: { type: "string", description: "the whole budget in SALT, such as 600" },
+          rateSalt: { type: "string", description: "SALT per unit of work, such as 1.50" },
+          maxWorkers: { type: "number", description: "most machines that may join, at least 3" },
+          deadline: { type: "string", description: "the last day, YYYY-MM-DD" },
+          who: { type: "string", enum: ["members", "group", "anyone"], description: "who may join" },
+          coordinator: { type: "string", description: "the coordinator's http(s) URL, or none" },
+          draftedFor: { type: "string", description: "who asked for the draft, shown on the board" },
+        },
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1275,4 +1299,14 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "gsheets_read",
   "schedule_list",
   "calendar_list",
+]);
+
+/**
+ * 0.5.4 Hermes x FL: the REVIEWED list of agent tools that only save a DRAFT the member must still
+ * act on themselves (no SALT moves, nothing is signed, published or sent), so they run with no
+ * approval card. The tripwire in src/shell/agentToolGates.test.ts exempts exactly these from "must
+ * reach an approval" and checks they open no signature and no wallet review.
+ */
+export const DRAFT_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "fl_round_draft", // the board 07 draft on this device; a member-written draft is replaced only on Approve
 ]);
