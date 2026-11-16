@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 94,
+  "count": 98,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -227,6 +227,22 @@
     {
       "id": "tc-fl-adapter-unload",
       "sha256": "e8f910cc4898c9e8c39327b1b0ba11bfc6474954313c0d7147ed43380e015afb"
+    },
+    {
+      "id": "tc-fl-dataset-clean-dedupe",
+      "sha256": "77cb70da47b850200131656b8a5dca112a39e3e5e741be4fbec864e6c107e4f3"
+    },
+    {
+      "id": "tc-fl-dataset-create-folder",
+      "sha256": "dbfda82cd946c30d974683c4a284182e872d9f87ccf64d28119534bf35df0b91"
+    },
+    {
+      "id": "tc-fl-dataset-list",
+      "sha256": "1d939b1c12ae487c4eef529e7713ae47ad368dbc7036dcf60ec03d3f136d1ce8"
+    },
+    {
+      "id": "tc-fl-dataset-sample",
+      "sha256": "156c37e3687f486594651b6514214641e884960370bc94c78828bd431672f7fa"
     },
     {
       "id": "tc-fl-plan-explain",
