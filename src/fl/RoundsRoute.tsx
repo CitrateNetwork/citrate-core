@@ -16,6 +16,7 @@ import { loadWorkerTerms, type WorkerTerms } from "./workerTerms";
 import { machineFrom, readMarket } from "./market";
 import { JOIN_SIGNATURE, joinCalldata, MatchesView, useMarket } from "./Matches";
 import { downloadText } from "./download";
+import { AdaptersView } from "./Adapters";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
@@ -131,12 +132,8 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
     case ROUNDS_ROUTES.matches:
       return <Matches store={store} s={s} />;
     case ROUNDS_ROUTES.adapters:
-      // The eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
-      return (
-        <div style={{ padding: "20px 26px 24px", maxWidth: 900 }}>
-          <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
-        </div>
-      );
+      // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
+      return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
       return <NotLiveSubtab route={route} s={s} />;
   }
