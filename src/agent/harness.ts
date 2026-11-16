@@ -765,6 +765,31 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── FL history and patronage (0.5.4 Hermes x FL, WP-H10) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_history_read",
+      description:
+        "Read this device's federated learning history: the round starts the member approved and any consent withdrawn, the rounds consented to, the LoRA eval gate's decisions, and whether there are payouts on this network. filter narrows it to rounds, consent, gate or payouts. Read-only; never invent a round, a payout or an amount.",
+      parameters: {
+        type: "object",
+        properties: { filter: { type: "string", enum: ["all", "rounds", "consent", "gate", "payouts"], description: "which part; defaults to all" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_patronage_read",
+      description:
+        "Read the member's cooperative patronage on PatronageLedger: units recorded and the pending dividend in SALT, plus a group's recorded rounds when groupId is given. Read-only. A failed read is reported with its reason, never as zero; nothing can be claimed from here.",
+      parameters: {
+        type: "object",
+        properties: { groupId: { type: "string", description: "a group id, from groups_list, to also count its recorded rounds" } },
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1271,6 +1296,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_history_read",
+  "fl_patronage_read",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

@@ -1344,8 +1344,12 @@ export interface RoundStatus {
 }
 export interface RewardInfo {
   round: number;
+  /** Cumulative patronage units (PatronageLedger.units). */
   weight: string;
+  /** Pending dividend in whole SALT, rounded down. */
   salt: string;
+  /** The same pending dividend exactly, in wei (decimal string). */
+  pendingWei: string;
 }
 export interface TrainingDomain {
   start(groupId: string): Promise<void>;

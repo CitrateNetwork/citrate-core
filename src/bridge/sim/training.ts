@@ -14,7 +14,7 @@ export function simTraining(_host: SimHost): TrainingDomain {
       /* sim: no-op */
     },
     async reward(): Promise<RewardInfo> {
-      return { round: 0, weight: "0", salt: "0" };
+      return { round: 0, weight: "0", salt: "0", pendingWei: "0" };
     },
     async claim() {
       /* sim: no payout */

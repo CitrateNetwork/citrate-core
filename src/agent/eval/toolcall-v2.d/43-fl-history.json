@@ -1,0 +1,25 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H10 (fl_history_read, fl_patronage_read; lane HC)",
+  "note": "Items for the FL history and patronage reads (src/agent/flHistoryTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-history-read",
+      "prompt": "Which federated training rounds have I agreed to join on this computer, and did I withdraw any consent?",
+      "expect": { "tool": "fl_history_read" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "tc-fl-history-payouts",
+      "prompt": "Show my federated learning payout history.",
+      "expect": { "tool": "fl_history_read", "argsMatch": { "filter": "re:^(payouts|all)$" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-patronage-read",
+      "prompt": "How many patronage units do I have on the cooperative ledger, and is any dividend pending?",
+      "expect": { "tool": "fl_patronage_read" },
+      "tags": ["tool-choice", "read"]
+    }
+  ]
+}
