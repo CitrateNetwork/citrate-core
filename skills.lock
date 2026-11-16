@@ -4054,26 +4054,11 @@ name = "osint-investigation"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/osint-investigation"
-verdict = "include-with-scripts-stripped"
-reason = "ships without its scripts and executable files"
+verdict = "exclude"
+reason = "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): a public-records OSINT investigation framework (filings, court and property records, sanctions, leaks) about people and organisations; OSINT results about individuals are never collected"
 skill_md_sha256 = "c75b5a30a1972046f75d1175d71ce995aa4af67bfa6a0439bd43cbc699df76e5"
-intake_rewrite = "flatten-frontmatter"
-shipped_skill_md_sha256 = "573be04c2290f0b19a125fbb79947c5b608166bfae9d4599298cbf3c9e839841"
-refs = [
-  { path = "references/sources/courtlistener.md", sha256 = "af965f421cbfbd96a96e848e5523e4e34c07fc1eedd9e66f31dc5dbdbe817c15" },
-  { path = "references/sources/gdelt.md", sha256 = "30889b42cb92638c27476527189e836ee9f13bfc7344a5da097e920d81fada7c" },
-  { path = "references/sources/icij-offshore.md", sha256 = "de9a78282e0e402921bba911a773d6c1ebe3a0223cb8ad109061731a1685af91" },
-  { path = "references/sources/nyc-acris.md", sha256 = "5085c47d002f4680fdc209328dd6c0b293d8a25dd73a2c5722db68ce08f1dc24" },
-  { path = "references/sources/ofac-sdn.md", sha256 = "631c37cf9fad515b2e0d34ab597965df8634156aed5a186959728fe638c13095" },
-  { path = "references/sources/opencorporates.md", sha256 = "f3406184c4afeaf8bfc9aca58f14f3aa5cede359ca4f5372d0ceefa85a4a98d5" },
-  { path = "references/sources/sec-edgar.md", sha256 = "877c465d00ce4c8ed736ffd5db59c89c8e5a51550086908ad6fb44b50c25dd0b" },
-  { path = "references/sources/senate-ld.md", sha256 = "f06400d5aa10c1336268d54ffab9e3aa6e31e85a211fc31825843fec48c8daa8" },
-  { path = "references/sources/usaspending.md", sha256 = "f80a59de1dac539af24785bc8e7b5c0cc26a60253d5638cb86a18676fec0efea" },
-  { path = "references/sources/wayback.md", sha256 = "1c6502ef9de69d560208e784ca79a51fb53f35f57ce57c91f52df507beb8ca6e" },
-  { path = "references/sources/wikipedia.md", sha256 = "24fdf463fa3a74119618b696f7fe976702692cd4ed0b696cc17987754177aa86" },
-  { path = "templates/source-template.md", sha256 = "2ded3a421e05be393c7ec795fc68568ce10fd2195ccd052d98c69ffa901942cd" },
-]
-stripped = ["scripts/_http.py", "scripts/_normalize.py", "scripts/build_findings.py", "scripts/entity_resolution.py", "scripts/fetch_courtlistener.py", "scripts/fetch_gdelt.py", "scripts/fetch_icij_offshore.py", "scripts/fetch_nyc_acris.py", "scripts/fetch_ofac_sdn.py", "scripts/fetch_opencorporates.py", "scripts/fetch_sec_edgar.py", "scripts/fetch_senate_ld.py", "scripts/fetch_usaspending.py", "scripts/fetch_wayback.py", "scripts/fetch_wikipedia.py", "scripts/timing_analysis.py"]
+refs = []
+stripped = []
 
 [[skill]]
 name = "parallel-cli"
@@ -4103,10 +4088,9 @@ name = "scrapling"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/scrapling"
-verdict = "include-as-is"
+verdict = "exclude"
+reason = "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy): web collection goes through core's one compliant collector (robots.txt, the curated allow and deny lists, rate limits, provenance; fl_collect.rs); this skill teaches scraping around it (stealth browsing, Cloudflare bypass, spider crawling), so it is not bundled and collection requests use the collector"
 skill_md_sha256 = "fdf4c925f55abb0bb408757fd3ab44c10037704b55d2d92ce95293c5227372d3"
-intake_rewrite = "flatten-frontmatter"
-shipped_skill_md_sha256 = "56bebc1eda6bc0dd30d90e286adcbf8ea5702ef14c7d485a6264c1eba49e0b9f"
 refs = []
 stripped = []
 
@@ -4172,10 +4156,9 @@ name = "sherlock"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/sherlock"
-verdict = "include-as-is"
+verdict = "exclude"
+reason = "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): an OSINT username search across hundreds of social networks to find a person's accounts; people-search and OSINT results about individuals are never collected"
 skill_md_sha256 = "e79d38077bff7db2a3538f48c37079557b02e8212c94d7a1229d5ad07a5eda05"
-intake_rewrite = "flatten-frontmatter"
-shipped_skill_md_sha256 = "e6bf6d8edc51a305b19305bf6e0154aef22539153d7056ab92dc1be67d88f0ea"
 refs = []
 stripped = []
 
@@ -4184,50 +4167,11 @@ name = "unbroker"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/unbroker"
-verdict = "include-with-scripts-stripped"
-reason = "ships without its scripts and executable files"
+verdict = "exclude"
+reason = "0.5.4 owner decision 2026-11-16 (Hermes x FL collection policy, never-collect list): it drives data-broker and people-search sites autonomously (searching them for a person's records to file opt-outs); the collector never reaches those sites, and this build keeps Hermes off them"
 skill_md_sha256 = "075d93606b0a5c0e56a7e52bdad39bfe703f254465d03e7b460a245cd2d56ce8"
-intake_rewrite = "flatten-frontmatter"
-shipped_skill_md_sha256 = "907552a1ef2fe9cad8442d0e8a119f5a4e42b74db666cf5d1e0cdbf385595977"
-refs = [
-  { path = "README.md", sha256 = "d198cbdfae53c25991ec57f859d39304d4e3085f42e78e6e9a08adb4d75a9f34" },
-  { path = "assets/unbroker.png", sha256 = "ca40ce8c043353a31205efc545100c3112024ce7a34e01c2c3f2d01cac780c43" },
-  { path = "references/brokers/addresses.json", sha256 = "1593c033458bafd3453787557af06f96f4d4aa3cb78c2ad981a58eec1c11dc86" },
-  { path = "references/brokers/advancedbackgroundchecks.json", sha256 = "5bc1f4e693b58befb1e979eb06e0c7a498172197dc023c9510325a900232f791" },
-  { path = "references/brokers/beenverified.json", sha256 = "c4f0715e9dc0cb67b0f629c11467133a8f7b9f80cf378d02b3760980f8943618" },
-  { path = "references/brokers/clustal.json", sha256 = "c464a3f69d1e809be7cb231031164cb865894d7467f5f1a480fff2f8d23611ce" },
-  { path = "references/brokers/clustrmaps.json", sha256 = "8cd48575457e21941016eccbcbb85ef67b953a8f9fdf597c03df59131b85c11a" },
-  { path = "references/brokers/cyberbackgroundchecks.json", sha256 = "3ac6b644a39aa2adc68f4a65166b4d13ce0a7ca66f047121b1bbb47379a413da" },
-  { path = "references/brokers/familytreenow.json", sha256 = "4355fd1deeba8a4b53c63b037f98b208d2a027fbc51335a001f86f314464125a" },
-  { path = "references/brokers/fastpeoplesearch.json", sha256 = "f9eb8dcb690d822ae35570f572141cac7a848007ef3cee3cfe2d4f39cbe454c6" },
-  { path = "references/brokers/intelius.json", sha256 = "1fbd111c68d457fe9553e27aec8d21af7badbfb499adc8891dae1a9ca6adfb64" },
-  { path = "references/brokers/mylife.json", sha256 = "5e0bbe777f7f69484a70040f02449a2a8f5ee5a120984ae18c33d78dbb51d9d0" },
-  { path = "references/brokers/nuwber.json", sha256 = "4c522adcb07766001928baf25f4ec91c563fbcd5b36f4a1459828c83ee74f018" },
-  { path = "references/brokers/peekyou.json", sha256 = "ae1474651173c6d5206907bb0bc4a021290ca84e6745dc7014eb80a0cfab6d4a" },
-  { path = "references/brokers/peoplefinders.json", sha256 = "ecafd936cc77373704c06c0f2b0d2da784997d3584d42fe47d80d8f6332d4adf" },
-  { path = "references/brokers/radaris.json", sha256 = "8a8c698c0d58f55a2c61b415e8cff64857edd0ddb421a2b7396400b0112f0fb8" },
-  { path = "references/brokers/rehold.json", sha256 = "77aeb3149380e649afd73922de7a1eb1d0dd3ad8b231162eb56c541a619b41a7" },
-  { path = "references/brokers/searchpeoplefree.json", sha256 = "80a7eb64432c05867d8c20ee41c7139f1ebb4567b4b4a3b1c54f2375c2eefb40" },
-  { path = "references/brokers/socialcatfish.json", sha256 = "c80e247bd0900f2e8ec467d0177c98ed01fcd8c0b687bb18a5efabe6db99fb1a" },
-  { path = "references/brokers/spokeo.json", sha256 = "423a97ed76e357dd4f5954bab7a2176ccbd04e4d82170d6e528ff9771f9e69cf" },
-  { path = "references/brokers/thatsthem.json", sha256 = "43a420336ec58cb323af6dbdd75e64eb59acb7bafe7b52517c99fed633344069" },
-  { path = "references/brokers/truepeoplesearch.json", sha256 = "a0f63638559cd819c67cbcc706a48a8c73d1b3d285e466ab59669b8c7efabf65" },
-  { path = "references/brokers/usphonebook.json", sha256 = "4d1eea42d831932d4c23a8d15721dcc8021fcdc4f13b1a36e4608e2e354c0942" },
-  { path = "references/brokers/whitepages.json", sha256 = "64347fb6cba011bb5bae7294c4696e34ad2e5db433abdb9471d73f16b4a72d32" },
-  { path = "references/legal/ccpa.md", sha256 = "b97253e05ca1898e5fee04284a0e4224f092572634a97e881fef3022c19c5f24" },
-  { path = "references/legal/drop.md", sha256 = "b267fd81fbedfc47e612b9ced11f00105c221f4fe36df2ec607e22c5b8c813ce" },
-  { path = "references/legal/gdpr.md", sha256 = "1d470d5e83c4a4b034b36e07bc5500746bd47a0cc5ba0c613f48f0e0c588dc54" },
-  { path = "references/methods.md", sha256 = "94bdd6386a4b308f1b2c22d085849a4ad48c521f6f9cd0de66caafce463ac281" },
-  { path = "references/site-playbooks.md", sha256 = "67fc8d6f689c8f4ef232449e7e9ec903ebb54869a26d28eb5cbe7ca3d5c7647f" },
-  { path = "references/state-machine.md", sha256 = "8856ffa67c0b7619e6b49c17109e9be6c91ce5914f831ec563c23a6bff6ed680" },
-  { path = "templates/consent/authorization.md", sha256 = "98a75d506983720f5ac4d9fefa151040926ed1d923e7e3fee82207851fe1c7f3" },
-  { path = "templates/emails/ccpa-authorized-agent.txt", sha256 = "352be4838a80d7ea0138ba61b83a9ea2ad44451571ce5f31807e007fd2243b50" },
-  { path = "templates/emails/ccpa-deletion.txt", sha256 = "0ac5c78e8fb9118dd3c4d1789fd6cbdf8702d049677cf1d6d84c1b5073f98dff" },
-  { path = "templates/emails/ccpa-indirect-deletion.txt", sha256 = "10baa0a99fd91f15d0733d11df188cde9cb99abd2730be2d0c1a17a8607d4525" },
-  { path = "templates/emails/gdpr-erasure.txt", sha256 = "58a0ff986c55f0f1278efc0dbd56a80b6aea76f8eb926e8cc73c320ca5479a58" },
-  { path = "templates/emails/generic-optout.txt", sha256 = "7742bc0e347cb5cf02c457f29bd667c1fdc65cb40939cd04e41885cd0d7d745f" },
-]
-stripped = ["scripts/autopilot.py", "scripts/badbool.py", "scripts/brokers.py", "scripts/cdp.py", "scripts/config.py", "scripts/crypto.py", "scripts/dossier.py", "scripts/email_modes.py", "scripts/emailer.py", "scripts/ledger.py", "scripts/legal.py", "scripts/paths.py", "scripts/pdd.py", "scripts/registry.py", "scripts/report.py", "scripts/scan.py", "scripts/storage.py", "scripts/tiers.py", "scripts/vectors.py"]
+refs = []
+stripped = []
 
 [[skill]]
 name = "web-pentest"

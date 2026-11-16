@@ -242,7 +242,8 @@ pub struct PiiScanRecord {
     pub content_hash: String,
     /// `true` when no PII was found.
     pub pass: bool,
-    /// Findings per class (email, phone, name, address, government-id, card, secret).
+    /// Findings per class, keyed as the WP-H7 scanner names them (email, phone, name,
+    /// street-address, government-id, card, secret, ...).
     pub counts: BTreeMap<String, u32>,
 }
 
