@@ -29,7 +29,7 @@ import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 import { RunReceipts, RunTimeline } from "./RunTimeline";
-import { PolicyProposalCard } from "./PolicyProposalCard";
+import { PolicyProposalCard, SETTINGS_WORK_ROUTE } from "./PolicyProposalCard";
 import { contextRows, contextSummary } from "../agent/hermesContext";
 import { ChatCommandBar, chatCommands, slashMatches, type ChatCommand } from "./ChatCommandBar";
 import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
@@ -573,7 +573,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 onConfirm={() => void store.confirmProposal(m.proposal!.id)}
                 onDecline={() => store.declineProposal(m.proposal!.id)}
                 onReopen={() => store.reopenProposal(m.proposal!.id)}
-                onEdit={() => store.go("settings/work")}
+                onEdit={() => store.go(SETTINGS_WORK_ROUTE)}
               />
             )}
             {m.who === "You" && !chatBusy && m.text.trim() !== "" && (

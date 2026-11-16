@@ -13,6 +13,10 @@ import { HicBadge, KV } from "../fl/primitives";
 import type { WorkerTerms } from "../fl/workerTerms";
 import type { ChatProposal } from "../shell/state";
 
+/** Where "Edit fields" and "Change in Settings › Work" go: board 11, Settings › Work. No route ships
+ *  on main yet (Lane 1 is building it). If board 11 lands under another name, change it here only. */
+export const SETTINGS_WORK_ROUTE = "settings/work";
+
 function hoursLine(t: WorkerTerms): string {
   const when = t.hours === "any" ? "Any time" : `${t.hours.start} to ${t.hours.end}`;
   return t.weekdaysOnly ? `${when}, Monday to Friday` : when;
