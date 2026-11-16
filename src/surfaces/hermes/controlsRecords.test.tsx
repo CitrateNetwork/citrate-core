@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { ControlsRecords, RUN_WINDOW_DAYS, openRecords, recordsSlice, type RecordsIo } from "./ControlsRecords";
+import { ControlsRecords, HIC_RECORDS_LIMIT, RUN_WINDOW_DAYS, openRecords, recordsSlice, type HicRecordRow, type RecordsIo } from "./ControlsRecords";
 import type { EscalationBudget } from "../../bridge/domains";
 import type { DaemonRunEntry, DaemonRunLog } from "../../daemons/api";
 import type { WebBudgetStatus } from "../../budgets/budgets";
@@ -73,6 +73,7 @@ function io(o: Partial<RecordsIo> = {}): RecordsIo {
   return {
     escalationBudget: vi.fn(async () => budget()),
     webSignIn: vi.fn(async () => webStatus([])),
+    hicRecords: vi.fn(async (): Promise<HicRecordRow[]> => []),
     runsBetween: vi.fn(async (): Promise<DaemonRunLog> => ({ runs: [], unreadable: 0 })),
     now: () => NOW,
     ...o,
@@ -97,15 +98,40 @@ async function click(el: Element | null) {
 }
 
 describe("Controls › 3 · Records: approval records", () => {
-  it("names the missing read command for Hermes approval records instead of showing an empty list", async () => {
+  it("lists the Hermes approval records core keeps (hic_records_list), newest first", async () => {
+    const rec = (recordId: number, kind: string, decision: string, subject: string): HicRecordRow => ({
+      recordId,
+      atMs: NOW - (10 - recordId) * 60_000,
+      prevHash: "0x0",
+      hash: "0x1",
+      event: { kind, decision, subject, reason: "on a card", outcome: null, outcomeDetail: null },
+    });
+    const hicRecords = vi.fn(async () => [rec(1, "agent.tool_approval", "approved", "memory_assert"), rec(2, "grant.revoked", "denied", "g-1")]);
+    await mount(io({ hicRecords }));
+    expect(hicRecords).toHaveBeenCalledWith(HIC_RECORDS_LIMIT);
+    const rows = [...host!.querySelectorAll('[data-testid="hic-record"]')].map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("#2");
+    expect(rows[0]).toContain("folder access removed");
+    expect(rows[0]).toContain("denied");
+    expect(rows[1]).toContain("Hermes tool card");
+    expect(rows[1]).toContain("memory_assert");
+    expect(text()).not.toContain("Not available yet");
+    expect($("hic-records")?.getAttribute("data-source")).toBe("hic_records_list");
+  });
+
+  it("an empty outbox says how records are made; a failed read names the call and its error", async () => {
     await mount(io());
-    const gap = $("hic-records-gap");
-    expect(gap).toBeTruthy();
-    expect(gap?.getAttribute("data-gap")).toBe("hic-records-read");
-    expect(gap?.textContent).toContain("Not available yet");
-    expect(gap?.textContent).toContain("hic_record_decision");
-    // Not drawn as "no decisions": the records exist on this machine, they just can't be read here.
-    expect(text()).not.toContain("No decisions recorded");
+    expect(text()).toContain("No approval records yet");
+    act(() => root?.unmount());
+    host?.remove();
+    await mount(io({ hicRecords: vi.fn(async () => Promise.reject(new Error("the outbox chain is broken at record 3"))) }));
+    expect($("hic-records-error")?.textContent).toBe("Couldn’t read the approval records (hic_records_list): the outbox chain is broken at record 3");
+  });
+
+  it("outside the desktop app it says where the records live", async () => {
+    await mount(io({ hicRecords: null }));
+    expect($("hic-records-unavailable")?.textContent).toMatch(/live in the desktop app/);
   });
 
   it("lists the web sign-in decision records core keeps, newest first", async () => {
