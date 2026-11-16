@@ -24,6 +24,7 @@ import type { DeployGateRecord } from "../agent/deployGate";
 import type { RunRecord } from "../agent/runTimeline";
 import type { WorkerTerms, WorkerTermsReceipt } from "../fl/workerTerms";
 import type { ChatAttachment } from "../agent/chatAttachments";
+import type { RoundDraft } from "../fl/roundDraft";
 import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -163,8 +164,19 @@ export interface ChatMsg {
   model?: string;
   /** Board 01: a proposal core renders in the transcript for the member to decide (HIC-1). */
   proposal?: ChatProposal;
+  /** Board 07: a round draft Hermes proposed; the member may open it in Open a round. */
+  roundDraft?: ChatRoundDraft;
   /** #690: what the member attached to this message with @ (shown as chips; told to Hermes). */
   attachments?: ChatAttachment[];
+}
+/** Board 07: a round draft card. Only core writes it; only the member's click opens the draft. */
+export interface ChatRoundDraft {
+  id: string;
+  draft: Partial<RoundDraft>;
+  /** `opened`: the member handed it to Open a round. `expired`: restored from history or
+   *  carried into a branch, so it can no longer be opened from here. */
+  state: "pending" | "opened" | "declined" | "expired";
+  at?: number;
 }
 /** Board 01: a worker-terms proposal card. Only core writes it; Hermes can only ask for one. */
 export interface ChatProposal {

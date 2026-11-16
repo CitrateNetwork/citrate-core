@@ -369,6 +369,10 @@
       "sha256": "81b0a730b9d716808f0efd68af1a753791219307f1561d3d51701eb623d71275"
     },
     {
+      "id": "tc-round-draft-tune",
+      "sha256": "14164a396fa6a998cb5db3a670053fa2ed6df4399d06ceedb156e29daed42fed"
+    },
+    {
       "id": "tc-schedule-add-weekly",
       "sha256": "87a8a7343e9e4b0a0981fa5a75d343f6920c6cef8dfb0326d801ef1c5d7acbed"
     },

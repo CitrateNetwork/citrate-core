@@ -1152,6 +1152,28 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── FL design board 07: a round draft Hermes hands to Open a round ──
+  {
+    type: "function",
+    function: {
+      name: "round_draft_propose",
+      description:
+        "PROPOSE a draft of a group round for Groups › Rounds › Open a round. Core shows the draft on a card in the chat; only the member can press \"Review in Open a round\", which opens it there, and the member checks every field and signs it themselves (HIC-1). Nothing is escrowed, published or opened by this tool. Fill only what the member asked for; leave the rest out.",
+      parameters: {
+        type: "object",
+        properties: {
+          template: { type: "string", enum: ["tune", "eval", "data"], description: "tune a model, evaluate an adapter, or build a dataset" },
+          dataClass: { type: "string", description: "the data class members train on, e.g. \"hermes-conversations\"" },
+          budgetSalt: { type: "string", description: "the round budget in SALT, decimal, e.g. \"600\"" },
+          rateSalt: { type: "string", description: "the rate per unit in SALT, decimal, e.g. \"1.50\"" },
+          maxWorkers: { type: "number", description: "most workers; at least 3 (the round ledger's floor)" },
+          deadline: { type: "string", description: "YYYY-MM-DD" },
+          who: { type: "string", enum: ["members", "group", "anyone"], description: "who may join" },
+          groupId: { type: "string", description: "the group the round belongs to, from groups_list" },
+        },
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1683,6 +1705,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_source_check",
   // Board 01: renders a card core checked; nothing changes until the member confirms it there.
   "worker_terms_propose",
+  // Board 07: renders a draft card; only the member opens it in Open a round and signs it there.
+  "round_draft_propose",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

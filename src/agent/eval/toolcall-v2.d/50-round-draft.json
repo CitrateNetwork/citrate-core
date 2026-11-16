@@ -1,0 +1,13 @@
+{
+  "added": "2026-11-15",
+  "by": "FL design board 07 (round_draft_propose, Lane 3)",
+  "note": "The tool only puts a draft card in the chat; the member opens it in Open a round and signs there (HIC-1).",
+  "tasks": [
+    {
+      "id": "tc-round-draft-tune",
+      "prompt": "Draft a round for my group that tunes a model on hermes-conversations, 600 SALT budget at 1.50 SALT per unit, up to 8 workers.",
+      "expect": { "tool": "round_draft_propose", "argsMatch": { "template": "tune", "budgetSalt": "re:^600(\\.0+)?$", "rateSalt": "re:^1\\.50?$" } },
+      "tags": ["tool-choice", "args", "propose"]
+    }
+  ]
+}

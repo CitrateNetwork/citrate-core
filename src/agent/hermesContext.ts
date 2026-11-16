@@ -62,7 +62,7 @@ const GROUPS: { id: string; title: string; tools: string[]; detail: string }[] =
   {
     id: "rounds",
     title: "Rounds and adapters",
-    tools: ["fl_round_plan", "fl_round_start", "worker_terms_propose", "fl_adapter_gate_read", "fl_adapter_load_propose", "fl_adapter_unload"],
+    tools: ["fl_round_plan", "fl_round_start", "worker_terms_propose", "round_draft_propose", "fl_adapter_gate_read", "fl_adapter_load_propose", "fl_adapter_unload"],
     detail: "round plans and adapter gate records; joining or loading asks you (HIC-1)",
   },
   { id: "google", title: "Google sheets and calendar", tools: ["gsheets_read", "calendar_list", "gsheets_append"], detail: "only after you connect Google in Settings" },

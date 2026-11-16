@@ -85,6 +85,7 @@
     { "name": "fl_source_check", "host": "core", "read_only": true },
     { "name": "fl_collect_plan", "host": "core", "read_only": false },
     { "name": "worker_terms_propose", "host": "core", "read_only": true },
+    { "name": "round_draft_propose", "host": "core", "read_only": true },
     { "name": "belnap_codec", "host": "core", "read_only": true },
     { "name": "gsheets_read", "host": "core", "read_only": true },
     { "name": "gsheets_append", "host": "core", "read_only": false },

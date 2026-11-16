@@ -30,6 +30,7 @@ import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 import { RunReceipts, RunTimeline } from "./RunTimeline";
 import { PolicyProposalCard, SETTINGS_WORK_ROUTE } from "./PolicyProposalCard";
+import { RoundDraftCard } from "./RoundDraftCard";
 import { contextRows, contextSummary } from "../agent/hermesContext";
 import { datasetAttachment, groupAttachment, journalAttachment, matchAttachments, mentionAt, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
 import { ChatCommandBar, chatCommands, exactCommand, slashMatches, type ChatCommand } from "./ChatCommandBar";
@@ -660,6 +661,9 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 onReopen={() => store.reopenProposal(m.proposal!.id)}
                 onEdit={() => store.go(SETTINGS_WORK_ROUTE)}
               />
+            )}
+            {m.roundDraft && (
+              <RoundDraftCard card={m.roundDraft} onOpen={() => store.openRoundDraft(m.roundDraft!.id)} onDecline={() => store.declineRoundDraft(m.roundDraft!.id)} />
             )}
             {m.who === "You" && !chatBusy && m.text.trim() !== "" && (
               <span style={{ display: "flex", gap: 2, alignSelf: "flex-start" }}>

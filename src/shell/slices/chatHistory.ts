@@ -146,6 +146,7 @@ export function archivable(msgs: ChatMsg[]): ChatMsg[] {
       // A proposal that was still open is kept as expired: a card restored from history can never
       // be confirmed with terms proposed in another session (Hermes proposes again).
       if (m.proposal) keep.proposal = expireOpenProposal(m.proposal);
+      if (m.roundDraft) keep.roundDraft = m.roundDraft.state === "pending" ? { ...m.roundDraft, state: "expired" } : m.roundDraft;
       return keep;
     });
 }
