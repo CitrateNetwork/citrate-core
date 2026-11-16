@@ -24,7 +24,7 @@ describe("Groups honesty — scoped reach, honest-empty, relay-enforced RBAC", (
   it("renders honest empty states with no fabricated room or message (Rule 1)", () => {
     // Fresh mount, before any bridge load: the group list + main pane are empty prompts.
     expect(html.toLowerCase()).toContain("no groups yet");
-    expect(html.toLowerCase()).toContain("your groups live here");
+    expect(html.toLowerCase()).toContain("groups you create or join show here");
   });
 
   it("is truthful about who checks roles (GC-2: every member checks a signed grant; the relay sees only ciphertext)", () => {
