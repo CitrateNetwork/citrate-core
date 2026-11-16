@@ -49,7 +49,9 @@ export function checkStates(run: { record: FlAdapterGateRecord | null; refusal: 
   for (const c of CHECKS) {
     const i = CORE_ORDER.indexOf(c.id);
     if (!run) out[c.id] = "not-run";
-    else if (c.round && !run.withRound) out[c.id] = "not-applicable";
+    // A round check passes only when core actually bound a round: a record without one, or a run
+    // with no round file, never shows them as passed.
+    else if (c.round && (!run.withRound || (run.record !== null && run.record.round === null))) out[c.id] = "not-applicable";
     else if (run.record) out[c.id] = "passed";
     else if (!failed) out[c.id] = "not-run";
     else out[c.id] = i < at ? "passed" : i === at ? "failed" : "not-run";
@@ -58,7 +60,7 @@ export function checkStates(run: { record: FlAdapterGateRecord | null; refusal: 
 }
 
 const GLYPH: Record<CheckState, string> = { passed: "✓", failed: "✕", "not-run": "○", "not-applicable": "–" };
-const CHECK_WORD: Record<CheckState, string> = { passed: "passed", failed: "failed", "not-run": "not checked yet", "not-applicable": "not applicable: no round result given" };
+const CHECK_WORD: Record<CheckState, string> = { passed: "passed", failed: "failed", "not-run": "not checked yet", "not-applicable": "not checked: no round result file was given" };
 const CHECK_COLOR: Record<CheckState, string> = { passed: "var(--ok)", failed: "var(--danger)", "not-run": "var(--tx-3)", "not-applicable": "var(--tx-3)" };
 
 export type Verdict = "ACCEPT" | "REJECT" | "Not comparable" | "Refused" | "Scorecards needed";
@@ -147,15 +149,17 @@ export function AdaptersView({ fl, toast, go, pick = pickFile }: AdaptersViewPro
   }, []);
 
   const withRound = from === "round";
+  // What core will check: round checks run only when a round result file is actually given.
+  const roundGiven = withRound && f.round.trim() !== "";
   const runGate = async () => {
     setBusy(true);
     setApplyErr(null);
     try {
       const rec = await fl.gateAdapter(gateRequest(withRound ? f : { ...f, round: "" }));
-      setRun({ record: rec, refusal: null, withRound });
+      setRun({ record: rec, refusal: null, withRound: roundGiven });
       await refresh();
     } catch (e) {
-      setRun({ record: null, refusal: e instanceof Error ? e.message : String(e), withRound });
+      setRun({ record: null, refusal: e instanceof Error ? e.message : String(e), withRound: roundGiven });
     } finally {
       setBusy(false);
     }
@@ -246,7 +250,7 @@ export function AdaptersView({ fl, toast, go, pick = pickFile }: AdaptersViewPro
                 <span>{c.t}</span>
                 <span className="sr-only">{CHECK_WORD[checks[c.id]]}</span>
                 {checks[c.id] === "failed" && run?.refusal && <span style={{ color: "var(--danger)", fontSize: 11.5 }}>{run.refusal}</span>}
-                {checks[c.id] === "not-applicable" && <span className="fl-faint" style={{ fontSize: 11.5 }}>no round result given</span>}
+                {checks[c.id] === "not-applicable" && <span className="fl-faint" style={{ fontSize: 11.5 }}>not checked: no round result file was given</span>}
               </span>
             </li>
           ))}
