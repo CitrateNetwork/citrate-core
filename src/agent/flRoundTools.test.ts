@@ -164,11 +164,16 @@ describe("fl_round_status once WorkMarket is deployed (test-only chain)", () => 
 
 describe("fl_lease_explain", () => {
   it("names a rejected round's fault in plain words and says a lease cannot be singled out", async () => {
-    const out = await runFlRoundTool("fl_lease_explain", { roundId: ROUND, leaseIndex: 2 }, deps({ call: chain(roundTuple(2, 2)) }));
-    expect(out).toContain("was rejected: row mismatch");
+    const out = await runFlRoundTool("fl_lease_explain", { roundId: ROUND, leaseIndex: 2 }, deps({ call: chain(roundTuple(2, 2, { faultChunk: 5 })) }));
+    expect(out).toContain("was rejected: row mismatch in chunk 5");
     expect(out).toContain("not the row that participant's committed update holds");
     expect(out).toContain("a rejected round never pays");
     expect(out).toMatch(/Lease 2: its receipt is the coordinator's/);
+  });
+
+  it("names no chunk for a participant-order fault, which is about the whole list", async () => {
+    const out = await runFlRoundTool("fl_lease_explain", { roundId: ROUND }, deps({ call: chain(roundTuple(2, 4)) }));
+    expect(out).toContain("was rejected: participant order. That means");
   });
 
   it("says a committed round has not been rejected, and an accepted one has no fault", async () => {

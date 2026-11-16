@@ -64,6 +64,13 @@ function offerIdOf(v: unknown): number | null {
   return Number.isInteger(n) && n >= 1 && n <= Number.MAX_SAFE_INTEGER ? n : null;
 }
 
+/** Which chunk the fault was proved on. A participant-order fault is about the whole list (chunk 0
+ *  is not meaningful there), so no chunk is named for it. */
+export function chunkWords(r: ChainRound): string {
+  if (r.status !== "rejected" || r.fault === "none" || r.fault === "participant order") return "";
+  return ` in chunk ${r.faultChunk}`;
+}
+
 /** The round ledger's record as lines, each tagged by source. */
 export function formatFrlRound(roundId: string, r: ChainRound): string[] {
   const src = "[FederatedRoundLedger.getRound, on chain]";
@@ -71,7 +78,7 @@ export function formatFrlRound(roundId: string, r: ChainRound): string[] {
   const lines = [`Round ${roundId}: ${r.status} ${src}`, `- round ordinal in its cluster: ${r.ordinal} ${src}`, `- devices that took part: ${r.participants} ${src}`];
   if (r.status === "committed") lines.push(`- challenge window: accepted after block ${r.deadlineBlock} unless a challenge proves it wrong first ${src}`);
   if (r.status === "accepted") lines.push(`- accepted: no challenge proved it wrong before block ${r.deadlineBlock} ${src}`);
-  if (r.status === "rejected") lines.push(`- rejected: ${r.fault}, meaning ${FAULT_WORDS[r.fault]}. A rejected round never pays. ${src}`);
+  if (r.status === "rejected") lines.push(`- rejected: ${r.fault}${chunkWords(r)}, meaning ${FAULT_WORDS[r.fault]}. A rejected round never pays. ${src}`);
   lines.push(`- merged adapter hash: ${ZERO32.test(r.adapterHash) ? "none recorded" : r.adapterHash} ${src}`);
   return lines;
 }
@@ -196,7 +203,7 @@ async function leaseExplain(args: Record<string, unknown>, deps: FlRoundDeps): P
   const src = "[FederatedRoundLedger.getRound, on chain]";
   let why: string;
   if (r.status === "none") why = `FederatedRoundLedger holds no round with id ${roundId} on this network. ${src}`;
-  else if (r.status === "rejected") why = `Round ${roundId} was rejected: ${r.fault}. That means ${FAULT_WORDS[r.fault]}. Someone proved it on chain with a challenge, and a rejected round never pays. ${src}`;
+  else if (r.status === "rejected") why = `Round ${roundId} was rejected: ${r.fault}${chunkWords(r)}. That means ${FAULT_WORDS[r.fault]}. Someone proved it on chain with a challenge, and a rejected round never pays. ${src}`;
   else if (r.status === "committed") why = `Round ${roundId} has not been rejected. It is committed and accepted after block ${r.deadlineBlock} unless a challenge proves it wrong first. ${src}`;
   else why = `Round ${roundId} was accepted; no fault was proved. ${src}`;
   return why + leaseNote;
