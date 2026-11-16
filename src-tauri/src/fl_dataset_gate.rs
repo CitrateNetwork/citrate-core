@@ -64,23 +64,47 @@ fn share_alike(license: &str) -> bool {
     license.starts_with("CC-BY-SA-") || license == "ODbL-1.0" || license == "CDLA-Sharing-1.0"
 }
 
-/// Every string inside a JSON value, in order.
-fn strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+/// The text of a JSON value that the scanner reads, one line per item, in order (review of
+/// #734: ingest and publish keep keys and numbers, so they are scanned too):
+/// - a string or number inside an array, or at the top, as text;
+/// - an object entry with a string or number value as one `key: value` line, so a key-named
+///   shape (`password: ...`) is seen next to its value (each item is read once, so counts stay
+///   one per finding);
+/// - any other object key alone, then its value;
+/// - `true`, `false` and `null` add nothing.
+fn scan_lines(v: &serde_json::Value, out: &mut Vec<String>) {
+    use serde_json::Value;
+    fn scalar(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
     match v {
-        serde_json::Value::String(s) => out.push(s),
-        serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
-        serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
-        _ => {}
+        Value::Array(a) => a.iter().for_each(|x| scan_lines(x, out)),
+        Value::Object(o) => {
+            for (k, x) in o {
+                match scalar(x) {
+                    Some(t) => out.push(format!("{k}: {t}")),
+                    None => {
+                        out.push(k.clone());
+                        scan_lines(x, out);
+                    }
+                }
+            }
+        }
+        other => out.extend(scalar(other)),
     }
 }
 
-/// The scan of one version, as rows: each row's strings joined, so a finding names its row.
+/// The scan of one version, as rows: each row's scanned text joined, so a finding names its row.
 pub fn scan_manifest_rows(rows: &[crate::fl_datasets::Row]) -> ScanReport {
     let texts: Vec<String> = rows
         .iter()
         .map(|r| {
             let mut s = Vec::new();
-            strings(&r.data, &mut s);
+            scan_lines(&r.data, &mut s);
             s.join("\n")
         })
         .collect();

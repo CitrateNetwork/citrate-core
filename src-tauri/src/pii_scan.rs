@@ -350,8 +350,10 @@ fn card_hits(b: &[u8], out: &mut Vec<Finding>) {
     while i < b.len() {
         if b[i].is_ascii_digit() && left_edge(b, i) {
             let (e, digits, groups) = digit_groups(b, i, b" -");
-            let grouped_ok =
-                groups.len() == 1 || groups[..groups.len() - 1].iter().all(|g| *g == 4);
+            // 4-4-4-4 style, or the American Express 4-6-5 printing.
+            let grouped_ok = groups.len() == 1
+                || groups[..groups.len() - 1].iter().all(|g| *g == 4)
+                || groups == [4, 6, 5];
             if (13..=19).contains(&digits.len()) && grouped_ok && right_edge(b, e) && luhn(&digits)
             {
                 out.push(Finding {
@@ -520,6 +522,9 @@ fn phone_hits(b: &[u8], out: &mut Vec<Finding>) {
         let mut groups = 0usize;
         let mut longest = 0usize;
         let mut seps_seen: Vec<u8> = Vec::new();
+        // Every group end, so a run that is too long as a whole (two numbers side by side) can
+        // still yield its longest valid leading number: (end, digits, groups, longest, seps).
+        let mut ends: Vec<(usize, usize, usize, usize, usize)> = Vec::new();
         loop {
             let s = j;
             while j < b.len() && b[j].is_ascii_digit() {
@@ -532,6 +537,7 @@ fn phone_hits(b: &[u8], out: &mut Vec<Finding>) {
             digits += g;
             groups += 1;
             longest = longest.max(g);
+            ends.push((j, digits, groups, longest, seps_seen.len()));
             // `(555) 123-4567`: the closing parenthesis of the area code, then a separator.
             if paren && groups == 1 && j < b.len() && b[j] == b')' {
                 j += 1;
@@ -547,25 +553,38 @@ fn phone_hits(b: &[u8], out: &mut Vec<Finding>) {
                 break;
             }
         }
-        // Mixed separators (`1.2-3 4`) are not how a phone number is written.
-        let one_style = seps_seen.windows(2).all(|w| w[0] == w[1]);
-        let shaped = if plus {
-            groups >= 1
-        } else {
-            groups >= 2 || paren
+        let ok = |end: usize, digits: usize, groups: usize, longest: usize, nseps: usize| {
+            let seps = &seps_seen[..nseps];
+            // Mixed separators (`1.2-3 4`) are not how a phone number is written.
+            let one_style = seps.windows(2).all(|w| w[0] == w[1]);
+            let shaped = if plus {
+                groups >= 1
+            } else {
+                groups >= 2 || paren
+            };
+            (10..=15).contains(&digits)
+                && shaped
+                && one_style
+                && (plus || longest <= 4)
+                && right_edge(b, end)
         };
-        let ok = (10..=15).contains(&digits)
-            && shaped
-            && one_style
-            && (plus || longest <= 4)
-            && right_edge(b, j);
-        if ok {
+        // The whole run, else its longest valid prefix that ends before a space.
+        let hit = if ok(j, digits, groups, longest, seps_seen.len()) {
+            Some(j)
+        } else {
+            ends.iter()
+                .rev()
+                .skip(1)
+                .find(|(e, d, g, l, n)| b.get(*e) == Some(&b' ') && ok(*e, *d, *g, *l, *n))
+                .map(|(e, ..)| *e)
+        };
+        if let Some(end) = hit {
             out.push(Finding {
                 class: PiiClass::Phone,
                 start: i,
-                end: j,
+                end,
             });
-            i = j;
+            i = end;
         } else {
             i = j.max(i + 1);
         }
