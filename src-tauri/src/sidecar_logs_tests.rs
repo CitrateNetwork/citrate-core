@@ -403,3 +403,41 @@ fn the_export_command_names_its_data_sources_and_is_registered() {
     assert!(include_str!("lib.rs").contains("sidecar_logs::diagnostics_logs_export,"));
     assert!(include_str!("../permissions/main-window.toml").contains("\"diagnostics_logs_export\""));
 }
+
+// ---------------------------------------------------------------------------
+// 0.5.4 — one service's log, read back for Node › Advanced
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_registry_service_maps_to_its_supervisor_log_file() {
+    for id in ["node", "nodeAgent", "memory", "llamaChat", "llamaEmbed", "ipfs", "hermes", "comms", "cluster"] {
+        let name = sidecar_name(id).unwrap_or_else(|| panic!("{id} has a log name"));
+        assert_eq!(file_stem(name), name, "{id}: the log file is named after the supervisor");
+    }
+    assert!(sidecar_name("../etc").is_none());
+}
+
+#[test]
+fn a_service_tail_reads_its_file_newest_last_and_scrubs_again() {
+    let t = Tmp::new("tail");
+    let path = t.0.join("ipfs.log");
+    let lines: Vec<String> = (0..10).map(|i| format!("line {i} from {HOME}/data")).collect();
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let r = tail_for(&t.0, "ipfs", 3, HOME).unwrap();
+    assert_eq!(r.file, "ipfs.log");
+    assert!(!r.lifecycle_only);
+    assert_eq!(r.lines.len(), 3);
+    assert!(r.lines[2].starts_with("line 9"));
+    assert!(r.lines.iter().all(|l| !l.contains(HOME)), "home folder scrubbed: {:?}", r.lines);
+    // A content-bearing sidecar says its log keeps lifecycle lines only.
+    assert!(tail_for(&t.0, "hermes", 3, HOME).unwrap().lifecycle_only);
+}
+
+#[test]
+fn a_service_with_no_log_yet_has_no_lines_and_an_unknown_one_is_refused() {
+    let t = Tmp::new("tail-empty");
+    let r = tail_for(&t.0, "cluster", 50, HOME).unwrap();
+    assert!(r.lines.is_empty());
+    assert_eq!(r.file, "cluster-daemon.log");
+    assert!(tail_for(&t.0, "shell", 50, HOME).is_err());
+}
