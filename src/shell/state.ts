@@ -189,6 +189,8 @@ export interface QueuedChat {
   steer: boolean;
   /** #690: what was attached with @ when it was typed. */
   attachments?: ChatAttachment[];
+  /** The conversation it was typed in. It is only ever sent there. */
+  threadId: string;
 }
 /** HUP-S1.4 — the last brief the member accepted (persisted; nothing is built from it yet). */
 export interface AcceptedBrief {
