@@ -85,7 +85,18 @@ export function saveRoundDraft(d: RoundDraft): number {
 
 /** Hand a draft in (Hermes or a group card). The member still checks and signs every field. */
 export function setRoundDraft(d: Partial<RoundDraft>, source: RoundDraft["source"] = "member"): void {
-  saveRoundDraft({ ...BLANK_DRAFT, ...d, source });
+  saveRoundDraft(handedIn(d, source));
+}
+
+/** The money fields of a draft: only the member types these, on the Open a round screen. */
+export const MONEY_FIELDS = ["budgetSalt", "rateSalt", "joinBondSalt", "coordinatorBondSalt"] as const;
+
+/** A draft as handed in. G-SEC PAY-19 (owner decision): Hermes may never set money, so a Hermes
+ *  draft carries only non-money fields; every money field arrives empty, whatever was passed. */
+export function handedIn(d: Partial<RoundDraft>, source: RoundDraft["source"]): RoundDraft {
+  const out: RoundDraft = { ...BLANK_DRAFT, ...d, source };
+  if (source === "hermes") for (const k of MONEY_FIELDS) out[k] = "";
+  return out;
 }
 
 export function clearRoundDraft(): void {

@@ -162,6 +162,19 @@ describe("round drafts", () => {
     expect((openParamsOf(ready, b) as { params: { coordinatorBond: bigint } }).params.coordinatorBond).toBe(0n);
     expect(openParamsOf(BLANK_DRAFT, b)).toHaveProperty("problems");
   });
+  it("PAY-19 (owner): a Hermes draft never sets money; budget, rate and bonds arrive empty", async () => {
+    setRoundDraft({ dataClass: "support-tickets", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", coordinatorBondSalt: "100" }, "hermes");
+    const d = loadRoundDraft()!;
+    expect(d).toMatchObject({ dataClass: "support-tickets", source: "hermes", budgetSalt: "", rateSalt: "", joinBondSalt: "", coordinatorBondSalt: "" });
+    const m = mount(await live(), { draft: d });
+    m.click("Continue");
+    const inputs = [...m.el.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]')];
+    expect(inputs.every((i) => i.value === "")).toBe(true);
+    m.done();
+    // A member's own draft keeps what the member typed.
+    setRoundDraft({ budgetSalt: "600" }, "member");
+    expect(loadRoundDraft()!.budgetSalt).toBe("600");
+  });
   it("a draft handed in by Hermes is kept on this device for the member to check", () => {
     setRoundDraft({ dataClass: "photos" }, "hermes");
     expect(loadRoundDraft()).toMatchObject({ dataClass: "photos", source: "hermes" });
