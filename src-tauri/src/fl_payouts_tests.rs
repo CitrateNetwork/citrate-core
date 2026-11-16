@@ -1,5 +1,7 @@
 // G-SEC PAY-14: the payouts status the webview reads, from the shipped profile and the chain.
 
+use super::*;
+
 struct CodeRpc {
     code: &'static str,
     calls: std::cell::Cell<usize>,

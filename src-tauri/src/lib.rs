@@ -26,8 +26,8 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    abi_book, ceremony, config, custody, oidc, payouts_gate, rpc, secret, supervisor, txdecode, wallet,
-    wallet_link,
+    abi_book, ceremony, config, custody, oidc, payouts_gate, rpc, secret, supervisor, txdecode,
+    wallet, wallet_link,
 };
 
 mod activity;

@@ -440,7 +440,10 @@ fn fl_pins_in_order(p: RawFlCodePins) -> Vec<FlCodePin> {
 /// `0x` + 40 hex, not zero; returned lowercase.
 fn check_address(s: &str) -> Option<String> {
     let hex = s.strip_prefix("0x")?;
-    if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) || hex.bytes().all(|b| b == b'0') {
+    if hex.len() != 40
+        || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        || hex.bytes().all(|b| b == b'0')
+    {
         return None;
     }
     Some(format!("0x{}", hex.to_ascii_lowercase()))
@@ -720,10 +723,12 @@ impl NetworkProfile {
                 .ok_or_else(|| invalid(format!("{} is not an FL contract", p.name)))?;
             let pin = match (&p.address, &p.code_hash) {
                 (Some(a), Some(h)) => {
-                    let address = check_address(a)
-                        .ok_or_else(|| invalid(format!("{}.address {a:?} is not an address", p.name)))?;
-                    let code_hash = check_hash(h)
-                        .ok_or_else(|| invalid(format!("{}.codeHash {h:?} is not a code hash", p.name)))?;
+                    let address = check_address(a).ok_or_else(|| {
+                        invalid(format!("{}.address {a:?} is not an address", p.name))
+                    })?;
+                    let code_hash = check_hash(h).ok_or_else(|| {
+                        invalid(format!("{}.codeHash {h:?} is not a code hash", p.name))
+                    })?;
                     let mut addr = [0u8; 20];
                     let mut hash = [0u8; 32];
                     hex::decode_to_slice(&address[2..], &mut addr)
@@ -738,9 +743,16 @@ impl NetworkProfile {
                     }
                 }
                 (None, None) => {
-                    let why = p.pending.clone().filter(|w| !w.trim().is_empty()).ok_or_else(|| {
-                        invalid(format!("{} is not pinned and names no pending reason", p.name))
-                    })?;
+                    let why = p
+                        .pending
+                        .clone()
+                        .filter(|w| !w.trim().is_empty())
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "{} is not pinned and names no pending reason",
+                                p.name
+                            ))
+                        })?;
                     FlPin {
                         contract,
                         address: None,
