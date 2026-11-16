@@ -14,8 +14,10 @@ beforeEach(() => store.setState({ chatMsgs: [] }));
 afterEach(() => vi.restoreAllMocks());
 
 describe("contract_view", () => {
-  it("runs an eth_call through core's contract_view_call and asks for no approval", async () => {
-    const view = vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue(encodeAbiParameters([{ type: "uint256" }], [42n]));
+  it("runs an eth_call through core's contract_view_call_at (pinned to a block) and asks for no approval", async () => {
+    const view = vi
+      .spyOn(bridge.contracts, "viewCallAt")
+      .mockResolvedValue({ data: encodeAbiParameters([{ type: "uint256" }], [42n]), block: 1204303, rpc: "rpc.citrate.ai" });
     const src = vi.spyOn(bridge.contracts, "verifiedSource");
     const sig = vi.spyOn(store, "requestSig");
     const out = await store.handleTool(
@@ -28,10 +30,12 @@ describe("contract_view", () => {
     expect(sig).not.toHaveBeenCalled();
     expect(out).toContain("<<<UNTRUSTED");
     expect(out).toContain("42");
+    // Board 01: the answer names the block the read ran at and the server that answered.
+    expect(out).toContain("at block 1204303 on rpc.citrate.ai");
   });
 
   it("a write function is refused before core is asked anything", async () => {
-    const view = vi.spyOn(bridge.contracts, "viewCall");
+    const view = vi.spyOn(bridge.contracts, "viewCallAt");
     const sig = vi.spyOn(store, "requestSig");
     const out = await store.handleTool(call({ address: ADDR, function: "mint", abi_fragment: "function mint(uint256) payable" }), "m1", noop);
     expect(out).toMatch(/not a view function/);

@@ -8,7 +8,7 @@
 // =====================================================================
 import { useState } from "react";
 import { Unknown } from "../fl/primitives";
-import { formatDuration, receiptsOf, runSummary, stepLabel, STATE_WORD, type RunRecord, type RunStep } from "../agent/runTimeline";
+import { durationReason, formatDuration, receiptsOf, runSummary, stepLabel, STATE_WORD, type RunRecord, type RunStep } from "../agent/runTimeline";
 
 const RING: Record<RunStep["state"], string> = {
   running: "var(--warn)",
@@ -22,6 +22,7 @@ const GLYPH: Record<RunStep["state"], string> = { running: "", done: "✓", refu
 function StepRow({ st }: { st: RunStep }) {
   const filled = st.state === "done" || st.state === "refused" || st.state === "failed";
   const dur = formatDuration(st.durationMs);
+  const why = durationReason(st);
   const durTitle = st.timing === "model" ? "model time, reported by the model server" : st.timing === "core" ? "timed by Citrate Core" : "time between the events as this app received them";
   return (
     <li data-testid="run-step" data-state={st.state} data-kind={st.kind} style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) auto", gap: 8, padding: "5px 12px", alignItems: "start" }}>
@@ -40,17 +41,19 @@ function StepRow({ st }: { st: RunStep }) {
         </span>
         {st.detail && <span style={{ fontSize: 11.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{st.detail}</span>}
         {st.block !== undefined && (
-          <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>{st.block === null ? (
+          <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
+            {st.block === null ? (
               <>
-                Block: <Unknown reason="the node height was not read yet" />
+                Block: <Unknown reason={st.blockReason ?? "the block was not reported"} />
               </>
             ) : (
-              `Read at block ${st.block.toLocaleString("en-US")}`
-            )}</span>
+              `Read at block ${st.block.toLocaleString("en-US")}${st.blockSource ? ` (${st.blockSource})` : ""}`
+            )}
+          </span>
         )}
       </span>
-      <span className="mono" title={dur ? durTitle : "duration not known"} style={{ fontSize: 10.5, color: "var(--tx-3)", whiteSpace: "nowrap" }}>
-        {dur}
+      <span className="mono" data-testid="run-step-duration" title={dur ? durTitle : why ?? undefined} style={{ fontSize: 10.5, color: "var(--tx-3)", whiteSpace: "nowrap" }}>
+        {dur ? dur : why ? <Unknown reason={why} /> : null}
       </span>
     </li>
   );
@@ -95,7 +98,7 @@ export function RunTimeline({ run, onStop }: { run: RunRecord; onStop?: () => vo
   );
 }
 
-/** What the answer read, under the reply. Chain reads name the block the node was at. */
+/** What the answer read, under the reply. Chain reads name the block the read ran at. */
 export function RunReceipts({ run }: { run: RunRecord | undefined }) {
   const receipts = receiptsOf(run);
   if (receipts.length === 0) return null;
@@ -111,11 +114,11 @@ export function RunReceipts({ run }: { run: RunRecord | undefined }) {
             {r.status === "refused" && " · refused, nothing was run"}
             {r.status === "failed" && " · the read failed"}
             {r.chain && r.status === "ok" && (r.block ? (
-              ` · at block ${r.block.toLocaleString("en-US")}`
+              ` · at block ${r.block.toLocaleString("en-US")}${r.blockSource ? ` (${r.blockSource})` : ""}`
             ) : (
               <>
                 {" · block "}
-                <Unknown reason="node height not read yet" />
+                <Unknown reason={r.blockReason ?? "the block was not reported"} />
               </>
             ))}
           </li>
