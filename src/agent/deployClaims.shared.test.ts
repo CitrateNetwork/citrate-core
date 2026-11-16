@@ -11,11 +11,13 @@ import { checkDeployClaims, collectDeployEvidence, newDeployLedger, type CodeRea
 
 const FIXTURE = resolve(process.cwd(), "src/agent/fixtures/deploy_claims_cases.json");
 /** The sha256 of the shared file; the sidecar's test pins the same value. */
-export const DEPLOY_CLAIM_CASES_SHA256 = "3327f7b948c7168da692d4a0dde351d2d64fe5c236ce1fc4818e3e8a88710d88";
+export const DEPLOY_CLAIM_CASES_SHA256 = "a1b6a5604fece4ea661662c9cfaa0998a658c4a4dedd224094a6fefac254ea11";
 
 interface Turn {
   outputs: TurnToolOutput[];
   memberTexts: string[];
+  /** Hermes's earlier replies in this conversation (#681 review 3: "Shall I deploy?" then "yes"). */
+  assistantTexts?: string[];
   answer: string;
   expect?: { text: string; changed: boolean; findings: string[] };
 }
@@ -41,7 +43,7 @@ async function run(c: Case): Promise<Turn[]> {
   };
   const out: Turn[] = [];
   for (const t of c.turns) {
-    const ev = collectDeployEvidence(t.outputs, { ledger, memberTexts: t.memberTexts, memberWallet: c.memberWallet, contextTexts: c.contextTexts });
+    const ev = collectDeployEvidence(t.outputs, { ledger, memberTexts: t.memberTexts, assistantTexts: t.assistantTexts, memberWallet: c.memberWallet, contextTexts: c.contextTexts });
     const r = await checkDeployClaims(t.answer, ev, readCode);
     out.push({ ...t, expect: { text: r.text, changed: r.changed, findings: r.findings } });
   }
@@ -238,6 +240,43 @@ const INPUTS: Case[] = [
   one("asked, not attempted: the contract is confirmed", "The contract is confirmed on chain.", [], null, ["deploy it"]),
   one("not asked: a third party's deployment is complete", "The Uniswap deployment is complete on mainnet.", [], null, ["what's new on Ethereum?"]),
   one("asked, attempted and pending: it's live", "It's live!", [INAPP_PENDING], null, ["deploy my token"]),
+  // ---- #681 review round 3 (the last phrasing pass) ----
+  one("asked, not attempted: it's deployed", "It's deployed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: your token's deployed", "Your token's deployed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: it's been deployed", "It's been deployed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: a curly apostrophe", "It\u2019s live!", [], null, ["deploy my token"]),
+  one("asked, not attempted: a curly apostrophe in a contraction", "Your token\u2019s deployed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: after Great,", "Great, it's live!", [], null, ["deploy my token"]),
+  one("asked, not attempted: after OK,", "OK, the deployment is complete.", [], null, ["deploy my token"]),
+  one("asked, not attempted: after Done and a dash", "Done \u2014 your contract is live.", [], null, ["deploy my token"]),
+  one("asked, not attempted: after a leading clause", "As you asked, it's on chain now.", [], null, ["deploy my token"]),
+  one("asked, not attempted: token deployed", "Token deployed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: shipped", "Shipped!", [], null, ["deploy my token"]),
+  one("asked, not attempted: is on chain", "Your contract is on chain.", [], null, ["deploy my token"]),
+  {
+    name: "a bare yes after Hermes offered to deploy",
+    memberWallet: WALLET,
+    code: null,
+    turns: [{ outputs: [], memberTexts: ["write me an ERC-20", "yes"], assistantTexts: ["Here is the contract. Shall I deploy it?"], answer: "It's live!" }],
+  },
+  {
+    name: "a deploy asked two messages ago",
+    memberWallet: WALLET,
+    code: null,
+    turns: [{ outputs: [], memberTexts: ["deploy my token", "what will gas cost?"], answer: "The deployment is complete." }],
+  },
+  {
+    name: "a bare yes to something else is not a deploy request",
+    memberWallet: WALLET,
+    code: null,
+    turns: [{ outputs: [], memberTexts: ["what's the Uniswap news?", "yes"], assistantTexts: ["Want me to summarise it?"], answer: "The Uniswap deployment is complete on mainnet." }],
+  },
+  // Conditionals stay as written.
+  one("keep: once the deployment is complete", "Once the deployment is complete, you'll get an address.", [], null, ["deploy my token"]),
+  one("keep: when it's live", "When it's live, I'll send you the address.", [], null, ["deploy my token"]),
+  one("keep: after the deploy goes through", "After the deploy goes through, check CitrateScan for the address.", [INAPP_PENDING], null, ["deploy my token"]),
+  one("keep: if the deployment is confirmed", "If the deployment is confirmed, you'll see it in Activity.", [INAPP_PENDING], null, ["deploy my token"]),
+  one("keep: as soon as it's deployed", "As soon as it's deployed, the address will show here.", [INAPP_PENDING], null, ["deploy my token"]),
 ];
 
 describe("#681 the deploy-claim cases shared with the Hermes sidecar", () => {
@@ -268,7 +307,7 @@ describe("#681 the deploy-claim cases shared with the Hermes sidecar", () => {
         return { isContract: n > 0, codeSize: n };
       };
       for (const t of c.turns) {
-        const ev = collectDeployEvidence(t.outputs, { ledger, memberTexts: t.memberTexts, memberWallet: c.memberWallet, contextTexts: c.contextTexts });
+        const ev = collectDeployEvidence(t.outputs, { ledger, memberTexts: t.memberTexts, assistantTexts: t.assistantTexts, memberWallet: c.memberWallet, contextTexts: c.contextTexts });
         const again = await checkDeployClaims(t.expect!.text, ev, readCode);
         expect(again.text, c.name).toBe(t.expect!.text);
       }

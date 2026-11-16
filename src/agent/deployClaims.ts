@@ -202,6 +202,7 @@ export function plainText(text: string): string {
   return text
     .replace(INVISIBLE, "")
     .replace(ODD_SPACE, " ")
+    .replace(/[\u2018\u2019\u02BC\u2032]/g, "'")
     .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 }
 
@@ -223,6 +224,12 @@ function fold(text: string): string {
 
 /** A member message that asks for a deploy ("deploy my token", "please deploy the vault"). */
 const DEPLOY_ASK = /\b(?:deploy|redeploy|launch)\s+(?:my|the|a|an|it|this|that|our|your|these|those|them)\b|\bplease\s+(?:re)?deploy\b|^\W*(?:re)?deploy\b/i;
+/** A short yes ("yes", "go ahead", "do it"): a deploy request when Hermes had just offered one. */
+const AFFIRM = /^\W*(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|go for it|sounds good|y)\b/i;
+/** Hermes offering to deploy ("Shall I deploy it?", "Want me to deploy this?"). */
+const DEPLOY_OFFER = /\b(?:shall|should|can|may)\s+i\s+(?:go ahead and\s+)?(?:re)?deploy\b|\bwant me to\s+(?:re)?deploy\b|\bready to deploy\b[^.!\n]*\?|\b(?:re)?deploy\s+(?:it|this|that|the|your)\b[^.!\n]*\?/i;
+/** How many of the member's latest messages a deploy request is read from. */
+const REQUEST_LOOKBACK = 3;
 
 // ---- evidence ----
 
@@ -307,7 +314,7 @@ function receiptsOf(top: Obj): Obj[] {
  */
 export function collectDeployEvidence(
   outputs: TurnToolOutput[],
-  opts: { ledger?: DeployLedger; memberTexts?: string[]; memberWallet?: string | null; contextTexts?: string[] } = {},
+  opts: { ledger?: DeployLedger; memberTexts?: string[]; assistantTexts?: string[]; memberWallet?: string | null; contextTexts?: string[] } = {},
 ): DeployEvidence {
   const ledger = opts.ledger ?? newDeployLedger();
   const wallet = (): string | null => ledger.wallet ?? lower(opts.memberWallet ?? null);
@@ -405,9 +412,13 @@ export function collectDeployEvidence(
   const w = wallet();
   if (w) contextStrings.add(w);
   for (const t of opts.contextTexts ?? []) for (const a of addressLikeTokens(plainText(t))) contextStrings.add(a.toLowerCase());
-  const texts = opts.memberTexts ?? [];
+  // #681 review 3: the request is read from the recent turns: one of the member's last
+  // REQUEST_LOOKBACK messages asks for a deploy, or the member said yes to Hermes's offer of one.
+  const texts = (opts.memberTexts ?? []).map((t) => fold(plainText(t)));
   const latest = texts.length > 0 ? texts[texts.length - 1] : "";
-  const deployRequested = DEPLOY_ASK.test(fold(plainText(latest)));
+  const asked = (opts.assistantTexts ?? []).map((t) => fold(plainText(t)));
+  const offered = asked.length > 0 && DEPLOY_OFFER.test(asked[asked.length - 1]);
+  const deployRequested = texts.slice(-REQUEST_LOOKBACK).some((t) => DEPLOY_ASK.test(t)) || (AFFIRM.test(latest) && offered);
   return { state, receipts: ledger.receipts, toolStrings: ledger.toolStrings, memberStrings, contextStrings, unfunded, deployRequested };
 }
 
@@ -415,11 +426,11 @@ export function collectDeployEvidence(
 
 /** Spans that talk about a deploy without claiming one happened (future, conditional, negated). */
 const NOT_A_CLAIM =
-  /\b(?:not|never)\s+(?:yet\s+)?(?:been\s+)?deployed\b|\b\w+n't\s+(?:yet\s+)?(?:been\s+)?deployed\b|\bno (?:contract|deploy(?:ment)?)\s+(?:was|is|has been|happened|ran)(?:\s+deployed)?\b|\b(?:will|would|can|could|should|may|might|to)\s+be\s+deployed\b|\b(?:once|until|after|before|when|if|unless)\s+(?:it(?:'s| is)?|they(?:'re| are)?|the contract (?:is )?|your contract (?:is )?)?\s*deployed\b|\bnot (?:yet )?(?:live|on[- ]?chain)\b|\bready to (?:be )?deploy(?:ed)?\b|\bdeployed nothing\b|\bnothing (?:was |has been |got )?deployed\b/gi;
+  /\b(?:not|never)\s+(?:yet\s+)?(?:been\s+)?deployed\b|\b\w+n't\s+(?:yet\s+)?(?:been\s+)?deployed\b|\bno (?:contract|deploy(?:ment)?)\s+(?:was|is|has been|happened|ran)(?:\s+deployed)?\b|\b(?:will|would|can|could|should|may|might|to)\s+be\s+deployed\b|\b(?:once|until|after|before|when|if|unless)\s+(?:it(?:'s| is)?|they(?:'re| are)?|the contract (?:is )?|your contract (?:is )?)?\s*deployed\b|\bnot (?:yet )?(?:live|on[- ]?chain)\b|\bready to (?:be )?deploy(?:ed)?\b|\bdeployed nothing\b|\bnothing (?:was |has been |got )?deployed\b|\b(?:once|when|whenever|after|if|until|unless|before|as soon as)\b[^.!?\n,;]*/gi;
 
 /** A sentence (with the non-claim spans taken out) that says a deploy happened. */
 const DONE_CLAIM =
-  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|\b(?:deploy(?:ment)?|contract)\s+(?:is\s+|was\s+|has been\s+)?confirmed\b|\b(?:it|it's|it is|that's|that is|they're|they are|everything is|we're|we are)\s+(?:now\s+)?live\b|\b(?:it|that|everything)\s+went\s+through\b|^\W*(?:now\s+)?live\b|^\W*(?:all\s+|both\s+)?deployed\b/i;
+  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|\b(?:deploy(?:ment)?|contract)\s+(?:is\s+|was\s+|has been\s+)?confirmed\b|\b(?:it|it's|it is|that's|that is|they're|they are|everything is|we're|we are)\s+(?:now\s+)?live\b|\b(?:it|that|everything)\s+went\s+through\b|^\W*(?:now\s+)?live\b|\b(?:contract|token|it|they|deployment|vault|everything)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\b|\b(?:has been|was|is|got)\s+shipped\b|^\W*(?:shipped|launched)\b|^\W*(?:the\s+|your\s+|my\s+)?(?:[\w'-]+\s+){0,2}(?:deployed|shipped|launched)\W*$|^\W*(?:all\s+|both\s+)?deployed\b/i;
 
 /** Words that tie an address in a sentence to a deployment. */
 const DEPLOY_WORD =
@@ -433,7 +444,15 @@ const ADDRESS_CONTEXT =
 const OWN = /\b(?:i|i've|i'm|we|we've|our|you|you've|your|my|me|us)\b/i;
 
 /** A claim with no subject ("Deployed!", "Deployment complete."): Hermes reporting its own deploy. */
-const SUBJECTLESS = /^\W*(?:(?:all|both|successfully)\s+)?(?:deployed|deployment|deploy\s+(?:done|complete|succeeded)|done|success)\b/i;
+const SUBJECTLESS = /^\W*(?:(?:all|both|successfully)\s+)?(?:deployed|deployment|deploy\s+(?:done|complete|succeeded)|done|success|shipped|launched|live)\b/i;
+
+/** A headline-style claim ("Token deployed.", "Contract shipped!"): Hermes's own report. */
+const HEADLINE = /^\W*(?:the\s+|your\s+|my\s+)?(?:[\w'-]+\s+){0,2}(?:deployed|shipped|launched)\W*$/i;
+
+/** A leading interjection or short clause ("Great,", "OK,", "Done \u2014", "As you asked,"): the
+ *  claim after it is read as if the sentence started there. */
+const LEAD_IN =
+  /^\W*(?:(?:great|ok|okay|done|all set|perfect|awesome|good news|alright|nice|excellent|sure|yes|yep|yeah|congrats|congratulations|so|and|well|success|boom|there you go|here you go)\b[\s,!.:;\u2014\u2013-]*)+|^[^,.!?:;\n\u2014\u2013]{1,30}[,:;\u2014\u2013]\s*/i;
 
 /** A claim about "the deployment", "it", "the contract": in a turn where the member asked for a
  *  deploy and none was attempted, that is Hermes reporting its own (nonexistent) deploy. */
@@ -473,8 +492,17 @@ export function sentences(text: string): string[] {
   return out;
 }
 
+/** `'s` read as is/has before a deploy word ("It's deployed", "Your token's been deployed"). */
+const HAS_BEEN = /\b(\w+)'s\s+been\b/gi;
+const IS_DONE = /\b(\w+)'s\s+((?:now\s+|already\s+|successfully\s+|officially\s+|fully\s+)*(?:deployed|live|on[- ]?chain|done|complete|completed|confirmed|shipped|launched|up)\b)/gi;
+
 function claimText(sentence: string): string {
-  return fold(sentence).replace(NOT_A_CLAIM, " ");
+  return fold(sentence).replace(HAS_BEEN, "$1 has been").replace(IS_DONE, "$1 is $2").replace(NOT_A_CLAIM, " ");
+}
+
+/** The claim with a leading interjection or short clause taken off. */
+function claimCore(claim: string): string {
+  return claim.replace(LEAD_IN, "");
 }
 
 function gasLine(ev: DeployEvidence): string {
@@ -568,13 +596,16 @@ export async function checkDeployClaims(
     // "Address: 0x…" or a table cell its meaning.
     const around = prev + " " + (listLine ? lead : "");
     const tokens = OWN_STATUS.test(sentence) ? [] : addressLikeTokens(sentence).filter((t) => addressShape(t) !== "other");
-    const deployClaimed = DONE_CLAIM.test(claim);
+    const core = claimCore(claim);
+    const deployClaimed = DONE_CLAIM.test(claim) || DONE_CLAIM.test(core);
     const ctxClaimed = deployClaimed || (LABEL.test(sentence) && DONE_CLAIM.test(claimText(around)));
     const inClaim = tokens.length > 0 && (ctxClaimed || DEPLOY_WORD.test(claim) || (LABEL.test(sentence) && DEPLOY_WORD.test(claimText(around))));
     const own =
       OWN.test(claim) ||
       SUBJECTLESS.test(claim) ||
-      (ev.deployRequested && !attempted && DEFINITE.test(claim)) ||
+      SUBJECTLESS.test(core) ||
+      HEADLINE.test(core) ||
+      (ev.deployRequested && !attempted && (DEFINITE.test(claim) || DEFINITE.test(core))) ||
       (LABEL.test(sentence) && (OWN.test(claimText(around)) || SUBJECTLESS.test(claimText(prev)) || SUBJECTLESS.test(claimText(lead))));
     let drop = false;
     const replace = new Map<string, string>();

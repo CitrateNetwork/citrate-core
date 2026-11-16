@@ -4014,10 +4014,15 @@ export class Store {
    * #643 — read a turn's tool results into the conversation's deploy ledger and return the
    * evidence for the final-answer check (src/agent/deployClaims.ts).
    */
-  private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
+  private deployEvidence(outputs: TurnToolOutput[], answerId?: string): DeployEvidence {
+    // #681 review 3: Hermes's earlier replies (before the answer being checked), so "yes" to
+    // "Shall I deploy it?" reads as a deploy request.
+    const end = answerId === undefined ? -1 : this.state.chatMsgs.findIndex((m) => m.id === answerId);
+    const before = end < 0 ? this.state.chatMsgs : this.state.chatMsgs.slice(0, end);
     return collectDeployEvidence(outputs, {
       ledger: this.deployLedger(),
       memberTexts: this.state.chatMsgs.filter((m) => m.who === "You").map((m) => m.text),
+      assistantTexts: before.filter((m) => m.who !== "You").map((m) => m.text),
       memberWallet: this.state.walletAddr || null,
     });
   }
@@ -4032,7 +4037,7 @@ export class Store {
    * declined, unfunded, ...).
    */
   private async checkAnswerClaims(msgId: string, outputs: TurnToolOutput[]): Promise<void> {
-    const ev = this.deployEvidence(outputs);
+    const ev = this.deployEvidence(outputs, msgId);
     const msg = this.state.chatMsgs.find((m) => m.id === msgId);
     if (!msg || !msg.text) return;
     const checked = await checkDeployClaims(msg.text, ev, (a) => bridge.contracts.getCode(a));

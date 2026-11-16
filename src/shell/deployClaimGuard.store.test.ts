@@ -210,3 +210,19 @@ describe("#681 review 2: a `node` server core did not register is not core's", (
     expect(asst()?.text).toBe(answer);
   });
 });
+
+describe("#681 review 3: the deploy request is read from the recent turns", () => {
+  it("a bare yes to Hermes's offer to deploy, answered 'It's live!' with no deploy, is corrected", async () => {
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      callbacks.onToken("Here is the contract. Shall I deploy it?");
+    });
+    await store.sendChat("write me an ERC-20");
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      callbacks.onToken("It’s live!");
+    });
+    await store.sendChat("yes");
+    const last = store.state.chatMsgs.filter((m) => m.who !== "You").pop();
+    expect(last?.text).toContain("No deploy ran in this conversation turn");
+    expect(last?.text).not.toMatch(/live!/);
+  });
+});
