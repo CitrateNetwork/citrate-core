@@ -7,6 +7,8 @@
 // it themselves (HIC-1). Stored in this webview's localStorage; a failed read or write is said,
 // never hidden.
 // =====================================================================
+import { encodeFunctionData, type Hex } from "viem";
+import type { FlNetworkState } from "./networkState";
 
 export type RoundTemplate = "tune" | "eval" | "data";
 export type WhoMayJoin = "members" | "group" | "anyone";
@@ -15,10 +17,19 @@ export interface RoundDraft {
   groupId: string | null;
   template: RoundTemplate;
   dataClass: string;
-  /** Decimal SALT. */
+  /** What a machine needs (the requirements file members' apps check). */
+  minVramGb: number;
+  estHours: number;
+  /** Decimal SALT, as typed. Never prefilled (G-SEC PAY-19). */
   budgetSalt: string;
-  /** Decimal SALT per unit. */
+  /** Decimal SALT per unit, as typed. Never prefilled. */
   rateSalt: string;
+  /** Decimal SALT each worker posts to join, as typed ("0" for none). Never prefilled. */
+  joinBondSalt: string;
+  /** Decimal SALT the coordinator bonds when it posts the payout; empty = WorkMarket's default. */
+  coordinatorBondSalt: string;
+  /** Hours members may dispute a posted payout list (WorkMarket's floor is 24). */
+  disputeWindowHours: number;
   maxWorkers: number;
   /** YYYY-MM-DD. */
   deadline: string;
@@ -35,8 +46,13 @@ export const BLANK_DRAFT: RoundDraft = {
   groupId: null,
   template: "tune",
   dataClass: "",
-  budgetSalt: "600",
-  rateSalt: "1.50",
+  minVramGb: 16,
+  estHours: 2,
+  budgetSalt: "",
+  rateSalt: "",
+  joinBondSalt: "",
+  coordinatorBondSalt: "",
+  disputeWindowHours: 24,
   maxWorkers: 8,
   deadline: "",
   who: "members",
@@ -77,14 +93,16 @@ export function clearRoundDraft(): void {
   }
 }
 
+/** Decimal SALT as typed to wei, exactly; null when it is not a SALT amount. */
+export function weiOf(s: string): bigint | null {
+  const m = /^(\d{1,12})(?:\.(\d{1,18}))?$/.exec(s.trim());
+  return m ? BigInt(m[1]) * 10n ** 18n + BigInt((m[2] ?? "").padEnd(18, "0") || "0") : null;
+}
+
 /** How many leases the budget covers at the rate: floor(budget / rate), exact in wei. */
 export function leasesCovered(budgetSalt: string, rateSalt: string): number | null {
-  const w = (s: string) => {
-    const m = /^(\d{1,12})(?:\.(\d{1,18}))?$/.exec(s.trim());
-    return m ? BigInt(m[1]) * 10n ** 18n + BigInt((m[2] ?? "").padEnd(18, "0") || "0") : null;
-  };
-  const b = w(budgetSalt);
-  const r = w(rateSalt);
+  const b = weiOf(budgetSalt);
+  const r = weiOf(rateSalt);
   if (b === null || r === null || r === 0n) return null;
   return Number(b / r);
 }
@@ -94,9 +112,160 @@ export function draftProblems(d: RoundDraft): string[] {
   const out: string[] = [];
   if (!d.groupId) out.push("Choose a group");
   if (!d.dataClass.trim()) out.push("Name the data class members train on");
-  if (leasesCovered(d.budgetSalt, d.rateSalt) === null) out.push("Budget and rate must be SALT amounts like 600 and 1.50");
+  if (leasesCovered(d.budgetSalt, d.rateSalt) === null) out.push("Enter the budget and the rate as SALT amounts");
   else if ((leasesCovered(d.budgetSalt, d.rateSalt) ?? 0) < 1) out.push("The budget must cover at least one lease");
   if (!(d.maxWorkers >= 3)) out.push("At least three workers (the round ledger's floor)");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d.deadline)) out.push("Set a deadline");
+  if (weiOf(d.joinBondSalt) === null) out.push("Enter the join bond as a SALT amount (0 for none)");
+  if (d.coordinatorBondSalt.trim() !== "" && weiOf(d.coordinatorBondSalt) === null) out.push("The coordinator bond must be a SALT amount, or empty for WorkMarket's default");
+  if (!(d.disputeWindowHours >= 24)) out.push("The dispute window must be at least 24 hours (WorkMarket's floor)");
+  if (!(d.minVramGb >= 1 && d.minVramGb <= 1024)) out.push("Minimum GPU memory must be 1 to 1024 GB");
+  if (!(d.estHours >= 1 && d.estHours <= 720)) out.push("Estimated hours must be 1 to 720");
   return out;
+}
+
+// ---------------------------------------------------------------- WorkMarket.open's parameters
+
+/** WorkMarket.OpenParams (citrate-chain contracts/src/work/WorkMarket.sol), field for field. */
+export interface OpenParams {
+  kind: 0 | 1;
+  verifier: string;
+  bindRef: string;
+  jobSpecHash: string;
+  requirementsHash: string;
+  requirementsCid: string;
+  groupHash: string;
+  allowlistRoot: string;
+  pricePerUnit: bigint;
+  deadline: bigint;
+  disputeWindow: number;
+  maxWorkers: number;
+  joinBond: bigint;
+  coordinator: string;
+  coordinatorBond: bigint;
+  disputeAdmin: string;
+}
+
+/** What the draft cannot say: the round's binding (from the coordinator), its requirements file
+ *  (published on IPFS), the verifier and the group. */
+export interface OpenBinding {
+  verifier: string;
+  bindRef: string;
+  jobSpecHash: string;
+  requirementsHash: string;
+  requirementsCid: string;
+  groupHash: string;
+  coordinator: string;
+}
+
+const ZERO_ADDR = "0x" + "0".repeat(40);
+const ZERO_32 = "0x" + "0".repeat(64);
+
+/** The exact OpenParams a draft signs (with msg.value = budget), or the problems that stop it. */
+export function openParamsOf(d: RoundDraft, b: OpenBinding): { params: OpenParams; valueWei: bigint } | { problems: string[] } {
+  const problems = draftProblems(d);
+  if (problems.length) return { problems };
+  const deadline = BigInt(Math.floor(Date.parse(d.deadline + "T23:59:59Z") / 1000));
+  return {
+    valueWei: weiOf(d.budgetSalt)!,
+    params: {
+      kind: 0,
+      verifier: b.verifier,
+      bindRef: b.bindRef,
+      jobSpecHash: b.jobSpecHash,
+      requirementsHash: b.requirementsHash,
+      requirementsCid: b.requirementsCid,
+      groupHash: b.groupHash,
+      allowlistRoot: ZERO_32,
+      pricePerUnit: weiOf(d.rateSalt)!,
+      deadline,
+      disputeWindow: d.disputeWindowHours * 3600,
+      maxWorkers: d.maxWorkers,
+      joinBond: weiOf(d.joinBondSalt)!,
+      coordinator: b.coordinator,
+      coordinatorBond: d.coordinatorBondSalt.trim() === "" ? 0n : weiOf(d.coordinatorBondSalt)!,
+      disputeAdmin: ZERO_ADDR,
+    },
+  };
+}
+
+// ---------------------------------------------------------------- the open intent (WorkMarket.open)
+
+
+export const WORK_MARKET_OPEN_ABI = [
+  {
+    type: "function",
+    name: "open",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "kind", type: "uint8" },
+          { name: "verifier", type: "address" },
+          { name: "bindRef", type: "bytes32" },
+          { name: "jobSpecHash", type: "bytes32" },
+          { name: "requirementsHash", type: "bytes32" },
+          { name: "requirementsCid", type: "string" },
+          { name: "groupHash", type: "bytes32" },
+          { name: "allowlistRoot", type: "bytes32" },
+          { name: "pricePerUnit", type: "uint128" },
+          { name: "deadline", type: "uint64" },
+          { name: "disputeWindow", type: "uint32" },
+          { name: "maxWorkers", type: "uint32" },
+          { name: "joinBond", type: "uint128" },
+          { name: "coordinator", type: "address" },
+          { name: "coordinatorBond", type: "uint128" },
+          { name: "disputeAdmin", type: "address" },
+        ],
+      },
+    ],
+    outputs: [{ name: "id", type: "uint256" }],
+  },
+] as const;
+
+export const OPEN_SIGNATURE = "open((uint8,address,bytes32,bytes32,bytes32,string,bytes32,bytes32,uint128,uint64,uint32,uint32,uint128,address,uint128,address))";
+
+/** Why a round cannot be opened yet: the coordinator does not publish its round binding. */
+export const OPEN_NEEDS_BINDING =
+  "opening needs the coordinator's round binding (its on-chain address and FederatedRoundLedger cluster), which the training coordinator does not publish yet";
+export const OPEN_WAITS_FOR_GSEC = "Opening escrows SALT, so it opens with payouts after the security review.";
+
+/** The exact WorkMarket.open the wallet review signs (msg.value = the budget), or an Error naming
+ *  why there is none. Fails closed: dark payouts, no WorkMarket, no binding, or a bad draft. The
+ *  Rust payouts gate refuses the same call at the signer regardless. */
+export function openIntent(d: RoundDraft, binding: OpenBinding | null, state: FlNetworkState): { address: string; calldata: string; valueWei: string; label: string } {
+  if (state.payouts !== "open") throw new Error(state.payoutsReason ? `${OPEN_WAITS_FOR_GSEC} ${state.payoutsReason}` : OPEN_WAITS_FOR_GSEC);
+  const wm = state.contracts.WorkMarket;
+  if (wm.kind !== "deployed") throw new Error("WorkMarket is not deployed on this network");
+  if (!binding) throw new Error(OPEN_NEEDS_BINDING);
+  const r = openParamsOf(d, binding);
+  if ("problems" in r) throw new Error(r.problems.join("; "));
+  const p = r.params;
+  const calldata = encodeFunctionData({
+    abi: WORK_MARKET_OPEN_ABI,
+    functionName: "open",
+    args: [
+      {
+        kind: p.kind,
+        verifier: p.verifier as Hex,
+        bindRef: p.bindRef as Hex,
+        jobSpecHash: p.jobSpecHash as Hex,
+        requirementsHash: p.requirementsHash as Hex,
+        requirementsCid: p.requirementsCid,
+        groupHash: p.groupHash as Hex,
+        allowlistRoot: p.allowlistRoot as Hex,
+        pricePerUnit: p.pricePerUnit,
+        deadline: p.deadline,
+        disputeWindow: p.disputeWindow,
+        maxWorkers: p.maxWorkers,
+        joinBond: p.joinBond,
+        coordinator: p.coordinator as Hex,
+        coordinatorBond: p.coordinatorBond,
+        disputeAdmin: p.disputeAdmin as Hex,
+      },
+    ],
+  });
+  return { address: wm.address, calldata, valueWei: r.valueWei.toString(), label: OPEN_SIGNATURE };
 }

@@ -39,6 +39,7 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { FL_ROUND_DRAFT_READ_TOOL, runFlRoundDraftRead } from "../agent/flRoundDraftTool";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
@@ -127,7 +128,8 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+/** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4614,8 +4616,14 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlAdapterTool(call.name)) {
+      // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
+      // re-checks the gate), and unloading (lowers authority, no card).
+      const out = await runFlAdapterTool(call.name, args as Record<string, unknown>, ann, { fl: bridge.flRounds, ask });
+      status = out.status;
+      result = out.result;
     } else if (call.name === FL_ROUND_DRAFT_READ_TOOL) {
-      // 0.5.4 WP-H5: read the board 07 draft. Writing one is round_draft_propose's card (#725).
+      // 0.5.4 WP-H5: read the board 07 draft. Writing one is lane 3's card hand-off (#725).
       result = runFlRoundDraftRead();
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
@@ -5446,6 +5454,20 @@ export class Store {
    */
   async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // FL G-SEC PAY-15: one proposal at a time. A second call while core is still opening the
+    // first ceremony (before walletReview is set) is refused, so a double press signs nothing twice.
+    if (this.contractCallInFlight) throw new Error("a contract call is already being prepared; wait for its review");
+    this.contractCallInFlight = true;
+    try {
+      return await this.proposeContractCallOnce(input);
+    } finally {
+      this.contractCallInFlight = false;
+    }
+  }
+
+  private contractCallInFlight = false;
+
+  private async proposeContractCallOnce(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     // The label becomes the review's title, so the main window checks it against the calldata
     // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
     let selector = "";

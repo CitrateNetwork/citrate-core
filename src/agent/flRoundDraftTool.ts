@@ -5,8 +5,9 @@
 //
 // Data source (Rule 7): the board 07 draft store, src/fl/roundDraft.ts (`loadRoundDraft`,
 // `leasesCovered`, `draftProblems`), the same draft the member edits on Groups › Rounds › Open a
-// round. This tool only reads it. Writing a draft is lane 3's `round_draft_propose` card hand-off
-// (#725), the one write path: the member presses "Review in Open a round" themselves.
+// round. This tool only reads it. Writing a draft is lane 3's card hand-off (#725), the one write path:
+// the member presses "Review in Open a round" themselves. Model-facing text names only tools in
+// AGENT_TOOLS, so it does not point at that tool until it lands.
 //
 // The draft can hold another member's text when it came from a group card, so the free-text
 // fields reach the model fenced; the computed lines (leases covered, what is missing) are core's.
@@ -43,7 +44,7 @@ export function formatDraft(d: RoundDraft): string {
     fenceUntrusted("the round draft's fields", fields),
     `The budget covers ${leases === null ? "an unknown number of" : leases} leases at that rate.`,
     problems.length ? `Still needed before it can be opened: ${problems.join("; ")}.` : "Every field is filled in.",
-    "Nothing is escrowed by a draft. To change it, propose a new draft with round_draft_propose, or the member edits it on Groups › Rounds › Open a round. Opening the round is the member's own HIC-1 escrow signature; Hermes cannot sign it.",
+    "Nothing is escrowed by a draft. The member changes it on Groups › Rounds › Open a round. Opening the round is the member's own HIC-1 escrow signature; Hermes cannot sign it.",
   ].join("\n");
 }
 
