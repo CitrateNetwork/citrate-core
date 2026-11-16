@@ -125,6 +125,8 @@ export interface DeployEvidence {
   contextStrings: Set<string>;
   /** The wallet cannot pay deploy gas (a zero balance read or an insufficient-funds refusal). */
   unfunded: "zero" | "short" | null;
+  /** The member's latest message asks for a deploy ("deploy my token"). */
+  deployRequested: boolean;
 }
 
 /** What the code read needs to say: whether there is code at the address. */
@@ -219,6 +221,9 @@ function fold(text: string): string {
   return text.replace(LOOKALIKE_RE, (c) => LOOKALIKE[c]).replace(/[*_\x60~]+/g, "");
 }
 
+/** A member message that asks for a deploy ("deploy my token", "please deploy the vault"). */
+const DEPLOY_ASK = /\b(?:deploy|redeploy|launch)\s+(?:my|the|a|an|it|this|that|our|your|these|those|them)\b|\bplease\s+(?:re)?deploy\b|^\W*(?:re)?deploy\b/i;
+
 // ---- evidence ----
 
 /** Where the call ran: its recorded origin, or the one its name implies. */
@@ -229,13 +234,14 @@ export function originOf(o: TurnToolOutput): ToolOrigin {
 }
 
 /**
- * Where a tool the sidecar ran came from. Only core's own node server counts: core writes the
- * sidecar's MCP allowlist and gives that server the `node` name, which a member's server can never
- * take (src-tauri mcp_servers RESERVED_SERVER_NAMES). Every other sidecar tool is "other", bare
- * names included (those run in the sidecar, not in core).
+ * Where a tool the sidecar ran came from. Only core's own node server counts: a `mcp__node__`
+ * tool is "node" only when `nodeIsCore`, i.e. core checked that the server it started Hermes with
+ * under the `node` name is its own node entry (`bridge.agentHarness.nodeMcpTrusted`,
+ * src-tauri hermes_mcp `node_entry_is_core`). The name alone is never enough. Every other
+ * sidecar tool is "other", bare names included (those run in the sidecar, not in core).
  */
-export function sidecarToolOrigin(tool: string): ToolOrigin {
-  return tool.startsWith("mcp__node__") ? "node" : "other";
+export function sidecarToolOrigin(tool: string, nodeIsCore: boolean): ToolOrigin {
+  return nodeIsCore && tool.startsWith("mcp__node__") ? "node" : "other";
 }
 
 /** The tool name without the sidecar's `mcp__<server>__` prefix. */
@@ -399,7 +405,9 @@ export function collectDeployEvidence(
   const w = wallet();
   if (w) contextStrings.add(w);
   for (const t of opts.contextTexts ?? []) for (const a of addressLikeTokens(plainText(t))) contextStrings.add(a.toLowerCase());
-  return { state, receipts: ledger.receipts, toolStrings: ledger.toolStrings, memberStrings, contextStrings, unfunded };
+  const latest = (opts.memberTexts ?? []).at(-1) ?? "";
+  const deployRequested = DEPLOY_ASK.test(fold(plainText(latest)));
+  return { state, receipts: ledger.receipts, toolStrings: ledger.toolStrings, memberStrings, contextStrings, unfunded, deployRequested };
 }
 
 // ---- claims ----
@@ -410,7 +418,7 @@ const NOT_A_CLAIM =
 
 /** A sentence (with the non-claim spans taken out) that says a deploy happened. */
 const DONE_CLAIM =
-  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|^\W*(?:all\s+|both\s+)?deployed\b/i;
+  /\b(?:has|have|had)\s+(?:now\s+)?(?:been\s+)?(?:successfully\s+)?deployed\b|\b(?:was|were|is|are|got)\s+(?:now\s+|successfully\s+)*deployed\b|\b(?:successfully|i|i've|we|we've|you've)\s+deployed\b|\bdeployed\s+(?:successfully|it|them|your|the|both|two|a|an)\b|\bdeploy(?:ment)?\s+(?:is\s+|was\s+)?(?:succeeded|complete|completed|successful|done|finished|went through|worked)\b|\b(?:is|are)\s+now\s+live\b|\bwent\s+live\b|\bnow\s+(?:live|on[- ]?chain)\b|\b(?:contract|token|it|they)\b[^.!?\n]{0,40}\b(?:is|are)\s+(?:now\s+)?(?:live|on[- ]?chain)\s+(?:at|on)\b|\b(?:live|on[- ]?chain)\s+(?:at|on)\s+0x|\bsuccessfully\s+(?:launched|created)\b|\bcreated\s+(?:your|the|a|an)\s+(?:new\s+)?(?:\w+\s+)?contract\b|\bcontract\s+(?:was|is|has been)\s+created\b|\b(?:deploy(?:ment)?|contract)\s+(?:is\s+|was\s+|has been\s+)?confirmed\b|\b(?:it|it's|it is|that's|that is|they're|they are|everything is|we're|we are)\s+(?:now\s+)?live\b|\b(?:it|that|everything)\s+went\s+through\b|^\W*(?:now\s+)?live\b|^\W*(?:all\s+|both\s+)?deployed\b/i;
 
 /** Words that tie an address in a sentence to a deployment. */
 const DEPLOY_WORD =
@@ -425,6 +433,10 @@ const OWN = /\b(?:i|i've|i'm|we|we've|our|you|you've|your|my|me|us)\b/i;
 
 /** A claim with no subject ("Deployed!", "Deployment complete."): Hermes reporting its own deploy. */
 const SUBJECTLESS = /^\W*(?:(?:all|both|successfully)\s+)?(?:deployed|deployment|deploy\s+(?:done|complete|succeeded)|done|success)\b/i;
+
+/** A claim about "the deployment", "it", "the contract": in a turn where the member asked for a
+ *  deploy and none was attempted, that is Hermes reporting its own (nonexistent) deploy. */
+const DEFINITE = /^\W*(?:the|it|it's|its|this|that|they|they're|everything|all)\b/i;
 
 /** A line that labels a value ("Address: 0x…", a list item, a table row). */
 const LABEL = /^\s*(?:[-*+|>]|\d+[.)]\s)|^[^.!?:\n]{0,60}:\s*\S/;
@@ -561,6 +573,7 @@ export async function checkDeployClaims(
     const own =
       OWN.test(claim) ||
       SUBJECTLESS.test(claim) ||
+      (ev.deployRequested && !attempted && DEFINITE.test(claim)) ||
       (LABEL.test(sentence) && (OWN.test(claimText(around)) || SUBJECTLESS.test(claimText(prev)) || SUBJECTLESS.test(claimText(lead))));
     let drop = false;
     const replace = new Map<string, string>();

@@ -123,6 +123,36 @@ fn spec_env_names_this_executable_for_the_node_server_check() {
 }
 
 #[test]
+fn a_start_records_whether_the_node_server_is_cores_own() {
+    // #681 review 2: the chat view trusts the sidecar's `node` results only when the allowlist
+    // this Hermes was started with names core's own node entry (this executable, --mcp-stdio).
+    let (mgr, dir) = stub_manager("nodeentry");
+    let exe = std::env::current_exe().expect("exe");
+    let path = dir.join("mcp.json");
+    let env = vec![(
+        crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
+        path.to_string_lossy().to_string(),
+    )];
+    let ours = serde_json::json!({"servers": [{"name": "node", "transport": "stdio", "command": exe.to_string_lossy(), "args": ["--mcp-stdio"]}]});
+    std::fs::write(&path, ours.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    assert!(mgr.node_server_is_core());
+    // A member-configured `node` (another program) is not core's.
+    let member = serde_json::json!({"servers": [{"name": "node", "transport": "stdio", "command": "/usr/local/bin/evil-mcp", "args": ["--mcp-stdio"]}]});
+    std::fs::write(&path, member.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    assert!(!mgr.node_server_is_core());
+    // No MCP allowlist at all: no.
+    mgr.note_node_entry_for_test(&[]);
+    assert!(!mgr.node_server_is_core());
+    // Stopping forgets it.
+    std::fs::write(&path, ours.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    mgr.stop();
+    assert!(!mgr.node_server_is_core());
+}
+
+#[test]
 fn spec_env_carries_addr_and_token_path_never_the_token() {
     let (mgr, _dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =

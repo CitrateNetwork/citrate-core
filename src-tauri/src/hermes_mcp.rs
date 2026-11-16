@@ -157,6 +157,49 @@ pub fn render_config(
     (!servers.is_empty()).then(|| json!({ "servers": servers }))
 }
 
+/// #681 review: whether the allowlist `v` gives the name [`NODE_SERVER_NAME`] to exactly one
+/// server, and that server is core's own node entry as [`render_config`] writes it: stdio, run as
+/// `core_exe` with [`crate::node_mcp_http::STDIO_FLAG`]. A member's server can never be named
+/// `node` (`mcp_servers` reserves it), but the deploy-claim check trusts the registration, not the
+/// name, so a second or different `node` entry means no.
+pub fn node_entry_is_core(v: &Value, core_exe: &Path) -> bool {
+    let Some(servers) = v.get("servers").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut named = servers
+        .iter()
+        .filter(|s| s.get("name").and_then(Value::as_str) == Some(NODE_SERVER_NAME));
+    let (Some(entry), None) = (named.next(), named.next()) else {
+        return false;
+    };
+    entry.get("transport").and_then(Value::as_str) == Some("stdio")
+        && entry.get("command").and_then(Value::as_str).map(Path::new) == Some(core_exe)
+        && entry
+            .get("args")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            == Some(crate::node_mcp_http::STDIO_FLAG)
+}
+
+/// [`node_entry_is_core`] for the allowlist file at `path` (the one Hermes is started with).
+/// No file, or one that cannot be read, is no. The file can hold secrets: it is read into a
+/// wiping buffer.
+pub fn node_entry_in_file(path: Option<&Path>, core_exe: &Path) -> bool {
+    let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return false;
+    };
+    let text = zeroize::Zeroizing::new(text);
+    serde_json::from_str::<Value>(&text).is_ok_and(|v| node_entry_is_core(&v, core_exe))
+}
+
+/// #681 review: whether the running Hermes's `node` MCP server is core's own node entry. The chat
+/// view takes that server's results as deploy evidence only when this says so.
+#[tauri::command]
+pub fn hermes_node_mcp_trusted() -> bool {
+    crate::hermes::running_manager().is_some_and(|m| m.node_server_is_core())
+}
+
 /// The temp file [`write_private`] writes before renaming it over `path`.
 pub(crate) fn temp_path(path: &Path) -> PathBuf {
     path.with_extension("json.tmp")

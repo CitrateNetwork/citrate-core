@@ -3514,6 +3514,8 @@ export class Store {
     };
     // #643: the resumed turn's tool results (what this view saw), for the final-answer check.
     const toolOutputs: TurnToolOutput[] = [];
+    // #681: whether the sidecar's `node` MCP server is core's own node entry.
+    const nodeIsCore = await this.nodeMcpTrusted();
     try {
       const r = await provider.reattach({
         signal: ac.signal,
@@ -3555,7 +3557,7 @@ export class Store {
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
             } else if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
               // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
@@ -3774,6 +3776,7 @@ export class Store {
       },
       handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
       checkReply: (reply, outputs) => this.checkDaemonReply(reply, outputs),
+      nodeMcpTrusted: () => this.nodeMcpTrusted(),
     });
   }
 
@@ -3825,6 +3828,8 @@ export class Store {
     const asstId = "m" + ++this.mid;
     // #643: this turn's tool results, for the final-answer check on deploy claims.
     const toolOutputs: TurnToolOutput[] = [];
+    // #681: whether the sidecar's `node` MCP server is core's own node entry.
+    const nodeIsCore = await this.nodeMcpTrusted();
     let started = false;
     const ensure = () => {
       if (started) return;
@@ -3933,7 +3938,7 @@ export class Store {
             }
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
@@ -3999,6 +4004,16 @@ export class Store {
    * #643 — read a turn's tool results into the conversation's deploy ledger and return the
    * evidence for the final-answer check (src/agent/deployClaims.ts).
    */
+  /** #681: whether the MCP server Hermes knows as `node` is core's own node entry (core checked
+   *  the allowlist it started Hermes with). Anything else, an error included, is "no". */
+  private async nodeMcpTrusted(): Promise<boolean> {
+    try {
+      return (await bridge.agentHarness.nodeMcpTrusted()) === true;
+    } catch {
+      return false;
+    }
+  }
+
   private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
     return collectDeployEvidence(outputs, {
       ledger: this.deployLedger(),

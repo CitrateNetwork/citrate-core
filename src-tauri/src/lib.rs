@@ -943,6 +943,7 @@ pub fn run() {
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
+            hermes_mcp::hermes_node_mcp_trusted,
             hermes::workers::hermes_workers,
             hermes::decide::hermes_decide_stats,
             hermes_learn::hermes_workflow_run,

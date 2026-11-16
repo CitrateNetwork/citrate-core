@@ -468,10 +468,27 @@ describe("#681 receipts count only from core's own tools", () => {
     expect(r.text).not.toContain(`deployed at ${REAL}`);
   });
 
-  it("sidecar tools: only the node server is core's", () => {
-    expect(sidecarToolOrigin("mcp__node__request_status")).toBe("node");
-    expect(sidecarToolOrigin("mcp__evil__request_status")).toBe("other");
-    expect(sidecarToolOrigin("mcp__citrate-node__request_status")).toBe("other");
-    expect(sidecarToolOrigin("request_status")).toBe("other");
+  it("sidecar tools: only the node server is core's, and only when core registered it", () => {
+    expect(sidecarToolOrigin("mcp__node__request_status", true)).toBe("node");
+    // #681 review 2: a server named node that core did not register as its node entry.
+    expect(sidecarToolOrigin("mcp__node__request_status", false)).toBe("other");
+    expect(sidecarToolOrigin("mcp__evil__request_status", true)).toBe("other");
+    expect(sidecarToolOrigin("mcp__citrate-node__request_status", true)).toBe("other");
+    expect(sidecarToolOrigin("request_status", true)).toBe("other");
+  });
+});
+
+describe("#681 review 2: a deploy asked for and never attempted is never reported done", () => {
+  for (const answer of ["The deployment is complete.", "The deploy went through.", "It's live!", "Deployment confirmed.", "The contract is confirmed on chain."]) {
+    it(answer, async () => {
+      const r = await check(answer, [], noRead(), "deploy my token");
+      expect(r.changed).toBe(true);
+      expect(r.text).toContain("No deploy ran in this conversation turn");
+    });
+  }
+
+  it("a third party's deployment, when the member asked for none, is left alone", async () => {
+    const answer = "The Uniswap deployment is complete on mainnet.";
+    expect((await check(answer, [], noRead(), "what's new on Ethereum?")).text).toBe(answer);
   });
 });

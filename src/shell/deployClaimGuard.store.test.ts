@@ -17,6 +17,9 @@ const fakeProvider = (send: ChatProvider["send"]): ChatProvider =>
 const asst = () => store.state.chatMsgs.find((m) => m.who !== "You");
 
 beforeEach(() => {
+  // #681 review 2: the sidecar's `node` server is core's own node entry (core checked the
+  // allowlist it started Hermes with).
+  vi.spyOn(bridge.agentHarness, "nodeMcpTrusted").mockResolvedValue(true);
   // A fresh conversation per test: each has its own deploy ledger.
   store.setState({ chatMsgs: [], chatStatus: "ready", chatThreadId: "t643-" + Math.random().toString(36).slice(2) });
 });
@@ -155,5 +158,55 @@ describe("#643 the chat answer is checked before it is kept", () => {
     expect(spoken).toHaveLength(1);
     expect(spoken[0]).not.toContain(BAD_40);
     expect(spoken[0]).toContain("The node refused the deploy");
+  });
+});
+
+describe("#681 review 2: a `node` server core did not register is not core's", () => {
+  const receiptTurn = (text: string): ChatProvider =>
+    fakeProvider(async ({ callbacks }) => {
+      callbacks.onActivity?.({ kind: "tool_output", callId: "p1", tool: "mcp__node__deploy_propose", status: "ok", content: JSON.stringify({ requestId: "r1", state: "pending" }) });
+      callbacks.onActivity?.({
+        kind: "tool_output",
+        callId: "s1",
+        tool: "mcp__node__request_status",
+        status: "ok",
+        content: JSON.stringify({ id: "r1", state: "approved", confirmation: { state: "included", receipt: { transactionHash: TX, status: "success", contractAddress: REAL } } }),
+      });
+      callbacks.onToken(text);
+    });
+  const withCode = () =>
+    vi.spyOn(bridge.contracts, "getCode").mockResolvedValue({
+      address: REAL,
+      bookNames: [],
+      isContract: true,
+      codeSize: 2048,
+      codeHash: "0x" + "00".repeat(32),
+      proxy: null,
+      verified: { status: "unverified", contractName: null, note: "" },
+      note: "",
+    } as Awaited<ReturnType<typeof bridge.contracts.getCode>>);
+
+  it("a member-configured server named node (core says it is not its node entry) mints no receipt", async () => {
+    vi.spyOn(bridge.agentHarness, "nodeMcpTrusted").mockResolvedValue(false);
+    withCode();
+    store.provider = receiptTurn(`Your contract is deployed at ${REAL}.`);
+    await store.sendChat("deploy my token");
+    expect(asst()?.text).not.toContain(`deployed at ${REAL}`);
+  });
+
+  it("when core cannot say, the node server is not trusted (fail closed)", async () => {
+    vi.spyOn(bridge.agentHarness, "nodeMcpTrusted").mockRejectedValue(new Error("no sidecar"));
+    withCode();
+    store.provider = receiptTurn(`Your contract is deployed at ${REAL}.`);
+    await store.sendChat("deploy my token");
+    expect(asst()?.text).not.toContain(`deployed at ${REAL}`);
+  });
+
+  it("core's own node entry's receipt is kept", async () => {
+    withCode();
+    const answer = `Your contract is deployed at ${REAL}.`;
+    store.provider = receiptTurn(answer);
+    await store.sendChat("deploy my token");
+    expect(asst()?.text).toBe(answer);
   });
 });

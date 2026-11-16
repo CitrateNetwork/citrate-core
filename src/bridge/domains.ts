@@ -1701,6 +1701,10 @@ export interface AgentHarnessDomain {
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
   /** HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan). Rejects outside the app. */
   mcpSettings(): Promise<HermesMcpView>;
+  /** #681: whether the MCP server the running Hermes knows as `node` is core's own node entry
+   *  (the bundled `--mcp-stdio` server core put in the allowlist it started Hermes with). Only
+   *  then do that server's results count as deploy evidence. */
+  nodeMcpTrusted(): Promise<boolean>;
   /** HUP-S4.3 — save the member's choice; takes effect at the next Hermes start. */
   mcpSet(settings: HermesMcpSettings): Promise<HermesMcpView>;
   /** HUP-S2.9 — the agent session's checkpointed file changes (newest first). `enabled: false`

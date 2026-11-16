@@ -63,6 +63,8 @@ export interface DaemonTurnDeps {
   /** #643: check the run's reply against its tool results before it is shown or logged (the
    *  store's deploy-claim check). Absent = the reply is returned as the model wrote it. */
   checkReply?: (reply: string, outputs: TurnToolOutput[]) => Promise<string>;
+  /** #681: whether the sidecar's `node` MCP server is core's own node entry. Absent = no. */
+  nodeMcpTrusted?: () => Promise<boolean>;
   /** The chat provider's kind right now (`local` | `sidecar` run daemons; nothing else does). */
   providerKind: string | undefined;
   /** The chat system prompt with its live context (the daemon preamble is appended here). */
@@ -222,6 +224,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
   let answered = false;
   // #643: the run's tool results, for the reply check.
   const outputs: TurnToolOutput[] = [];
+  const nodeIsCore = (await deps.nodeMcpTrusted?.().catch(() => false)) === true;
   try {
     const reply = await provider.send({
       messages,
@@ -232,7 +235,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         onActivity: (ev) => {
           if (ev.kind === "step") meter.round();
           else if (ev.kind === "usage") meter.measured(ev.promptTokens, ev.completionTokens);
-          else if (ev.kind === "tool_output") outputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
+          else if (ev.kind === "tool_output") outputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
         },
         onToolCall: async (call, meta) => {
           throwIfStopped(signal);

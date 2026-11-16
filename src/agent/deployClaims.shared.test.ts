@@ -11,7 +11,7 @@ import { checkDeployClaims, collectDeployEvidence, newDeployLedger, type CodeRea
 
 const FIXTURE = resolve(process.cwd(), "src/agent/fixtures/deploy_claims_cases.json");
 /** The sha256 of the shared file; the sidecar's test pins the same value. */
-export const DEPLOY_CLAIM_CASES_SHA256 = "0945f4efaccc61192be9d41ae9c70f84d5c6846ab8a1bf68a8e5db1c5f97c0ad";
+export const DEPLOY_CLAIM_CASES_SHA256 = "3327f7b948c7168da692d4a0dde351d2d64fe5c236ce1fc4818e3e8a88710d88";
 
 interface Turn {
   outputs: TurnToolOutput[];
@@ -229,6 +229,15 @@ const INPUTS: Case[] = [
   // ---- #681 review P2/P3 ----
   one("a pending deploy is not done, even at an address a tool returned with code", `The contract was deployed at ${WRAPPED_SALT}.`, [INAPP_PENDING, book("WrappedSALT", WRAPPED_SALT)], C(WRAPPED_SALT, 3000)),
   one("an old deploy from the member's wallet is a receipt, not this turn's deploy", `Deployed! Your contract is at ${REAL}.`, [MCP_PENDING, explain(WALLET)], C(REAL)),
+  // ---- #681 review round 2: a deploy was asked for and never attempted ----
+  one("asked, not attempted: the deployment is complete", "The deployment is complete.", [], null, ["deploy my token"]),
+  one("asked, not attempted: the deploy went through", "The deploy went through.", [], null, ["deploy my token"]),
+  one("asked, not attempted: it's live", "It's live!", [], null, ["deploy my token"]),
+  one("asked, not attempted: deployment confirmed", "Deployment confirmed.", [], null, ["deploy my token"]),
+  one("asked, not attempted: it went through", "It went through. Your token is ready.", [], null, ["please deploy the vault"]),
+  one("asked, not attempted: the contract is confirmed", "The contract is confirmed on chain.", [], null, ["deploy it"]),
+  one("not asked: a third party's deployment is complete", "The Uniswap deployment is complete on mainnet.", [], null, ["what's new on Ethereum?"]),
+  one("asked, attempted and pending: it's live", "It's live!", [INAPP_PENDING], null, ["deploy my token"]),
 ];
 
 describe("#681 the deploy-claim cases shared with the Hermes sidecar", () => {
