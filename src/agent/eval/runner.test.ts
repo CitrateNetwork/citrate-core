@@ -44,6 +44,7 @@ describe("WRITE_TOOLS is derived from the real harness", () => {
         "fl_adapter_unload",
         "fl_dataset_clean_propose",
         "fl_dataset_create",
+        "fl_join_propose",
         "fl_round_start",
         "group_create",
         "group_invite",

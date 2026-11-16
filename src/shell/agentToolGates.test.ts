@@ -21,6 +21,7 @@ import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
 import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
+import { VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -157,6 +158,11 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
       vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
       vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
+      // 0.5.4 WP-H5: fl_join_propose reaches the wallet review only on a 0.6.0 network with payouts open.
+      vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
+      vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
+      vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
+      vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -182,6 +188,7 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           folder: "/home/m/notes",
           dataset: DATASET_ID,
           ops: [{ op: "dedupe" }],
+          offerId: 1,
         }),
         "m1",
         noop,

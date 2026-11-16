@@ -910,6 +910,42 @@ export const AGENT_TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  // ── federated round offers and joining (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_offers_list",
+      description:
+        "List the WorkMarket offers (federated training rounds and tasks) this member can see, matched against their worker terms and this machine: each with its rate in SALT, workers, join bond, requirements, deadline, and why it matches or why not. Ranked joinable first, then by deadline, never by amount. Read-only; offer text is written by posters. When WorkMarket is not on this network it says group rounds are not live yet.",
+      parameters: {
+        type: "object",
+        properties: { includeHidden: { type: "boolean", description: "also list offers hidden from this member, with the reason" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_join_propose",
+      description:
+        "PROPOSE joining one WorkMarket offer from fl_offers_list. It opens the member's wallet review for WorkMarket.join at the offer's own rate with its join bond; the member reads the decoded call and signs it (HIC-1). You never sign or send it. Refused, with the reason, when WorkMarket is not on this network, payouts are not open yet, or the offer cannot be joined.",
+      parameters: {
+        type: "object",
+        properties: { offerId: { type: "number", description: "the offer id from fl_offers_list" } },
+        required: ["offerId"],
+      },
+    },
+  },
+  // ── FL payouts, shipped dark (0.5.4 Hermes x FL, WP-H10) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_payouts_list",
+      description:
+        "Read the member's federated round payouts: for each WorkMarket offer they joined, whether the payout is waiting for its dispute window, claimable, claimed, disputed or frozen, the rate in SALT, and the pull balance ready to withdraw. Read-only. Until payouts open after the security review it says so and reads nothing; units and amounts are the coordinator's and are shown as unknown, never guessed.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1424,6 +1460,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_dataset_list",
   "fl_dataset_sample",
   "fl_round_draft_read",
+  "fl_offers_list",
+  "fl_payouts_list",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

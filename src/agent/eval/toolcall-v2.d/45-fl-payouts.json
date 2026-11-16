@@ -1,0 +1,13 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H10 (fl_payouts_list, shipped dark; lane HC)",
+  "note": "Items for the payouts read (src/agent/flPayoutTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-payouts-list",
+      "prompt": "Can I claim anything from the rounds I joined yet, and what is my pull balance?",
+      "expect": { "tool": "fl_payouts_list" },
+      "tags": ["tool-choice", "read"]
+    }
+  ]
+}
