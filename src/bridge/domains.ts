@@ -490,8 +490,8 @@ export interface AgentDomain {
 // return REAL parsed nodes/edges from the per-user encrypted store — never a
 // fabricated graph (Rule 1). `status` carries the supervisor state + socket path
 // (a local path, not a secret); `constellation` recalls the personal +
-// chain-state tenants for the Storage graph. `assert` (a signed WRITE) still
-// routes through the SignatureCeremony (a later WP), so it stays a seam stub.
+// chain-state tenants for the Storage graph. `assert` writes one member-approved
+// fact into the personal tenant (Hermes's memory_assert, after its HIC-1 card).
 export interface MemoryHit {
   id: string;
   kind: string;
@@ -580,11 +580,19 @@ export interface KnowledgeImportReport {
   vectorsReused?: number;
 }
 
+/** What a durable `memory.assert` wrote: the tenant and the node id the daemon printed. */
+export interface MemoryAssertReceipt {
+  tenant: string;
+  nodeId: string | null;
+}
+
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
-  assert(fact: string): Promise<"approved" | "declined">;
+  /** Durable write of one approved fact into the personal tenant. Rejects with the
+   *  reason (daemon not running, empty or too long) when nothing was saved. */
+  assert(fact: string): Promise<MemoryAssertReceipt>;
   recall(tenant: string, budget?: number): Promise<MemoryResult>;
   /** `opts.passages` (HUP-S3.1): each hit also carries its text and citation. */
   search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }): Promise<MemoryResult>;

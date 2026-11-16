@@ -1214,3 +1214,81 @@ fn a_start_waits_for_a_memory_stop_in_progress() {
     assert!(mgr.is_running_now());
     mgr.stop();
 }
+
+// ---------------------------------------------------------------------------
+// 0.5.4 — Hermes "remember this fact" (memory_assert) is a durable write
+// ---------------------------------------------------------------------------
+
+/// Records every tool call (tool, args) and answers `memory.assert` the way the
+/// daemon does (`asserted <12 hex> [...]`).
+type ToolCalls = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+struct AssertStub {
+    calls: ToolCalls,
+}
+impl MemoryTransport for AssertStub {
+    fn call_tool(&self, tool: &str, args: Value) -> Result<String> {
+        self.calls.lock().unwrap().push((tool.to_string(), args));
+        match tool {
+            "memory.assert" => Ok("asserted 0a1b2c3d4e5f [claim]".to_string()),
+            other => Err(MemoryError::Decode(format!("stub: unknown tool {other}"))),
+        }
+    }
+}
+
+fn assert_stub_manager(tag: &str) -> (MemoryManager, ToolCalls) {
+    let dir = tmp_dir(tag);
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(AssertStub { calls: calls.clone() }),
+    )
+    .with_key_runtime_dir(Some(key_runtime_dir(&dir)));
+    (mgr, calls)
+}
+
+#[test]
+fn remember_fact_fails_honestly_when_the_daemon_is_not_running() {
+    let (mgr, calls) = assert_stub_manager("remember-norun");
+    let err = mgr.remember_fact("my backup machine is the NUC").unwrap_err();
+    assert!(err.contains("not running"), "got: {err}");
+    assert!(calls.lock().unwrap().is_empty(), "no write is attempted against a dead daemon");
+}
+
+#[test]
+fn remember_fact_rejects_an_empty_or_oversize_fact_before_writing() {
+    let (mgr, calls) = assert_stub_manager("remember-invalid");
+    assert!(mgr.remember_fact("   ").unwrap_err().contains("empty"));
+    let long = "x".repeat(MAX_FACT_CHARS + 1);
+    assert!(mgr.remember_fact(&long).unwrap_err().contains("limit"));
+    assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(validate_fact("  tea  ").unwrap(), "tea");
+}
+
+#[test]
+fn remember_fact_writes_a_claim_into_the_personal_tenant() {
+    let (mgr, calls) = assert_stub_manager("remember-write");
+    mgr.start().expect("stub daemon starts");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running());
+    let r = mgr.remember_fact("  my backup machine is the NUC  ").expect("write ok");
+    assert_eq!(r.tenant, "personal");
+    assert_eq!(r.node_id.as_deref(), Some("0a1b2c3d4e5f"));
+    let rec = calls.lock().unwrap();
+    let (tool, args) = rec.iter().find(|(t, _)| t == "memory.assert").expect("asserted");
+    assert_eq!(tool, "memory.assert");
+    assert_eq!(args["repo"], "personal");
+    assert_eq!(args["kind"], "claim");
+    assert_eq!(args["content"], "my backup machine is the NUC");
+    drop(rec);
+    mgr.stop();
+}

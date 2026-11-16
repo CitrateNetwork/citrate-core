@@ -32,11 +32,9 @@ macro_rules! seam_cmd {
 // claimable read in `earnings.rs`. `wallet_activity` was replaced by the REAL
 // CitrateScan `txlist` tx-history read in `activity.rs` (public, no-auth) — it is
 // no longer a seam stub.
-seam_cmd!(memory_assert, "memory", "assert");
 // NOTE: `memory_recall` was replaced by the real citrate-memories mcp_serve
-// wiring in CORE-C3 (see `memory.rs`). recall/search/neighbors are genuinely
-// wired; only the `assert` WRITE path remains a seam stub (it routes through the
-// SignatureCeremony in a later WP).
+// wiring in CORE-C3 (see `memory.rs`), and `memory_assert` by the durable
+// personal-tenant write in `memory.rs` (0.5.4).
 seam_cmd!(chat_backend, "chat", "backend");
 seam_cmd!(membership_entitlement, "membership", "entitlement");
 seam_cmd!(commissary_catalog, "commissary", "catalog");
@@ -63,7 +61,6 @@ mod tests {
     #[test]
     fn all_seam_domains_report_unavailable() {
         for r in [
-            memory_assert(),
             commissary_catalog(),
             membership_entitlement(),
             comms_connections(),

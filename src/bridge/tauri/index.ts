@@ -24,6 +24,7 @@ import type {
   BridgeContract,
   ClaimResult,
   MemoryStatus,
+  MemoryAssertReceipt,
   MemoryResult,
   MemoryNeighbor,
   DocsIngestReport,
@@ -359,10 +360,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async stop() {
         await invoke("memory_stop");
       },
-      // `assert` (a signed WRITE) still routes through the SignatureCeremony in a
-      // later WP — honest Unavailable until then, never a fabricated "approved".
-      async assert() {
-        return unavailable("memory", "assert");
+      // Durable personal-tenant write; the HIC-1 card in the chat gates the call.
+      async assert(fact: string) {
+        return invoke<MemoryAssertReceipt>("memory_assert", { fact });
       },
       async recall(tenant: string, budget?: number) {
         return invoke<MemoryResult>("memory_recall", { tenant, budget });
