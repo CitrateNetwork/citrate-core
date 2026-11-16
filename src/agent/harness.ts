@@ -843,6 +843,34 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── the HIC-2 envelope (0.5.4 Hermes × FL, WP-H4; src/agent/flEnvelopeTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_read",
+      description:
+        "Read the member's HIC-2 envelope: on or off, joins left this week, machine hours per round, whether it can authorize anything on this network, and the fixed rules core enforces. Read-only. Quote what it returns; never state caps from memory.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_propose",
+      description:
+        "PROPOSE an HIC-2 envelope (enabled true, with joinsPerWeek and maxHoursPerRound): the member decides on a card (HIC-1) and you never approve it. Or turn the envelope off now (enabled false), which needs no card. Core enforces the caps; the first join with a new group or poster always asks, and an offer's text can never change the envelope.",
+      parameters: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "true to propose an envelope, false to turn it off now" },
+          joinsPerWeek: { type: "number", description: "1 to 50" },
+          maxHoursPerRound: { type: "number", description: "machine hours per round, 1 to 72" },
+          name: { type: "string", description: "a short name the member will recognise" },
+        },
+        required: ["enabled"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1352,6 +1380,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_terms_read",
   "fl_consent_list",
   "fl_eligibility",
+  "fl_envelope_read",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

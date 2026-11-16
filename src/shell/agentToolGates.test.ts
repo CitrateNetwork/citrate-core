@@ -132,6 +132,12 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
       // 0.5.4 WP-H3: fl_terms_propose reads the sealed terms (none saved here) before its card.
       vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null, save: async () => ({}) } as never);
+      // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
+      vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
+        status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
+        approve: async () => ({}) as never,
+        off: async () => null,
+      });
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
@@ -150,6 +156,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           start: "2099-01-05T09:00",
           floorSaltPerUnit: "1.20",
           hours: "any",
+          enabled: true,
+          joinsPerWeek: 3,
+          maxHoursPerRound: 8,
         }),
         "m1",
         noop,

@@ -59,6 +59,8 @@
     { "name": "fl_consent_list", "host": "core", "read_only": true },
     { "name": "fl_consent_withdraw", "host": "core", "read_only": false },
     { "name": "fl_eligibility", "host": "core", "read_only": true },
+    { "name": "fl_envelope_read", "host": "core", "read_only": true },
+    { "name": "fl_envelope_propose", "host": "core", "read_only": false },
     { "name": "belnap_codec", "host": "core", "read_only": true },
     { "name": "gsheets_read", "host": "core", "read_only": true },
     { "name": "gsheets_append", "host": "core", "read_only": false },

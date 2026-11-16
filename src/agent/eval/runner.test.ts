@@ -52,6 +52,8 @@ describe("WRITE_TOOLS is derived from the real harness", () => {
         // 0.5.4 WP-H3
         "fl_terms_propose",
         "fl_consent_withdraw",
+        // 0.5.4 WP-H4
+        "fl_envelope_propose",
       ].sort(),
     );
   });
@@ -305,7 +307,7 @@ describe("buildScorecard + runEvalSuite", () => {
     });
     expect(seen).toHaveLength(3);
     expect(seen.every((s) => s.toolCount === AGENT_TOOLS.length)).toBe(true);
-    expect(AGENT_TOOLS.length).toBe(40); // 0.5.4 WP-H3 fl_terms_read, fl_terms_propose, fl_consent_list, fl_consent_withdraw, fl_eligibility; CORE-A1/A2 address_book_lookup, get_code, identify_contract, decode_calldata, decode_log, explain_tx; HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; US-9.2 belnap_codec; HUP-S6.7 contract_view; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
+    expect(AGENT_TOOLS.length).toBe(42); // 0.5.4 WP-H4 fl_envelope_read, fl_envelope_propose; WP-H3 fl_terms_read, fl_terms_propose, fl_consent_list, fl_consent_withdraw, fl_eligibility; CORE-A1/A2 address_book_lookup, get_code, identify_contract, decode_calldata, decode_log, explain_tx; HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; US-9.2 belnap_codec; HUP-S6.7 contract_view; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);
