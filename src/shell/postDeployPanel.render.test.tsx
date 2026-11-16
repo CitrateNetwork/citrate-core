@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { PostDeployPanel, type PostDeployOps } from "./PostDeployPanel";
-import type { DeployRecordSummaryView } from "../bridge/domains";
+import type { DeployRecordSummaryView, DeployRecordView } from "../bridge/domains";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,6 +21,20 @@ function summary(over: Partial<DeployRecordSummaryView> = {}): DeployRecordSumma
   };
 }
 
+function full(over: Partial<DeployRecordView> = {}): DeployRecordView {
+  return {
+    chainId: 40204, address: ADDR, txHash: TX, blockNumber: 12, deployer: "0x" + "11".repeat(20),
+    initcodeHash: "0x" + "cd".repeat(32), contractName: "LemonDrops",
+    abi: [{ type: "function", name: "mint" }, { type: "event", name: "Minted" }],
+    constructorArgsHex: "0x",
+    compiler: { solcVersion: "0.8.36", optimizer: true, optimizerRuns: 200, evmVersion: "cancun" },
+    standardJsonInput: '{"language":"Solidity"}', standardJsonNote: null,
+    gate: { initcodeHash: "0x" + "cd".repeat(32), bindingHash: "0x" + "ef".repeat(32), compiler: { solcVersion: "0.8.36", optimizer: true, optimizerRuns: 200, evmVersion: "cancun" }, verdict: "READY", items: [], evaluatedAtMs: Date.UTC(2026, 10, 1, 9, 30) },
+    recordedAtMs: Date.UTC(2026, 10, 1, 9, 31),
+    ...over,
+  };
+}
+
 function ops(over: Partial<PostDeployOps> = {}): PostDeployOps {
   return {
     postdeployStatus: vi.fn(async () => ({ contractName: "LemonDrops", siteContract: null, built: true, exportDir: null })),
@@ -31,6 +45,7 @@ function ops(over: Partial<PostDeployOps> = {}): PostDeployOps {
     postdeployVercelExport: vi.fn(async () => ({ dir: "/p/vercel-export", files: 9, commands: ["cd \"/p/vercel-export\"", "npx vercel deploy --prod"] })),
     deployRecordSave: vi.fn(async () => ({ record: summary(), alreadySaved: false, count: 1 })),
     deployRecords: vi.fn(async () => [summary()]),
+    deployRecordGet: vi.fn(async () => full()),
     ...over,
   };
 }
@@ -201,6 +216,41 @@ describe("Feature: after the deploy (HUP-S6.6)", () => {
     await act(async () => { type($(el2, "pd-project"), "/p"); });
     await click($(el2, "pd-records"));
     expect($(el2, "pd-records-out")?.textContent).toMatch(/No deploy records are saved/);
+  });
+
+  it("CORE-A3: Open record shows one saved deploy in full, from deploy_record_get", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const o = ops();
+    const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-records"));
+    await click($(el, "pd-open-record"));
+    expect(o.deployRecordGet).toHaveBeenCalledWith("/p", ADDR);
+    const d = $(el, "pd-record-detail")?.textContent ?? "";
+    expect(d).toContain("LemonDrops at " + ADDR);
+    expect(d).toContain("solc 0.8.36, optimizer on (200 runs), EVM cancun");
+    expect(d).toContain("2 entries");
+    expect(d).toContain("standard-JSON, 23 characters");
+    expect(d).toContain("ready, checked 2026-11-01 09:30 UTC");
+    expect(d).toMatch(/Constructor arguments\s*none/);
+    await click($(el, "pd-copy-abi"));
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(full().abi, null, 2));
+    expect($(el, "pd-record-detail-out")?.textContent).toBe("Copied the ABI.");
+  });
+
+  it("CORE-A3: a record that is gone, or a gate that did not pass, says so", async () => {
+    const o = ops({ deployRecordGet: vi.fn(async () => null) });
+    const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+    await act(async () => { type($(el, "pd-project"), "/p"); });
+    await click($(el, "pd-records"));
+    await click($(el, "pd-open-record"));
+    expect($(el, "pd-record-detail-out")?.textContent).toMatch(/No saved record for 0x5aae.* was found/);
+    expect($(el, "pd-record-detail")).toBeNull();
+    const { recordRows } = await import("./PostDeployPanel");
+    const rows = recordRows(full({ standardJsonInput: null, standardJsonNote: "forge build ran without --build-info", gate: { ...full().gate, verdict: "NOT_READY", items: [{ id: "slither" as never, label: "Slither", pass: false, reason: "2 high", evidence: {} as never }] } }));
+    expect(rows.find(([k]) => k === "Compiler input")?.[1]).toBe("not kept: forge build ran without --build-info");
+    expect(rows.find(([k]) => k === "Deploy gate")?.[1]).toMatch(/^not ready \(failing: Slither\)/);
   });
 
   it("without a project folder nothing runs", async () => {
