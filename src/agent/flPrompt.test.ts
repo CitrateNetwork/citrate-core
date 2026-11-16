@@ -33,7 +33,8 @@ describe("the FL prompt names only tools this build has", () => {
     const flLowering = [...AUTHORITY_LOWERING_AGENT_TOOLS].filter((t) => P.FL_GUIDE_TOOLS.has(t)).sort();
     expect(P.loweringTools().sort()).toEqual(flLowering);
     for (const t of P.loweringTools()) expect(AUTHORITY_LOWERING_AGENT_TOOLS.has(t), t).toBe(true);
-    expect(P.FL_PROMPT_SECTION).toMatch(/no card, because they only lower the member's exposure: fl_adapter_unload\./);
+    // 0.5.4 integration: HB's consent and invite tools landed with HC's adapters.
+    expect(P.FL_PROMPT_SECTION).toMatch(/no card, because they only lower the member's exposure: fl_consent_withdraw, group_invite_revoke, fl_adapter_unload\./);
   });
 
   it("never lists a tool that can raise authority as no-card (envelope on is behind a card)", () => {
@@ -44,16 +45,21 @@ describe("the FL prompt names only tools this build has", () => {
   });
 
   it("turns a lane's guidance on only with all of its tools", () => {
-    const withHb = new Set([...P.FL_TOOLS_IN_BUILD, "fl_consent_list", "fl_consent_withdraw", "group_invites_list", "group_invite_revoke"]);
+    // 0.5.4 integration: HB is in this build, so the "without HB" set is built by taking it out.
+    const withoutHb = [...P.FL_TOOLS_IN_BUILD].filter((t) => !["fl_consent_list", "fl_consent_withdraw", "group_invites_list", "group_invite_revoke"].includes(t));
+    const withHb = new Set([...withoutHb, "fl_consent_list", "fl_consent_withdraw", "group_invites_list", "group_invite_revoke"]);
     const text = P.flPromptLines(withHb).join("\n");
     expect(text).toContain("fl_consent_withdraw withdraws one at once");
     expect(text).toMatch(/only lower the member's exposure: fl_consent_withdraw, group_invite_revoke, fl_adapter_unload\./);
-    expect(P.flPromptLines(new Set([...P.FL_TOOLS_IN_BUILD, "fl_consent_list"])).join("\n")).not.toContain("fl_consent_list");
+    expect(P.flPromptLines(new Set([...withoutHb, "fl_consent_list"])).join("\n")).not.toContain("fl_consent_list");
   });
 
   it("collection: fl_collect_* only once the collector ships, and an honest refusal before", () => {
-    expect(P.FL_PROMPT_SECTION).toContain("Collecting web pages into a dataset is not in this build");
-    const withHa = P.flPromptLines(new Set([...P.FL_TOOLS_IN_BUILD, "fl_source_check", "fl_collect_plan"])).join("\n");
+    // 0.5.4 integration: HA's collector is in this build; the refusal is checked without it.
+    const withoutHa = [...P.FL_TOOLS_IN_BUILD].filter((t) => t !== "fl_source_check" && t !== "fl_collect_plan");
+    expect(P.flPromptLines(new Set(withoutHa)).join("\n")).toContain("Collecting web pages into a dataset is not in this build");
+    expect(P.FL_PROMPT_SECTION).toContain("Use only fl_collect_* to build a dataset from the web");
+    const withHa = P.flPromptLines(new Set([...withoutHa, "fl_source_check", "fl_collect_plan"])).join("\n");
     expect(withHa).toContain("Use only fl_collect_* to build a dataset from the web; never read_url, browser, shell or fs tools.");
     expect(withHa).not.toContain("not in this build: say so");
   });
@@ -96,7 +102,10 @@ describe("the FL facts in Hermes's live snapshot", () => {
     expect(s.groupRounds).toBe(NS.ROUNDS_NOT_LIVE);
     expect(s.payouts).toContain(NS.NOT_AVAILABLE);
     expect(s.training).toBe(NS.NO_TRAINING_YET);
-    expect(s.envelope).toMatch(/not in this build: every FL action is HIC-1/);
+    // 0.5.4 integration: HB's envelope tools are in this build; without them the snapshot says HIC-1 only.
+    expect(s.envelope).toBe("read it with fl_envelope_read; never state caps from memory");
+    const noEnvelope = new Set([...P.FL_TOOLS_IN_BUILD].filter((t) => !t.startsWith("fl_envelope_")));
+    expect(flSnapshot(realBook, { label: "r1007" } as never, noEnvelope).envelope).toMatch(/not in this build: every FL action is HIC-1/);
   });
 
   it("follow the book and the profile when a later network pins WorkMarket", () => {
