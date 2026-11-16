@@ -2228,29 +2228,54 @@ impl<'a> DatasetStore<'a> {
     }
 }
 
-/// Private information in the text a publish manifest carries: every string value of the manifest
-/// (its keys are the fixed schema) and the dataset license, scanned with core's scanner. Counts by
-/// class key.
+/// Private information in the text a publish manifest carries, scanned with core's scanner. Counts
+/// by class key. The id and hash fields core writes (the dataset id, source ids, consent refs,
+/// `prev`, `contentHash`, `contentSha256`, `publishedPrev`, the schema) are left out by FIELD, never
+/// by what a string starts with (review of #732: a folder named `s-ana@example.org` is scanned).
+/// Every other string, and every object key, is scanned.
 pub fn manifest_findings(m: &Manifest, license: &str) -> BTreeMap<String, u32> {
     fn strings(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) => out.push(s.clone()),
             serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
-            serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+                out.push(k.clone());
+                strings(x, out);
+            }),
             _ => {}
         }
     }
+    let mut v = serde_json::to_value(m).unwrap_or(serde_json::Value::Null);
+    if let Some(o) = v.as_object_mut() {
+        for k in [
+            "schema",
+            "dataset",
+            "prev",
+            "contentHash",
+            "consent",
+            "publishedPrev",
+        ] {
+            o.remove(k);
+        }
+        if let Some(srcs) = o.get_mut("sources").and_then(|x| x.as_array_mut()) {
+            for src in srcs.iter_mut().filter_map(|x| x.as_object_mut()) {
+                for k in ["id", "contentSha256", "consentRef"] {
+                    src.remove(k);
+                }
+            }
+        }
+        if let Some(scan) = o.get_mut("piiScan").and_then(|x| x.as_object_mut()) {
+            scan.remove("contentHash");
+        }
+    }
     let mut texts = Vec::new();
-    if let Ok(v) = serde_json::to_value(m) {
-        strings(&v, &mut texts);
+    // Values only for the top level: its keys are the fixed schema.
+    if let Some(o) = v.as_object() {
+        o.values().for_each(|x| strings(x, &mut texts));
     }
     texts.push(license.to_string());
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     for t in &texts {
-        // Hashes and ids are not text a person wrote; skip them so a hex digest is never a "phone".
-        if is_hash(t) || t.starts_with("ds-") || t.starts_with("s-") || t.starts_with("c-") {
-            continue;
-        }
         for f in crate::pii_scan::scan(t) {
             *counts.entry(f.class.key().to_string()).or_default() += 1;
         }
