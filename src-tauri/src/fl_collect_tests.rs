@@ -519,13 +519,16 @@ fn an_approved_run_writes_provenance_through_the_store_and_records_the_scan() {
         .unwrap()
         .unwrap();
     assert_eq!(rec.content_hash, m.content_hash);
-    // Two pages on one host: the second waited for the 2 s interval.
+    // Codex review of #738: robots.txt is a request too. The run read robots.txt, waited the
+    // 2 s interval before the first page, and again before the second.
     let waited = waits.0.lock().unwrap().clone();
-    assert_eq!(waited.len(), 1);
-    assert!(
-        waited[0] > Duration::from_millis(1900) && waited[0] <= MIN_INTERVAL,
-        "{waited:?}"
-    );
+    assert_eq!(waited.len(), 2, "{waited:?}");
+    for w in &waited {
+        assert!(
+            *w > Duration::from_millis(1900) && *w <= MIN_INTERVAL,
+            "{waited:?}"
+        );
+    }
     // A plan runs once.
     assert!(run_plan(&w, &waits, &policy(), &s, &p.id, &clock).is_err());
 }
@@ -870,3 +873,65 @@ fn the_pinned_resolver_answers_only_the_vetted_addresses() {
 }
 
 const TIMEOUT: ureq::unversioned::transport::NextTimeout = ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::Exact(std::time::Duration::from_secs(1)), reason: ureq::Timeout::Resolve };
+
+// ---- Codex review of #738 (P2s) ----------------------------------------------------------------
+
+#[test]
+fn an_out_of_range_crawl_delay_refuses_the_host_and_never_panics() {
+    let check = |delay: &str| {
+        let w = Web::default().page(
+            "https://en.wikipedia.org/robots.txt",
+            200,
+            "text/plain",
+            &format!("User-agent: *\nCrawl-delay: {delay}\n"),
+        );
+        check_source(
+            &w,
+            &policy(),
+            &mut RobotsCache::default(),
+            "https://en.wikipedia.org/wiki/Apple",
+            None,
+        )
+    };
+    // Too long to represent as a duration: longer than the maximum honoured, so refused.
+    for d in ["1e100", "1e30"] {
+        assert!(!check(d).allowed, "{d}");
+    }
+    // Not a delay at all: ignored, and the 2 s floor applies.
+    for d in ["inf", "NaN", "-1", "soon"] {
+        let c = check(d);
+        assert!(c.allowed, "{d}: {c:?}");
+        assert_eq!(c.interval_secs, 2, "{d}");
+    }
+}
+
+#[test]
+fn robots_txt_belongs_to_its_origin_not_its_host() {
+    let w = Web::default()
+        .page("http://en.wikipedia.org/robots.txt", 200, "text/plain", ROBOTS_OPEN)
+        .page(
+            "https://en.wikipedia.org/robots.txt",
+            200,
+            "text/plain",
+            "User-agent: *\nDisallow: /\n",
+        );
+    let mut cache = RobotsCache::default();
+    let http = check_source(&w, &policy(), &mut cache, "http://en.wikipedia.org/wiki/Apple", None);
+    let https = check_source(&w, &policy(), &mut cache, "https://en.wikipedia.org/wiki/Apple", None);
+    assert_eq!(http.robots, RobotsState::Allowed, "{http:?}");
+    assert!(!https.allowed, "https has its own robots.txt: {https:?}");
+    assert!(w.asked().contains(&"https://en.wikipedia.org/robots.txt".to_string()));
+}
+
+#[test]
+fn robots_matching_decodes_percent_encoded_unreserved_characters() {
+    let r = Robots::parse("User-agent: *\nDisallow: /private/\nDisallow: /%7Euser/\n");
+    assert!(!r.allows("/private/x"));
+    assert!(!r.allows("/%70rivate/x"), "%70 is p");
+    assert!(!r.allows("/~user/a"), "the rule's own %7E is ~");
+    assert!(!r.allows("/%7euser/a"));
+    // A reserved character stays encoded: %2F is not a path separator.
+    let slash = Robots::parse("User-agent: *\nDisallow: /a/b\n");
+    assert!(slash.allows("/a%2Fb"));
+}
+
