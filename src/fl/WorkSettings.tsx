@@ -386,7 +386,7 @@ export function WorkSettingsView(p: WorkSettingsViewProps) {
               Payout address
             </h1>
             <Card style={{ maxWidth: 620 }}>
-              <Eyebrow>Your smart wallet</Eyebrow>
+              <Eyebrow>Your wallet</Eyebrow>
               <span>{p.wallet ? <Hex value={p.wallet} head={10} tail={6} /> : <Unknown reason="no wallet on this device yet" />}</span>
               <span className="fl-muted" style={{ fontSize: 12.5 }}>
                 Default. Payouts land in your WorkMarket pull balance, then you withdraw here.
