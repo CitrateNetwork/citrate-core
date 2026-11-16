@@ -312,7 +312,7 @@ fn mint_bearer() -> Zeroizing<String> {
     let mut bytes = Zeroizing::new([0u8; TOKEN_LEN]);
     OsRng.fill_bytes(bytes.as_mut());
     // hex-encode into a Zeroizing<String>; the raw byte buffer zeroizes on drop.
-    Zeroizing::new(hex::encode(bytes.as_ref()))
+    Zeroizing::new(hex::encode(&bytes[..]))
 }
 
 /// Write the bearer `token` to `path` with `0600` perms (parent `0700`), the same

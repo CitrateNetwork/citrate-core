@@ -1,14 +1,18 @@
 // =====================================================================
 // citrate-core — group role changes (#495).
 //
-// The pinned comms-member-daemon accepts a role change only with a signed RoleAssertion, and no
-// part of core or the daemon signs one yet. Until a signer exists, Assign role is shown as not
-// available with this reason, and no request is sent. `src-tauri/src/comms.rs`
-// (`groups_assign_role`) returns the same reason; groupsAssignRole.test.tsx keeps the two in step.
+// GC-2: a role change is a `grantRole` request. The 0.6.0 comms-member-daemon signs the grant
+// with this device's comms key and every member checks it. `src-tauri/src/comms.rs`
+// (`groups_assign_role`) uses the same older-daemon reason; groupsAssignRole.test.tsx keeps the
+// two in step.
 // =====================================================================
 
-/** Whether a member's role can be changed in this build. */
-export const ROLE_CHANGES_AVAILABLE: boolean = false;
+/** The member-facing reason an older daemon can't change roles, word for word the Rust
+ *  `ROLE_GRANTS_NEED_NEWER_DAEMON`. */
+export const ROLE_CHANGES_NEED_NEWER_DAEMON = "Role changes need the 0.6.0 comms daemon; the one this app runs is older.";
 
-/** The member-facing reason, word for word the Rust `ROLE_GRANTS_NOT_AVAILABLE`. */
-export const ROLE_CHANGES_NOT_AVAILABLE = "Role changes aren't available yet: signed role grants aren't built.";
+/** Whether this member may use the role control. Only the owner: making an admin is the owner's
+ *  alone (admin gates money-adjacent surfaces), and the daemon refuses it from anyone else. */
+export function canChangeRoles(myRole: string): boolean {
+  return myRole === "owner";
+}

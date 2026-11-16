@@ -8,7 +8,7 @@ scripts/third-party-notices.mjs from release/notices.json; do not edit by hand.
 Targets: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc
 
 Components:
-  app: citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 508 third-party packages
+  app: citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 511 third-party packages
   app-webview: citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e, vite 7.3.6 build (vite.config.ts), 735 bundled modules and assets, 23 third-party packages
   citrate-node: citrate-chain@56cc2bc80439c350dd9eca8817f173c1986096e6, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
   cluster-daemon: citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 217 third-party packages
@@ -212,6 +212,7 @@ http 1.4.2  MIT OR Apache-2.0  [T1]  https://github.com/hyperium/http
 http-body 1.0.1  MIT  [T1]  https://github.com/hyperium/http-body
 http-body-util 0.1.3  MIT  [T1]  https://github.com/hyperium/http-body
 httparse 1.10.1  MIT OR Apache-2.0  [T1]  https://github.com/seanmonstar/httparse
+hybrid-array 0.2.3  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/hybrid-array
 hyper 1.10.1  MIT  [T1]  https://github.com/hyperium/hyper
 hyper-rustls 0.27.9  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/hyper-rustls
 hyper-util 0.1.20  MIT  [T1]  https://github.com/hyperium/hyper-util
@@ -242,6 +243,7 @@ jsonptr 0.6.3  MIT OR Apache-2.0  [T4]  https://github.com/chanced/jsonptr
 jsonwebtoken 10.4.0  MIT  [T2]  https://github.com/Keats/jsonwebtoken
 k256 0.13.4  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/elliptic-curves/tree/master/k256
 keccak 0.1.6  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/sponges/tree/master/keccak
+kem 0.3.0-pre.0  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/traits/tree/master/kem
 keyboard-types 0.7.0  MIT OR Apache-2.0  [T1]  https://github.com/pyfisch/keyboard-types
 keyring 3.6.3  MIT OR Apache-2.0  [T1]  https://github.com/hwchen/keyring-rs.git
 libc 0.2.186  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/libc
@@ -259,6 +261,7 @@ mime 0.3.17  MIT OR Apache-2.0  [T1]  https://github.com/hyperium/mime
 minisign-verify 0.2.5  MIT  [T4]  https://github.com/jedisct1/rust-minisign-verify
 miniz_oxide 0.8.9  MIT OR Zlib OR Apache-2.0  [T4]  https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 mio 1.2.1  MIT  [T1]  https://github.com/tokio-rs/mio
+ml-kem 0.2.3  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/KEMs
 muda 0.19.3  Apache-2.0 OR MIT  [T4]  https://github.com/tauri-apps/muda
 new_debug_unreachable 1.0.6  MIT  [T1]  https://github.com/mbrubeck/rust-debug-unreachable
 nix 0.31.3  MIT  [T2]  https://github.com/nix-rust/nix  (on aarch64-apple-darwin only)

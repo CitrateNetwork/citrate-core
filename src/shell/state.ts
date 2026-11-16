@@ -10,6 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import { newThreadId } from "./slices/chatHistory";
 import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
@@ -548,6 +549,9 @@ export interface AppState {
   /** Q-E.1 (@rule8, P0) — the pending wallet money-action review (null = none). */
   walletReview: WalletReview | null;
   chatMsgs: ChatMsg[];
+  /** 0.5.4 — the id the current thread is kept under in the chat history (slices/chatHistory.ts).
+   *  Not persisted: a launch starts a new thread; the earlier ones stay in the history. */
+  chatThreadId: string;
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
   /** SCL-S7.5a (D-16 extended) — a chat message held because the local model is configured but
    *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
@@ -681,6 +685,11 @@ export interface AppState {
   /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
    *  Off by default. Persisted. */
   hermesReadAloud: boolean;
+  /** 0.5.4 — the member collapsed the sidebar to its icons. Off by default. Persisted. */
+  sidebarCollapsed: boolean;
+  /** 0.5.4 — the member collapsed the Hermes chat's right column (widgets, daemons, transactions,
+   *  tutorials). Off by default. Persisted. */
+  hermesRailCollapsed: boolean;
   /** HUP-S10.4 (US-10.4 AC1) — write today's Hermes summary into the journal automatically once a
    *  day. Off by default; the member turns it on in the Journal. Persisted. */
   journalAutoSummary: boolean;
@@ -941,6 +950,7 @@ export function freshState(pid: string): AppState {
     activation: null,
     activationError: null,
     chatMsgs: [],
+    chatThreadId: newThreadId(),
     chatStatus: "ready",
     chatRouteHold: null,
     chatRoute: "ask_first",
@@ -1002,6 +1012,8 @@ export function freshState(pid: string): AppState {
     hermesPersona: null,
     customPersonas: [],
     hermesReadAloud: false,
+    sidebarCollapsed: false,
+    hermesRailCollapsed: false,
     journalAutoSummary: false,
     journalAutoSummaryDay: null,
     aiEdit: null,
@@ -1148,6 +1160,8 @@ export const PERSIST_SCOPE = {
   pins: D, userSkills: D, jPages: D, jSel: D, connections: D, aiDefault: D, hermesSidecarLoop: D,
   hermesSidecarLoopDefaultApplied: D, hermesTerminal: D, hermesTerminalDefaultApplied: D, hermesBrief: D,
   hermesPersona: D, customPersonas: D, hermesReadAloud: D, journalAutoSummary: D, journalAutoSummaryDay: D,
+  // 0.5.4: the member's layout choices (collapsed sidebar, collapsed Hermes right column).
+  sidebarCollapsed: D, hermesRailCollapsed: D,
   sponsorUnits: N, blocksProposed: N,
   // The reads still owed on this network after a switch, and the switch notice (kept until dismissed).
   netUnread: N, networkNotice: D,

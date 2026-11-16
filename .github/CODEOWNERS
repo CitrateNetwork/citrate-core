@@ -1,3 +1,10 @@
 # Code owners: the maintainers team reviews every change on protected branches.
 # Team: https://github.com/orgs/CitrateNetwork/teams/maintainers
 * @CitrateNetwork/maintainers
+
+# V60 MESH-2: the CL-S4 sign-off record, the packet copy and the signer registry. Main requires
+# code-owner reviews, so any PR touching these (including one that changes signers.json and the
+# record together) needs the owner's approval. GitHub accepts any ONE listed owner per path, so a
+# second name here would not require both people; the security lead's part is their signature in
+# the record itself, which the build verifies against signers.json.
+/release/signoffs/ @SaulBuilds

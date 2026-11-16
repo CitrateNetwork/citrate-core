@@ -3,6 +3,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { StorageBackup } from "./StorageBackup";
+import { exportProtection } from "./storageTruth";
 import { storageSlice } from "../shell/slices/storage";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";
@@ -27,11 +28,15 @@ afterEach(() => {
 });
 
 describe("K4 Backup — export", () => {
-  it("explains what is exported and that the memory store is not encrypted by the app", () => {
+  it("explains what is exported and that the backup is encrypted with the member's passphrase", () => {
     const html = render();
     expect(html).toContain("Export a backup");
     expect(html).toContain("SHA-256 of every file");
-    expect(html).toContain("The Memory part of a backup is not encrypted");
+    expect(html).toContain("encrypted with a passphrase you choose");
+    expect(html).toContain("Export encrypted to a folder");
+    expect(html).toContain('aria-label="Backup passphrase"');
+    // The unencrypted warning shows only once the member ticks the box.
+    expect(html).not.toContain("plaintext-warning");
   });
 
   it("shows progress while exporting", () => {
@@ -54,14 +59,65 @@ describe("K4 Backup — export", () => {
         skipped: [{ item: "bafygone", reason: "not pinned on this node" }],
         daemonRestarted: true,
         notes: [],
+        encrypted: false,
       },
     });
     const html = render();
-    expect(html).toContain("Backup written and checked against its manifest.");
+    expect(html).toContain("Unencrypted backup written and checked against its manifest.");
     expect(html).toContain("citrate-backup-20261019-120000");
     expect(html).toContain("2 files · 5 memory store files · 4 MB");
     expect(html).toContain("ab".repeat(32));
     expect(html).toContain("skipped bafygone: not pinned on this node");
+  });
+});
+
+describe("STO-2 Backup — protection choice", () => {
+  it("encrypts by default and needs a 12+ character passphrase typed twice", () => {
+    expect(exportProtection("", "", false).protection).toBeNull();
+    expect(exportProtection("short", "short", false).reason).toMatch(/at least 12/);
+    expect(exportProtection("correct horse battery", "correct horse batterx", false).reason).toMatch(/don't match/);
+    expect(exportProtection("correct horse battery", "correct horse battery", false).protection).toEqual({
+      passphrase: "correct horse battery",
+    });
+  });
+
+  it("writes plaintext only when the member chose it", () => {
+    expect(exportProtection("", "", true).protection).toEqual({ plaintext: true });
+  });
+
+  it("an encrypted export report says so", () => {
+    storageSlice.set({
+      lastExport: {
+        folder: "/Users/m/Backups/citrate-backup-20261019-120000.citrate-backup",
+        createdAt: 1,
+        parts: ["memory"],
+        files: 0,
+        memoryFiles: 5,
+        totalBytes: 10,
+        entriesSha256: "cd".repeat(32),
+        skipped: [],
+        daemonRestarted: false,
+        notes: [],
+        encrypted: true,
+      },
+    });
+    const html = render();
+    expect(html).toContain("Encrypted backup written.");
+    expect(html).toContain(".citrate-backup");
+  });
+
+  it("a wrong passphrase is named as such in the refusal", () => {
+    storageSlice.set({
+      restoreCheck: {
+        ...OK_CHECK,
+        folder: "/b/x.citrate-backup",
+        ok: false,
+        parts: [],
+        problem: "the backup manifest can't be used: that passphrase does not open this backup, or the file was changed or damaged",
+      },
+    });
+    const html = render();
+    expect(html).toContain("that passphrase doesn&#x27;t open this backup");
   });
 });
 
@@ -88,7 +144,7 @@ describe("K4 Backup — restore", () => {
       },
     });
     const html = render();
-    expect(html).toContain("Restore refused: this folder doesn&#x27;t match its manifest.");
+    expect(html).toContain("Restore refused: this backup doesn&#x27;t match its manifest.");
     expect(html).toContain("memory/store.bge.memdag/000123.sst: content differs from the manifest (sha256)");
     expect(html).toContain("files/bafy1: missing from the folder");
     expect(html).toContain("memory/planted.bin: not listed in the manifest");

@@ -47,7 +47,7 @@ describe("K4 storage slice", () => {
   it("export streams progress into state and keeps the report", async () => {
     const seen: (string | undefined)[] = [];
     const unsub = storageSlice.subscribe(() => seen.push(storageSlice.get().backupProgress?.phase));
-    vi.spyOn(bridge.storage, "backupExport").mockImplementation(async (_d, _p, on) => {
+    vi.spyOn(bridge.storage, "backupExport").mockImplementation(async (_d, _p, _prot, on) => {
       on?.({ op: "export", phase: "files", done: 1, total: 1, item: "files/bafy1" });
       on?.({ op: "export", phase: "done", done: 1, total: 1, item: "/b/x" });
       return {
@@ -61,9 +61,10 @@ describe("K4 storage slice", () => {
         skipped: [],
         daemonRestarted: false,
         notes: [],
+        encrypted: true,
       };
     });
-    await exportBackup("/b", ["files"]);
+    await exportBackup("/b", ["files"], { passphrase: "correct horse battery" });
     unsub();
     expect(seen).toContain("files");
     expect(storageSlice.get().lastExport?.folder).toBe("/b/x");
@@ -73,7 +74,7 @@ describe("K4 storage slice", () => {
   it("a second operation while one runs is ignored", async () => {
     storageSlice.set({ backupOp: "export" });
     const exp = vi.spyOn(bridge.storage, "backupExport");
-    await exportBackup("/b", ["files"]);
+    await exportBackup("/b", ["files"], { plaintext: true });
     expect(exp).not.toHaveBeenCalled();
   });
 

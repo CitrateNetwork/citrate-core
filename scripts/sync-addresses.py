@@ -66,8 +66,13 @@ REQUIRED = [
 # on by accident: the pin is validated like every other pin but written only with
 # --with-inference-router (US-1.5, pending owner sign-off). Without the flag it is withheld and the
 # route stays off.
+# #653 (0.5.4): FederatedRoundLedger and LoRAFactory join PatronageLedger. Group rounds read both
+# ledgers (src/fl/groupRoundsLedger.ts, src/surfaces/Train.tsx), and a round's merged adapter is a
+# LoRAFactory record. All three are block-0 contracts on r1007 and in the canonical book.
 OPTIONAL = [
     "PatronageLedger",
+    "FederatedRoundLedger",
+    "LoRAFactory",
     "ModelCooperative",
     "AgentSBT",
     "OrganizationSBT",

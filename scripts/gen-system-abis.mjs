@@ -64,6 +64,10 @@ export const NAME_MAP = {
   EntryPoint: { contract: "EntryPoint" },
   ArachnidDeterministicDeployer: { abi: null, note: "takes raw salt ++ init code, no ABI" },
   P256Verifier: { abi: null, note: "takes raw 160-byte input, no ABI" },
+  // The r1007 root book keys post-genesis contracts by their deploy script's name where it would
+  // collide (citrate-chain scripts/addresses/emit_root_book.py): DeployQuorumS6.s.sol deploys this
+  // second AnchorRegistry (src/cit_agent/AnchorRegistry.sol) for Quorum.
+  "Quorum.AnchorRegistry": { contract: "AnchorRegistry" },
 };
 /** Book names matching this prefix are TeamVestingWallet instances (DeployTeamVesting.s.sol). */
 const TEAM_VESTING_PREFIX = "TeamVesting_";

@@ -547,10 +547,7 @@ pub fn is_env_reference(v: &str) -> bool {
             return true;
         }
     }
-    if t.len() >= 3 && t.starts_with('%') && t.ends_with('%') && valid_env_key(&t[1..t.len() - 1]) {
-        return true;
-    }
-    false
+    t.len() >= 3 && t.starts_with('%') && t.ends_with('%') && valid_env_key(&t[1..t.len() - 1])
 }
 
 /// `https://<host>` or `http://<loopback>`, no credentials in the authority.

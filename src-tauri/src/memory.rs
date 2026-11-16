@@ -757,7 +757,7 @@ impl MemoryManager {
                 self.keyring
                     .set(KEYRING_MEM_STORE_ACCOUNT, key.as_ref())
                     .map_err(|e| MemoryError::Keyring(e.to_string()))?;
-                Ok(Zeroizing::new(hex::encode(key.as_ref())))
+                Ok(Zeroizing::new(hex::encode(&key[..])))
             }
         }
     }

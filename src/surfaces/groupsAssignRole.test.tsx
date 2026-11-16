@@ -1,15 +1,14 @@
-// #495 — Groups › Assign role. The pinned comms-member-daemon accepts `assignRole` only with a signed
-// RoleAssertion (`{group, assertion}`), and nothing in core or the daemon signs one yet, so every
-// press failed with "bad request: missing field `assertion`" while the confirm sheet claimed "a signed
-// RoleAssertion, enforced at the relay". Until a signer exists the action is shown as not available,
-// with a plain reason, and no request is sent. Written red-first against 90dce48a.
+// #495 / GC-2 — Groups › Assign role. A role change is a `grantRole` request: the 0.6.0
+// comms-member-daemon signs the grant with this device's comms key and sends it to the group,
+// where every member checks it against the group owner and its roster. Only the owner makes admins
+// (Admin gates money-adjacent surfaces), so the role control is the owner's. Red-first.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Groups } from "./Groups";
-import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "./groupRoles";
+import { ROLE_CHANGES_NEED_NEWER_DAEMON, canChangeRoles } from "./groupRoles";
 import { bridge } from "../bridge";
 import { freshState } from "../shell/state";
 import { groupsSlice, assignRole } from "../shell/slices/groups";
@@ -75,66 +74,51 @@ async function openPeopleTab(): Promise<void> {
 const roleButton = () =>
   [...host.querySelectorAll("button")].find((b) => /Make admin|Make member/.test(b.textContent ?? "")) as HTMLButtonElement | undefined;
 
-describe("Assign role is not available until role grants are signed (#495)", () => {
-  it("shows Make admin as not available, with the plain reason", async () => {
+describe("Assign role sends a grant the daemon signs with the comms key (#495, GC-2)", () => {
+  it("the owner sees Make admin, and confirming sends the role change", async () => {
+    const send = vi.spyOn(bridge.groups, "assignRole").mockResolvedValue();
     await openPeopleTab();
     const b = roleButton();
-    expect(b, "the role control is still drawn for a manager").toBeDefined();
-    expect(b!.disabled).toBe(true);
-    expect(b!.getAttribute("aria-disabled")).toBe("true");
-    expect(host.textContent).toContain(ROLE_CHANGES_NOT_AVAILABLE);
+    expect(b, "the owner gets the role control").toBeDefined();
+    expect(b!.disabled).toBe(false);
+    await act(async () => b!.click());
+    expect(requestSig).toHaveBeenCalledTimes(1);
+    const sheet = requestSig.mock.calls[0][0];
+    expect(JSON.stringify(sheet)).toContain("comms key");
+    expect(sheet.origin).not.toMatch(/wallet/i);
+    await act(async () => sheet.apply());
+    expect(send).toHaveBeenCalledWith(GROUP.id, THEM, "admin");
   });
 
-  it("pressing it opens no confirm sheet and sends no request", async () => {
-    const send = vi.spyOn(bridge.groups, "assignRole");
-    await openPeopleTab();
-    await act(async () => roleButton()!.click());
-    expect(requestSig).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
+  it("only the owner changes roles", () => {
+    expect(canChangeRoles("owner")).toBe(true);
+    for (const r of ["admin", "member", "guest", "agent"] as const) expect(canChangeRoles(r)).toBe(false);
   });
 
-  it("the slice refuses with the reason and never calls the bridge", async () => {
-    const send = vi.spyOn(bridge.groups, "assignRole");
+  it("an older daemon's refusal is shown in plain words", async () => {
+    vi.spyOn(bridge.groups, "assignRole").mockRejectedValue(new Error(ROLE_CHANGES_NEED_NEWER_DAEMON));
     await assignRole(GROUP.id, THEM, "admin");
-    expect(send).not.toHaveBeenCalled();
-    expect(groupsSlice.get().error).toBe(ROLE_CHANGES_NOT_AVAILABLE);
+    expect(groupsSlice.get().error).toBe(ROLE_CHANGES_NEED_NEWER_DAEMON);
     expect(groupsSlice.get().busyMember).toBeNull();
   });
 
-  it("the sim bridge refuses the same way the app does (no simulated role change)", async () => {
+  it("the sim bridge makes no simulated role change", async () => {
     if (bridge.mode !== "sim") return;
-    await expect(bridge.groups.assignRole(GROUP.id, THEM, "admin")).rejects.toThrow(ROLE_CHANGES_NOT_AVAILABLE);
+    await expect(bridge.groups.assignRole(GROUP.id, THEM, "admin")).rejects.toThrow(/desktop app/);
   });
 
-  it("drops the claim that a signed RoleAssertion is enforced at the relay", () => {
+  it("the UI reason for an older daemon is the Rust reason, word for word", () => {
+    const m = read("src-tauri/src/comms.rs").match(/ROLE_GRANTS_NEED_NEWER_DAEMON: &str =\s*"([^"]+)"/);
+    expect(m?.[1]).toBe(ROLE_CHANGES_NEED_NEWER_DAEMON);
+  });
+
+  it("groups_assign_role routes the request instead of refusing", () => {
+    expect(rustAssignRoleBody()).toMatch(/\broute\(/);
+  });
+
+  it("no copy claims the grant is enforced at the relay", () => {
     for (const p of ["src/surfaces/Groups.tsx", "src/shell/slices/groups.ts", "src/bridge/domains.ts"]) {
-      expect(read(p), p).not.toMatch(/signed\s+RoleAssertion/i);
+      expect(read(p), p).not.toMatch(/enforced at the relay/i);
     }
-  });
-});
-
-describe("tripwire: Assign role stays not available while the app has no role-grant signer", () => {
-  it("the UI flag matches groups_assign_role: refusing in Rust means not available in the UI", () => {
-    const body = rustAssignRoleBody();
-    const rustRefuses = body.includes("role_grants_available()") && !/\broute\(/.test(body);
-    // Re-enable Assign role only together with a groups_assign_role that sends a signed assertion.
-    expect(ROLE_CHANGES_AVAILABLE).toBe(!rustRefuses);
-  });
-
-  it("the UI reason is the Rust reason, word for word", () => {
-    const m = read("src-tauri/src/comms.rs").match(/ROLE_GRANTS_NOT_AVAILABLE: &str =\s*"([^"]+)"/);
-    expect(m?.[1]).toBe(ROLE_CHANGES_NOT_AVAILABLE);
-  });
-
-  it("no surface calls assignRole without going through the availability gate", () => {
-    const groups = read("src/surfaces/Groups.tsx");
-    // The role control is only wired to the confirm sheet behind ROLE_CHANGES_AVAILABLE.
-    expect(groups).toContain("ROLE_CHANGES_AVAILABLE");
-    const slice = read("src/shell/slices/groups.ts");
-    const fn = slice.slice(slice.indexOf("export async function assignRole"));
-    const gate = fn.indexOf("ROLE_CHANGES_AVAILABLE");
-    const call = fn.indexOf("bridge.groups.assignRole");
-    expect(gate, "assignRole checks the gate").toBeGreaterThan(-1);
-    expect(gate).toBeLessThan(call);
   });
 });

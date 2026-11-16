@@ -1,6 +1,6 @@
 // FL round cards (0.5.2, first cut), flag ON. The cards read the round ledgers ONLY through the
 // address book (src-tauri/addresses/40204.json). No address: "Group rounds not live yet" and no
-// chain read at all. An address with code: an honest dormant state. A failed read: unknown, never
+// chain read at all. An address with code: deployed, no rounds (#676). A failed read: unknown, never
 // a fabricated round. The design's round states exist only as labelled fixtures, here in tests.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -55,11 +55,10 @@ describe("the flag", () => {
 });
 
 describe("address book pins", () => {
-  it("today's book (r1006) pins PatronageLedger but not FederatedRoundLedger", () => {
-    // r1006 deploys PatronageLedger in block 0 (canonical book, citrate-chain a857443e);
-    // FederatedRoundLedger is not in the book, so rounds stay not live.
+  it("today's book (r1007) pins both ledgers at their block-0 addresses (#653)", () => {
+    // r1007 block 0 carries both (citrate-chain main's root book); the app's sync now emits both.
     expect(roundLedgerPins(realBook)).toEqual([
-      { name: "FederatedRoundLedger", address: null },
+      { name: "FederatedRoundLedger", address: "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5" },
       { name: "PatronageLedger", address: "0x41f68b9e710585b064459a0ec706148fbf503659" },
     ]);
   });
@@ -80,11 +79,11 @@ describe("readGroupRounds", () => {
     expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger", "PatronageLedger"] });
     expect(codeSize).not.toHaveBeenCalled();
   });
-  it("today's book (one ledger pinned): not live, and nothing is read from the chain", async () => {
-    const codeSize = vi.fn();
+  it("today's book (both pinned): code is read at the book addresses", async () => {
+    const codeSize = vi.fn(async () => 1);
     const r = await readGroupRounds(realBook, codeSize);
-    expect(r).toEqual({ kind: "not-live", missing: ["FederatedRoundLedger"] });
-    expect(codeSize).not.toHaveBeenCalled();
+    expect(r.kind).toBe("deployed-no-rounds");
+    expect(codeSize.mock.calls.map((c) => c[0])).toEqual(["0x25fc02fbfad9589d0dde84f858d0962bfa0253c5", "0x41f68b9e710585b064459a0ec706148fbf503659"]);
   });
   it("one ledger pinned is still not live, and still no read", async () => {
     const codeSize = vi.fn();
@@ -92,11 +91,11 @@ describe("readGroupRounds", () => {
     expect(r).toEqual({ kind: "not-live", missing: ["PatronageLedger"] });
     expect(codeSize).not.toHaveBeenCalled();
   });
-  it("both pinned with code: dormant, with the code sizes read", async () => {
+  it("both pinned with code: deployed, no rounds, with the code sizes read", async () => {
     const codeSize = vi.fn(async (a: string) => (a === FRL ? 9000 : 4000));
     const r = await readGroupRounds(bookWith({ FederatedRoundLedger: FRL, PatronageLedger: PL }), codeSize);
     expect(r).toEqual({
-      kind: "dormant",
+      kind: "deployed-no-rounds",
       ledgers: [
         { name: "FederatedRoundLedger", address: FRL, codeSize: 9000 },
         { name: "PatronageLedger", address: PL, codeSize: 4000 },
@@ -108,7 +107,7 @@ describe("readGroupRounds", () => {
     const r = await readGroupRounds(bookWith({ FederatedRoundLedger: FRL, PatronageLedger: PL }), async (a) => (a === PL ? 0 : 9000));
     expect(r).toEqual({ kind: "no-code", empty: ["PatronageLedger"] });
   });
-  it("a failed read is unknown, never zero and never dormant", async () => {
+  it("a failed read is unknown, never zero and never deployed", async () => {
     const r = await readGroupRounds(bookWith({ FederatedRoundLedger: FRL, PatronageLedger: PL }), async () => {
       throw new Error("rpc down");
     });
@@ -122,7 +121,7 @@ describe("GroupRoundsView copy", () => {
     { kind: "not-live", missing: ["FederatedRoundLedger", "PatronageLedger"] },
     { kind: "no-code", empty: ["PatronageLedger"] },
     { kind: "unavailable", reason: "rpc down" },
-    { kind: "dormant", ledgers: [{ name: "FederatedRoundLedger", address: FRL, codeSize: 9000 }, { name: "PatronageLedger", address: PL, codeSize: 4000 }] },
+    { kind: "deployed-no-rounds", ledgers: [{ name: "FederatedRoundLedger", address: FRL, codeSize: 9000 }, { name: "PatronageLedger", address: PL, codeSize: 4000 }] },
   ];
   const view = (r: GroupRoundsReading, variant: "chat" | "tab" = "tab") => renderToStaticMarkup(<GroupRoundsView reading={r} variant={variant} />);
 
@@ -132,10 +131,13 @@ describe("GroupRoundsView copy", () => {
     expect(view(states[2])).toContain("Group rounds not live yet");
     expect(view(states[2])).toContain("no contract code");
   });
-  it("dormant says deployed and dormant, never open or running", () => {
-    const h = view(states[4]);
-    expect(h).toContain("Deployed · dormant");
-    expect(h).not.toMatch(/round open|running|live round/i);
+  it("#676: deployed ledgers say Group rounds not live yet with deployed, no rounds, never dormant", () => {
+    for (const variant of ["tab", "chat"] as const) {
+      const h = view(states[4], variant);
+      expect(h).toContain("Group rounds not live yet");
+      expect(h).toContain("deployed, no rounds");
+      expect(h).not.toMatch(/dormant|Deployed · dormant|audited|round open|running|live round/i);
+    }
   });
   it("unavailable shows unknown with the reason, not a zero", () => {
     const h = view(states[3]);
@@ -200,7 +202,8 @@ describe("flag ON in the app", () => {
   it("Groups › Rounds shows the card, not the PatronageLedger read (V11)", () => {
     const h = rounds();
     expect(h).toContain('data-testid="group-rounds-card"');
-    expect(h).toContain("Group rounds not live yet");
+    // Today's book pins both ledgers (#653), so the first render is the code read, not "not live".
+    expect(h).toContain('data-reading="loading"');
     expect(h).not.toContain("Train together");
     expect(h).not.toContain("reads live");
   });
@@ -211,27 +214,38 @@ describe("flag ON in the app", () => {
     groupsSlice.set({ groups: [GROUP], selectedId: GROUP.id, roster: [], messages: [] });
     const h = renderToStaticMarkup(<Groups store={stubStore} s={freshState("p1")} />);
     expect(h).toContain('data-testid="group-rounds-card"');
-    expect(h).toContain("Group rounds not live yet");
+    expect(h).toContain('data-reading="loading"');
     expect(h.indexOf('data-testid="group-rounds-card"')).toBeLessThan(h.indexOf("Nothing here yet"));
   });
 
-  it("mounted with today's book, the card never calls the chain", async () => {
+  it("mounted with a book missing a ledger, the card never calls the chain", async () => {
     const codeSize = vi.fn(async () => 1);
     const el = document.createElement("div");
     const root = createRoot(el);
-    await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} />));
+    await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} book={bookWith({ PatronageLedger: PL })} />));
     expect(el.textContent).toContain("Group rounds not live yet");
     expect(codeSize).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 
-  it("mounted with both pins, the card reads code size and shows dormant", async () => {
+  it("mounted with today's book (both pinned), the card reads code at the r1007 addresses", async () => {
+    const codeSize = vi.fn(async () => 1);
+    const el = document.createElement("div");
+    const root = createRoot(el);
+    await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} />));
+    expect(codeSize.mock.calls.map((c) => c[0])).toEqual(["0x25fc02fbfad9589d0dde84f858d0962bfa0253c5", "0x41f68b9e710585b064459a0ec706148fbf503659"]);
+    act(() => root.unmount());
+  });
+
+  it("mounted with both pins, the card reads code size and shows deployed, no rounds", async () => {
     const codeSize = vi.fn(async () => 1234);
     const el = document.createElement("div");
     const root = createRoot(el);
     await act(async () => root.render(<GroupRoundsCard variant="tab" codeSize={codeSize} book={bookWith({ FederatedRoundLedger: FRL, PatronageLedger: PL })} />));
     expect(codeSize).toHaveBeenCalledTimes(2);
-    expect(el.textContent).toContain("Deployed · dormant");
+    expect(el.textContent).toContain("Group rounds not live yet");
+    expect(el.textContent).toContain("deployed, no rounds");
+    expect(el.textContent).not.toMatch(/dormant/i);
     act(() => root.unmount());
   });
 });

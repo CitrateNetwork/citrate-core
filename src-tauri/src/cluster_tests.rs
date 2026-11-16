@@ -337,6 +337,7 @@ fn peer_dto_omits_member_for_a_member_identity() {
         address: "aa".into(),
         online: true,
         member: None,
+        link: None,
     };
     assert_eq!(
         serde_json::to_string(&dto).expect("json"),
@@ -539,4 +540,35 @@ fn the_seed_commands_are_registered_and_allowed_for_the_main_window_only() {
         assert!(lib.contains(&format!("cluster::{cmd},")), "{cmd} in lib.rs");
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
     }
+}
+
+/// V60 MESH-4: a NAT-aware daemon (citrate-cluster S0-NAT-SPIKE) says how an online peer is
+/// reached; the UI gets it as `link`, and nothing when the daemon does not say (older daemon) or
+/// says something other than `direct` / `relayed`.
+#[test]
+fn peers_carry_the_link_kind_from_a_nat_aware_daemon() {
+    let parse = |line: &str| -> Vec<ClusterPeerDto> {
+        match serde_json::from_str::<Response>(line).expect("parse") {
+            Response::Peers { peers } => peers.into_iter().map(ClusterPeerDto::from).collect(),
+            other => panic!("expected Peers, got {other:?}"),
+        }
+    };
+    let dtos = parse(
+        r#"{"type":"peers","peers":[
+            {"address":"aa","online":true,"link":"relayed"},
+            {"address":"bb","online":true,"link":"direct"},
+            {"address":"cc","online":true,"link":"teleported"},
+            {"address":"dd","online":false}]}"#,
+    );
+    let out = serde_json::to_value(&dtos).expect("json");
+    assert_eq!(out[0]["link"], "relayed");
+    assert_eq!(out[1]["link"], "direct");
+    assert!(out[2].get("link").is_none(), "an unknown kind is not passed on");
+    assert!(out[3].get("link").is_none(), "an offline peer has no link");
+    // An older daemon sends no link: the UI line is exactly as before.
+    let old = parse(r#"{"type":"peers","peers":[{"address":"aa","online":true}]}"#);
+    assert_eq!(
+        serde_json::to_string(&old).expect("json"),
+        r#"[{"address":"aa","online":true}]"#
+    );
 }

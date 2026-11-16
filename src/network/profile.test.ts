@@ -30,14 +30,17 @@ describe("network profile (K6)", () => {
     expect(missing.every((m) => m.reason !== "not recorded" && m.reason.length > 0)).toBe(true);
   });
 
-  it("r1007 (0.5.3) is known and not ready until the genesis cut; a retired profile is refused", () => {
+  it("r1007 (0.5.3) is the active, ready profile after the genesis cut; r1006 is retired; a retired profile is refused", () => {
     const r1007 = PROFILES.find((p) => p.id === "r1007");
     expect(r1007).toBeDefined();
-    expect(isReady(r1007!)).toBe(false);
-    expect(gateGenesis(r1007!)).toBeNull();
-    expect(missingValues(r1007!).map((m) => m.field)).toEqual(["genesisHash", "genesisProfile", "bootnodes", "addressBookSha256", "minChainRev"]);
+    expect(ACTIVE_PROFILE_ID).toBe("r1007");
+    expect(isReady(r1007!)).toBe(true);
+    expect(gateGenesis(r1007!)).toBe("0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631");
+    expect(missingValues(r1007!)).toEqual([]);
     expect(r1007!.memberPruneRetain).toBe(10_000);
-    expect(ACTIVE_PROFILE_ID).not.toBe("r1007");
+    const r1006 = PROFILES.find((p) => p.id === "r1006");
+    expect(r1006?.retired).toMatch(/r1007/);
+    expect(isReady(r1006!)).toBe(false);
     // The Rust rule: retired is refused even with every value set; an empty reason is malformed.
     const retired: NetworkProfile = { ...ACTIVE_PROFILE!, retired: "replaced by r1007" };
     expect(isReady(retired)).toBe(false);

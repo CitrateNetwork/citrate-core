@@ -187,9 +187,15 @@ boot, rpc and indexer nodes must stay full-history.
 
 ## Cutting 0.5.3 (runbook)
 
-1. **Values**: fill `release/network-cut.json` from the S4-1/S4-2/S4-3 records (genesis, keys,
-   book) and the three node builds (N1); empty `pending`.
-2. `python3 -I scripts/network-cut.py apply`.
+1. **Values and apply, one command**: put the S4-1/S4-2/S4-3 records (genesis, keys, book) and
+   the three node builds (N1) into one JSON object (`genesisHash`, `genesisProfile`,
+   `compiledActivations`, `chainParams`, `rpcUrl`, `bootnodes`, `addressBookSha256`, `chainRev`,
+   `consensusFingerprint`, `node.<target>`), then
+   `python3 -I scripts/network-cut.py fill --values <file> --apply`. It writes the cut and every
+   pin, or nothing: an unknown key, a null, a malformed value, a value already in the cut, or an
+   incomplete cut is refused before any file changes. (`fill` without `--apply` fills part of the
+   cut; `apply` alone applies a cut filled by hand.)
+2. (Done by step 1.)
 3. `cargo update -p citrate-wallet-core -p citrate-commd` (Cargo.lock to the chain rev).
 4. Copy the frozen canonical book and run `scripts/sync-addresses.py --book <it> --genesis <hash> --rpc https://rpc.citrate.ai`.
 5. Version 0.5.3 (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`, `release/components.json` `release`), notices and changelog, as for 0.5.2.

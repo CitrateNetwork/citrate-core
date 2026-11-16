@@ -8,6 +8,7 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
+import { chatHistory, forgetAllThreads, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -44,7 +45,7 @@ import type { DaemonRunEntry } from "../daemons/api";
 import type { ChatConsent, ChatRoute, FlRoundPlan, RouteAskOptions } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
-import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
+import { activeRouterId, canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { runContractView } from "../agent/contractView";
@@ -67,6 +68,7 @@ import {
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
+import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -85,6 +87,7 @@ import { parseClaimLink } from "../onboarding/claimLink";
 import { isInviteLink } from "../surfaces/inviteLink";
 import { isAccessLink } from "../onboarding/accessLink";
 import { groupsSlice } from "./slices/groups";
+import { runHermesSelfCheck, setupNotice } from "./slices/hermesSetup";
 import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
@@ -106,6 +109,8 @@ import {
 } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
+import { agentSlice } from "./slices/agent";
+import { downReason, onHermesFlip, readSidecar, sameReason, type SidecarDownReason } from "../agent/sidecarLiveness";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
@@ -824,7 +829,7 @@ export class Store {
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
-  chatInputEl: HTMLInputElement | null = null;
+  chatInputEl: HTMLTextAreaElement | null = null;
   jChatScrollEl: HTMLElement | null = null;
   jChatInputEl: HTMLInputElement | null = null;
 
@@ -854,11 +859,115 @@ export class Store {
     this.state = { ...this.state, ...patch };
     this.snap = this.state;
     this.subs.forEach((cb) => cb());
+    // 0.5.4: a changed thread (or a turn that just finished) is kept in the chat history.
+    if ("chatMsgs" in patch || "chatStatus" in patch) this.scheduleChatArchive();
+  }
+
+  // ---------- 0.5.4 — Hermes chat history (slices/chatHistory.ts) ----------
+  private _archiveT: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleChatArchive(): void {
+    if (this._archiveT) clearTimeout(this._archiveT);
+    this._archiveT = setTimeout(() => {
+      this._archiveT = null;
+      this.archiveChat();
+    }, 500);
+  }
+
+  /** Keep the current thread in the history, once no turn is running (a streaming reply is kept
+   *  when it has finished). A greeting-only thread is not kept. */
+  archiveChat(): void {
+    const s = this.state;
+    if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
+    recordThread(s.chatThreadId, s.chatMsgs);
+  }
+
+  /** Why the thread can't be switched right now, or null. A running turn writes into the current
+   *  thread, so it is never swapped from under it. */
+  private chatSwitchBlocked(): string | null {
+    if (this.state.chatStatus !== "ready" || this.state.chatRouteHold) return "Finish or stop the current reply first";
+    return null;
+  }
+
+  /** Start a new conversation. The current one stays in the history. Hermes's agent session is
+   *  rebuilt, so the new conversation does not carry the previous one's context. */
+  newChat(): boolean {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Reopen a conversation from the history. Its messages come back as they were kept; ids are
+   *  re-keyed so they never collide with new messages. Hermes's agent session is rebuilt (the
+   *  sidecar session has no record of this thread). */
+  openChat(threadId: string): boolean {
+    if (threadId === this.state.chatThreadId) return true;
+    const thread = chatHistory.get().threads.find((t) => t.id === threadId);
+    if (!thread) {
+      this.toast("That conversation is no longer in this device's history");
+      return false;
+    }
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    this.archiveChat();
+    const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
+    // changed means nothing moves in the list.
+    recordThread(thread.id, msgs, thread.updatedAt);
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
+  }
+
+  /** Erase a conversation from this device's history: core removes its sealed file and rotates the
+   *  history key, so no copy of it opens again. The current thread cannot be erased from under the
+   *  member. */
+  forgetChat(threadId: string): Promise<void> {
+    if (threadId === this.state.chatThreadId) return Promise.resolve();
+    return forgetThread(threadId);
+  }
+
+  /** Erase every conversation, the current one included, and the history key. The chat starts
+   *  over (a fresh thread and agent session), so nothing erased is sealed again. */
+  async forgetAllChats(): Promise<boolean> {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    if (this._archiveT) {
+      clearTimeout(this._archiveT);
+      this._archiveT = null;
+    }
+    const ok = await forgetAllThreads();
+    if (!ok) return false;
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    void this.rebuildProvider();
+    return true;
   }
 
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => this.tick(), 600);
+    // 0.5.4: the Hermes setup self-check at launch; a missing required item is said, not logged.
+    if (BRIDGE_MODE === "tauri") {
+      void runHermesSelfCheck().then((r) => {
+        const n = setupNotice(r);
+        if (n) this.toast(n);
+      });
+    }
     // CORE-A2 — pull the real custody lock state into the Keys-&-security
     // section. In a Tauri build this reads the live vault (custody_status); in
     // web-dev it is the sim shim. Failures leave the field "unknown" (honest).
@@ -879,6 +988,9 @@ export class Store {
     // while the local model is not running waits (bounded) instead of asking.
     if (BRIDGE_MODE === "tauri") this.launchLocalStartPending = true;
     void this.rebuildProvider();
+    // 0.5.4: Hermes starts and stops after launch (Agent › Start, Node › Services); chat follows it,
+    // so it never keeps a "Hermes is not running" route built before Hermes came up.
+    if (BRIDGE_MODE === "tauri") this.followHermes();
     // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
     // syncPct/state) from the supervisor + local RPC every 2s and fold them into
     // AppState, so the Node surface + Sidebar render live numbers instead of the
@@ -1229,13 +1341,13 @@ export class Store {
       // D-11 (ADR P-5): the cloud model the member chose for Hermes, through the core proxy. Never
       // under Local model only (core refuses it there too); it needs the sidecar loop.
       const cloudChoice = cloudModelFor(preferred, route, this.state.hermesSidecarLoop, BRIDGE_MODE);
-      const sidecarUp =
+      // 0.5.4: one fresh read; a failed read is "unreadable", never "not running" (sidecarLiveness.ts).
+      const sidecarReading =
         (kind === "local" || cloudChoice) && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
-          ? await bridge.agentHarness
-              .status()
-              .then((st) => st.running)
-              .catch(() => false)
-          : false;
+          ? await readSidecar(() => bridge.agentHarness.status())
+          : null;
+      const sidecarUp = sidecarReading?.up === true;
+      this.sidecarDown = null;
       if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint,
@@ -1314,7 +1426,9 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC1): the local model's agent loop runs only in the Hermes sidecar. With
         // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
         // and it says so: the webview runs no tool loop for the local model.
-        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx));
+        // 0.5.4: the notice names the real case: loop switched off, not running, or status unknown.
+        this.sidecarDown = downReason(this.state.hermesSidecarLoop, sidecarReading);
+        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx), this.sidecarDown);
         this.reflectProvider();
         return;
       }
@@ -3055,6 +3169,18 @@ export class Store {
     this.save();
   }
 
+  /** 0.5.4 — collapse the sidebar to its icons, or expand it (remembered across launches). */
+  toggleSidebar(collapsed: boolean = !this.state.sidebarCollapsed): void {
+    this.setState({ sidebarCollapsed: collapsed });
+    this.save();
+  }
+
+  /** 0.5.4 — collapse the Hermes chat's right column, or expand it (remembered across launches). */
+  toggleHermesRail(collapsed: boolean = !this.state.hermesRailCollapsed): void {
+    this.setState({ hermesRailCollapsed: collapsed });
+    this.save();
+  }
+
   // ---------- HUP-S10.4 (US-10.4 AC1) — the daily journal summary ----------
 
   /**
@@ -3197,7 +3323,7 @@ export class Store {
               planReported(ev.steps);
             } else if (ev.kind === "approval") {
               approvalNoted(ev.callId, ev.tool, ev.state);
-            } else if (!ac.signal.aborted) noteStep(ev.step);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
           },
         },
       });
@@ -3333,6 +3459,34 @@ export class Store {
   /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
   private sidecarReattachTried = false;
 
+  private hermesFlipUnsub: (() => void) | null = null;
+
+  /** 0.5.4 — rebuild the chat provider each time the Agent slice sees Hermes start or stop. */
+  followHermes(): void {
+    if (this.hermesFlipUnsub) return;
+    this.hermesFlipUnsub = onHermesFlip(agentSlice.subscribe, agentSlice.get, () => {
+      if (this.state.hermesSidecarLoop) void this.rebuildProvider();
+    });
+  }
+
+  /** 0.5.4 — why chat is on the no-tools fallback (null = it is not). */
+  private sidecarDown: SidecarDownReason | null = null;
+
+  /**
+   * 0.5.4 — before a message goes out on the no-tools fallback, read Hermes again. Hermes may have
+   * come up (or its status become readable) since the provider was built: then the provider is
+   * rebuilt, so the message goes to Hermes and no stale "not running" notice is shown. With the
+   * loop switched off nothing is read. Returns the provider to send with.
+   */
+  private async recheckSidecarBeforeSend(provider: ChatProvider): Promise<ChatProvider> {
+    const down = this.sidecarDown;
+    if (!down || down.why === "loop_off" || provider !== this.provider || BRIDGE_MODE !== "tauri") return provider;
+    const now = await readSidecar(() => bridge.agentHarness.status());
+    if (!now.up && sameReason(down, downReason(true, now))) return provider;
+    await this.rebuildProvider();
+    return this.provider ?? provider;
+  }
+
   /**
    * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
    * running (or finished while the view was gone) is shown to its end, core calls the loop asks for
@@ -3358,6 +3512,8 @@ export class Store {
       this.turnAbort = ac;
       beginTurn(provider.kind, `${provider.label} · resumed after reload`);
     };
+    // #643: the resumed turn's tool results (what this view saw), for the final-answer check.
+    const toolOutputs: TurnToolOutput[] = [];
     try {
       const r = await provider.reattach({
         signal: ac.signal,
@@ -3380,6 +3536,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, msgId, ensure, meta);
+              toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3397,6 +3554,8 @@ export class Store {
               commandRan(ev);
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
+            } else if (ev.kind === "tool_output") {
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
               // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
@@ -3419,6 +3578,7 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
+    if (shown) await this.checkAnswerClaims(msgId, toolOutputs);
     if (shown) patch((m) => ({ ...m, streaming: false }));
     if (began) this.setState({ chatStatus: "ready" });
     this.scrollChat();
@@ -3613,6 +3773,7 @@ export class Store {
         close: (id) => h.sessionClose(id),
       },
       handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
+      checkReply: (reply, outputs) => this.checkDaemonReply(reply, outputs),
     });
   }
 
@@ -3639,6 +3800,8 @@ export class Store {
     const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
+    // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
+    if (this.sidecarDown) provider = await this.recheckSidecarBeforeSend(provider);
     // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
     // Hold this message: wait for the app's own startup start, or ask the member. Nothing is sent
     // to the gateway unless the member chooses that for this message.
@@ -3660,6 +3823,8 @@ export class Store {
     }
     beginTurn(provider.kind, provider.label);
     const asstId = "m" + ++this.mid;
+    // #643: this turn's tool results, for the final-answer check on deploy claims.
+    const toolOutputs: TurnToolOutput[] = [];
     let started = false;
     const ensure = () => {
       if (started) return;
@@ -3720,6 +3885,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
+              toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3747,6 +3913,11 @@ export class Store {
               this.toast(ev.text);
               return;
             }
+            // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
+            if (ev.kind === "tool_output") {
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              return;
+            }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
             if (ev.kind === "approval") {
               approvalNoted(ev.callId, ev.tool, ev.state);
@@ -3765,12 +3936,16 @@ export class Store {
       const winner = await Promise.race([run.then(() => "done" as const), stopSignal]);
       if (winner === "stopped") throw new TurnStopped();
       flush();
+      // #643: no deploy claim is kept unless this turn's tools confirmed it (receipt + code).
+      await this.checkAnswerClaims(asstId, toolOutputs);
       endTurn("answered");
       // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
       this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
       flush();
       ensure();
+      // #643: a stopped or failed turn's partial text is checked the same way.
+      await this.checkAnswerClaims(asstId, toolOutputs);
       if (e instanceof TurnStopped || stopped()) {
         patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
         endTurn("stopped");
@@ -3788,6 +3963,63 @@ export class Store {
     this.scrollChat();
     this.save();
   }
+  /** #643 — what each conversation (by thread id) has established about deploys. */
+  private deployLedgers = new Map<string, DeployLedger>();
+
+  /** #643 — the deploy ledger of the conversation on screen. */
+  private deployLedger(): DeployLedger {
+    const id = this.state.chatThreadId || "";
+    let l = this.deployLedgers.get(id);
+    if (!l) {
+      l = newDeployLedger();
+      this.deployLedgers.set(id, l);
+    }
+    return l;
+  }
+
+  /**
+   * #643 — read a turn's tool results into the conversation's deploy ledger and return the
+   * evidence for the final-answer check (src/agent/deployClaims.ts).
+   */
+  private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
+    return collectDeployEvidence(outputs, {
+      ledger: this.deployLedger(),
+      memberTexts: this.state.chatMsgs.filter((m) => m.who === "You").map((m) => m.text),
+      memberWallet: this.state.walletAddr || null,
+    });
+  }
+
+  /**
+   * #643 — the final-answer check. Before an answer is kept (shown as final, read aloud, saved,
+   * and sent back as context next turn), every deploy claim in it is checked: an address stays
+   * only when a trusted receipt in this conversation names it and `eth_getCode` on 40204 (core
+   * `contract_get_code`) returns code there, or, for a contract that is not the member's own
+   * deploy, when there is code at it; a malformed address is removed; a claimed deploy with no
+   * receipt is replaced by where the deploy really stands (refused, waiting for approval,
+   * declined, unfunded, ...).
+   */
+  private async checkAnswerClaims(msgId: string, outputs: TurnToolOutput[]): Promise<void> {
+    const ev = this.deployEvidence(outputs);
+    const msg = this.state.chatMsgs.find((m) => m.id === msgId);
+    if (!msg || !msg.text) return;
+    const checked = await checkDeployClaims(msg.text, ev, (a) => bridge.contracts.getCode(a));
+    if (!checked.changed) return;
+    console.warn("#643 answer check:", checked.findings.join("; "));
+    this.setState((s) => ({
+      chatMsgs: s.chatMsgs.map((m) =>
+        m.id === msgId ? { ...m, text: checked.text, chips: m.chips.concat([{ label: DEPLOY_CLAIM_CHIP, status: "declined" }]) } : m,
+      ),
+    }));
+  }
+
+  /** #643 — a scheduled daemon run's reply, checked the same way before it is shown or logged. */
+  private async checkDaemonReply(reply: string, outputs: TurnToolOutput[]): Promise<string> {
+    const ev = collectDeployEvidence(outputs, { memberWallet: this.state.walletAddr || null });
+    const checked = await checkDeployClaims(reply, ev, (a) => bridge.contracts.getCode(a));
+    if (checked.changed) console.warn("#643 daemon reply check:", checked.findings.join("; "));
+    return checked.text;
+  }
+
   scrollChat(): void {
     requestAnimationFrame(() => {
       if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
@@ -4404,7 +4636,7 @@ export class Store {
           // HUP-S6.4: the READY D-4 gate record core checked for exactly this bytecode.
           ...(view.gate ? { deployGate: view.gate } : {}),
         });
-        result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf.";
+        result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf. Nothing is deployed yet: there is no contract address until the member approves, the creation tx is sent, and its receipt names one.";
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         // HUP-S6.4 (D-4): core refused because the deploy gate is not READY for this bytecode.
@@ -4863,10 +5095,32 @@ export class Store {
    * switches the SERVED local model for a local pick (modelsSlice.selectModel restarts
    * llama-server); the gateway is the always-ready default, so picking it needs no restart.
    */
-  selectModel(id: string, choices: ModelChoice[]): void {
-    if (!canSelect(id, choices)) return; // phantom id — never persist a non-choice
+  /**
+   * D-11 — a cloud choice (a model of a provider connected in Settings › Models) is stored in core
+   * as the preferred model (`providers_preferred_set`, which checks the provider can take calls),
+   * and the provider is rebuilt so the next Hermes turn runs on it through the core model proxy.
+   * A local or gateway choice clears a stored cloud model, so the pick in the chat is what answers.
+   * Returns core's refusal (nothing changes then), or null.
+   */
+  async selectModel(id: string, choices: ModelChoice[]): Promise<string | null> {
+    if (!canSelect(id, choices)) return null; // phantom id — never persist a non-choice
+    const chosen = choices.find((c) => c.id === id);
+    if (chosen?.source === "cloud" && chosen.cloud) {
+      const err = await this.setHermesCloudModel(chosen.cloud);
+      if (err) return err;
+      this.setState({ activeModelId: id });
+      this.save();
+      return null;
+    }
     this.setState({ activeModelId: id });
     this.save();
+    if (this.state.hermesCloudModel) return this.setHermesCloudModel(null);
+    return null;
+  }
+
+  /** The router id shown as selected: the stored cloud model while one is set, else the stored id. */
+  routerActiveId(): string | null {
+    return activeRouterId(this.state.activeModelId, this.state.hermesCloudModel);
   }
 
   /**
@@ -4875,7 +5129,7 @@ export class Store {
    * chat never routes to a not-ready (still-downloading / not-pulled) model.
    */
   routerActive(choices: ModelChoice[]): ModelChoice {
-    return resolveActive(this.state.activeModelId, choices);
+    return resolveActive(this.routerActiveId(), choices);
   }
 
   /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an

@@ -23,6 +23,7 @@
 @import "@fontsource/space-grotesk/700.css";
 @import "./foundation.css";
 @import "./tokens.css";
+@import "./fl.css";
 
 /* App root fills the Tauri webview; the design drives its own backgrounds
    per surface via data-register, so the root stays neutral. */

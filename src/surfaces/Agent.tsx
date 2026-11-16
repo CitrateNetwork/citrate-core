@@ -38,6 +38,7 @@ import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
 import { CHAIN_ID_TEXT } from "../network/profile";
 import { openRecords } from "./hermes/ControlsRecords";
+import { HermesSetupCard } from "./hermes/HermesSetupCard";
 
 type Tab = "overview" | "contracts";
 
@@ -274,6 +275,9 @@ export function Agent({ store, s, children }: SurfaceProps & { /** Hermes › Wo
                   This agent holds no key and signs nothing. It runs skills on your node; anything that touches the chain, your code, or your shell stops for your review.
                 </p>
               </div>
+
+              {/* 0.5.4: the setup self-check (what Hermes needs, and what is missing). */}
+              {sel.id === "hermes" && <HermesSetupCard />}
 
               {/* skills */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>

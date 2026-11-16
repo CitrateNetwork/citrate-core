@@ -1895,6 +1895,8 @@ fn r1006_network() -> crate::network_profile::ReadyNetwork {
     let mut p = crate::network_profile::profile("r1006")
         .expect("the r1006 profile exists")
         .clone();
+    // The r1007 cut retired r1006 (0.5.3); these cases test the node on an r1006 network.
+    p.retired = None;
     p.genesis_hash = Some(R1006_GENESIS_HASH.to_string());
     p.address_book_sha256 = Some("5c".repeat(32));
     p.min_chain_rev = Some("9a32147e2aac60d388356ecc67488d717aa84c41".to_string());

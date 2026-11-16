@@ -28,14 +28,22 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
 const fill = path.join(here, "fill-network-profile.sh");
 const check = path.join(here, "check-network-profile.sh");
-const realProfiles = path.join(repo, "src-tauri", "network", "profiles.json");
+// These RC52 cases are about the r1006 profile. Since the r1007 cut (2026-11-12) the shipped file
+// has r1007 active and r1006 retired, so they run on the file as it shipped before that cut
+// (fixtures/network-cut/pre-cut, the bytes at the commit before the fill), with its r1006 books and
+// the node rev it pinned. The shipped r1007 state is covered by network-cut.test.mjs.
+const PRE_CUT = path.join(repo, "fixtures", "network-cut", "pre-cut");
+const realProfiles = path.join(PRE_CUT, "src-tauri", "network", "profiles.json");
+const shippedProfiles = path.join(repo, "src-tauri", "network", "profiles.json");
+const PRE_CUT_REV = JSON.parse(fs.readFileSync(path.join(PRE_CUT, "release", "components.json"), "utf8"))
+  .components.find((c) => c.id === "citrate-node").source.rev;
 // The values the RC52 fill wrote into the shipped r1006 profile, and their reasons before it.
 const R1006_FILLED = {
   genesisHash: "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4",
   addressBookSha256: "724e3843f677588a6aac680554dd1f2db768d5c3ca2bea18bdc0c173c100b90b",
   // The node rev is read from build-sidecar.sh (the pin the profile must equal), not repeated here,
   // so a node rev change is the two pin lines only.
-  minChainRev: /^MIN_CHAIN_REV="([0-9a-f]{40})"/m.exec(fs.readFileSync(path.join(here, "build-sidecar.sh"), "utf8"))[1],
+  minChainRev: PRE_CUT_REV,
 };
 const PREFILL_REASONS = {
   genesisHash: "recorded at the r1006 reroll (block 0 of the fleet after fleet_agree.sh); fill with scripts/fill-network-profile.sh",
@@ -51,6 +59,9 @@ function prefillProfiles() {
   return d;
 }
 const realSidecar = path.join(here, "build-sidecar.sh");
+// build-sidecar.sh as it was before the cut: the same script with the r1006 node rev.
+const preCutSidecarText = () =>
+  fs.readFileSync(realSidecar, "utf8").replace(/^MIN_CHAIN_REV="[0-9a-f]{40}"/m, `MIN_CHAIN_REV="${PRE_CUT_REV}"`);
 
 const GENESIS = "0x" + "6a".repeat(32);
 // Block 0 of r1006: what the bundled node builds for genesis profile r1006 (citrate-chain 9a32147e).
@@ -112,7 +123,15 @@ afterEach(() => {
 });
 
 describe("the shipped r1006 profile", () => {
-  it("is filled with the reroll values (RC52 fill) and is the active profile, ready by the app's rule", () => {
+  it("is retired by the r1007 cut and keeps its values, so a 0.5.2 data dir on r1006 is still named", () => {
+    const d = JSON.parse(fs.readFileSync(shippedProfiles, "utf8"));
+    expect(d.active).toBe("r1007");
+    expect(d.profiles.r1006.retired).toMatch(/r1007/);
+    const before = JSON.parse(fs.readFileSync(realProfiles, "utf8")).profiles.r1006;
+    expect({ ...d.profiles.r1006, retired: undefined }).toEqual({ ...before, retired: undefined });
+  });
+
+  it("was filled with the reroll values (RC52 fill) and was the active profile before the r1007 cut, ready by the app's rule", () => {
     const d = JSON.parse(fs.readFileSync(realProfiles, "utf8"));
     const p = d.profiles.r1006;
     expect(d.active).toBe("r1006");
@@ -289,8 +308,11 @@ describe("fill-network-profile.sh", SLOW, () => {
 });
 
 describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
-  it("positive control: the shipped profiles pass the release check, r1006 required (G0)", () => {
-    const r = run(check, ["--release", "--require-active", "r1006"]);
+  it("positive control: the pre-cut shipped tree passes the release check, r1006 required (G0)", () => {
+    const sidecar = path.join(dir, "build-sidecar.sh");
+    fs.writeFileSync(sidecar, preCutSidecarText());
+    const r = run(check, ["--release", "--require-active", "r1006", "--profiles", realProfiles,
+      "--app-book-dir", path.join(PRE_CUT, "src-tauri"), "--sidecar", sidecar]);
     expect(r.code, r.err).toBe(0);
     expect(r.out).toMatch(/OK \(active r1006, release; not set \(inactive\): r1007, genesis-2026-12\)/);
   });
@@ -324,7 +346,7 @@ describe("check-network-profile.sh (release tripwire, G0)", SLOW, () => {
     const oldBook = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri", "addresses", "40204.json"), "utf8"));
     oldBook.genesisHash = prefillProfiles().profiles["alpha-r1005"].genesisHash;
     fs.writeFileSync(appBook, JSON.stringify(oldBook, null, 2) + "\n");
-    fs.copyFileSync(realSidecar, sidecar);
+    fs.writeFileSync(sidecar, preCutSidecarText());
     const stale = run(check, opts);
     expect(stale.code).toBe(1);
     expect(stale.err).toMatch(/embedded book .* genesis .* != profile/);

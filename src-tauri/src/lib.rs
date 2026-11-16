@@ -59,6 +59,8 @@ mod contract_reader;
 mod deploy_gate;
 // CORE-A3 (0.5.3): durable deploy records, encrypted per project.
 mod deploy_records;
+// 0.5.4 — the Hermes chat history, sealed on this device (ML-KEM-768 + AES-256-GCM, key in the keyring).
+mod hermes_history;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -181,6 +183,8 @@ mod skills_local;
 mod telemetry;
 // CORE-D6 (0.5.3): drain the sidecars before an update is installed.
 mod update_drain;
+// 0.5.4: the signed minimum version (forced update).
+mod update_policy;
 // HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
 mod template_forge;
 mod tier;
@@ -197,6 +201,8 @@ mod cluster_mesh;
 mod comms;
 mod embed_serve;
 mod hermes;
+// 0.5.4: Hermes provisioning at launch + the setup self-check.
+mod hermes_setup;
 // SCL-S0.3: the managed browser does not outlive the Hermes sidecar.
 mod hermes_headless;
 mod hermes_learn;
@@ -370,6 +376,9 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
         })
         .setup(|app| {
+            // 0.5.4 (#677, owner 2026-11-14: on for new installs only): whether this install has
+            // data from an earlier run, read before this launch writes anything.
+            let had_existing_data = hermes_setup::had_existing_data(&hermes_setup::data_roots(app.handle()));
             // K6 — install the network gate before anything can sign. Every wallet signature is
             // checked locally against the active network profile (refused when no network is set,
             // or when it commits to another chain id). Transaction sends additionally check the
@@ -397,6 +406,15 @@ pub fn run() {
             // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
             // profile removed, from the record this app kept (never from anything the sidecar wrote).
             hermes::clean_leftover_browser(handle);
+            // STO-2 P3: a backup staging copy an earlier (killed) run left behind is removed
+            // before any backup can run. It may hold plaintext of the member's stores.
+            if let Ok(dir) = app.path().app_data_dir() {
+                match storage_backup::sweep_staging(&dir) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("[storage] removed {n} leftover backup staging folder(s)"),
+                    Err(e) => eprintln!("[storage] {e}"),
+                }
+            }
             // RC52 P-9a: spawn-time MCP files an earlier run left are removed, and member MCP env
             // values an older version kept in plain text move to the keychain (in the background).
             mcp_servers::startup(handle);
@@ -572,7 +590,13 @@ pub fn run() {
             // data dir; started on demand via ipfs_start (alongside the node).
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
             // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
-            // Settings; loopback only; every request needs a connect token; writes need approval.
+            // Settings, or (owner 2026-11-14: on for new installs only) a real first run turned it
+            // on above; loopback only; every request needs a connect token; writes need approval.
+            // 0.5.4: provision Hermes (data folders, pinned starter capsules) BEFORE the node MCP
+            // state is built. Owner 2026-11-14: on for new installs only. A real first run also
+            // offers Hermes the node MCP read tools and turns the server on; an upgraded install
+            // keeps both off (its Setup card offers "Turn on node tools").
+            hermes_setup::provision(app.handle(), had_existing_data);
             app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
             // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
             // watching (turns from the node MCP server or the CLI), instead of leaving them to the
@@ -757,6 +781,12 @@ pub fn run() {
             deploy_records::deploy_record_save,
             deploy_records::deploy_records_list,
             deploy_records::deploy_record_get,
+            // 0.5.4: the Hermes chat history, sealed on this device (P-11).
+            hermes_history::hermes_history_list,
+            hermes_history::hermes_history_save,
+            hermes_history::hermes_history_delete,
+            hermes_history::hermes_history_delete_all,
+            hermes_history::hermes_history_set_retention,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,
@@ -874,6 +904,10 @@ pub fn run() {
             training::training_claim,
             hermes::hermes_start,
             hermes::hermes_status,
+            // 0.5.4: the Hermes setup self-check.
+            hermes_setup::hermes_setup_check,
+            hermes_setup::hermes_setup_repair,
+            hermes_setup::hermes_setup_enable_node_tools,
             hermes::hermes_skills,
             hermes::hermes_run_skill,
             hermes::hermes_pending_approvals,
@@ -1116,6 +1150,10 @@ pub fn run() {
             update_drain::update_prepare,
             update_drain::update_prepare_cancel,
             update_drain::update_install_begin,
+            // 0.5.4: the signed minimum version the update gate reads.
+            update_policy::update_policy_apply,
+            update_policy::update_policy_status,
+            update_policy::update_policy_refresh,
             // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
             sidecar_logs::diagnostics_logs_export,
             // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call

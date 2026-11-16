@@ -1,14 +1,16 @@
 # created: 2026-10-22 | branch: ci/k1l-linux-native-acceptance | author: Larry Klosowski + Claude Opus 5.5 (DGX lane)
 # status: active (K1-L, SCL-S14.6). Packages `linux-native-acceptance.sh --fetch <arch>` downloads.
 # "to" = the release under test; "from" = the 0.4.x install S14.6 updates over.
-# sha256 values are the published SHA256SUMS-linux of each release (CDN downloads/<v>/), and were
-# re-checked against the downloaded files on 2026-10-22. Bump "to" with each Linux release.
+# sha256 values are the published SHA256SUMS-linux of each release, and equal the digest GitHub
+# reports for each asset (checked by --check-pins and before every fetch). Since 2026-11-11 the
+# packages come from the GitHub release (owner 053-UPDATER decision; the CDN answers 403). "from"
+# is 0.4.1: v0.4.2 has no Linux assets on GitHub. Bump "to" with each Linux release.
 # role version arch kind sha256 url
-to   0.5.1 aarch64 deb      a01951553dc8877a9db17cc10a4672350d287f7603b6764808f18414c53cf0a3 https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-aarch64.deb
-to   0.5.1 aarch64 AppImage c9205242157aff0d863fe1412448e103dbb90465d584a7b9f036327002854faa https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-aarch64.AppImage
-from 0.4.2 aarch64 deb      b7583630ea587f754a2df4141e0db19e65993d280a4a240bd60f6f27a8898b1b https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.4.2/Citrate-Core-linux-aarch64.deb
-from 0.4.2 aarch64 AppImage 0a56b2565dd6cd1cca2a8f9c0d25fe78b87ec1c6233a3491b302ad980cdbec62 https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.4.2/Citrate-Core-linux-aarch64.AppImage
-to   0.5.1 x86_64  deb      58af16697bd80fe98cc36f3d36f2ca4aec1a5f4de0b37053effa6829f1e245f0 https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-x86_64.deb
-to   0.5.1 x86_64  AppImage 8171cd24cc2e7e5258dcc6ec86cf899ff8d7d7f3f3fbd4117e29009f169a4c7c https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.5.1/Citrate-Core-linux-x86_64.AppImage
-from 0.4.2 x86_64  deb      2ac2c797429f27185f534c04f45224ea68d96b93fd7c742cb593580143eddc67 https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.4.2/Citrate-Core-linux-x86_64.deb
-from 0.4.2 x86_64  AppImage 8280df5530268f27d23b7e371f45e1409b2f672bc8d0e55f5b977b6b4b1d8f19 https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/v0.4.2/Citrate-Core-linux-x86_64.AppImage
+to   0.5.1 aarch64 deb      a01951553dc8877a9db17cc10a4672350d287f7603b6764808f18414c53cf0a3 https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.1/Citrate-Core-linux-aarch64.deb
+to   0.5.1 aarch64 AppImage c9205242157aff0d863fe1412448e103dbb90465d584a7b9f036327002854faa https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.1/Citrate-Core-linux-aarch64.AppImage
+from 0.4.1 aarch64 deb      8857309005a04e288bb0497699d4eb1ed95015d3b23c5cd3c28ddfc06172396d https://github.com/CitrateNetwork/citrate-core/releases/download/v0.4.1/Citrate-Core-linux-aarch64.deb
+from 0.4.1 aarch64 AppImage 89bfcbbf8af28ddd63201c4aace64b9cba11fd99e4c844dd7145c1891cd0a8c0 https://github.com/CitrateNetwork/citrate-core/releases/download/v0.4.1/Citrate-Core-linux-aarch64.AppImage
+to   0.5.1 x86_64  deb      58af16697bd80fe98cc36f3d36f2ca4aec1a5f4de0b37053effa6829f1e245f0 https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.1/Citrate-Core-linux-x86_64.deb
+to   0.5.1 x86_64  AppImage 8171cd24cc2e7e5258dcc6ec86cf899ff8d7d7f3f3fbd4117e29009f169a4c7c https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.1/Citrate-Core-linux-x86_64.AppImage
+from 0.4.1 x86_64  deb      cde859fb5d56221fecbee284dc2458bd86829d3cbba1936bad0e84e6818e462a https://github.com/CitrateNetwork/citrate-core/releases/download/v0.4.1/Citrate-Core-linux-x86_64.deb
+from 0.4.1 x86_64  AppImage c7c7c7db2f0e854043f4dff3bd27ace896a12d99b0fb4e89991d1be2ab855959 https://github.com/CitrateNetwork/citrate-core/releases/download/v0.4.1/Citrate-Core-linux-x86_64.AppImage

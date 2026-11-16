@@ -6,7 +6,6 @@
 // Guarded out of packaged builds by the bridge mode. secp addresses are a clearly-fake sim self.
 import type { Group, GroupMessage, GroupsDomain } from "../domains";
 import type { SimHost } from "./index";
-import { ROLE_CHANGES_NOT_AVAILABLE } from "../../surfaces/groupRoles";
 
 /** The dev user's address in sim (clearly fake, valid hex) — the owner/sender of sim groups. */
 const SIM_SELF = "0x5100000000000000000000000000000000000051";
@@ -60,10 +59,9 @@ export function simGroups(_host: SimHost): GroupsDomain {
     async roster(groupId) {
       return groups.get(groupId)?.members.map((m) => ({ ...m })) ?? [];
     },
-    // #495: the app has no role-grant signer, so the real command refuses. The sim refuses the same
-    // way rather than simulate a role change the app can't make.
+    // GC-2: a role change is signed by the desktop app's comms daemon; the sim does not simulate one.
     async assignRole() {
-      throw new Error(ROLE_CHANGES_NOT_AVAILABLE);
+      throw new Error("Role changes run in the desktop app (the comms daemon signs them).");
     },
     async offboard(groupId, address) {
       const g = groups.get(groupId);

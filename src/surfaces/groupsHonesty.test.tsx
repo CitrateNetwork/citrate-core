@@ -3,7 +3,7 @@
 // The chat surface must (1) scope reach to "your Groups", never blanket message-anyone reach (RT-6:
 // the web<->native bridge isn't delivered), (2) render honest EMPTY states with no fabricated room,
 // roster, or message on a fresh mount (effects don't fire in static markup, so this is the pre-load
-// state), and (3) be truthful that RBAC is enforced at the relay, not the client. Red-then-green:
+// state), and (3) be truthful about who checks roles: since GC-2, every member checks a signed role grant (membership changes are still checked by the relay). Red-then-green:
 // these fail if the forbidden phrasing renders or a fake conversation is drawn.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -27,8 +27,9 @@ describe("Groups honesty — scoped reach, honest-empty, relay-enforced RBAC", (
     expect(html.toLowerCase()).toContain("your groups live here");
   });
 
-  it("is truthful that roles are enforced at the relay, not the client", () => {
-    expect(html.toLowerCase()).toContain("enforced at the relay");
+  it("is truthful about who checks roles (GC-2: every member checks a signed grant; the relay sees only ciphertext)", () => {
+    expect(html.toLowerCase()).toContain("checked by every member");
+    expect(html.toLowerCase()).not.toContain("enforced at the relay");
   });
 
   it("promises no guaranteed privacy/unbreakability — states the concrete property (ciphertext-only relay)", () => {

@@ -82,12 +82,18 @@ describe("component-pins check", () => {
   // release at the build step. An x86_64 pin is an inline sha256 recorded by the Linux builder;
   // an aarch64 pin is the line of its runtime-deps asset (release.yml's Linux aarch64 job stages
   // those bytes, as the macOS job does).
-  it("pins every cargo sidecar for both Linux triples", () => {
+  it("pins every cargo sidecar for both Linux triples, except a node target the network cut does not build", () => {
     const m = JSON.parse(read(repo, "release/components.json"));
     const pins = parsePins(read(repo, "src-tauri/runtime-deps.sha256"));
+    // release/network-cut.json notBuilt (0.5.3, owner 2026-11-12: no Linux aarch64 node): such a
+    // target is pending on citrate-node with that reason, never pinned.
+    const notBuilt = JSON.parse(read(repo, "release/network-cut.json")).notBuilt || {};
+    const node = m.components.find((x) => x.id === "citrate-node");
+    for (const t of Object.keys(notBuilt)) expect(node.pending?.[t]).toMatch(/not built/);
     const missing = [];
     for (const c of m.components.filter((x) => x.build && x.build.kind === "cargo")) {
       for (const t of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]) {
+        if (c.id === "citrate-node" && notBuilt[t]) continue;
         let d = "";
         try {
           d = pinnedDigest(m, pins, c.id, t);

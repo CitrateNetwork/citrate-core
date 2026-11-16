@@ -69,7 +69,8 @@ even if the harness itself is killed.
 ## Running it on the DGX (aarch64)
 
 ```sh
-# packages: the published 0.5.1 and 0.4.2 aarch64 builds, sha256-checked against pins.txt
+# packages: the 0.5.1 and 0.4.1 aarch64 builds from their GitHub releases, sha256-checked against
+# pins.txt (GH_TOKEN set; `--check-pins` checks every pin against its release first)
 scripts/ci/linux-native-acceptance.sh --fetch aarch64 --cache "$PWD/target/k1l-cache" --fetch-only
 scripts/ci/linux-native-acceptance.sh --fetch aarch64 --cache "$PWD/target/k1l-cache" \
   --work "$PWD/target/k1l-work" --log-dir "$PWD/target/k1l-logs"

@@ -23,7 +23,7 @@ import { InvitePanel } from "./InvitePanel";
 import { RelayStatusChip } from "./RelayStatusChip";
 import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
 import { GroupRoundsCard } from "../fl/GroupRoundsCard";
-import { ROLE_CHANGES_AVAILABLE, ROLE_CHANGES_NOT_AVAILABLE } from "./groupRoles";
+import { canChangeRoles } from "./groupRoles";
 import {
   groupsSlice,
   refreshGroups,
@@ -116,7 +116,8 @@ export function Groups({ store, s }: SurfaceProps) {
     myGroupRow?.myRole ??
     st.roster.find((r) => r.address.toLowerCase() === myAddr)?.role ??
     (selected && selected.owner.toLowerCase() === myAddr ? "owner" : "member");
-  // RBAC is still enforced at the relay — this only decides which controls the UI offers.
+  // Membership changes are checked by the relay and role grants by every member's client; this only
+  // decides which controls the UI offers.
   const canManage = myGroupRow ? myGroupRow.iManage : myRole === "owner" || myRole === "admin" || iCreated;
 
   // Verified, group-visible faces for the addresses on screen (ADR resolver). Self today;
@@ -310,14 +311,15 @@ export function Groups({ store, s }: SurfaceProps) {
   const doRole = (groupId: string, address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
     void store.requestSig({
-      origin: "user wallet action",
-      requester: "you · group admin",
+      origin: "group role grant",
+      requester: "you · group owner",
       title: next === "admin" ? "Make this member an admin" : "Return this admin to member",
       rows: [
         { k: "Group", v: groupNameFor(groupId) },
         { k: "Member", v: shortAddr(address) },
         { k: "New role", v: next },
-        { k: "Effect", v: "the member's role in this group changes" },
+        { k: "Signed with", v: "this device's comms key (not your wallet); every member checks it" },
+        { k: "Effect", v: "the member's role in this group changes for everyone" },
       ],
       cost: "—",
       sponsor: "you approve · one role change",
@@ -463,7 +465,7 @@ export function Groups({ store, s }: SurfaceProps) {
         <div className="lattice-dots" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 48, textAlign: "center" }}>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 400, fontSize: 26 }}>Your groups live here.</div>
           <p style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0, maxWidth: 460 }}>
-            A group is a space with real roles — enforced at the relay, which only ever sees ciphertext. Reach stays in your groups. Talk, hold files together as a cluster, and grow it toward the network's milestones.
+            A group is a space with real roles, checked by every member, on a relay that only ever sees ciphertext. Reach stays in your groups. Talk, hold files together as a cluster, and grow it toward the network's milestones.
           </p>
         </div>
       ) : (
@@ -570,9 +572,6 @@ export function Groups({ store, s }: SurfaceProps) {
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Who's here</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>{st.roster.length} member{st.roster.length === 1 ? "" : "s"}</span>
                 </div>
-                {canManage && !ROLE_CHANGES_AVAILABLE && st.roster.length > 0 && (
-                  <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "8px 16px", borderBottom: "1px solid var(--line-1)" }}>{ROLE_CHANGES_NOT_AVAILABLE}</p>
-                )}
                 {st.roster.length === 0 ? (
                   <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>Just you so far. Add someone by their address below.</p>
                 ) : (
@@ -598,12 +597,8 @@ export function Groups({ store, s }: SurfaceProps) {
                         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + tone.bd, color: tone.fg, background: tone.bg }}>{r.role}</span>
                         {canManage && r.role !== "owner" && !you && !isAgent && (
                           <>
-                            {ROLE_CHANGES_AVAILABLE ? (
+                            {canChangeRoles(myRole) && (
                               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => selected && doRole(selected.id, r.address, r.role)}>
-                                {r.role === "admin" ? "Make member" : "Make admin"}
-                              </button>
-                            ) : (
-                              <button className="btn btn-ghost btn-sm" disabled aria-disabled="true" title={ROLE_CHANGES_NOT_AVAILABLE} style={{ opacity: 0.5, cursor: "not-allowed" }}>
                                 {r.role === "admin" ? "Make member" : "Make admin"}
                               </button>
                             )}

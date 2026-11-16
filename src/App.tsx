@@ -11,11 +11,13 @@ import { AccessPassGate } from "./onboarding/AccessPassGate";
 import { accessPassStatus } from "./onboarding/accessPass";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
-import { Sidebar, ROUTES } from "./shell/Sidebar";
+import { Sidebar, ROUTES, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH } from "./shell/Sidebar";
+import { useLayoutShortcut } from "./shell/layoutShortcuts";
 import { PlaceView } from "./shell/PlaceView";
 import { registerFor } from "./shell/places";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
-import { UpdateBanner } from "./shell/UpdateBanner";
+import { GateOrApp, UpdateBanner } from "./shell/UpdateBanner";
+import { useAppUpdate } from "./shell/updater";
 import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { useNetworkLabel } from "./shell/networkCompat";
 import { SignedForYou } from "./budgets/SignedForYou";
@@ -25,8 +27,13 @@ import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
 const queryClient = new QueryClient();
 
+const toggleSidebar = () => store.toggleSidebar();
+
 function Shell({ s }: { s: AppState }) {
   const reg = registerFor(s.route);
+  // 0.5.4: the sidebar collapses to its icons (⌘B / Ctrl+B, or its toggle); the choice is persisted.
+  useLayoutShortcut("sidebar", toggleSidebar);
+  const sideW = s.sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
 
   // banner (entitlement): copy + tone are a pure, tested function (entitlementBanner.ts).
   const banner = entitlementBanner(s);
@@ -36,7 +43,7 @@ function Shell({ s }: { s: AppState }) {
   const bannerCta = banner.cta;
 
   return (
-    <div style={{ height: "100vh", display: "grid", gridTemplateColumns: "226px 1fr", overflow: "hidden" }}>
+    <div style={{ height: "100vh", display: "grid", gridTemplateColumns: sideW + "px 1fr", overflow: "hidden", transition: "grid-template-columns var(--dur-fast) var(--ease-standard)" }}>
       <Sidebar store={store} s={s} />
       <main style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", background: "var(--srf-0)", color: "var(--tx-1)" }} data-register={reg}>
         {bannerShow && (
@@ -132,6 +139,8 @@ function AuthGate() {
 
 function Root() {
   const s = useStore();
+  // W2.4 + 0.5.4: one updater per app (its checks run here, gated or not).
+  const update = useAppUpdate();
 
   // Download gate: an install whose saved state shows a finished onboarding is recorded as
   // `existing` the first time the check runs, so it is never asked for a code later (a build
@@ -203,35 +212,40 @@ function Root() {
 
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--tx-1)", height: "100vh", overflow: "hidden", background: "var(--srf-0)" }} data-register="charter">
-      {body}
-      <SignatureCeremony store={store} s={s} />
-      <WalletReviewModal store={store} s={s} />
-      <Coach store={store} s={s} />
-      <DemoPanel store={store} s={s} />
-      <Toast s={s} />
-      {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
-      <JoinStepsNote
-        telemetry={s.telemetry}
-        consentVersion={s.telemetryConsentVersion}
-        onAcknowledge={() => {
-          store.setState(setTelemetryConsent(true));
-          store.save();
-        }}
-        onTurnOff={() => {
-          const c = setTelemetryConsent(false); // forgets unsent steps, drops prepared reports
-          store.setState(c);
-          bridge.config.write({ telemetry: c.telemetry }).catch(() => {
-            /* honest no-op: on the Tauri path a failed persist surfaces on next read */
-          });
-          store.save();
-        }}
-      />
-      {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
-      <SignedForYou />
-      {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
-      <NetworkCompatGate />
-      {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
-      <UpdateBanner />
+      {/* 0.5.4 (#678 review P1): below a verified minimum version none of the app is rendered,
+          only the update gate, so nothing behind it can be focused, clicked or reached by a
+          shortcut. */}
+      <GateOrApp update={update}>
+        {body}
+        <SignatureCeremony store={store} s={s} />
+        <WalletReviewModal store={store} s={s} />
+        <Coach store={store} s={s} />
+        <DemoPanel store={store} s={s} />
+        <Toast s={s} />
+        {/* 0.5.2 Join — one-time note for a pre-0.5.2 telemetry opt-in (the report gained joinSteps). */}
+        <JoinStepsNote
+          telemetry={s.telemetry}
+          consentVersion={s.telemetryConsentVersion}
+          onAcknowledge={() => {
+            store.setState(setTelemetryConsent(true));
+            store.save();
+          }}
+          onTurnOff={() => {
+            const c = setTelemetryConsent(false); // forgets unsent steps, drops prepared reports
+            store.setState(c);
+            bridge.config.write({ telemetry: c.telemetry }).catch(() => {
+              /* honest no-op: on the Tauri path a failed persist surfaces on next read */
+            });
+            store.save();
+          }}
+        />
+        {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
+        <SignedForYou />
+        {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
+        <NetworkCompatGate />
+        {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
+        <UpdateBanner update={update} />
+      </GateOrApp>
     </div>
   );
 }

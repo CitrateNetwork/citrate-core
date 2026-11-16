@@ -7,8 +7,8 @@ status: active
 
 # Group round cards (0.5.2, first cut, behind a flag)
 
-Group rounds go live after mainnet. FederatedRoundLedger and PatronageLedger deploy dormant at
-genesis (audit phase A). In 0.5.2 the app can show where they stand, behind a flag, and nothing more.
+FederatedRoundLedger and PatronageLedger deploy at genesis with no rounds. Rounds reach members
+through the WorkMarket contract, which is not on r1007. In 0.5.2 the app can show where they stand, behind a flag, and nothing more.
 This is the first item cut if the code freeze is at risk.
 
 ## The flag
@@ -32,8 +32,8 @@ federated-rounds panel stays below it) and at the top of each group's chat.
 |---|---|---|
 | Not live | The address book has no entry for either ledger (today) | "Group rounds not live yet". No chain read is made |
 | Not live (no code) | The book pins both, but `eth_getCode` is empty at one | "Group rounds not live yet", naming the ledger |
-| Unknown | The code read failed | "Round ledgers: —" with the reason. Never zero, never dormant |
-| Deployed · dormant | Both pinned and both have code | "Group rounds are not open yet": deployed, dormant while audited, rounds open after mainnet |
+| Unknown | The code read failed | "Round ledgers: —" with the reason. Never zero |
+| Deployed, no rounds | Both pinned and both have code (today) | "Group rounds not live yet", with the allowed detail "deployed, no rounds" (#676) |
 
 Data source (Rule 7): `src-tauri/addresses/40204.json` for the addresses, then core's
 `contract_code_size` (`eth_getCode` on 40204). No round, amount or projection is shown.
@@ -48,5 +48,5 @@ by tests. A test fails if any production module imports that file.
 
 - Reading a group's actual rounds. That needs a group → cluster id mapping (`clusterIdOf(coordinator,
   salt)`) that core does not have yet.
-- "Deployed · dormant" is not yet in the UI truth contract's state vocabulary (§1); it is requested
-  there.
+- #676 (0.5.4): the earlier "Deployed · dormant" wording is banned by the UI truth contract and is
+  gone; `groupRoundCards.test.tsx` pins the replacement.

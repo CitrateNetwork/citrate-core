@@ -685,21 +685,45 @@ fn run_with_deadline_maps_a_worker_panic_to_an_error() {
     assert!(matches!(r, Err(CommsError::Ipc(m)) if m.contains("without a result")));
 }
 
-// #495 — the pinned comms-member-daemon's `assignRole` requires `{group, assertion: RoleAssertion}`
-// and nothing here signs one, so the old `{group, member, role}` request was always refused
-// ("bad request: missing field `assertion`"). Until a signer exists the command refuses with a typed
-// not-available error and never contacts the daemon.
+// #495 / GC-2 — a role change is a `grantRole` request: the 0.6.0 comms-member-daemon signs the
+// grant with this device's comms key and sends it to the group, where every member checks it
+// against the group owner (MLS group context) and its roster. Core signs nothing.
 #[test]
-fn role_grants_are_not_available_until_a_signer_exists() {
-    assert_eq!(role_grants_available(), Err(RoleGrantError::NotAvailable));
+fn a_role_change_is_a_grant_role_request_with_the_daemon_role_name() {
+    let r = grant_role_request("ab".repeat(32), "0x2222222222222222222222222222222222222222".into(), "admin")
+        .expect("admin is grantable");
+    let v = serde_json::to_value(&r).expect("encodes");
     assert_eq!(
-        RoleGrantError::NotAvailable.to_string(),
-        "Role changes aren't available yet: signed role grants aren't built."
+        v,
+        serde_json::json!({
+            "op": "grantRole",
+            "group": "ab".repeat(32),
+            "member": "0x2222222222222222222222222222222222222222",
+            "role": "Admin",
+        })
     );
-    assert_eq!(
-        RoleGrantError::NotAvailable.to_string(),
-        ROLE_GRANTS_NOT_AVAILABLE
-    );
+    for (ui, daemon) in [("member", "Member"), ("guest", "Guest")] {
+        let v = serde_json::to_value(grant_role_request("g".into(), "m".into(), ui).unwrap()).unwrap();
+        assert_eq!(v["role"], daemon, "{ui}");
+    }
+}
+
+#[test]
+fn owner_and_agent_are_not_grantable_from_the_role_control() {
+    // The owner changes only by an ownership transfer; agents join through their own sponsor path.
+    for role in ["owner", "agent", "Admin", ""] {
+        let e = grant_role_request("g".into(), "m".into(), role).expect_err(role);
+        assert!(e.contains("can't be given here"), "{role}: {e}");
+    }
+}
+
+#[test]
+fn an_older_daemon_is_named_instead_of_a_serde_error() {
+    let raw = "bad request: unknown variant `grantRole`, expected one of `createGroup`, ...".to_string();
+    assert_eq!(role_grant_error(raw), ROLE_GRANTS_NEED_NEWER_DAEMON);
+    // Anything else (a refused grant, a legacy group) passes through word for word.
+    let refused = "rbac error: only the owner grants Admin".to_string();
+    assert_eq!(role_grant_error(refused.clone()), refused);
 }
 
 /// The source of one `pub async fn <name>` in comms.rs, up to its closing brace.
@@ -711,25 +735,17 @@ fn command_body<'a>(src: &'a str, name: &str) -> &'a str {
     &src[start..start + len]
 }
 
-// Tripwire: the command gates on `role_grants_available()` before anything else and does not route
-// to the daemon, and no request of the refused shape exists to send. A signer lands together with a
-// request that carries the assertion; only then may this test (and groupsAssignRole.test.tsx) change.
 #[test]
-fn groups_assign_role_never_sends_the_daemon_a_request() {
+fn groups_assign_role_routes_a_grant_role_request() {
     let src = include_str!("comms.rs");
     let body = command_body(src, "groups_assign_role");
-    assert!(
-        body.contains("role_grants_available()"),
-        "groups_assign_role must check role_grants_available():\n{body}"
-    );
-    assert!(
-        !body.contains("route("),
-        "groups_assign_role must not contact the daemon while role grants are not available:\n{body}"
-    );
+    assert!(body.contains("grant_role_request("), "builds the grantRole request:\n{body}");
+    assert!(body.contains("route("), "sends it to the daemon:\n{body}");
+    assert!(body.contains("role_grant_error"), "maps an older daemon's refusal:\n{body}");
     let request_enum = &src[src.find("enum Request {").expect("Request enum")..];
     let request_enum = &request_enum[..request_enum.find("\n}\n").expect("enum end")];
     assert!(
         !request_enum.contains("AssignRole"),
-        "the daemon refuses an assignRole without a signed assertion; no such request may exist"
+        "the unsigned {{group, member, role}} assignRole shape the daemon refuses must not exist"
     );
 }

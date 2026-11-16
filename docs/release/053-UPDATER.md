@@ -49,7 +49,56 @@ cutover, so "Update required" has an update to offer. On the first 0.5.3 start t
 moves to r1007 and the old chain is kept in `node/chain.r1006.bak/` (CORE-N3,
 [053-NETWORK.md](053-NETWORK.md)); the wallet, pins, Hermes settings and Store are untouched.
 
-## 3. The release steps (approved plan)
+## Owner decision (2026-11-12): a private release; the update files on the CDN
+
+**Supersedes the 2026-11-11 section below** on where files go ("update files on the GitHub release,
+no CDN ACL change"). Signing and notarizing on the release Mac are unchanged. Relayed by the MAC lead
+on 2026-11-12, after r1007 went live at 14:00Z (genesis `0xcf686345…6631`):
+
+- 0.5.3 is a **private** release, and the repository stays public. There is **no GitHub release**,
+  not even a draft.
+- The **updater files** go to Spaces `citrate-cdn` under `downloads/updater/`. Only those objects are
+  **public-read**: `latest.json`, plus each update file and its `.sig` under `downloads/updater/v<v>/`.
+  That prefix is the 0.5.2 updater's first endpoint,
+  `https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/latest.json`, and the URLs
+  in `latest.json` point at those CDN objects. On Linux the update file is the AppImage or .deb
+  itself, so the Linux installers are also reachable publicly at their versioned updater URL.
+- The **installers** go to `downloads/<file>` as **PRIVATE** objects: the DMG as
+  `Citrate-Core-macos-arm64.dmg`, plus the AppImage and .deb. The invite gate serves them through
+  presigned links (citrate-landing `src/lib/download-gate/config.ts`). `SHA256SUMS` is private too,
+  next to them.
+- The release ships **macOS and Linux x86_64 only**. Linux aarch64 is not built, so the feed has no
+  `linux-aarch64` entry, and an aarch64 install is offered no update.
+- Command: `scripts/release-local.sh --version 0.5.3 --linux-arches x86_64 --publish-target spaces
+  --publish`. It verifies before `latest.json` exists:
+  - the ACLs (public-read only on the updater objects);
+  - that each updater object answers anonymously;
+  - that each installer and `SHA256SUMS` is refused anonymously (403);
+  - that each installer's size and sha256 match.
+
+  Only then does it write `latest.json`, flush that path on the CDN, and fetch the feed and every URL
+  and `.sig` in it anonymously, comparing each by sha256.
+- The owner pre-approved publishing once the release is ready and verified.
+
+## Owner decision (2026-11-11): the release Mac, and update files on the GitHub release
+
+This replaces the hosting part of decision 2 and section 3's steps 3 and 4 for 0.5.3:
+
+- 0.5.3 is built, signed (Developer ID, v2 updater key) and notarized on the release Mac, not in CI
+  (Actions holds no signing secrets).
+- The update files (`Citrate-Core.app.tar.gz`, both AppImages, both `.deb`, each with its `.sig`)
+  are assets of the **v0.5.3 GitHub release**, and `latest.json` points at those assets
+  (`https://github.com/CitrateNetwork/citrate-core/releases/download/v0.5.3/<file>`). The repository
+  is public, so the assets answer anonymously. No CDN ACL change.
+- A 0.5.2 install reads feed 1 (CDN, 403 today), and tauri-plugin-updater 2.10.1 moves on from a
+  non-2xx endpoint to feed 2, `releases/latest/download/latest.json`. So the v0.5.3 release must be
+  the repository's **latest, non-prerelease** release.
+- One command does it: `scripts/release-local.sh` (build, sign, notarize, staple, update files,
+  `tauri signer sign`, signatures verified against the pinned key, `latest.json` for the five
+  platforms, `SHA256SUMS`, the release created as a draft, every asset checked by sha256 against `SHA256SUMS`, only then published as latest, then the anonymous check of the
+  fallback feed and every update file). Runbook: [RELEASE.md](../RELEASE.md#the-local-release-script-053).
+
+## 3. The release steps (approved plan, before 2026-11-11)
 
 1. **Build and sign** 0.5.3 as for 0.5.2, from the tree after the network cut, with
    `CITRATE_ACCESS_GATE_URL=https://www.citrate.ai/api/access/verify` in the build environment

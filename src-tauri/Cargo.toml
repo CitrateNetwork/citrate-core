@@ -1,7 +1,7 @@
 [package]
 license = "BUSL-1.1"
 name = "citrate-core"
-version = "0.5.2"
+version = "0.5.4"
 description = "citrate-core — the federation desktop house (Tauri full-node app). T1."
 authors = ["Citrate Network"]
 edition = "2021"
@@ -31,6 +31,10 @@ tauri-plugin-store = "2"
 # never in the repo; it is passphrase-protected and held in the org secret manager /
 # CI secrets (see docs/RELEASE.md §1).
 tauri-plugin-updater = "2"
+# 0.5.4 — verify the signed update policy (minimum version) exactly as tauri-plugin-updater verifies
+# an artifact. Already in Cargo.lock (tauri-plugin-updater and citrate-components use it, and it was
+# a dev-dependency here), so no new crate.
+minisign-verify = "0.2"
 # W2.4 — relaunch the app after an update is staged (updater installs, process
 # plugin restarts into the new version).
 tauri-plugin-process = "2"
@@ -40,9 +44,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 argon2 = "0.5"
-aes-gcm = "0.10"
+aes-gcm = { version = "0.10", features = ["stream"] }
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
+# 0.5.4 — the Hermes chat history at rest: the federation's AES-256-GCM + ML-KEM-768 envelope
+# (citrate-homestead/crates/homestead-crypto: ml-kem 0.2 + hkdf 0.12, same versions). hkdf is
+# already in the lock. `deterministic` = the FIPS 203 seed form (d || z): the device keeps a 64-byte
+# seed in the OS keyring instead of the 2400-byte decapsulation key (Windows credentials cap at
+# 2560 bytes, and an erase holds two keys at once).
+hkdf = "0.12"
+ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
 # CORE-A3 — OIDC loopback-PKCE sign-in.
 # ureq: light blocking HTTP client (rustls TLS) for /token, /userinfo, JWKS,
 #   revoke. Chosen over reqwest (not already in the Tauri tree; pulls tokio +
@@ -110,14 +121,16 @@ bip39 = { version = "1.2", features = ["std", "zeroize"] }
 #   crate's source changed since 9a32147e; the rev moves only to stay on the bundled node's rev.
 # 2026-10-30 (RC52 recut, the split-healing and restart-safe reorg fix, chain main 56cc2bc8): moved with the node to chain 56cc2bc8 (fed#331).
 #   Neither crate's source changed since ad11ed9d; the rev moves only to stay on the bundled node's rev.
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "56cc2bc80439c350dd9eca8817f173c1986096e6", default-features = false, features = ["crypto"] }
+# 2026-11-14 (0.5.4, the r1007 serve-split fix, chain main b2e91167, #476): moved with the node from a53bac64.
+#   Neither crate's source changed since a53bac64; the rev moves only to stay on the bundled node's rev.
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "b2e91167bda2b81d52658c58f6327063a25cbedc", default-features = false, features = ["crypto"] }
 # CX-S2.2 — the canonical CommD/dataCommit the IPFSIncentivesV3 model bond registers. Pinned at
 # citrate-chain 763d764 (the #170 sound-CommD fix + the 40204 redeploy, PR #179). Lean by design:
 # ark-bn254 + Poseidon only (NO groth16/nova/tracing-subscriber — verified via `cargo tree`), and
 # it is NOT on the key path (it hashes; it never signs), so wallet-core stays at its reviewed
 # 47a6f92 (Cargo carries both revs as separate git sources). Byte-exactness is pinned by a
 # storage_tests vector check against citrate-commd's frozen `commd_frozen_v1.rs`. Rule 12 [[drift]].
-citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "56cc2bc80439c350dd9eca8817f173c1986096e6" }
+citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "b2e91167bda2b81d52658c58f6327063a25cbedc" }
 # W1.1 — proposer identity. The node's block-signing (proposer) key is a deterministic
 # ed25519 key seeded from Sha3_256(domain ‖ coinbase32); the app must derive the SAME
 # public value to read validatorInfo(pubkey) and drive registration. We reimplement the
@@ -199,6 +212,5 @@ citrate-templates = { path = "../templates/renderer" }
 # K5a test-only: sign Store catalog fixtures with a throwaway minisign-format key (BLAKE2b-512
 # prehash). Already in Cargo.lock via citrate-components' dev-dependencies (no new crates).
 blake2 = "0.10"
-# RC52 G8 test-only: check the golden signatures as `minisign -V` does (minisign-verify is already in
-# Cargo.lock: tauri-plugin-updater and citrate-components use it).
-minisign-verify = "0.2"
+# RC52 G8: the golden signature tests use minisign-verify too; since 0.5.4 it is a normal
+# dependency (see [dependencies], the update policy).

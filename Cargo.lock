@@ -848,7 +848,7 @@ dependencies = [
 [[package]]
 name = "citrate-commd"
 version = "0.1.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=56cc2bc80439c350dd9eca8817f173c1986096e6#56cc2bc80439c350dd9eca8817f173c1986096e6"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=b2e91167bda2b81d52658c58f6327063a25cbedc#b2e91167bda2b81d52658c58f6327063a25cbedc"
 dependencies = [
  "ark-bn254",
  "ark-crypto-primitives",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "citrate-core"
-version = "0.5.2"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -894,6 +894,7 @@ dependencies = [
  "citrate-wallet-core",
  "ed25519-dalek",
  "hex",
+ "hkdf",
  "hmac",
  "interprocess",
  "jsonwebtoken",
@@ -901,6 +902,7 @@ dependencies = [
  "keyring",
  "libc",
  "minisign-verify",
+ "ml-kem",
  "p256",
  "qrcode",
  "rand 0.8.7",
@@ -971,7 +973,7 @@ dependencies = [
 [[package]]
 name = "citrate-wallet-core"
 version = "0.4.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=56cc2bc80439c350dd9eca8817f173c1986096e6#56cc2bc80439c350dd9eca8817f173c1986096e6"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=b2e91167bda2b81d52658c58f6327063a25cbedc#b2e91167bda2b81d52658c58f6327063a25cbedc"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2393,6 +2395,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "hybrid-array"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2d35805454dc9f8662a98d6d61886ffe26bd465f5960e0e55345c70d5c0d2a9"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
 name = "hyper"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2869,6 +2880,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kem"
+version = "0.3.0-pre.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b8645470337db67b01a7f966decf7d0bafedbae74147d33e641c67a91df239f"
+dependencies = [
+ "rand_core 0.6.4",
+ "zeroize",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3058,6 +3079,19 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ml-kem"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8de49b3df74c35498c0232031bb7e85f9389f913e2796169c8ab47a53993a18f"
+dependencies = [
+ "hybrid-array",
+ "kem",
+ "rand_core 0.6.4",
+ "sha3",
+ "zeroize",
 ]
 
 [[package]]
@@ -5397,7 +5431,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

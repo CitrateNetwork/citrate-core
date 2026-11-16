@@ -23,6 +23,14 @@ check [--release] [--root <dir>] [--cut-only]
     values. Unless --cut-only, it then runs scripts/check-network-profile.sh --release
     --require-active <profile> as well (the embedded address book and the rest of the K6 gate).
 
+fill --values <file.json> [--apply] [--root <dir>]
+
+    The one-command cut (0.5.3): write the genesis outputs, a JSON object of cut values (and
+    `node.<target>` pins), into the cut file and clear them from `pending`. Refuses, writing
+    nothing, on an unknown key, a null, a malformed value or a value already in the cut (the
+    cut is written once). With --apply it then applies the cut, all or nothing: if the filled
+    cut is incomplete or would not apply cleanly, neither the cut nor any pin is written.
+
 apply [--root <dir>]
 
     Refuses unless the file is complete (nothing pending, every value well formed) and the target
@@ -83,6 +91,11 @@ MAC = "aarch64-apple-darwin"
 # after the rev plus its line in runtime-deps.sha256. Linux x86_64 stays an inline sha256.
 STAGED = (MAC, "aarch64-unknown-linux-gnu")
 KEYS = {"_comment", "profile", "retire", "node", "pending", "rpcHosts"} | set(VALUES)
+# Optional: `notBuilt` maps a node target this release does not build to why (owner 2026-11-12:
+# 0.5.3 ships no Linux aarch64). Its node pin stays null and is not pending; apply pins nothing for
+# it and marks it pending, with that reason, on citrate-node in components.json. The macOS node is
+# always built (the release Mac).
+OPTIONAL_KEYS = {"notBuilt"}
 # The r1007 fleet's P2P entry points (owner decision: boot1-3 + rpc.citrate.ai).
 BOOT_HOSTS = ["boot1.citrate.ai:30303", "boot2.citrate.ai:30303", "boot3.citrate.ai:30303", "rpc.citrate.ai:30303"]
 
@@ -267,15 +280,28 @@ def value_problems(cut: dict, profiles: dict) -> list:
     return out
 
 
+def not_built(cut: dict) -> dict:
+    """The well-formed `notBuilt` entries: {target: reason} (shape_problems reports the rest)."""
+    nb = cut.get("notBuilt")
+    if not isinstance(nb, dict):
+        return {}
+    return {t: r for t, r in nb.items() if t in TARGETS and t != MAC and isinstance(r, str) and r.strip()}
+
+
+def built_targets(cut: dict) -> list:
+    nb = not_built(cut)
+    return [t for t in TARGETS if t not in nb]
+
+
 def null_keys(cut: dict) -> list:
     keys = [k for k in VALUES if cut.get(k) is None]
     node = cut.get("node") if isinstance(cut.get("node"), dict) else {}
-    return keys + [f"node.{t}" for t in TARGETS if node.get(t) is None]
+    return keys + [f"node.{t}" for t in built_targets(cut) if node.get(t) is None]
 
 
 def shape_problems(cut: dict, profiles: dict) -> list:
     out = []
-    unknown = sorted(set(cut) - KEYS)
+    unknown = sorted(set(cut) - KEYS - OPTIONAL_KEYS)
     absent = sorted(KEYS - {"_comment"} - set(cut))
     if unknown:
         out.append(f"unknown keys {unknown}")
@@ -294,6 +320,21 @@ def shape_problems(cut: dict, profiles: dict) -> list:
                 out.append(f"retire names {r!r}, which is not another profile in {PROFILES}")
             if not (isinstance(why, str) and why.strip()):
                 out.append(f"retire.{r} needs a reason")
+    if "notBuilt" in cut:
+        nb = cut["notBuilt"]
+        node = cut.get("node") if isinstance(cut.get("node"), dict) else {}
+        if not isinstance(nb, dict) or not nb:
+            out.append("notBuilt must map a node target this release does not build to why")
+        else:
+            for t, why in nb.items():
+                if t == MAC:
+                    out.append(f"notBuilt names {t}: the macOS node is always built (the release Mac)")
+                elif t not in TARGETS:
+                    out.append(f"notBuilt names {t!r}, which is not a node target ({TARGETS})")
+                elif node.get(t) is not None:
+                    out.append(f"notBuilt names {t}, which is also pinned in node")
+                if not (isinstance(why, str) and why.strip()):
+                    out.append(f"notBuilt.{t} needs a reason")
     pending = cut.get("pending")
     if not isinstance(pending, dict):
         return out + ["pending must map a value to what sets it"]
@@ -368,20 +409,23 @@ def applied_components(cut: dict, components: dict) -> dict:
                 "citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md).",
     }
     arts = {}
-    for t in TARGETS:
+    for t in built_targets(cut):
         a = cut["node"][t]
         arts[t] = ({"runtime_deps_asset": a["runtime_deps_asset"], "evidence": a["evidence"]} if t in STAGED
                    else {"sha256": a["sha256"], "evidence": a["evidence"]})
     c["artifacts"] = arts
     c.pop("pending", None)
+    if not_built(cut):
+        c["pending"] = {t: f"not built for this release ({CUT} notBuilt): {why}" for t, why in not_built(cut).items()}
     return d
 
 
 def runtime_deps_lines(cut: dict) -> list:
     """The runtime-deps pins the cut adds: the staged node bytes (macOS, Linux aarch64), then each
     node build's PROVENANCE."""
-    lines = [(cut["node"][t]["runtime_deps_asset"], cut["node"][t]["sha256"]) for t in STAGED]
-    lines += [(cut["node"][t]["provenance"]["asset"], cut["node"][t]["provenance"]["sha256"]) for t in TARGETS]
+    built = built_targets(cut)
+    lines = [(cut["node"][t]["runtime_deps_asset"], cut["node"][t]["sha256"]) for t in STAGED if t in built]
+    lines += [(cut["node"][t]["provenance"]["asset"], cut["node"][t]["provenance"]["sha256"]) for t in built]
     return lines
 
 
@@ -453,12 +497,71 @@ def complete_problems(cut: dict, profiles: dict) -> list:
     return out
 
 
-def cmd_apply(a) -> None:
+def filled_cut(cut: dict, values: dict, profiles: dict) -> dict:
+    """`cut` with `values` written in and cleared from `pending`. Raises Refused, writing nothing."""
+    if not isinstance(values, dict):
+        raise Refused("the values file must be one JSON object")
+    unknown = sorted(set(values) - set(VALUES) - {"node"})
+    if unknown:
+        raise Refused(f"unknown keys {unknown}; a values file names cut values only ({VALUES + ['node']})")
+    out = json.loads(json.dumps(cut))
+    pending = dict(out.get("pending") or {})
+    items = [(k, v) for k, v in values.items() if k != "node"]
+    node = values.get("node", {})
+    if not isinstance(node, dict):
+        raise Refused("node must map a target to its pin")
+    bad_targets = sorted(set(node) - set(TARGETS))
+    if bad_targets:
+        raise Refused(f"node has unknown targets {bad_targets} (known: {TARGETS})")
+    skipped = sorted(set(node) & set(not_built(cut)))
+    if skipped:
+        raise Refused(f"node pins {skipped}, which {CUT} marks not built (notBuilt)")
+    for k, v in items + [(f"node.{t}", v) for t, v in node.items()]:
+        if v is None:
+            raise Refused(f"{k} is null; leave a value out to keep it pending")
+        if k.startswith("node."):
+            t = k[len("node."):]
+            have = out["node"].get(t)
+            slot = lambda val: out["node"].__setitem__(t, val)
+        else:
+            have = out.get(k)
+            slot = lambda val, k=k: out.__setitem__(k, val)
+        if have is not None and have != v:
+            raise Refused(f"{k} is already set in {CUT}; the cut is written once (edit it by hand to change it)")
+        slot(v)
+        pending.pop(k, None)
+    out["pending"] = pending
+    problems = shape_problems(out, profiles)
+    if problems:
+        raise Refused("the filled cut is not well formed; nothing was written:\n  " + "\n  ".join(problems))
+    return out
+
+
+def cmd_fill(a) -> None:
     root = Path(a.root)
     cut, profiles = load(root)
-    errors = complete_problems(cut, profiles)
-    if errors:
-        raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+    try:
+        values = json.loads(Path(a.values).read_text())
+    except (OSError, ValueError) as e:
+        raise Refused(f"the values file cannot be read as JSON: {e}")
+    new = filled_cut(cut, values, profiles)
+    if a.apply:
+        errors = complete_problems(new, profiles)
+        if errors:
+            raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+        # Plan the apply against the filled cut before writing anything (all or nothing).
+        writes = apply_plan(root, new, profiles)
+        write_atomic(root / CUT, dump(new))
+        print(f"network-cut fill: wrote {CUT}")
+        write_apply(root, new, writes)
+        return
+    write_atomic(root / CUT, dump(new))
+    left = null_keys(new)
+    print(f"network-cut fill: wrote {CUT} ({len(left)} value(s) still pending{': ' + ', '.join(left) if left else ''})")
+
+
+def apply_plan(root: Path, cut: dict, profiles: dict) -> dict:
+    """What `apply` writes for `cut`, checked. Raises Refused, writing nothing."""
     p = profiles["profiles"][cut["profile"]]
     # rpcUrl is not a prerequisite: it is a cut value, and `apply` writes it (core#611).
     other = [f for f in ("chainId", "nodeNetwork", "explorerUrl", "faucetUrl", "addressBook")
@@ -469,6 +572,10 @@ def cmd_apply(a) -> None:
     left = applied_problems(root, cut, overrides=writes, lock=False)
     if left:
         raise Refused("the cut would not apply cleanly; nothing was written:\n  " + "\n  ".join(left))
+    return writes
+
+
+def write_apply(root: Path, cut: dict, writes: dict) -> None:
     for rel, text in writes.items():
         if (root / rel).read_text() != text:
             write_atomic(root / rel, text)
@@ -478,6 +585,15 @@ def cmd_apply(a) -> None:
     print("    cargo update -p citrate-wallet-core -p citrate-commd   # Cargo.lock to the new chain rev")
     print(f"    scripts/sync-addresses.py --book <the canonical book> --genesis {cut['genesisHash']} --rpc <rpc>")
     print(f"    scripts/check-network-profile.sh --release --require-active {cut['profile']}")
+
+
+def cmd_apply(a) -> None:
+    root = Path(a.root)
+    cut, profiles = load(root)
+    errors = complete_problems(cut, profiles)
+    if errors:
+        raise Refused("the cut is not complete; nothing was written:\n  " + "\n  ".join(errors))
+    write_apply(root, cut, apply_plan(root, cut, profiles))
 
 
 def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
@@ -519,13 +635,17 @@ def applied_problems(root: Path, cut: dict, overrides=None, lock=True) -> list:
         if c["source"]["rev"] != rev or c["federation"]["rev"] != rev:
             out.append(f"{COMPONENTS}: citrate-node rev {c['source']['rev']} / federation {c['federation']['rev']}, "
                        f"the cut has {rev}")
-        for t in TARGETS:
+        for t in built_targets(cut):
             a, have = cut["node"][t], c.get("artifacts", {}).get(t, {})
             key = "runtime_deps_asset" if t in STAGED else "sha256"
             if have.get(key) != a[key] or have.get("evidence") != a["evidence"]:
                 out.append(f"{COMPONENTS}: citrate-node {t} is not the cut's pin")
-        if c.get("pending"):
-            out.append(f"{COMPONENTS}: citrate-node still has pending targets {sorted(c['pending'])}")
+        for t in not_built(cut):
+            if t in c.get("artifacts", {}):
+                out.append(f"{COMPONENTS}: citrate-node pins {t}, which the cut does not build")
+        if sorted(c.get("pending") or {}) != sorted(not_built(cut)):
+            out.append(f"{COMPONENTS}: citrate-node pending targets {sorted(c.get('pending') or {})}, "
+                       f"the cut does not build {sorted(not_built(cut))}")
     except (KeyError, ValueError, TypeError, Refused) as e:
         out.append(f"{COMPONENTS} cannot be read: {e}")
     deps = text(RUNTIME_DEPS).split("\n")
@@ -629,9 +749,13 @@ def main() -> None:
     c.add_argument("--root", default=str(REPO))
     p = sub.add_parser("apply")
     p.add_argument("--root", default=str(REPO))
+    f = sub.add_parser("fill", help="write the genesis outputs (a JSON values file) into the cut")
+    f.add_argument("--values", required=True, help="JSON object: cut values (and node.<target> pins)")
+    f.add_argument("--apply", action="store_true", help="then apply the cut, all or nothing")
+    f.add_argument("--root", default=str(REPO))
     a = ap.parse_args()
     try:
-        cmd_check(a) if a.cmd == "check" else cmd_apply(a)
+        {"check": cmd_check, "apply": cmd_apply, "fill": cmd_fill}[a.cmd](a)
     except Refused as e:
         print(f"network-cut {a.cmd}: REFUSED: {e}", file=sys.stderr)
         sys.exit(1)
