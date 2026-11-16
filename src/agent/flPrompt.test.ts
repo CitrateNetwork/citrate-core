@@ -36,6 +36,13 @@ describe("the FL prompt names only tools this build has", () => {
     expect(P.FL_PROMPT_SECTION).toMatch(/no card, because they only lower the member's exposure: fl_adapter_unload\./);
   });
 
+  it("never lists a tool that can raise authority as no-card (envelope on is behind a card)", () => {
+    const all = P.loweringTools(P.FL_GUIDE_TOOLS);
+    expect(all).not.toContain("fl_envelope_propose");
+    expect(all.sort()).toEqual(["fl_adapter_unload", "fl_consent_withdraw", "group_invite_revoke"]);
+    expect(P.FL_GUIDE_TOOLS.has("fl_terms_propose")).toBe(false);
+  });
+
   it("turns a lane's guidance on only with all of its tools", () => {
     const withHb = new Set([...P.FL_TOOLS_IN_BUILD, "fl_consent_list", "fl_consent_withdraw", "group_invites_list", "group_invite_revoke"]);
     const text = P.flPromptLines(withHb).join("\n");
@@ -64,6 +71,8 @@ describe("the FL prompt follows the truth contract and the copy rules", () => {
     expect(AGENT_SYSTEM_PROMPT).toContain(P.FL_PROMPT_SECTION);
     expect(AGENT_SYSTEM_PROMPT).not.toMatch(/the one write that does not ask first/);
     expect(AGENT_SYSTEM_PROMPT).toMatch(/a change that only lowers the member's exposure/);
+    // #742 review (P2): true once #716 puts every skill save behind a card.
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/Every skill save asks first/);
     expect(AGENT_SYSTEM_PROMPT).toMatch(/Never claim differential privacy or secure aggregation/);
     expect(AGENT_SYSTEM_PROMPT).toMatch(/You cannot sign, open a round, join, claim or publish/);
   });

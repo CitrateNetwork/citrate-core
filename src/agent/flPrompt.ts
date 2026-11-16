@@ -24,7 +24,8 @@ export interface FlGuideLine {
   /** The tools this line names. It is in the prompt only when every one is in this build. */
   tools: readonly string[];
   text: string;
-  /** The tools on this line change something with no card because they only lower exposure. */
+  /** The tools on this line that only ever lower exposure, so they run with no card. A tool that
+   *  can also raise authority (fl_envelope_propose turns an envelope on) is never listed here. */
   lowers?: readonly string[];
 }
 
@@ -66,7 +67,8 @@ export const FL_GUIDE: readonly FlGuideLine[] = [
     text: "fl_round_open_propose opens the escrow signature for a drafted round; it is always the member's own signature and never inside an envelope.",
   },
   // ── terms, consent, eligibility (lane HB; lane 3) ──
-  { tools: ["fl_terms_read", "fl_terms_propose"], text: "fl_terms_read reads the member's sealed worker terms; fl_terms_propose PROPOSES new terms on a card. Never suggest a floor from memory." },
+  // worker_terms_propose (#693) is the one terms write path; HB removed fl_terms_propose from #712.
+  { tools: ["fl_terms_read"], text: "fl_terms_read reads the member's sealed worker terms, or that none are set. Never suggest a floor from memory." },
   { tools: ["worker_terms_propose"], text: "worker_terms_propose shows proposed worker terms on a card in the chat; only the member confirms them." },
   { tools: ["fl_eligibility"], text: "fl_eligibility checks this machine against a round's requirements and lists every why-not; a fact it cannot read is unknown, not a pass." },
   {
@@ -77,8 +79,7 @@ export const FL_GUIDE: readonly FlGuideLine[] = [
   // ── the HIC-2 envelope (lane HB) ──
   {
     tools: ["fl_envelope_read", "fl_envelope_propose"],
-    text: "fl_envelope_read reads the member's HIC-2 envelope and what is left of its caps; quote it, never state caps from memory. fl_envelope_propose PROPOSES an envelope on a card, or turns it off at once.",
-    lowers: ["fl_envelope_propose"],
+    text: "fl_envelope_read reads the member's HIC-2 envelope and what is left of its caps; quote it, never state caps from memory. fl_envelope_propose PROPOSES turning an envelope on, or raising it, on a card the member signs; turning it off applies at once.",
   },
   // ── groups and the cluster (lane HB) ──
   { tools: ["group_join_propose"], text: "group_join_propose asks to join a group from an invite link the member pasted; approving only asks, and the inviter decides." },
