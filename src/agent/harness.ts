@@ -791,6 +791,16 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── FL payouts, shipped dark (0.5.4 Hermes x FL, WP-H10) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_payouts_list",
+      description:
+        "Read the member's federated round payouts: for each WorkMarket offer they joined, whether the payout is waiting for its dispute window, claimable, claimed, disputed or frozen, the rate in SALT, and the pull balance ready to withdraw. Read-only. Until payouts open after the security review it says so and reads nothing; units and amounts are the coordinator's and are shown as unknown, never guessed.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1298,6 +1308,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "explain_tx",
   "fl_round_plan",
   "fl_offers_list",
+  "fl_payouts_list",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

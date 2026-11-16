@@ -56,6 +56,7 @@
     { "name": "fl_round_start", "host": "core", "read_only": false },
     { "name": "fl_offers_list", "host": "core", "read_only": true },
     { "name": "fl_join_propose", "host": "core", "read_only": false },
+    { "name": "fl_payouts_list", "host": "core", "read_only": true },
     { "name": "belnap_codec", "host": "core", "read_only": true },
     { "name": "gsheets_read", "host": "core", "read_only": true },
     { "name": "gsheets_append", "host": "core", "read_only": false },

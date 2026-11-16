@@ -40,6 +40,8 @@ import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
 import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
+import { isFlPayoutTool, runFlPayoutTool } from "../agent/flPayoutTools";
+import { latestBlockTime } from "../fl/chainTime";
 import { readFlNetworkState, type FlNetworkState } from "../fl/networkState";
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
 import { loadWorkerTerms } from "../fl/workerTerms";
@@ -4632,6 +4634,14 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlPayoutTool(call.name)) {
+      // 0.5.4 WP-H10 (dark): reads only, and only once WorkMarket is here and payouts are open.
+      result = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
+        networkState: () => this.flNetworkState(),
+        wallet: () => this.state.walletAddr,
+        call: (address, data) => bridge.contracts.viewCall("citrate", address, data),
+        chainNow: () => latestBlockTime(),
+      });
     } else if (isFlMarketTool(call.name)) {
       // 0.5.4 WP-H5: offers (read) and join (the member signs the bond in the wallet review; the
       // shared joinIntent refuses until WorkMarket is here and payouts open).
