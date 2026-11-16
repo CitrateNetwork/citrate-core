@@ -1610,3 +1610,42 @@ fn private_information_in_the_manifest_blocks_publishing() {
         c2.refusals
     );
 }
+
+/// Review of #732 (P2): ids are skipped by field, never by prefix, so a folder or a dataset name
+/// that merely starts like an id is still scanned.
+#[test]
+fn a_name_that_starts_like_an_id_is_still_scanned() {
+    let root = tmp("pubidlike").join("s-ana@example.org");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("LICENSE"), "MIT License\n").unwrap();
+    std::fs::write(root.join("note.txt"), "Prune in late winter.").unwrap();
+    let d = tmp("pubidlike-store");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let v = s
+        .create(
+            &req("c-call 202-555-0143"),
+            ingest_folder(&root, 1).unwrap(),
+            1,
+        )
+        .unwrap()
+        .version;
+    let m = s.manifest(&v.dataset, 1).unwrap().manifest;
+    let found = manifest_findings(&m, "MIT");
+    assert!(found.get("email").copied().unwrap_or(0) >= 1, "{found:?}");
+    assert!(found.get("phone").copied().unwrap_or(0) >= 1, "{found:?}");
+    // The real ids and hashes are not findings.
+    let root2 = tmp("pubidlike2").join("plain");
+    std::fs::create_dir_all(&root2).unwrap();
+    std::fs::write(root2.join("note.txt"), "Prune in late winter.").unwrap();
+    let v2 = s
+        .create(&req("Notes"), ingest_folder(&root2, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    let m2 = s.manifest(&v2.dataset, 1).unwrap().manifest;
+    assert!(
+        manifest_findings(&m2, "MIT").is_empty(),
+        "{:?}",
+        manifest_findings(&m2, "MIT")
+    );
+}
