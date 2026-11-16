@@ -1317,3 +1317,12 @@ fn adapter_gate_load_and_unload_run_one_at_a_time_and_loads_are_bound_to_the_bas
     let body = &src[i..i + src[i..].find("\n}\n").expect("end")];
     assert!(body.contains("LoraChoice::For"), "a load names its base model");
 }
+
+// 0.5.4 #702 review: an unload with nothing served or remembered is a no-op (no restart).
+#[test]
+fn unload_is_needed_only_when_an_adapter_is_served_or_remembered() {
+    assert!(!unload_needed(false, false));
+    assert!(unload_needed(true, false));
+    assert!(unload_needed(false, true));
+    assert!(unload_needed(true, true));
+}
