@@ -205,58 +205,11 @@ pub fn training_reward_sync(
     })
 }
 
-/// Opening a round is SETTLER-only (the coordinator commits it). Honest, not a sim.
-#[tauri::command]
-pub fn training_start(_group: String) -> Result<(), String> {
-    Err(
-        "opening a training round is done by the settlement coordinator, not the member"
-            .to_string(),
-    )
-}
-
-/// Contributions meter through the coordinator; recordContribution is SETTLER-only, and real SALT
-/// crediting is @rule8-gated (gateSec not yet passed). Say so plainly rather than fake a submit.
-#[tauri::command]
-pub fn training_contribute(_group: String) -> Result<(), String> {
-    Err("contributions meter through the settlement coordinator, and member SALT crediting is not yet authorized on 40204 (pending @rule8 / gateSec)".to_string())
-}
-
-/// Claim is member-callable + ceremony-gated (ModelCooperative.claimDividend). Until revenue is
-/// credited (gateSec), pendingDividend is 0 and there is nothing to claim — reported honestly. When
-/// dividends flow, this builds a claimDividend intent that stops at the SignatureCeremony (Rule 3).
-#[tauri::command]
-pub async fn training_claim(app_h: tauri::AppHandle, group: String) -> Result<(), String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st0 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        training_claim_sync(st0, group)
-    })
-    .await
-}
-
-/// Blocking body of [`training_claim`]; reached only through [`crate::blocking::off_main`].
-pub fn training_claim_sync(
-    custody: tauri::State<'_, crate::custody::CustodyState>,
-    group: String,
-) -> Result<(), String> {
-    let ledger = patronage_ledger()?;
-    let rpc = RpcClient::citrate();
-    let member = crate::wallet::address(&custody.0)
-        .map_err(|e| e.to_string())?
-        .address;
-    let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
-    pending_call.extend_from_slice(&left_pad_address(&member));
-    let pending = call_word(&rpc, ledger, &pending_call)
-        .and_then(|w| decode_u128(&w).ok())
-        .unwrap_or(0);
-    let _ = group;
-    if pending == 0 {
-        return Err("no dividend to claim yet — member SALT crediting activates once revenue is credited (pending @rule8 / gateSec)".to_string());
-    }
-    // A real dividend exists: the claimDividend ceremony wiring lands with the first credited round.
-    Err("a claimable dividend exists — the ceremony-gated claimDividend path lands with the first credited round".to_string())
-}
+// V5 (Hermes x FL gap analysis, 0.5.4): `training_start`, `training_contribute` and
+// `training_claim` were removed. They always returned an error (opening and recording a round are
+// SETTLER-only, member crediting is gated on G-SEC), which made them production stubs (Rule 1).
+// Joining, claiming and withdrawing are the WorkMarket-backed tools of the 0.6.0 round contracts,
+// dark until those are deployed and payouts open; PatronageLedger stays readable above.
 
 #[cfg(test)]
 mod tests {
