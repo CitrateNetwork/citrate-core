@@ -2021,6 +2021,21 @@ impl<'a> DatasetStore<'a> {
             &crate::fl_dataset_gate::PublishRequest { license, privacy },
         );
         let mut out = gate.refusals;
+        // Codex review of #732 (P1): the public bundle carries the manifest as well as the rows,
+        // so its text is scanned too (the dataset name, folder and file names in locators, license
+        // evidence, consent scopes). Any finding refuses: there is no label that makes a member's
+        // address in a file name publishable.
+        let found = manifest_findings(&v.manifest, license);
+        if !found.is_empty() {
+            out.push(format!(
+                "the manifest would publish private information ({}) in the dataset name or a source's folder or file name; rename it or drop that source",
+                found
+                    .iter()
+                    .map(|(k, n)| format!("{n} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         match privacy {
             PrivacyLabel::Public | PrivacyLabel::Private => {}
             PrivacyLabel::Members | PrivacyLabel::Group => out.push(
@@ -2162,7 +2177,7 @@ impl<'a> DatasetStore<'a> {
         bundle.extend_from_slice(&rows_bytes(&rows)?);
         let cid = sink.add_and_pin(&format!("{id}-v{}.citrate-dataset.jsonl", pv.manifest.version), &bundle).map_err(|e| {
             format!(
-                "version {} is ready to publish, but IPFS did not take it ({e}); nothing left this device. Try again once IPFS is running.",
+                "version {} is ready to publish, but IPFS did not finish taking it ({e}). Nothing is recorded as published. If IPFS stored the bundle before the error, it may already be on this node; check Storage before you try again.",
                 pv.manifest.version
             )
         })?;
@@ -2211,6 +2226,36 @@ impl<'a> DatasetStore<'a> {
         }
         Ok(())
     }
+}
+
+/// Private information in the text a publish manifest carries: every string value of the manifest
+/// (its keys are the fixed schema) and the dataset license, scanned with core's scanner. Counts by
+/// class key.
+pub fn manifest_findings(m: &Manifest, license: &str) -> BTreeMap<String, u32> {
+    fn strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    if let Ok(v) = serde_json::to_value(m) {
+        strings(&v, &mut texts);
+    }
+    texts.push(license.to_string());
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for t in &texts {
+        // Hashes and ids are not text a person wrote; skip them so a hex digest is never a "phone".
+        if is_hash(t) || t.starts_with("ds-") || t.starts_with("s-") || t.starts_with("c-") {
+            continue;
+        }
+        for f in crate::pii_scan::scan(t) {
+            *counts.entry(f.class.key().to_string()).or_default() += 1;
+        }
+    }
+    counts
 }
 
 fn check_item(it: &CollectedItem) -> Result<(), String> {

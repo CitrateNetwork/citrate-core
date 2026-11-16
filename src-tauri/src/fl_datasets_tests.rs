@@ -1390,7 +1390,11 @@ fn an_ipfs_failure_publishes_nothing_and_the_retry_reuses_the_publish_version() 
             1,
         )
         .unwrap_err();
-    assert!(e.contains("nothing left this device"), "{e}");
+    assert!(e.contains("Nothing is recorded as published"), "{e}");
+    assert!(
+        !e.contains("nothing left this device"),
+        "an add can succeed before the pin fails"
+    );
     assert!(s.published(&id).unwrap().is_empty());
     let l = s.list().unwrap();
     assert_eq!(l.datasets[0].versions.len(), 2, "the publish version waits");
@@ -1551,28 +1555,58 @@ fn private_information_in_the_manifest_blocks_publishing() {
     let d = tmp("publoc-store");
     let kr = MemKeyring::default();
     let s = DatasetStore::new(d.join("datasets"), &kr);
-    let v = s.create(&req("Notes"), ingest_folder(&root, 1).unwrap(), 1).unwrap().version;
-    s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash)).unwrap();
-    let c = s.publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public).unwrap();
+    let v = s
+        .create(&req("Notes"), ingest_folder(&root, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
     assert!(
-        c.refusals.iter().any(|r| r.contains("manifest") && r.contains("1 email")),
+        c.refusals
+            .iter()
+            .any(|r| r.contains("manifest") && r.contains("email")),
         "{:?}",
         c.refusals
     );
     let sink = MemSink::default();
     assert!(s
-        .publish(&v.dataset, 1, "MIT", PrivacyLabel::Public, &v.content_hash, &sink, 2)
+        .publish(
+            &v.dataset,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v.content_hash,
+            &sink,
+            2
+        )
         .is_err());
-    assert!(sink.added.lock().unwrap().is_empty(), "nothing reached IPFS");
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
     // A dataset name is scanned too.
     let root2 = tmp("publoc2").join("plain");
     std::fs::create_dir_all(&root2).unwrap();
     std::fs::write(root2.join("note.txt"), "Prune in late winter.").unwrap();
     let v2 = s
-        .create(&req("call 202-555-0143"), ingest_folder(&root2, 1).unwrap(), 1)
+        .create(
+            &req("call 202-555-0143"),
+            ingest_folder(&root2, 1).unwrap(),
+            1,
+        )
         .unwrap()
         .version;
-    s.record_pii_scan(&v2.dataset, 1, &passing_scan(&v2.content_hash)).unwrap();
-    let c2 = s.publish_preview(&v2.dataset, 1, "MIT", PrivacyLabel::Public).unwrap();
-    assert!(c2.refusals.iter().any(|r| r.contains("manifest")), "{:?}", c2.refusals);
+    s.record_pii_scan(&v2.dataset, 1, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c2 = s
+        .publish_preview(&v2.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c2.refusals.iter().any(|r| r.contains("manifest")),
+        "{:?}",
+        c2.refusals
+    );
 }
