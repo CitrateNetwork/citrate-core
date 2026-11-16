@@ -50,10 +50,13 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # 1.96.0, --locked) in a new tree of the same build root, reproduced byte for byte from a clean
 # target dir, uploaded under this new name (owner-approved 2026-11-16, never overwriting an asset)
 # and verified by download.
-# 2026-11-16 (runtime #109): hermes moves to citrate-agent-runtime f68d041c, built and reproduced the
+# 2026-11-16 (runtime #109): hermes moved to citrate-agent-runtime f68d041c (superseded below), built and reproduced the
 # same way in a new tree of the same build root, uploaded under this new name (owner-approved, nothing
 # overwritten) and verified by download. The 367ad79e asset stays on runtime-deps, no longer staged.
-e5900a23b53be4969cae2ab61eed8141a55f78406a1744a91c2bb87b1d67574e  hermes-aarch64-apple-darwin-f68d041c408c
+# 2026-11-16 (runtime #108): hermes moves to citrate-agent-runtime aa12b10e, built and reproduced the
+# same way in a new tree of the same build root, uploaded under this new name (owner-approved, nothing
+# overwritten) and verified by download. The f68d041c asset stays on runtime-deps, no longer staged.
+15c31bb08ea12cdcd2033f28ccf8fb9426756fe2ebc21ee6ab3199a9849bcf70  hermes-aarch64-apple-darwin-aa12b10ee996
 # 2026-11-08 Linux aarch64 (release.yml release-linux-aarch64, ubuntu-24.04-arm): the bytes 0.5.2
 # shipped for aarch64-unknown-linux-gnu, moved here from inline sha256s in release/components.json
 # (same digests) so release.yml stages them from runtime-deps as it does the macOS ones. Built by the
