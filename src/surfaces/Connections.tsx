@@ -10,8 +10,9 @@
 //     It is NOT a friend/follower import (X/Discord OAuth doesn't expose that) and the copy says so.
 //   • MCP servers — WIRED via bridge.connections (GitHub / Google Drive / Notion over OAuth PKCE;
 //     tokens sealed in the OS keyring), the same seam Settings uses. Real connect/disconnect state.
+//     The member's own servers are added in the one editor, Hermes › Controls › MCP.
 //   • Foundational models — routes to the real Models + Settings surfaces (no duplicate wiring).
-//   • SaaS tools — NOT WIRED; same OAuth/keyring pattern as MCP when it lands.
+//   • SaaS tools — NOT WIRED; disabled rows that say so (no connector in this build).
 //   • Webhooks — NOT WIRED; HMAC-signed event posts. A local draft list, flagged as not-yet-delivering.
 //
 // The companion runbook (docs/CONNECTIONS_RUNBOOK.md) is the buildable checklist for turning every
@@ -49,7 +50,6 @@ export function Connections({ store }: SurfaceProps) {
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [hooks, setHooks] = useState<string[]>([]);
   const [hookUrl, setHookUrl] = useState("");
-  const [mcpUrl, setMcpUrl] = useState("");
 
   const loadMcp = async () => {
     try {
@@ -250,9 +250,16 @@ export function Connections({ store }: SurfaceProps) {
               <button className="btn btn-ghost btn-sm" disabled={mcpBusy === c.service} onClick={() => void toggleMcp(c.service, c.connected)}>{c.connected ? "Disconnect" : "Connect"}</button>
             </div>
           ))}
+          {/* Your own MCP servers are saved by the one editor in Hermes › Controls › MCP
+              (McpServersPanel, mcp_server_save), so this row routes there instead of a second form. */}
           <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center" }}>
-            <input className="input" value={mcpUrl} onChange={(e) => setMcpUrl(e.target.value)} placeholder="Custom server — stdio command or https:// endpoint" style={{ flex: 1 }} />
-            <button className="btn btn-secondary btn-sm" onClick={() => { if (mcpUrl.trim()) { store.toast("Custom MCP servers write to your config — full custom-endpoint wiring is on the runbook."); setMcpUrl(""); } }}>Add server</button>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Your own MCP servers</span>
+              <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>
+                a local command or an https endpoint, reviewed before it is saved on this computer
+              </span>
+            </span>
+            <a href="#/settings/mcp" data-testid="mcp-add-server-link" onClick={(e) => { e.preventDefault(); store.go("settings/mcp"); }} className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", textDecoration: "none" }}>Add server in Hermes › Controls › MCP →</a>
           </div>
         </div>
         <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
@@ -293,7 +300,12 @@ export function Connections({ store }: SurfaceProps) {
                 <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{sa.name}</span>
                 <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>{sa.scope}</span>
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => store.toast(`${sa.name} connects over the same OAuth + keyring flow as MCP — on the runbook, not wired yet.`)}>Connect</button>
+              <span className="mono" data-testid={`saas-${sa.id}-unavailable`} style={{ fontSize: 10, color: "var(--tx-3)" }}>
+                not available in this build
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled aria-disabled="true" title={`${sa.name} has no connector in this build`}>
+                Connect
+              </button>
             </div>
           ))}
         </div>
