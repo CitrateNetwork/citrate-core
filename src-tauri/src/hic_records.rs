@@ -268,6 +268,16 @@ impl HicOutbox {
         self.records_locked()
     }
 
+    /// The newest `limit` retained records, newest first, with the chain verified (the Records
+    /// view). Any break is an error, never a partial list.
+    pub fn recent(&self, limit: usize) -> Result<Vec<HicRecord>, String> {
+        let _g = self.guard();
+        let mut all = self.records_locked()?;
+        all.reverse();
+        all.truncate(limit);
+        Ok(all)
+    }
+
     fn records_locked(&self) -> Result<Vec<HicRecord>, String> {
         Ok(self.chain_locked()?.1)
     }
@@ -636,6 +646,23 @@ pub async fn hic_record_decision(
     crate::blocking::off_main(move || {
         let ev = card_event(&kind, &decision, &subject, &reason)?;
         record_for_app(&app, ev)
+    })
+    .await
+}
+
+/// Most records one `hic_records_list` call returns.
+pub const LIST_MAX: usize = 500;
+
+/// **hic_records_list** — the member's decision records in core's outbox (approval cards, grant
+/// changes, escalation spend, faucet), newest first, at most `limit` (default 200, at most
+/// [`LIST_MAX`]). Read-only. An outbox whose chain does not verify is an error, not an empty list.
+#[tauri::command]
+pub async fn hic_records_list(
+    app: tauri::AppHandle,
+    limit: Option<usize>,
+) -> Result<Vec<HicRecord>, String> {
+    crate::blocking::off_main(move || {
+        outbox_for_app(&app)?.recent(limit.unwrap_or(200).clamp(1, LIST_MAX))
     })
     .await
 }
