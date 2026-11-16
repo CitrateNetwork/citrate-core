@@ -51,4 +51,12 @@ describe("#690 context toggles", () => {
     store.newChat();
     expect(store.state.chatContextOff).toEqual([]);
   });
+
+  it("a follow-up queued with an attachment stays with its conversation", async () => {
+    vi.spyOn(store, "rebuildProvider").mockResolvedValue();
+    store.queueChat("and this page", [datasetAttachment(DS)]);
+    expect(store.state.chatQueue[0]).toMatchObject({ threadId: store.state.chatThreadId, attachments: [expect.objectContaining({ kind: "dataset" })] });
+    store.newChat();
+    expect(store.state.chatQueue).toEqual([]);
+  });
 });

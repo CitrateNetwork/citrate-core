@@ -151,7 +151,7 @@ describe("board 01 Hermes chat", () => {
 
   it("Running: queued follow-ups are listed and can be removed", () => {
     const drop = vi.spyOn(store, "dropQueuedChat").mockImplementation(() => undefined);
-    store.setState({ chatStatus: "thinking", chatQueue: [{ id: "q1", text: "later question", steer: false }], chatMsgs: [agent({ streaming: true, run: liveRun() })] });
+    store.setState({ chatStatus: "thinking", chatQueue: [{ id: "q1", text: "later question", steer: false, threadId: store.state.chatThreadId }], chatMsgs: [agent({ streaming: true, run: liveRun() })] });
     render();
     expect(qa("queued-msg")[0].textContent).toContain("later question");
     act(() => (host.querySelector('[aria-label="Remove queued message: later question"]') as HTMLElement).click());

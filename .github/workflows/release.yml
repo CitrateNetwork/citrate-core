@@ -167,7 +167,7 @@ jobs:
 
       # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
       #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
-      #    skills-bundle.tar.gz in the `runtime-deps` prerelease and pinned in
+      #    skills-bundle-<sha12>.tar.gz in the `runtime-deps` prerelease and pinned in
       #    src-tauri/runtime-deps.sha256 like every other asset. The stager then refuses an asset
       #    that does not match this repo's skills.lock file for file (no extra file, no script,
       #    no symlink), so only reviewed, pinned skills ship.
@@ -180,12 +180,12 @@ jobs:
           rm -rf "$DL" && mkdir -p "$DL"
           # Same shape as the runtime-deps step below, so the PBA-L7b-005 pin tripwire
           # (scripts/ci/check-release-pins.sh) sees every download go through the verified list.
-          ASSETS=(skills-bundle.tar.gz)
+          ASSETS=(skills-bundle-35b4451bbd52.tar.gz)
           for a in "${ASSETS[@]}"; do
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
           done
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
-          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
 
       # ── Dry run only: build the six cargo sidecars from the revs pinned in release/components.json
       #    with the release build scripts, on this clean runner. These bytes are NOT the reviewed
@@ -529,12 +529,12 @@ jobs:
           set -euo pipefail
           DL="$RUNNER_TEMP/skills-bundle-dl"
           rm -rf "$DL" && mkdir -p "$DL"
-          ASSETS=(skills-bundle.tar.gz)
+          ASSETS=(skills-bundle-35b4451bbd52.tar.gz)
           for a in "${ASSETS[@]}"; do
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
           done
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
-          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
 
       # ── Dry run only: build the six cargo sidecars at their pinned revs and llama-server at b9438
       #    on this runner, as the macOS dry run does. The summary says whether each matches its pin,

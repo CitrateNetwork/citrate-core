@@ -353,6 +353,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const liveRun = [...s.chatMsgs].reverse().find((m) => m.run && m.run.outcome === null)?.run;
   const announce = stepAnnouncement(liveRun ?? [...s.chatMsgs].reverse().find((m) => m.run)?.run);
   const streamingNow = s.chatMsgs.some((m) => m.streaming);
+  // Only this conversation's queued follow-ups (they are only ever sent here).
+  const queued = s.chatQueue.filter((q) => q.threadId === s.chatThreadId);
 
   // WP4.1 — on-device browser dictation; honest fallback elsewhere.
   const dictation = useRef<Dictation | null>(null);
@@ -822,13 +824,13 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </button>
         </div>
       )}
-      {s.chatQueue.length > 0 && (
+      {queued.length > 0 && (
         <div data-testid="chat-queue" style={{ display: "flex", flexDirection: "column", gap: 4, margin: "0 16px 6px", flexShrink: 0 }}>
           <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
             Queued, sends after this run
           </span>
           <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-            {s.chatQueue.map((q) => (
+            {queued.map((q) => (
               <li key={q.id} data-testid="queued-msg" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", border: "1px dashed var(--line-2)", borderRadius: 6 }}>
                 <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{q.text}</span>
                 {q.steer && <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>after the stop</span>}
