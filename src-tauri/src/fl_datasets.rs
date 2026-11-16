@@ -1253,8 +1253,19 @@ impl<'a> DatasetStore<'a> {
             written_by: app_version(),
         };
         let mbytes = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-        // Rows first: a manifest is never on disk without its rows.
-        self.write_file(keys, &rec.id, &format!("v{version}.rows"), &body, true)?;
+        // Rows first: a manifest is never on disk without its rows. A version exists only once
+        // its manifest does, so a rows file left without one (a crash, a failed manifest write)
+        // is an orphan and is replaced rather than blocking every later version.
+        let manifest_path = self
+            .ds_dir(&rec.id)?
+            .join(format!("v{version}.manifest.{EXT}"));
+        if std::fs::symlink_metadata(&manifest_path).is_ok() {
+            return Err(format!(
+                "{}/v{version} already exists; versions are never overwritten",
+                rec.id
+            ));
+        }
+        self.write_file(keys, &rec.id, &format!("v{version}.rows"), &body, false)?;
         self.write_file(
             keys,
             &rec.id,
@@ -1900,12 +1911,11 @@ impl<'a> DatasetStore<'a> {
             .iter_mut()
             .find(|c| c.id == consent_id)
             .ok_or_else(|| format!("no consent record {consent_id}"))?;
-        if c.withdrawn_at_ms.is_some() {
-            return Err(format!("consent {consent_id} was already withdrawn"));
+        let already = c.withdrawn_at_ms.is_some();
+        if !already {
+            c.withdrawn_at_ms = Some(now_ms);
         }
-        c.withdrawn_at_ms = Some(now_ms);
         let consent = c.clone();
-        self.save_consent(&keys, id, &doc)?;
         let base = self.latest(&keys, id)?;
         let gone: BTreeSet<String> = base
             .manifest
@@ -1914,6 +1924,13 @@ impl<'a> DatasetStore<'a> {
             .filter(|s| s.consent_ref == consent_id)
             .map(|s| s.id.clone())
             .collect();
+        // Review of #715 (P1): the withdrawal and the version without its sources are one change.
+        // The version is written first and the withdrawal recorded only after, so a failure leaves
+        // the consent in force (retry works). A withdrawal recorded by an earlier build whose
+        // version never landed is finished here rather than refused.
+        if already && gone.is_empty() {
+            return Err(format!("consent {consent_id} was already withdrawn"));
+        }
         let new_version = if gone.is_empty() {
             None
         } else {
@@ -1956,6 +1973,9 @@ impl<'a> DatasetStore<'a> {
             )?;
             Some(self.view(&keys, id, &v)?)
         };
+        if !already {
+            self.save_consent(&keys, id, &doc)?;
+        }
         Ok(ConsentWithdrawn {
             consent,
             new_version,
@@ -2001,6 +2021,21 @@ impl<'a> DatasetStore<'a> {
             &crate::fl_dataset_gate::PublishRequest { license, privacy },
         );
         let mut out = gate.refusals;
+        // Codex review of #732 (P1): the public bundle carries the manifest as well as the rows,
+        // so its text is scanned too (the dataset name, folder and file names in locators, license
+        // evidence, consent scopes). Any finding refuses: there is no label that makes a member's
+        // address in a file name publishable.
+        let found = manifest_findings(&v.manifest, license);
+        if !found.is_empty() {
+            out.push(format!(
+                "the manifest would publish private information ({}) in the dataset name or a source's folder or file name; rename it or drop that source",
+                found
+                    .iter()
+                    .map(|(k, n)| format!("{n} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         match privacy {
             PrivacyLabel::Public | PrivacyLabel::Private => {}
             PrivacyLabel::Members | PrivacyLabel::Group => out.push(
@@ -2142,7 +2177,7 @@ impl<'a> DatasetStore<'a> {
         bundle.extend_from_slice(&rows_bytes(&rows)?);
         let cid = sink.add_and_pin(&format!("{id}-v{}.citrate-dataset.jsonl", pv.manifest.version), &bundle).map_err(|e| {
             format!(
-                "version {} is ready to publish, but IPFS did not take it ({e}); nothing left this device. Try again once IPFS is running.",
+                "version {} is ready to publish, but IPFS did not finish taking it ({e}). Nothing is recorded as published. If IPFS stored the bundle before the error, it may already be on this node; check Storage before you try again.",
                 pv.manifest.version
             )
         })?;
@@ -2191,6 +2226,36 @@ impl<'a> DatasetStore<'a> {
         }
         Ok(())
     }
+}
+
+/// Private information in the text a publish manifest carries: every string value of the manifest
+/// (its keys are the fixed schema) and the dataset license, scanned with core's scanner. Counts by
+/// class key.
+pub fn manifest_findings(m: &Manifest, license: &str) -> BTreeMap<String, u32> {
+    fn strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    if let Ok(v) = serde_json::to_value(m) {
+        strings(&v, &mut texts);
+    }
+    texts.push(license.to_string());
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for t in &texts {
+        // Hashes and ids are not text a person wrote; skip them so a hex digest is never a "phone".
+        if is_hash(t) || t.starts_with("ds-") || t.starts_with("s-") || t.starts_with("c-") {
+            continue;
+        }
+        for f in crate::pii_scan::scan(t) {
+            *counts.entry(f.class.key().to_string()).or_default() += 1;
+        }
+    }
+    counts
 }
 
 fn check_item(it: &CollectedItem) -> Result<(), String> {
@@ -2361,7 +2426,13 @@ pub fn ingest_folder(root: &Path, now_ms: u64) -> Result<Ingest, String> {
                     skipped.push(format!("{}: a protected location", rel(&root, &p)));
                 }
             } else if ft.is_file() {
-                files.push(p);
+                // Review of #715 (P1): the deny list covers files too (shell histories such as
+                // PSReadLine's ConsoleHost_history.txt, credential files), not only folders.
+                if crate::grant_deny::denied_location(&p).is_some() {
+                    skipped.push(format!("{}: a protected location", rel(&root, &p)));
+                } else {
+                    files.push(p);
+                }
             }
         }
     }
