@@ -274,6 +274,12 @@ describe("Feature: Hermes remembers an approved fact durably", () => {
     await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
     const spec = sig.mock.calls[0][0];
     expect(JSON.stringify(spec)).not.toMatch(/demo|not durable/i);
+    // memory.rs: the mem-mcp store is not encrypted at rest yet, so the card must not claim it is.
+    store.setState({ memDaemon: "running" });
+    await store.handleTool(call("memory_assert", { fact: "likes tea" }), "m1", noop);
+    const up = JSON.stringify(sig.mock.calls[1][0].rows);
+    expect(up).toContain("not encrypted at rest yet");
+    expect(up).not.toMatch(/·\s*encrypted at rest/);
     expect(spec.title).toBe("Remember this in your memory");
   });
 });

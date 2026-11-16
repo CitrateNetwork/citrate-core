@@ -4211,7 +4211,7 @@ export class Store {
         rows: [
           { k: "Fact", v: "“" + fact + "”" },
           { k: "Tenant", v: "personal" },
-          { k: "Store", v: daemonUp ? "memory daemon on this device · encrypted at rest" : "memory daemon offline · approving will fail and nothing is saved" },
+          { k: "Store", v: daemonUp ? "memory daemon on this device · stored on this computer, not encrypted at rest yet" : "memory daemon offline · approving will fail and nothing is saved" },
         ],
         cost: "none, a local memory write",
         sponsor: "no chain transaction",
