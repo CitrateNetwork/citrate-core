@@ -324,19 +324,29 @@ const ADDRESS_CONTEXT =
 /** First- or second-person words: the claim is about the member's or Hermes's own deploy. */
 const OWN = /\b(?:i|i've|i'm|we|we've|our|you|you've|your|my|me|us)\b/i;
 
-/** Split text into sentences, keeping every character (separators stay with the sentence). */
-function sentences(text: string): string[] {
+/**
+ * Split text into sentences, keeping every character. A sentence ends at a line break, or at
+ * `.`, `!` or `?` that is not followed by a letter or digit ("1.2" and "v0.5" stay whole), and
+ * takes the whitespace after its end with it. (#681: the earlier regex split skipped the text
+ * before a "1.2"-style dot, so a corrected answer lost it.) The sidecar's port
+ * (citrate-agent-runtime agent-sidecar/src/deploy_claims.rs) splits the same way.
+ */
+export function sentences(text: string): string[] {
   const out: string[] = [];
-  const re = /[^.!?\n]*(?:[.!?](?![0-9A-Za-z])|\n|$)\s*/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    if (m[0] === "") {
-      re.lastIndex++;
-      if (re.lastIndex > text.length) break;
-      continue;
+  const alnum = (c: string | undefined) => c !== undefined && /[0-9A-Za-z]/.test(c);
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const end = c === "\n" || ((c === "." || c === "!" || c === "?") && !alnum(text[i + 1]));
+    i++;
+    if (end) {
+      while (i < text.length && /[ \t\n\f\r]/.test(text[i])) i++;
+      out.push(text.slice(start, i));
+      start = i;
     }
-    out.push(m[0]);
   }
+  if (start < text.length) out.push(text.slice(start));
   return out;
 }
 

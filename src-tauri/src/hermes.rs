@@ -65,6 +65,8 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 /// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
 /// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
+/// #681: the 40204 RPC the sidecar's final-answer deploy-claim check reads eth_getCode from.
+pub const HERMES_CHAIN_RPC_ENV: &str = "CITRATE_HERMES_CHAIN_RPC";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -644,6 +646,13 @@ impl HermesManager {
             (
                 HERMES_TOKEN_FILE_ENV.to_string(),
                 self.token_path.to_string_lossy().to_string(),
+            ),
+            // #681: the sidecar checks every final answer for deploy claims (whoever started the
+            // turn: this app, the `citrate hermes` CLI, or a node MCP client) and reads
+            // eth_getCode on 40204 from the same RPC core's contract_get_code uses.
+            (
+                HERMES_CHAIN_RPC_ENV.to_string(),
+                citrate_core_kit::rpc::CITRATE_RPC_URL.to_string(),
             ),
         ];
         // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.

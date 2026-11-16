@@ -95,6 +95,18 @@ fn start_refuses_when_binary_missing() {
 }
 
 #[test]
+fn spec_env_points_the_answer_check_at_the_40204_rpc() {
+    // #681: the sidecar checks deploy claims in every final answer against eth_getCode here.
+    let (mgr, _dir) = stub_manager("chainrpc");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(HERMES_CHAIN_RPC_ENV).map(String::as_str),
+        Some(citrate_core_kit::rpc::CITRATE_RPC_URL)
+    );
+}
+
+#[test]
 fn spec_env_carries_addr_and_token_path_never_the_token() {
     let (mgr, _dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =

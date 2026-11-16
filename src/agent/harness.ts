@@ -107,7 +107,10 @@ export type TurnActivityEvent =
    *  them). Core-hosted results already pass through `onToolCall`. The chat's final-answer check
    *  (src/agent/deployClaims.ts) reads both, so a deploy claim is checked against what the tools
    *  really said in this turn. */
-  | { kind: "tool_output"; callId: string; tool: string; status: string; content: string };
+  | { kind: "tool_output"; callId: string; tool: string; status: string; content: string }
+  /** #681: the sidecar's final-answer check removed deploy claims no receipt or chain read
+   *  supports; the next final answer is the corrected one. */
+  | { kind: "answer_check"; findings: string[] };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent
@@ -146,6 +149,9 @@ export interface SendOpts {
     onToolCall: (call: ToolCall, meta?: ToolCallMeta) => Promise<string>;
     /** HUP-S7.6 — optional progress reports (a provider without steps never calls it). */
     onActivity?: (ev: TurnActivityEvent) => void;
+    /** #681: replace the streamed text `streamed` (the end of the reply so far) with
+     *  `replacement`, the answer the sidecar's check corrected. Absent = the provider appends. */
+    onRewrite?: (streamed: string, replacement: string) => void;
     /** HUP-S2.2 (US-2.2 AC2): ask the member about a held shell_run command (exact argv, folder,
      *  sandbox). Resolves true only on an explicit approval. Absent = every command is declined. */
     onCommandApproval?: (pending: ShellPendingView) => Promise<boolean>;

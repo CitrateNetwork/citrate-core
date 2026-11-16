@@ -3878,6 +3878,17 @@ export class Store {
             pending += tk;
             if (flushTimer === null) flushTimer = setTimeout(flush, 32);
           },
+          // #681: the sidecar corrected the answer it streamed; the corrected text replaces it.
+          onRewrite: (streamed, replacement) => {
+            if (stopped()) return;
+            ensure();
+            flush();
+            patch((m) => ({
+              ...m,
+              text: streamed !== "" && m.text.endsWith(streamed) ? m.text.slice(0, m.text.length - streamed.length) + replacement : m.text + (m.text ? "\n\n" : "") + replacement,
+            }));
+            this.scrollChat();
+          },
           onToolCall: async (call, meta) => {
             // HUP-S7.6: a call from a stopped turn is not run.
             if (stopped()) return "stopped by the member before this ran; nothing was done.";
@@ -3911,6 +3922,13 @@ export class Store {
             }
             if (ev.kind === "notice") {
               this.toast(ev.text);
+              return;
+            }
+            // #681: the sidecar's own check corrected this answer: say so on the reply.
+            if (ev.kind === "answer_check") {
+              ensure();
+              patch((m) => (m.chips.some((c) => c.label === DEPLOY_CLAIM_CHIP) ? m : { ...m, chips: m.chips.concat([{ label: DEPLOY_CLAIM_CHIP, status: "declined" }]) }));
+              if (ev.findings.length) console.warn("#681 sidecar answer check:", ev.findings.join("; "));
               return;
             }
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
