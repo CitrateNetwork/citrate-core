@@ -213,12 +213,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-agent-runtime",
         "checkout": "citrate-agent-runtime",
-        "rev": "f68d041c408cc37db87c5d2e49a654d795e71654"
+        "rev": "aa12b10ee9965619818268dcd6d8651b37dbf19a"
       },
       "federation": {
-        "rev": "f68d041c408cc37db87c5d2e49a654d795e71654",
+        "rev": "aa12b10ee9965619818268dcd6d8651b37dbf19a",
         "status": "match",
-        "note": "citrate-federation follow-up to #611 (Rule 12, merges before this) pins [repos.citrate-agent-runtime] and the citrate-core externalBin:hermes row at f68d041c: main with #106, #110 (RUSTSEC-2026-0387 to 2027-01-31), #107 (V1: every build, test and git rule is per-project opt-in) and #109 (steer the running turn; seed a session with earlier turns). Prev 367ad79e (#744); shipped in 0.5.2 and 0.5.3: 05243c72."
+        "note": "citrate-federation#613 (Rule 12, merges before this) pins [repos.citrate-agent-runtime] and the citrate-core externalBin:hermes row at aa12b10e: main with #106, #110 (RUSTSEC-2026-0387 to 2027-01-31), #107 (V1: every build, test and git rule is per-project opt-in), #109 (steer the running turn; seed a session with earlier turns) and #108 (deploy claims checked in every final answer; core side core#714). Prev 367ad79e (#744); shipped in 0.5.2 and 0.5.3: 05243c72."
       },
       "build": {
         "kind": "cargo",
@@ -231,12 +231,12 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "hermes-aarch64-apple-darwin-f68d041c408c",
-          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-11-16 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root (e5900a23... both builds); uploaded to runtime-deps 2026-11-16 under a new asset name (owner-approved), download-back sha256 matches the pin"
+          "runtime_deps_asset": "hermes-aarch64-apple-darwin-aa12b10ee996",
+          "evidence": "release Mac build with scripts/build-hermes.sh --print-digest (strip -x), 2026-11-16 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte-for-byte from a clean target dir in the same build root (15c31bb0... both builds); uploaded to runtime-deps 2026-11-16 under a new asset name (owner-approved, the last approved Mac build), download-back sha256 matches the pin"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "9b3bac626743b07d8da89110fc3409fe7081d1cc7ea8ae5bc35723c2bbad9ec7",
-          "evidence": "scripts/build-hermes.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-16; same bytes from a second build after removing the target dir. Replaces the 367ad79e pin 015e7b04"
+          "sha256": "5f4757d4910ffd680c4d01bd40edb23d346fad268adc050d5fe181d7c0b599a5",
+          "evidence": "scripts/build-hermes.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-16; same bytes from a second build after removing the target dir. Replaces the f68d041c pin 9b3bac62"
         }
       },
       "pending": {
