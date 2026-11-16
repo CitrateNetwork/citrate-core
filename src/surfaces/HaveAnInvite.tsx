@@ -235,7 +235,20 @@ export function InvitePasteField({ onOpen }: { onOpen: (link: string) => void })
  * The whole invitee side, shared by Groups and onboarding. `memberOf` is the group ids this member
  * is already in; `onJoined` runs when a request was approved and the join finished.
  */
-export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Store; s: AppState; memberOf?: string[]; onJoined?: () => void }) {
+export function HaveAnInvite({
+  store,
+  s,
+  memberOf = [],
+  onJoined,
+  pasteField = true,
+}: {
+  store: Store;
+  s: AppState;
+  memberOf?: string[];
+  onJoined?: () => void;
+  /** Show the "Have an invite?" field. Groups › Chat opens its Join sheet instead (same JoinCard). */
+  pasteField?: boolean;
+}) {
   const [requests, setRequests] = useState<MyInviteRequest[]>([]);
   // Joined requests are gone from Rust once the join finished; keep their card until dismissed.
   const [joined, setJoined] = useState<MyInviteRequest[]>([]);
@@ -302,9 +315,9 @@ export function HaveAnInvite({ store, s, memberOf = [], onJoined }: { store: Sto
           }}
           onClose={() => store.clearInviteLink()}
         />
-      ) : (
+      ) : pasteField ? (
         <InvitePasteField onOpen={(link) => store.openInviteLink(link)} />
-      )}
+      ) : null}
     </div>
   );
 }

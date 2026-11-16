@@ -8,13 +8,15 @@ import type { ReactNode } from "react";
 import type { Store } from "./store";
 import type { AppState } from "./state";
 import { ACCOUNT_SETTINGS, PLACES, locate, sectionFor, visibleTabs } from "./places";
-import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "../surfaces";
+import { Dashboard, Wallet, Node, Storage, Commissary, Settings, Journal, ALF } from "../surfaces";
 import { HermesWork } from "../surfaces/hermes/HermesWork";
 import { HermesLearn } from "../surfaces/hermes/HermesLearn";
 import { HermesControls } from "../surfaces/hermes/HermesControls";
 import { agentSlice } from "./slices/agent";
 import { RoundsRoute } from "../fl/RoundsRoute";
-import { Models, StorageFiles, Groups, Cluster, Connections, Community, People } from "../surfaces";
+import { Models, StorageFiles, Groups, Cluster, Connections, Community } from "../surfaces";
+import { GroupMembers } from "../surfaces/groups/GroupMembers";
+import { GroupChat } from "../surfaces/groups/GroupChat";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
 import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
@@ -97,7 +99,8 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "groups/chat":
       return <Groups store={store} s={s} />;
     case "groups/chat/alerts":
-      return <Comms store={store} s={s} />;
+      // 0.5.4 FL design board 02: alerts point at the screen where you act, never an approve button.
+      return <GroupChat store={store} s={s} view="alerts" />;
     case "groups/rounds":
     case "groups/rounds/live":
     case "groups/rounds/open":
@@ -107,7 +110,8 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
       // FL design (0.5.4): Groups › Rounds and its sub-tabs (src/fl/RoundsRoute.tsx).
       return <RoundsRoute route={route} store={store} s={s} />;
     case "groups/members":
-      return <People store={store} s={s} />;
+      // 0.5.4 FL design board 03: one group's members, signed role grants, single-use invites.
+      return <GroupMembers store={store} s={s} />;
     case "groups/cluster":
       return <Cluster store={store} s={s} />;
     case "groups/alf":
