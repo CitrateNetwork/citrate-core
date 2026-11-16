@@ -23,6 +23,8 @@ import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
 import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
 import { FILLED_DRAFT, ROUND_BINDING, VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
 import { saveRoundDraft } from "../fl/roundDraft";
+import { flCollect } from "../fl/collect";
+import { collectPlan } from "../fl/fixtures/collect";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -172,6 +174,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       // 0.5.4 WP-H10: fl_withdraw_propose reaches the wallet review once payouts are open and the pull balance is not 0.
       vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue("0x" + (10n ** 18n).toString(16).padStart(64, "0"));
       store.setState({ walletAddr: "0x" + "5b".repeat(20) });
+      // WP-H8: fl_collect_plan asks only about a plan core built with something to collect.
+      vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
+      vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan({ status: "declined" }));
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);

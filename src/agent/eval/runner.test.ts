@@ -41,6 +41,7 @@ describe("WRITE_TOOLS is derived from the real harness", () => {
       [
         "contract_deploy",
         "fl_adapter_load_propose",
+        "fl_collect_plan",
         "fl_adapter_unload",
         "fl_dataset_clean_propose",
         "fl_dataset_create",

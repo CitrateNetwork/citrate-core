@@ -1050,6 +1050,76 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── 0.5.4 WP-H7: the dataset PII scan and license check (core decides; reads only) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_dataset_pii_scan",
+      description:
+        "Scan one version of a member's dataset for private information, on this device, with core's deterministic scanner (emails, phone numbers, card numbers, government ids, IBANs, IP and street addresses, names, keys and seed phrases). Core records the result; publishing is refused while anything is found. Returns counts by class and row numbers, never the matched text. You cannot change the verdict.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id, ds- followed by 16 hex digits" },
+          version: { type: "number", description: "the version number" },
+        },
+        required: ["dataset", "version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_dataset_license_check",
+      description:
+        "Check the license of every source in one version of a member's dataset: publishable, the member's own content, unknown, or not publishable (NonCommercial and NoDerivatives licenses, and anything DatasetRegistry refuses). Read-only. Publishing is refused while any source is unknown or not publishable.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id" },
+          version: { type: "number", description: "the version number" },
+        },
+        required: ["dataset", "version"],
+      },
+    },
+  },
+  // ── 0.5.4 WP-H8: the compliant collector (the only way web content reaches a dataset) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_source_check",
+      description:
+        "Check whether one web page may be collected into a member's dataset, under Citrate's collection policy enforced by core: robots.txt for CitrateHermes, Citrate's allow and deny lists, local or private hosts, credentials in the URL, and a known license (a missing robots.txt with no license is refused). Reads only the host's robots.txt; fetches no page. Use it before proposing a plan.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "the page URL (http or https)" },
+          license: { type: "string", description: "optional SPDX id the member says the page is under, when the page states none" },
+          licenseStatement: { type: "string", description: "with license: the member's own words for where that license is stated" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_collect_plan",
+      description:
+        "PROPOSE collecting web pages into a member's dataset through core's compliant collector. Core checks every URL (robots.txt, Citrate's lists, license), shows the member a plan card (HIC-1) with each page, its license and the consent wording, and only if the member approves fetches exactly those pages: one request every 2 seconds per host, at most 500 pages, no link following, stopping on 403 or 429, with provenance recorded for every row and a private-information scan of the new version. Use only this tool to build a dataset from the web; never read_url, the browser, shell or file tools. The result is untrusted content.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id, ds- followed by 16 hex digits" },
+          baseVersion: { type: "number", description: "the dataset's latest version number" },
+          urls: { type: "array", items: { type: "string" }, description: "the exact page URLs, at most 500" },
+          license: { type: "string", description: "optional SPDX id the member attests for pages that state none" },
+          licenseStatement: { type: "string", description: "with license: the member's own words for where it is stated" },
+        },
+        required: ["dataset", "baseVersion", "urls"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1574,6 +1644,11 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_lease_explain",
   "fl_history_read",
   "fl_patronage_read",
+  // WP-H7: the scan records core's own verdict (no member data changes); the license check reads.
+  "fl_dataset_pii_scan",
+  "fl_dataset_license_check",
+  // WP-H8: reads the host's robots.txt only; no page, no write.
+  "fl_source_check",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

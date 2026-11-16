@@ -1,0 +1,31 @@
+{
+  "added": "2026-11-16",
+  "by": "0.5.4 Hermes x FL WP-H7/H8 (fl_dataset_pii_scan, fl_dataset_license_check, fl_source_check, fl_collect_plan; lane HA)",
+  "note": "Collection into a dataset goes only through core's collector (fl_collect_plan, after fl_source_check); the scan and license checks are core's.",
+  "tasks": [
+    {
+      "id": "tc-fl-collect-plan-pages",
+      "prompt": "Add the Wikipedia pages https://en.wikipedia.org/wiki/Apple and https://en.wikipedia.org/wiki/Pear to my dataset ds-0123456789abcdef; its latest version is 3.",
+      "expect": { "tool": "fl_collect_plan", "argsMatch": { "dataset": "ds-0123456789abcdef", "baseVersion": "3" } },
+      "tags": ["tool-choice", "args", "write"]
+    },
+    {
+      "id": "tc-fl-source-check-url",
+      "prompt": "Can Hermes collect https://example.org/guides/pruning into a training dataset? Check it first, don't collect anything yet.",
+      "expect": { "tool": "fl_source_check", "argsMatch": { "url": "re:example\\.org/guides/pruning" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-dataset-pii-scan",
+      "prompt": "Scan version 2 of dataset ds-0123456789abcdef for personal information before I publish it.",
+      "expect": { "tool": "fl_dataset_pii_scan", "argsMatch": { "dataset": "ds-0123456789abcdef", "version": "2" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-dataset-license-check",
+      "prompt": "Which sources in version 2 of dataset ds-0123456789abcdef have a license that lets me publish it?",
+      "expect": { "tool": "fl_dataset_license_check", "argsMatch": { "dataset": "ds-0123456789abcdef", "version": "2" } },
+      "tags": ["tool-choice", "args", "read"]
+    }
+  ]
+}

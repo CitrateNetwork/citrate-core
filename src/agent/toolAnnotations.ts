@@ -96,6 +96,14 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // 0.5.4 WP-H10: this device's own record (no scorecard text) and ledger numbers.
   fl_history_read: { effect: "none", trust: "trusted" },
   fl_patronage_read: { effect: "none", trust: "trusted" },
+  // WP-H7: core's scanner and license check over the member's own dataset; nothing the model
+  // writes reaches the verdict. The scan's record is core's, not a change to the dataset.
+  fl_dataset_pii_scan: { effect: "none", trust: "trusted" },
+  fl_dataset_license_check: { effect: "none", trust: "trusted" },
+  // WP-H8: the verdict is core's (host names from the member's own URLs); a run writes a dataset
+  // version from other people's pages, so its result is untrusted and taints the session.
+  fl_source_check: { effect: "none", trust: "trusted" },
+  fl_collect_plan: { effect: "write", trust: "untrusted" },
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

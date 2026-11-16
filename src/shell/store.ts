@@ -96,6 +96,8 @@ import { invoke } from "../bridge/tauri/invoke";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
+import { attestationCardRows, flCollect, planCardRows, runForAgent, sourceCheckForAgent, sourceLine, type FlAttestation, type FlCollectPlan } from "../fl/collect";
+import { datasetGate, licensesForAgent, scanForAgent } from "../fl/datasetGate";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
@@ -145,7 +147,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose", "fl_collect_plan"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -768,6 +770,13 @@ export function tickPatch(
     });
   }
   return u;
+}
+
+/** WP-H8: the member's license attestation from a tool call, when both parts are given. */
+function attestationFrom(args: Record<string, unknown>): FlAttestation | null {
+  const license = typeof args.license === "string" ? args.license.trim() : "";
+  const statement = typeof args.licenseStatement === "string" ? args.licenseStatement.trim() : "";
+  return license && statement ? { license, statement } : null;
 }
 
 export class Store {
@@ -4673,6 +4682,86 @@ export class Store {
         result = formatPlanForAgent(plan);
       } catch (e) {
         result = "couldn't plan a round: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_dataset_pii_scan" || call.name === "fl_dataset_license_check") {
+      // WP-H7: core decides (fl_dataset_gate.rs); Hermes gets counts and verdicts in plain words.
+      const dataset = String(args.dataset || "");
+      const version = Number(args.version);
+      try {
+        result =
+          call.name === "fl_dataset_pii_scan"
+            ? scanForAgent(dataset, version, await datasetGate.piiScan(dataset, version))
+            : licensesForAgent(await datasetGate.licenseCheck(dataset, version));
+      } catch (e) {
+        result = `couldn't check ${dataset} v${version}: ` + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_source_check") {
+      // WP-H8: core's verdict on one URL (fl_collect.rs); fetches the host's robots.txt only.
+      try {
+        result = sourceCheckForAgent(await flCollect.sourceCheck(String(args.url || ""), attestationFrom(args)));
+      } catch (e) {
+        result = "couldn't check that page: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_collect_plan") {
+      // WP-H8 (HIC-1): core builds and checks the plan; the member decides on the card; only an
+      // approved plan runs, once, and core checks every page again before it fetches it.
+      const urls = Array.isArray(args.urls) ? (args.urls as unknown[]).map(String) : [];
+      // Review of #739: an attestation comes from the model's arguments, so the member confirms
+      // it, word for word, on its own card first. Declined = the plan is built without it.
+      let attestation = attestationFrom(args);
+      if (attestation) {
+        const a = attestation;
+        const ok = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool fl_collect_plan (license attestation)",
+            title: "Confirm a license you are attesting",
+            chainless: true,
+            rows: attestationCardRows(a, urls),
+            cost: "none",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          fieldsCard("fl_collect_plan", ann, { license: a.license, statement: a.statement }, `attest ${a.license} for pages that state no license`),
+        );
+        if (ok !== "approved") attestation = null;
+      }
+      let plan: FlCollectPlan | null = null;
+      try {
+        plan = await flCollect.plan(String(args.dataset || ""), Number(args.baseVersion), urls, attestation);
+      } catch (e) {
+        result = "couldn't plan the collection: " + (e instanceof Error ? e.message : String(e));
+      }
+      if (plan && plan.pages === 0) {
+        result = "Nothing on that list can be collected, so no plan was shown. " + plan.sources.map(sourceLine).join(" ");
+        await flCollect.decide(plan.id, false).catch(() => undefined);
+      } else if (plan) {
+        const p = plan;
+        const r = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool fl_collect_plan",
+            title: `Collect ${p.pages} web page${p.pages === 1 ? "" : "s"} into a dataset`,
+            chainless: true,
+            rows: planCardRows(p),
+            cost: "none — pages are fetched by this device",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          fieldsCard("fl_collect_plan", ann, { dataset: p.dataset, pages: String(p.pages), consent: p.statement }, `collect ${p.pages} page${p.pages === 1 ? "" : "s"} into ${p.dataset}`),
+        );
+        status = r;
+        if (r !== "approved") {
+          await flCollect.decide(p.id, false).catch(() => undefined);
+          result = "The member declined the collection plan; nothing was fetched.";
+        } else {
+          try {
+            await flCollect.decide(p.id, true);
+            result = runForAgent(await flCollect.run(p.id));
+          } catch (e) {
+            result = "the collection did not run: " + (e instanceof Error ? e.message : String(e));
+          }
+        }
       }
     } else if (call.name === "fl_round_start") {
       // HUP-S9.4 (HIC-1): the member decides on a card showing core's plan; only an Approve asks
