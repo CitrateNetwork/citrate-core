@@ -81,7 +81,15 @@ ce6a8fd65a82aab00e08f80f567bfcf35e217111a3ce96a05402b4dab28c37cd  llama-server-a
 # from the five skills.lock sources at their pinned commits (fresh clones via
 # `node scripts/eval-check.mjs --fetch-skill-sources`), 240 skills / 1,055 files + skills.lock,
 # packed reproducibly (sorted entries, mtime 2026-10-06T00:00Z, uid/gid 0, no xattrs, gzip -n -9).
-ea95d49d2a01e1ff8f4d161413bca7746712dac36aa99f79b85ebc3ee9561cb0  skills-bundle.tar.gz
+# 0.5.4 (2026-11-16, owner decision on the Hermes x FL collection policy): the skills bundle is
+# rebuilt without sherlock, unbroker, osint-investigation and scrapling (skills.lock, intake.json).
+# `node scripts/stage-skills-bundle.mjs build` from fresh clones at the lock's pinned commits
+# (`node scripts/eval-check.mjs --fetch-skill-sources`), 236 skills / 1,003 files + skills.lock,
+# packed with GNU tar (sorted names, mtime 2026-11-16T00:00Z, uid/gid 0, no xattrs or ACLs,
+# u=rwX,go=rX) and `gzip -n -9` on cnv-build-2; two packs were byte-identical. Uploaded under a new
+# name (the old asset stays for the releases that pinned it) and verified by download. It
+# replaces skills-bundle.tar.gz (ea95d49d..., 240 skills), which this repo's skills.lock now refuses.
+35b4451bbd52ccd336edb45079a037a7c016336435d7f13fc446a8e96fe2f945  skills-bundle-35b4451bbd52.tar.gz
 # Checklist A9 (2026-10-06, release Mac). bge-base-en-v1.5.tar.gz: the asset already on
 # `runtime-deps` since 2026-09-11 (config.json, tokenizer.json, model.safetensors sha256 c7c1988a...);
 # the corpus vectors were made with exactly these weights. knowledge-corpus.tar.gz: format
