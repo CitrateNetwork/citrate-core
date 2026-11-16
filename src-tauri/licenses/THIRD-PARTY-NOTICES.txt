@@ -13,7 +13,7 @@ Components:
   citrate-node: citrate-chain@b2e91167bda2b81d52658c58f6327063a25cbedc, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
   cluster-daemon: citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 217 third-party packages
   comms-member-daemon: citrate-comms@9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 193 third-party packages
-  hermes-sidecar: citrate-agent-runtime@367ad79e3f4c2e752111d725d440e8f2ec0fc0bc, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 485 third-party packages
+  hermes-sidecar: citrate-agent-runtime@f68d041c408cc37db87c5d2e49a654d795e71654, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 485 third-party packages
   kubo: github.com/ipfs/kubo@v0.42.0 ./cmd/ipfs, go-licenses, go1.26.4, darwin/arm64, linux/amd64, linux/arm64, windows/amd64, 250 third-party packages
   mem-mcp: citrate-memories@5aeda31723693edf577f0bad238f691586ccde39, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 283 third-party packages
   node-agent: citrate-node-agent@1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 107 third-party packages

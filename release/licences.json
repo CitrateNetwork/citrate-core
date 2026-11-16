@@ -130,7 +130,7 @@
       "gap": "The citrate-agent-runtime LICENSE file is Apache-2.0 while the federation NOTICE lists it under BUSL-1.1.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-agent-runtime@367ad79e3f4c2e752111d725d440e8f2ec0fc0bc",
+        "source": "citrate-agent-runtime@f68d041c408cc37db87c5d2e49a654d795e71654",
         "packages": 485
       }
     },
