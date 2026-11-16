@@ -456,9 +456,13 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
     label: m + " min",
     cls: btnCls(s.autolock === m),
     go: () => {
-      writeConfig(store, { autolock: m });
-      store.toast("Auto-lock set to " + m + " minutes — UI and keystore share this constant");
+      store.setState({ autolock: m } as Partial<AppState>);
       store.save();
+      // Core applies a saved auto-lock window to the open vault at once (config_write).
+      bridge.config
+        .write({ autolock: m })
+        .then(() => store.toast("Auto-lock set to " + m + " minutes. It applies now, with no restart"))
+        .catch((e) => store.toast("Auto-lock was not saved: " + (e instanceof Error ? e.message : String(e))));
     },
   }));
   // The wallet is this device's EVM signing key in the custody vault (custodyAddr). It is linked when
@@ -998,7 +1002,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 ))}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                auto-lock — the UI and the keystore enforce this same constant; there is no second timer
+                auto-lock: the keystore locks this long after you unlock it. A change applies at once, with no restart
               </span>
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
