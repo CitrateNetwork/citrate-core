@@ -26,7 +26,8 @@ reviewed separately and pinned in `skills.lock` (HUP-S3.6); nothing here is thir
 | `citrate-fl-payouts` | dark payouts and the SALT-only copy rules |
 | `citrate-fl-diagnose` | rejected rounds (FRL fault codes), coordinators, reverted and unknown-outcome transactions |
 
-0.5.4 (Hermes x FL WP-H11): every `citrate-fl-` name and every bundled skill's name is reserved.
+0.5.4 (Hermes x FL WP-H11, the same rule as #716): every name that reads as `citrate-…`, lookalike
+letters included, is reserved.
 `skill_write` and learned skills cannot take one (`skills_local::reserved_skill_name`), because saved
 and learned skills load before these and would shadow them. `src/agent/skills/literacySkills.test.ts`
 checks that every tool an FL skill names exists in this build.

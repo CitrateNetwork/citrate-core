@@ -399,30 +399,99 @@ pub const SKILL_EXISTS_PREFIX: &str = "SKILL_EXISTS";
 /// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
 /// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
 /// one is an explicit, member-approved `overwrite == true` call.
-/// 0.5.4 Hermes x FL WP-H11: every `citrate-fl-` name is reserved for Citrate's bundled skills.
-pub const RESERVED_SKILL_PREFIX: &str = "citrate-fl-";
+/// 0.5.4 Hermes x FL WP-H11, aligned with #716 (V3): skill names starting with this belong to
+/// Citrate's bundled skills (`src-tauri/skills/`, every one of them `citrate-…`).
+pub const RESERVED_SLUG_PREFIX: &str = "citrate-";
+
+/// Whether `slug` is reserved for a bundled skill: exactly `citrate`, or starting `citrate-`.
+/// The same rule as #716's `is_reserved_slug`; one copy is kept when both land.
+pub fn is_reserved_slug(slug: &str) -> bool {
+    slug == "citrate" || slug.starts_with(RESERVED_SLUG_PREFIX)
+}
+
+/// The ASCII letter a common lookalike stands for: fullwidth forms, and Cyrillic and Greek letters
+/// that render like Latin ones. Anything else is returned unchanged. (Same table as #716.)
+fn confusable_ascii(c: char) -> char {
+    let u = c as u32;
+    if (0xFF01..=0xFF5E).contains(&u) {
+        return char::from_u32(u - 0xFEE0).unwrap_or(c);
+    }
+    match c {
+        'а' | 'А' | 'α' | 'Α' => 'a',
+        'с' | 'С' | 'ϲ' | 'Ϲ' => 'c',
+        'е' | 'Е' | 'ε' | 'Ε' => 'e',
+        'і' | 'І' | 'ι' | 'Ι' | 'ӏ' | 'Ӏ' => 'i',
+        'ј' | 'Ј' => 'j',
+        'к' | 'К' | 'κ' | 'Κ' => 'k',
+        'м' | 'М' | 'Μ' => 'm',
+        'н' | 'Н' | 'Η' => 'h',
+        'о' | 'О' | 'ο' | 'Ο' => 'o',
+        'р' | 'Р' | 'ρ' | 'Ρ' => 'p',
+        'т' | 'Т' | 'τ' | 'Τ' => 't',
+        'у' | 'У' | 'υ' => 'y',
+        'х' | 'Х' | 'χ' | 'Χ' => 'x',
+        'ѕ' | 'Ѕ' => 's',
+        'ԁ' => 'd',
+        'ν' | 'Ν' => 'v',
+        _ => c,
+    }
+}
+
+/// Whether a display name reads as a bundled skill's: folded (lookalikes to ASCII, lowercase,
+/// letters and digits only, so zero-width and combining characters drop out), it starts
+/// `citrate`. (Same rule as #716's `is_reserved_display_name`.)
+pub fn is_reserved_display_name(name: &str) -> bool {
+    let folded: String = name
+        .chars()
+        .map(confusable_ascii)
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    folded.starts_with("citrate")
+}
 
 /// Why a skill with this name may not be saved or learned, or `None` when it may. The sidecar loads
 /// learned and saved skills before Citrate's bundled ones (first wins, `hermes_learn::skills_env`),
-/// so a saved or learned skill with a bundled skill's name would shadow it. Every bundled name
-/// (`hermes_setup::FIRST_PARTY_SKILLS`) and every `citrate-fl-` name is reserved.
+/// so a saved or learned skill reading as a bundled skill's name would shadow it.
 pub fn reserved_skill_name(name: &str) -> Option<String> {
     let slug = slugify(name);
-    let bundled = crate::hermes_setup::FIRST_PARTY_SKILLS.contains(&slug.as_str());
-    (bundled || slug.starts_with(RESERVED_SKILL_PREFIX)).then(|| {
+    (is_reserved_slug(&slug) || is_reserved_display_name(name)).then(|| {
         format!("SKILL_RESERVED: \"{slug}\" is reserved for Citrate's bundled skills; choose another name. Nothing was saved.")
     })
 }
 
-/// The `name:` of a SKILL.md's frontmatter, if it has one.
-pub fn skill_md_name(skill_md: &str) -> Option<String> {
-    let rest = skill_md.strip_prefix("---")?;
-    let end = rest.find("\n---")?;
-    rest[..end].lines().find_map(|l| {
-        l.strip_prefix("name:")
-            .map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-            .filter(|v| !v.is_empty())
-    })
+/// The `name:` of a SKILL.md's frontmatter. Fails closed (review of #735, P2): no frontmatter, no
+/// closing fence, no `name:`, an empty name, or more than one top-level `name:` is an error, never a
+/// name that slips past the reserved check.
+pub fn skill_md_name(skill_md: &str) -> Result<String, String> {
+    let bad = |why: &str| {
+        Err(format!(
+            "SKILL_RESERVED: the skill's name cannot be read ({why}); it was refused"
+        ))
+    };
+    let text = skill_md.replace("\r\n", "\n");
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return bad("no frontmatter");
+    };
+    let Some(end) = rest.find("\n---") else {
+        return bad("no closing ---");
+    };
+    let names: Vec<String> = rest[..end]
+        .lines()
+        .filter_map(|l| l.strip_prefix("name:"))
+        .map(|v| {
+            v.trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .trim()
+                .to_string()
+        })
+        .collect();
+    match names.as_slice() {
+        [one] if !one.is_empty() => Ok(one.clone()),
+        [] => bad("no name"),
+        [_] => bad("an empty name"),
+        _ => bad("more than one name"),
+    }
 }
 
 fn write_skill_file(

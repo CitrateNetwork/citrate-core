@@ -1452,9 +1452,8 @@ pub(crate) fn refuse_reserved_skill(content: &Value) -> Result<(), String> {
         .get("skill_md")
         .and_then(|m| m.as_str())
         .unwrap_or_default();
-    match crate::skills_local::skill_md_name(md)
-        .and_then(|n| crate::skills_local::reserved_skill_name(&n))
-    {
+    let name = crate::skills_local::skill_md_name(md)?;
+    match crate::skills_local::reserved_skill_name(&name) {
         Some(why) => Err(why),
         None => Ok(()),
     }
@@ -1490,18 +1489,21 @@ pub async fn hermes_learn_accept(
             return Err("too many acknowledged conflicts".into());
         }
         let member = member_id(&app);
-        // WP-H11: a skill the sidecar proposed with a reserved name is never accepted.
+        // WP-H11: a skill the sidecar proposed with a reserved (or unreadable) name is never
+        // accepted. A proposal core cannot find in the sidecar's list is refused (fail closed).
         let m = manager(&app)?;
-        if let Some(p) = learn_list(m, true)?
+        let list = learn_list(m, true)?;
+        let proposal = list
             .get("proposals")
             .and_then(|a| a.as_array())
             .and_then(|a| {
                 a.iter()
                     .find(|p| p.get("id").and_then(|x| x.as_str()) == Some(id.as_str()))
             })
-        {
-            refuse_reserved_skill(p.get("content").unwrap_or(&Value::Null))?;
-        }
+            .ok_or_else(|| {
+                format!("proposal {id} is not in Hermes's list; nothing was accepted")
+            })?;
+        refuse_reserved_skill(proposal.get("content").unwrap_or(&Value::Null))?;
         let out = learn_accept_raw(m, &id, &member, &acknowledged)?;
         let persisted = out.get("persisted").cloned().unwrap_or(Value::Null);
         if persisted.get("kind").and_then(|k| k.as_str()) == Some("memory") {
