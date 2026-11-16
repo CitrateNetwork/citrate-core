@@ -30,7 +30,9 @@ import { HaveAnInvite } from "../HaveAnInvite";
 import { RelayStatusChip } from "../RelayStatusChip";
 import { groupsSlice, refreshGroups, selectGroup, reloadMessages, sendMessageTo, groupLabel, mySendAddress, plainText } from "../../shell/slices/groups";
 import { encodeReply, lastLine, messageRef, roleOf, threadModel, type ThreadItem } from "./groupEnvelope";
-import { answerInGroup, mentionsHermes, NOT_READ, ownAnswers, rememberOwnAnswer, type GroupContext } from "./groupHermes";
+import { answerInGroup, mentionsHermes, NOT_READ, ownAnswers, rememberOwnAnswer, type GroupContext, type SendDecision, type SendPreview } from "./groupHermes";
+import { GroupSendCard } from "./GroupSendCard";
+import { scanForDisclosure } from "../../privacy/disclosureScan";
 import { myRoleIn, presenceOf, roleWord } from "./memberRoles";
 import { liveRoundsFor, roundsLine, RoundDraftCard, RoundEventCard, ROUNDS_NOT_LIVE, useRoundsToday, type RoundsToday } from "./RoundCards";
 import { groupAlerts, type GroupAlert } from "./groupAlerts";
@@ -45,9 +47,13 @@ const initials = (s: string): string => (s.replace(/^0x/, "").slice(0, 2) || "·
 /** Why the epoch shows "—". */
 export const EPOCH_UNKNOWN = "The comms daemon this app runs does not report the MLS epoch yet.";
 /** The line under the composer. */
-export const HERMES_DISCLOSURE = "@Hermes runs on your device; its reply is posted to everyone in this group.";
+export const HERMES_DISCLOSURE = "@Hermes runs on your device. You see its answer, checked for private information, before you post it to everyone in this group.";
 
-type HermesRun = { kind: "idle" } | { kind: "running"; groupId: string } | { kind: "failed"; groupId: string; reason: string };
+type HermesRun =
+  | { kind: "idle" }
+  | { kind: "running"; groupId: string }
+  | { kind: "review"; groupId: string; preview: SendPreview; decide: (d: SendDecision) => void }
+  | { kind: "failed"; groupId: string; reason: string };
 
 export interface GroupChatProps extends SurfaceProps {
   view?: "groups" | "alerts";
@@ -217,6 +223,20 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
     setHermes({ kind: "running", groupId });
     const out = await answerInGroup(groupId, messageRef(asker, text), c, {
       inferLocal: (m, ctx) => bridge.chat.inferLocal(m, ctx),
+      scan: scanForDisclosure,
+      // V6: the send card. The answer waits here until the member decides; nothing is posted first.
+      confirm: (preview) =>
+        new Promise<SendDecision>((resolve) => {
+          setHermes({
+            kind: "review",
+            groupId,
+            preview,
+            decide: (d) => {
+              setHermes({ kind: "running", groupId });
+              resolve(d);
+            },
+          });
+        }),
       send: async (gid, body) => {
         rememberOwnAnswer(messageRef(asker, body));
         setOwn(ownAnswers());
@@ -224,6 +244,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
       },
     });
     if (out.kind === "posted") setHermes({ kind: "idle" });
+    else if (out.kind === "held") setHermes(out.reason === "you chose not to post it" ? { kind: "idle" } : { kind: "failed", groupId, reason: `Hermes's answer was not posted: ${out.reason}.` });
     else if (out.kind === "no-answer") setHermes({ kind: "failed", groupId, reason: `Hermes did not answer on this device (${out.reason}). Nothing was posted to the group.` });
     else setHermes({ kind: "failed", groupId, reason: `Hermes answered, but the answer was not sent to the group (${out.reason}).` });
   };
@@ -463,6 +484,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
                 <RoundEventCard key={r.round} r={r} onOpen={() => store.go("groups/rounds/live")} />
               ))}
               {hermes.kind === "running" && hermes.groupId === selected.id && <div role="status" className="grp-typing">Hermes is answering on your device.</div>}
+              {hermes.kind === "review" && hermes.groupId === selected.id && <GroupSendCard preview={hermes.preview} onDecide={hermes.decide} />}
               {hermes.kind === "failed" && hermes.groupId === selected.id && (
                 <div role="alert" className="grp-alert">
                   {hermes.reason}{" "}

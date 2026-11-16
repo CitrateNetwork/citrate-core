@@ -13,7 +13,7 @@ import {
   threadModel,
   HERMES_HEADER,
 } from "./groupEnvelope";
-import { answerInGroup, buildRequest, mentionsHermes, parseAnswer, readList, NOT_READ, type GroupContext } from "./groupHermes";
+import { answerInGroup, buildRequest, mentionsHermes, parseAnswer, readList, recipientsOf, NOT_READ, type DisclosureScan, type GroupContext, type HermesDeps, type SendDecision, type SendPreview } from "./groupHermes";
 import { groupAlerts } from "./groupAlerts";
 import { draftActions, liveRoundSentence, liveRoundsFor, roundsLine, roundsToday, ROUNDS_NOT_LIVE } from "./RoundCards";
 import type { GroupMessage } from "../../bridge/domains";
@@ -175,23 +175,47 @@ describe("Hermes in a group answers only when mentioned, from the group's contex
     expect(p.text).toBe("Three machines have 24 GB.");
     expect(p.draft).toEqual({ title: "Tune the support model", budgetSalt: 600, rateSalt: 1.5, workers: 8, deadline: null });
   });
-  it("posts the answer to the group as a Hermes answer message", async () => {
+  const passScan = async (t: string): Promise<DisclosureScan> => ({ scanner: "citrate-pii-scan/1", passed: true, found: [], redacted: t, coverage: "c" });
+  const post = async (p: SendPreview): Promise<SendDecision> => ({ post: true, text: p.text });
+  const deps = (over: Partial<HermesDeps>): HermesDeps => ({ inferLocal: async () => "ok", scan: passScan, confirm: post, send: vi.fn(async () => {}), ...over });
+
+  it("posts the answer to the group as a Hermes answer message once the member confirms", async () => {
     const send = vi.fn(async () => {});
-    const out = await answerInGroup("g", "m12345678", ctx(), { inferLocal: async () => "Five machines reported.", send });
+    const confirm = vi.fn(post);
+    const out = await answerInGroup("g", "m12345678", ctx(), deps({ inferLocal: async () => "Five machines reported.", send, confirm }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toMatchObject({ groupId: "g", text: "Five machines reported." });
     expect(out.kind).toBe("posted");
     const body = send.mock.calls[0][1] as string;
     expect(decodeHermes(body)).toMatchObject({ to: "m12345678", text: "Five machines reported." });
   });
   it("when the local model does not answer, nothing is posted", async () => {
     const send = vi.fn(async () => {});
-    const out = await answerInGroup("g", "m12345678", ctx(), { inferLocal: async () => Promise.reject(new Error("local model not running")), send });
+    const out = await answerInGroup("g", "m12345678", ctx(), deps({ inferLocal: async () => Promise.reject(new Error("local model not running")), send }));
     expect(out).toEqual({ kind: "no-answer", reason: "local model not running" });
     expect(send).not.toHaveBeenCalled();
   });
   it("an empty answer posts nothing; a refused send says it was not sent", async () => {
-    expect((await answerInGroup("g", "m12345678", ctx(), { inferLocal: async () => "  ", send: vi.fn() })).kind).toBe("no-answer");
-    const out = await answerInGroup("g", "m12345678", ctx(), { inferLocal: async () => "ok", send: async () => Promise.reject(new Error("relay down")) });
+    expect((await answerInGroup("g", "m12345678", ctx(), deps({ inferLocal: async () => "  " }))).kind).toBe("no-answer");
+    const out = await answerInGroup("g", "m12345678", ctx(), deps({ send: async () => Promise.reject(new Error("relay down")) }));
     expect(out.kind).toBe("not-sent");
+  });
+  it("V6: a declined card, a failed check or a finding in the final text posts nothing", async () => {
+    const send = vi.fn(async () => {});
+    expect(await answerInGroup("g", "m1", ctx(), deps({ send, confirm: async () => ({ post: false }) }))).toEqual({ kind: "held", reason: "you chose not to post it" });
+    expect((await answerInGroup("g", "m1", ctx(), deps({ send, confirm: async () => Promise.reject(new Error("closed")) }))).kind).toBe("held");
+    const down = await answerInGroup("g", "m1", ctx(), deps({ send, scan: async () => Promise.reject(new Error("no scanner")) }));
+    expect(down).toMatchObject({ kind: "held" });
+    expect((down as { reason: string }).reason).toContain("could not run (no scanner)");
+    // The member's chosen text is scanned again, whatever the card showed.
+    const found: DisclosureScan = { scanner: "s", passed: false, found: [{ class: "email", label: "email address", count: 1 }], redacted: "<email>", coverage: "c" };
+    const edited = await answerInGroup("g", "m1", ctx(), deps({ send, confirm: async () => ({ post: true, text: "mail me at x" }), scan: async (t) => (t === "ok" ? passScan(t) : found) }));
+    expect(edited).toEqual({ kind: "held", reason: "the text still holds email address, so nothing was posted" });
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("V6: the card says how many other members receive the answer", () => {
+    expect(recipientsOf(ctx())).toBe(ctx().roster.filter((r) => r.address.toLowerCase() !== ctx().asker.toLowerCase()).length);
+    expect(recipientsOf(ctx({ roster: [] }))).toBeNull();
   });
 });
 

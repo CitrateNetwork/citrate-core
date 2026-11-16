@@ -17,6 +17,17 @@ import { freshState, type AppState } from "../../shell/state";
 import { groupsSlice } from "../../shell/slices/groups";
 import type { Store } from "../../shell/store";
 import type { Group, GroupMember, GroupMessage, MyInviteRequest } from "../../bridge/domains";
+import type { DisclosureScan } from "./groupHermes";
+
+// V6: the on-device private-information check is Rust (`pii_scan_text`); the board's tests drive
+// its result through this seam.
+const scanMock = vi.hoisted(() => ({ fn: null as null | ((t: string) => Promise<DisclosureScan>) }));
+vi.mock("../../privacy/disclosureScan", () => ({
+  SCAN_NEEDS_DESKTOP: "the private-information check runs only in the desktop app",
+  scanForDisclosure: (t: string) => (scanMock.fn ? scanMock.fn(t) : Promise.reject(new Error("no scanner in this test"))),
+}));
+const COVERAGE = "Checked for email addresses and more.";
+const clean = (t: string): DisclosureScan => ({ scanner: "citrate-pii-scan/1", passed: true, found: [], redacted: t, coverage: COVERAGE });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -57,6 +68,7 @@ function seed(messages: GroupMessage[] = [], roster: GroupMember[] = ROSTER) {
 beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
+  scanMock.fn = async (t) => clean(t);
   vi.spyOn(bridge.groups, "selfAddress").mockResolvedValue(ME);
   vi.spyOn(bridge.social, "resolve").mockResolvedValue([]);
   vi.spyOn(bridge.cluster, "devices").mockRejectedValue(new Error("cluster daemon not running"));
@@ -181,7 +193,7 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
     expect(infer).not.toHaveBeenCalled();
   });
 
-  it("@Hermes runs the local model and posts its answer with the disclosure line", async () => {
+  it("@Hermes runs the local model, shows the send card, and posts only when the member presses Post (V6)", async () => {
     seed();
     vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("Five machines reported hardware.");
     const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
@@ -189,6 +201,15 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
     expect(host.textContent).toContain(HERMES_DISCLOSURE);
     await setValue(host.querySelector("#grp-msg") as HTMLTextAreaElement, "@Hermes what would that take?");
     await act(async () => btn("Send")!.click());
+    // Only the member's own message went out; Hermes's answer waits on the card.
+    expect(send).toHaveBeenCalledTimes(1);
+    const card = host.querySelector("[data-testid=group-send-card]") as HTMLElement;
+    expect(card.getAttribute("role")).toBe("dialog");
+    expect(card.querySelector("[data-testid=group-send-preview]")?.textContent).toBe("Five machines reported hardware.");
+    expect(card.textContent).toContain("1 member will see it.");
+    expect(card.textContent).toContain("Private-information check on this device: nothing found.");
+    expect(card.textContent).toContain(COVERAGE);
+    await act(async () => btn("Post to 1 member")!.click());
     expect(send).toHaveBeenCalledTimes(2);
     const posted = decodeHermes(send.mock.calls[1][1] as string);
     expect(posted?.to).toBe(messageRef(ME, "@Hermes what would that take?"));
@@ -254,10 +275,84 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
     await act(async () => groupsSlice.set({ selectedId: OTHER.id, roster: ROSTER, messages: groupsSlice.get().history[OTHER.id] }));
     release();
     await pending;
+    // The card belongs to the group the message went to; the member goes back there to post it.
+    expect(host.querySelector("[data-testid=group-send-card]")).toBeNull();
+    await act(async () => groupsSlice.set({ selectedId: GROUP.id, roster: ROSTER, messages: groupsSlice.get().history[GROUP.id] }));
+    await act(async () => btn("Post to 1 member")!.click());
     const [messagesJson, contextJson] = infer.mock.calls[0];
     expect(messagesJson).toContain("Orchard context");
     expect(messagesJson + contextJson).not.toContain("Pier Street");
     expect(send.mock.calls.map((c) => c[0])).toEqual([GROUP.id, GROUP.id]);
+  });
+});
+
+describe("V6: the @Hermes send card and the private-information check", () => {
+  const ask = async () => {
+    await setValue(host.querySelector("#grp-msg") as HTMLTextAreaElement, "@Hermes who should we ask?");
+    await act(async () => btn("Send")!.click());
+  };
+
+  it("a finding blocks posting the answer as written; the member can post the redaction", async () => {
+    seed();
+    const mail = ["dana", "@", "example.org"].concat();
+    vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue(`Write to ${mail}.`);
+    scanMock.fn = async (t) =>
+      t.includes(mail)
+        ? { scanner: "citrate-pii-scan/1", passed: false, found: [{ class: "email", label: "email address", count: 1 }], redacted: "Write to <email>.", coverage: COVERAGE }
+        : clean(t);
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    await ask();
+    const card = host.querySelector("[data-testid=group-send-card]") as HTMLElement;
+    expect(card.querySelector("[role=alert]")?.textContent).toContain("found 1 email address");
+    expect(btn("Post to 1 member")).toBeUndefined();
+    await act(async () => btn("Post with these removed")!.click());
+    expect(send).toHaveBeenCalledTimes(2);
+    const posted = decodeHermes(send.mock.calls[1][1] as string);
+    expect(posted?.text).toBe("Write to <email>.");
+    expect(send.mock.calls[1][1]).not.toContain(mail);
+  });
+
+  it("an edit that still holds private information is checked again and not posted", async () => {
+    seed();
+    const phone = ["202", "-555-", "0143"].concat();
+    vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("Ask the owners.");
+    scanMock.fn = async (t) =>
+      t.includes(phone)
+        ? { scanner: "citrate-pii-scan/1", passed: false, found: [{ class: "phone", label: "phone number", count: 1 }], redacted: t.replace(phone, "<phone>"), coverage: COVERAGE }
+        : clean(t);
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    await ask();
+    await act(async () => btn("Edit")!.click());
+    await setValue(host.querySelector("#grp-send-edit") as HTMLTextAreaElement, `Ask the owners, or call ${phone}.`);
+    await act(async () => btn("Post to 1 member")!.click());
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[role=alert]")?.textContent).toContain("still holds phone number, so nothing was posted");
+  });
+
+  it("Don't post posts nothing and closes the card", async () => {
+    seed();
+    vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("ok");
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    await ask();
+    await act(async () => btn("Don't post")!.click());
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[data-testid=group-send-card]")).toBeNull();
+    expect(host.querySelector("[role=alert]")).toBeNull();
+  });
+
+  it("when the check cannot run, nothing is posted and the member is told why", async () => {
+    seed();
+    vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("ok");
+    scanMock.fn = async () => Promise.reject(new Error("the private-information check runs only in the desktop app"));
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    await ask();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[data-testid=group-send-card]")).toBeNull();
+    expect(host.textContent).toContain("Hermes's answer was not posted: the private-information check could not run (the private-information check runs only in the desktop app), so nothing was posted.");
   });
 });
 
