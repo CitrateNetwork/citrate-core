@@ -68,7 +68,7 @@ import {
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
-import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
+import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, sidecarToolOrigin, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -3536,7 +3536,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, msgId, ensure, meta);
-              toolOutputs.push({ tool: call.name, content: result });
+              toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3555,7 +3555,7 @@ export class Store {
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
             } else if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
               // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
@@ -3896,7 +3896,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
-              toolOutputs.push({ tool: call.name, content: result });
+              toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3933,7 +3933,7 @@ export class Store {
             }
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.

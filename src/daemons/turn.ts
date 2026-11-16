@@ -18,7 +18,7 @@
 // The run's tokens are measured from the model server's usage reports when every model call has
 // one, otherwise estimated by the TokenMeter from characters (it says which).
 // =====================================================================
-import type { TurnToolOutput } from "../agent/deployClaims";
+import { sidecarToolOrigin, type TurnToolOutput } from "../agent/deployClaims";
 import {
   AGENT_SYSTEM_PROMPT,
   AGENT_TOOLS,
@@ -232,7 +232,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         onActivity: (ev) => {
           if (ev.kind === "step") meter.round();
           else if (ev.kind === "usage") meter.measured(ev.promptTokens, ev.completionTokens);
-          else if (ev.kind === "tool_output") outputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+          else if (ev.kind === "tool_output") outputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool) });
         },
         onToolCall: async (call, meta) => {
           throwIfStopped(signal);
@@ -240,7 +240,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
           const d = daemonToolDecision(call, claim.name, meta, allowed);
           const out = d.run ? await deps.handleTool(call, d.meta, signal) : d.result;
           meter.context(out.length);
-          outputs.push({ tool: call.name, content: out });
+          outputs.push({ tool: call.name, content: out, origin: "core" });
           return out;
         },
       },

@@ -107,6 +107,22 @@ fn spec_env_points_the_answer_check_at_the_40204_rpc() {
 }
 
 #[test]
+fn spec_env_names_this_executable_for_the_node_server_check() {
+    // #681 review: the sidecar trusts MCP deploy evidence only from the node server that runs as
+    // this executable with --mcp-stdio (the node entry hermes_mcp renders).
+    let (mgr, _dir) = stub_manager("coreexe");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    let exe = std::env::current_exe().expect("exe");
+    assert_eq!(
+        env.get(HERMES_CORE_EXE_ENV).map(String::as_str),
+        Some(exe.to_string_lossy().as_ref())
+    );
+    assert_eq!(crate::node_mcp_http::STDIO_FLAG, "--mcp-stdio");
+    assert_eq!(crate::hermes_mcp::NODE_SERVER_NAME, "node");
+}
+
+#[test]
 fn spec_env_carries_addr_and_token_path_never_the_token() {
     let (mgr, _dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =

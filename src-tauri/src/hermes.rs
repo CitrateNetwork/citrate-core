@@ -67,6 +67,8 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
 /// #681: the 40204 RPC the sidecar's final-answer deploy-claim check reads eth_getCode from.
 pub const HERMES_CHAIN_RPC_ENV: &str = "CITRATE_HERMES_CHAIN_RPC";
+/// #681 review: this executable, so the sidecar can tell core's node MCP server from any other.
+pub const HERMES_CORE_EXE_ENV: &str = "CITRATE_HERMES_CORE_EXE";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -655,6 +657,15 @@ impl HermesManager {
                 citrate_core_kit::rpc::CITRATE_RPC_URL.to_string(),
             ),
         ];
+        // #681 review: the node MCP server core registers runs as this executable
+        // (`hermes_mcp` node entry, `--mcp-stdio`). The sidecar takes MCP results as deploy
+        // evidence only from that server, never from a same-named one.
+        if let Some(exe) = std::env::current_exe().ok().filter(|p| p.is_absolute()) {
+            spec.env.push((
+                HERMES_CORE_EXE_ENV.to_string(),
+                exe.to_string_lossy().to_string(),
+            ));
+        }
         // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.
         if let Some(dir) = &self.capsules_dir {
             spec.env.push((

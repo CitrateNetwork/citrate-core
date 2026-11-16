@@ -30,7 +30,7 @@ describe("#643 the chat answer is checked before it is kept", () => {
       callbacks.onActivity?.({
         kind: "tool_output",
         callId: "c1",
-        tool: "mcp__citrate-node__deploy_propose",
+        tool: "mcp__node__deploy_propose",
         status: "error",
         content: "Deploy refused: no deploy gate record for this init code.",
       });
@@ -49,12 +49,14 @@ describe("#643 the chat answer is checked before it is kept", () => {
     expect(m?.streaming).toBe(false);
   });
 
-  it("the pending in-app deploy: the corrected text is what the next turn sends back as context", async () => {
+  it("the pending deploy: the corrected text is what the next turn sends back as context", async () => {
+    // #681: a sidecar-reported result counts only from core's node server (a sidecar-hosted
+    // tool named contract_deploy is not core's).
     store.provider = fakeProvider(async ({ callbacks }) => {
       callbacks.onActivity?.({
         kind: "tool_output",
         callId: "c2",
-        tool: "contract_deploy",
+        tool: "mcp__node__deploy_propose",
         status: "ok",
         content: "Proposed the contract deploy — it's waiting in the Signature Ceremony.",
       });
@@ -86,14 +88,14 @@ describe("#643 the chat answer is checked before it is kept", () => {
       callbacks.onActivity?.({
         kind: "tool_output",
         callId: "c2",
-        tool: "mcp__citrate-node__deploy_propose",
+        tool: "mcp__node__deploy_propose",
         status: "ok",
         content: JSON.stringify({ requestId: "r7", state: "pending" }),
       });
       callbacks.onActivity?.({
         kind: "tool_output",
         callId: "c3",
-        tool: "mcp__citrate-node__request_status",
+        tool: "mcp__node__request_status",
         status: "ok",
         content: JSON.stringify({
           id: "r7",
@@ -126,7 +128,7 @@ describe("#643 the chat answer is checked before it is kept", () => {
     const WSALT = "0xAA91b5c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7";
     vi.spyOn(bridge.contracts, "getCode").mockResolvedValue({ address: WSALT, bookNames: ["WrappedSALT"], isContract: true, codeSize: 3000, codeHash: null, proxy: null, verified: { status: "unverified", contractName: null, note: "" }, note: "" } as never);
     store.provider = fakeProvider(async ({ callbacks }) => {
-      callbacks.onActivity?.({ kind: "tool_output", callId: "b1", tool: "mcp__citrate-node__address_book", status: "ok", content: JSON.stringify({ book: { WrappedSALT: WSALT } }) });
+      callbacks.onActivity?.({ kind: "tool_output", callId: "b1", tool: "mcp__node__address_book", status: "ok", content: JSON.stringify({ book: { WrappedSALT: WSALT } }) });
       callbacks.onToken("Found WrappedSALT in the address book.");
     });
     await store.sendChat("look up WrappedSALT");
@@ -146,7 +148,7 @@ describe("#643 the chat answer is checked before it is kept", () => {
       spoken.push(t);
     });
     store.provider = fakeProvider(async ({ callbacks }) => {
-      callbacks.onActivity?.({ kind: "tool_output", callId: "c1", tool: "mcp__citrate-node__deploy_propose", status: "error", content: "Deploy refused: no deploy gate record." });
+      callbacks.onActivity?.({ kind: "tool_output", callId: "c1", tool: "mcp__node__deploy_propose", status: "error", content: "Deploy refused: no deploy gate record." });
       callbacks.onToken(`Deployed! Your token is deployed at ${BAD_40}.`);
     });
     await store.sendChat("deploy");
