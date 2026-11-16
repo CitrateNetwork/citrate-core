@@ -789,6 +789,7 @@ pub fn run() {
             contract_reader::contract_source,
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
+            contract_reader::contract_view_call_at,
             contract_reader::contract_write_propose,
             // CORE-A1 / CORE-A2 — find, identify and decode contracts (read-only).
             contract_intel::contract_address_book_lookup,

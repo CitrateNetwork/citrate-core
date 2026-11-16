@@ -354,6 +354,55 @@ pub fn view_call<T: crate::rpc::RpcTransport>(
     Ok(format!("0x{}", h.to_ascii_lowercase()))
 }
 
+/// A view call pinned to one block, so the answer can name the block it was read at.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedViewCall {
+    /// The raw `0x` return data.
+    pub data: String,
+    /// The block the call ran at: the RPC's `eth_blockNumber` just before the call.
+    pub block: u64,
+    /// The host of the RPC that answered (`rpc.citrate.ai`, or the fork's `127.0.0.1:8545`).
+    pub rpc: String,
+}
+
+/// FL design board 01 (receipts name the block): read `eth_blockNumber` on the same RPC, then run
+/// the `eth_call` at exactly that block, so the reported block is the one the value came from.
+pub fn view_call_at<T: crate::rpc::RpcTransport>(
+    client: &crate::rpc::RpcClient<T>,
+    to: &str,
+    data: &[u8],
+) -> Result<(String, u64), String> {
+    let head = rpc_raw(client, "eth_blockNumber", serde_json::json!([]))?;
+    let head = head
+        .as_str()
+        .and_then(|h| h.strip_prefix("0x"))
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
+        .ok_or_else(|| "the RPC's eth_blockNumber answer is not 0x hex".to_string())?;
+    let call = serde_json::json!({ "to": to, "data": format!("0x{}", hex::encode(data)) });
+    let out = rpc_raw(
+        client,
+        "eth_call",
+        serde_json::json!([call, format!("0x{head:x}")]),
+    )?;
+    let s = out
+        .as_str()
+        .ok_or_else(|| "the node's eth_call result is not a string".to_string())?;
+    let h = s
+        .strip_prefix("0x")
+        .ok_or_else(|| "the node's eth_call result is not 0x hex".to_string())?;
+    if !h.chars().all(|c| c.is_ascii_hexdigit()) || h.len() % 2 != 0 {
+        return Err("the node's eth_call result is not valid hex".to_string());
+    }
+    Ok((format!("0x{}", h.to_ascii_lowercase()), head))
+}
+
+/// The host part of an RPC URL, for naming where a read came from.
+pub fn rpc_host(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    rest.split('/').next().unwrap_or(rest).to_string()
+}
+
 /// `eth_getCode(address, "latest")` → the byte length of the deployed code (0 = no contract).
 pub fn code_size<T: crate::rpc::RpcTransport>(
     client: &crate::rpc::RpcClient<T>,
@@ -488,6 +537,34 @@ pub fn contract_view_call_sync(
     let address = normalize_address(&address)?;
     let data = parse_calldata(&calldata)?;
     view_call(&client_for(&target), &address, &data)
+}
+
+/// **contract_view_call_at** — a read-only `eth_call` pinned to the RPC's current block; returns
+/// the data, that block and the RPC host, so Hermes's answer can name the block (board 01).
+#[tauri::command]
+pub async fn contract_view_call_at(
+    target: Option<String>,
+    address: String,
+    calldata: String,
+) -> std::result::Result<PinnedViewCall, String> {
+    crate::blocking::off_main(move || contract_view_call_at_sync(target, address, calldata)).await
+}
+
+/// Blocking body of [`contract_view_call_at`]; reached only through [`crate::blocking::off_main`].
+pub fn contract_view_call_at_sync(
+    target: Option<String>,
+    address: String,
+    calldata: String,
+) -> std::result::Result<PinnedViewCall, String> {
+    let target = parse_target(target.as_deref())?;
+    let address = normalize_address(&address)?;
+    let data = parse_calldata(&calldata)?;
+    let (data, block) = view_call_at(&client_for(&target), &address, &data)?;
+    Ok(PinnedViewCall {
+        data,
+        block,
+        rpc: rpc_host(&target.rpc_url()),
+    })
 }
 
 /// **contract_write_propose** — open a PENDING SignatureCeremony for a write call on 40204. The

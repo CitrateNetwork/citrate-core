@@ -55,6 +55,28 @@ describe("board 01: the run timeline of a reply", () => {
     expect(m.streaming).toBe(false);
   });
 
+  it("a core call is refused only when the member's decision said no (structured, not by words)", async () => {
+    vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      await callbacks.onToolCall({ id: "g1", name: "group_create", arguments: '{"name":"Orchard Lab"}' } as never);
+      callbacks.onToken("ok");
+      return { role: "assistant", content: "" };
+    });
+    await store.sendChat("make a group");
+    expect(agentMsgs()[0].run?.steps.find((s) => s.tool === "group_create")?.state).toBe("refused");
+  });
+
+  it("a core result that merely says 'declined' is not a refusal", async () => {
+    vi.spyOn(store, "handleTool").mockResolvedValue("declined: the note says the member declined lunch");
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      await callbacks.onToolCall({ id: "m1", name: "memory_search", arguments: "{}" } as never);
+      callbacks.onToken("ok");
+      return { role: "assistant", content: "" };
+    });
+    await store.sendChat("what did I note");
+    expect(agentMsgs()[0].run?.steps.find((s) => s.tool === "memory_search")?.state).toBe("done");
+  });
+
   it("an unread node height leaves the chain read's block unknown, never 0", async () => {
     store.setState({ height: 0 });
     vi.spyOn(store, "handleTool").mockResolvedValue("{}");

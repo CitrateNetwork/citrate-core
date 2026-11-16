@@ -5,6 +5,7 @@ import { encodeAbiParameters } from "viem";
 import { encodeArgs, fragmentFunction, pickFunction, runContractView, viewTarget, type ContractViewDeps } from "./contractView";
 import { parseAbi } from "../contractReader/abi";
 import type { VerifiedSourceView } from "./verifiedSource";
+import { blockFromResult } from "./runTimeline";
 
 const TOKEN = "0x" + "22".repeat(20);
 const HOLDER = "0x" + "33".repeat(20);
@@ -43,6 +44,17 @@ describe("contract_view (US-6.3 AC2)", () => {
     expect(out).toContain("chain 40204");
     expect(out).toContain("1000000000000000000000000");
     expect(out.split("<<<UNTRUSTED").length - 1).toBe(1);
+  });
+
+  it("board 01: with the pinned call, the answer names the block it was read at and the RPC", async () => {
+    const data = encodeAbiParameters([{ type: "uint256" }], [7n]);
+    const viewCallAt = vi.fn(async () => ({ data, block: 1204303, rpc: "rpc.citrate.ai" }));
+    const d = deps({ viewCallAt });
+    const out = await runContractView(d, { address: TOKEN, function: "totalSupply" });
+    expect(viewCallAt).toHaveBeenCalledWith("citrate", TOKEN, "0x18160ddd");
+    expect(d.viewCall).not.toHaveBeenCalled();
+    expect(out.split("\n")[0]).toContain("(chain 40204) at block 1204303 on rpc.citrate.ai, using");
+    expect(blockFromResult("contract_view", out)).toEqual({ block: 1204303, source: "rpc.citrate.ai" });
   });
 
   it("encodes arguments for the chosen signature", async () => {

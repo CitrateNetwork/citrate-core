@@ -29,7 +29,7 @@ import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { loadChatHistory } from "../shell/slices/chatHistory";
 import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chatLayout";
 import { RunReceipts, RunTimeline } from "./RunTimeline";
-import { ChatCommandBar, chatCommands, slashMatches, type ChatCommand } from "./ChatCommandBar";
+import { ChatCommandBar, chatCommands, exactCommand, slashMatches, type ChatCommand } from "./ChatCommandBar";
 import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
 import { stepAnnouncement } from "../agent/runTimeline";
 import { useAuthority } from "../fl/authority";
@@ -67,6 +67,17 @@ function PlanGlyph() {
       <path d="M9 4 V3 H15 V4 M8.5 10 L10 11.5 L12.5 9 M14 10.5 H16 M8.5 15.5 L10 17 L12.5 14.5 M14 16 H16"></path>
     </svg>
   );
+}
+
+/** Whether an Esc press is for this chat: the pane is on screen, no dialog is open, and focus is
+ *  inside the pane or on nothing in particular. */
+export function escTargetsChat(pane: HTMLElement | null): boolean {
+  if (!pane || !pane.isConnected || typeof document === "undefined") return false;
+  if (document.visibilityState === "hidden") return false;
+  if (pane.closest("[hidden],[aria-hidden='true']")) return false;
+  if (document.querySelector("[role='dialog'],[role='alertdialog'],[aria-modal='true'],dialog[open]")) return false;
+  const a = document.activeElement;
+  return !a || a === document.body || pane.contains(a);
 }
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
@@ -182,7 +193,9 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         setBarOpen((v) => !v);
         return;
       }
-      if (e.key === "Escape" && !barOpen && !sheetOpen && runLive) {
+      // Esc stops only this chat's run: not a key repeat, no dialog open anywhere, this chat on
+      // screen, and focus in the chat (or nowhere in particular).
+      if (e.key === "Escape" && !e.repeat && !barOpen && !sheetOpen && runLive && escTargetsChat(paneRef.current)) {
         e.preventDefault();
         store.stopAgentTurn();
       }
@@ -647,7 +660,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 e.preventDefault();
                 const v = (e.target as HTMLTextAreaElement).value;
                 if (v.trim().startsWith("/") && !/^\/run\b/.test(v.trim())) {
-                  const hit = slashMatches(commands, v)[0];
+                  // Enter runs a command only when its exact word was typed (the menu lists prefixes).
+                  const hit = exactCommand(commands, v);
                   if (hit) {
                     runCommand(hit);
                     return;

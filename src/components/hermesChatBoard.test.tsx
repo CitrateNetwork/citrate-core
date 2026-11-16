@@ -17,7 +17,7 @@ const BANNED = /\b(earn|earning|earnings|income|yield|APY|APR|profit|HITL)\b|Dep
 function liveRun() {
   let r = runThink(newRun(0), 0, 1);
   r = runToolStart(r, "c0", "node_status", 10, "core");
-  r = runToolEnd(r, "c0", "node_status", "ok", "{}", 420, { block: 1204311 });
+  r = runToolEnd(r, "c0", "node_status", "ok", '{"height":1204311}', 420);
   return runToolStart(r, "c1", "fl_round_plan", 500, "core");
 }
 function doneRun() {
@@ -63,12 +63,17 @@ describe("board 01 Hermes chat", () => {
     render();
     const steps = qa("run-step");
     expect(steps.map((s) => s.dataset.state)).toEqual(["done", "done", "running"]);
-    expect(steps[1].textContent).toContain("Read at block 1,204,311");
+    expect(steps[1].textContent).toContain("Read at block 1,204,311 (this node)");
     expect(q("run-stop")?.textContent).toBe("Stop · Esc");
     // No old spinner beside a live timeline.
     expect(host.textContent).not.toContain("running tools");
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+    // A held key's repeats do not stop again.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", repeat: true }));
     });
     expect(stop).toHaveBeenCalledTimes(1);
     act(() => q("run-stop")!.click());
@@ -83,6 +88,46 @@ describe("board 01 Hermes chat", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("Running: Esc is not for the chat while another dialog is open or focus is elsewhere", () => {
+    const stop = vi.spyOn(store, "stopAgentTurn").mockImplementation(() => undefined);
+    store.setState({ chatStatus: "tool", chatMsgs: [agent({ streaming: true, run: liveRun() })] });
+    render();
+    const other = document.createElement("div");
+    other.setAttribute("role", "dialog");
+    document.body.appendChild(other);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    other.remove();
+    const field = document.createElement("input");
+    document.body.appendChild(field);
+    field.focus();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    field.remove();
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("Keyboard: Enter on a slash runs only an exact command, not a prefix", () => {
+    const newChat = vi.spyOn(store, "newChat").mockReturnValue(true);
+    const send = vi.spyOn(store, "sendChat").mockResolvedValue();
+    render();
+    const input = q("chat-input") as HTMLTextAreaElement;
+    input.value = "/ne";
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(newChat).not.toHaveBeenCalled();
+    input.value = "/new";
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(newChat).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("/ne");
   });
 
   it("Running: typing mid-run offers Steer now or Queue for after", () => {
@@ -123,18 +168,30 @@ describe("board 01 Hermes chat", () => {
     expect(q("run-toggle")?.getAttribute("aria-expanded")).toBe("false");
     const receipts = qa("run-receipt").map((r) => r.textContent ?? "");
     expect(receipts[0]).toContain("Read this node's status");
-    expect(receipts[0]).toContain("at block 1,204,311");
+    expect(receipts[0]).toContain("at block 1,204,311 (this node)");
     expect(host.textContent).toContain("Agent · Local 8B");
   });
 
-  it("Unavailable: a chain read with no node height shows a dash with the reason, never 0", () => {
+  it("Unavailable: a chain read that does not report its block shows a dash with the reason, never 0", () => {
     let r = runToolStart(newRun(0), "c", "staking_status", 1, "core");
-    r = runEnd(runToolEnd(r, "c", "staking_status", "ok", "{}", 2, { block: null }), "answered", 3);
+    r = runEnd(runToolEnd(r, "c", "staking_status", "ok", "{}", 2), "answered", 3);
+    store.setState({ height: 1204311, chatMsgs: [agent({ text: "x", run: r })] });
+    render();
+    const step = qa("run-step")[0];
+    expect(step.querySelector('[data-unknown="true"]')?.textContent).toContain("this read does not report the block it ran at");
+    // The local node height is never stamped on a read that did not run there.
+    expect(step.textContent).not.toContain("1,204,311");
+    expect(qa("run-receipt")[0].querySelector('[data-unknown="true"]')?.textContent).toContain("does not report the block");
+  });
+
+  it("Unavailable: an unknown duration shows a dash with its reason", () => {
+    let r = runToolStart(newRun(0), "c", "mcp__fs__read", 5, "events");
+    r = runEnd(runToolEnd(r, "c", "mcp__fs__read", "ok", "x", 5), "answered", 9);
     store.setState({ chatMsgs: [agent({ text: "x", run: r })] });
     render();
-    expect(qa("run-step")[0].querySelector('[data-unknown="true"]')?.textContent).toContain("the node height was not read yet");
-    expect(qa("run-step")[0].textContent).not.toMatch(/\b0\b/);
-    expect(qa("run-receipt")[0].querySelector('[data-unknown="true"]')?.textContent).toContain("node height not read yet");
+    const d = qa("run-step-duration")[0];
+    expect(d.textContent).toContain("—");
+    expect(d.textContent).toContain("start and end arrived together");
   });
 
   it("Failure: a refused tool step says refused with core's reason", () => {
