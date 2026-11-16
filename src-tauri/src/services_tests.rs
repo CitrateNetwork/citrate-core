@@ -276,8 +276,13 @@ fn the_snapshot_serializes_the_contract_the_tab_reads() {
         .filter(|r| !r["logsCommand"].is_null())
         .filter_map(|r| r["id"].as_str())
         .collect();
-    assert_eq!(with_logs, ["node"], "logs are not available yet for the other eight (N-8)");
+    assert_eq!(with_logs, ids, "every service has a log read");
     assert_eq!(rows[0]["logsCommand"], "node_logs");
+    for r in &rows[1..] {
+        assert_eq!(r["logsCommand"], "sidecar_logs_tail", "{}", r["id"]);
+        // Each one maps to the supervisor name its log file is written under.
+        assert!(crate::sidecar_logs::sidecar_name(r["id"].as_str().unwrap()).is_some());
+    }
 }
 
 // ---------------------------------------------------------------------------

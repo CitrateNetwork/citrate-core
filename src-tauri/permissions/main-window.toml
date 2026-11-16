@@ -404,6 +404,7 @@ commands.allow = [
   "update_policy_status",
   "update_policy_refresh",
   "diagnostics_logs_export",
+  "sidecar_logs_tail",
   "store_catalog",
   "store_stage",
   "store_install",
