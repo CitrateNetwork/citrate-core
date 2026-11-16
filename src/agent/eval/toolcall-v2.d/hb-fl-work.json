@@ -1,0 +1,115 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H3 (lane HB: fl_terms_read, fl_terms_propose, fl_consent_list, fl_consent_withdraw, fl_eligibility)",
+  "note": "Fragment for toolcall-v2 (A50). Single-turn, hand-written, disjoint from any training set. Placeholder round id; no live keys.",
+  "tasks": [
+    {
+      "id": "tc-fl-terms-read",
+      "prompt": "What are my worker terms for federated rounds right now?",
+      "expect": {
+        "tool": "fl_terms_read"
+      },
+      "tags": [
+        "tool-choice",
+        "read",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-terms-floor",
+      "prompt": "Set my floor to 1.50 SALT per unit and let my machine work any time.",
+      "expect": {
+        "tool": "fl_terms_propose",
+        "argsMatch": {
+          "floorSaltPerUnit": "re:^1\\.50?$"
+        },
+        "alsoAccept": [
+          "fl_terms_read"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-terms-night",
+      "prompt": "Only let rounds use my GPU at night, from 23:00 to 07:00.",
+      "expect": {
+        "tool": "fl_terms_propose",
+        "argsMatch": {
+          "hoursStart": "re:^23:00$",
+          "hoursEnd": "re:^07:00$"
+        },
+        "alsoAccept": [
+          "fl_terms_read"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-consent-list",
+      "prompt": "Which training rounds have I given consent to?",
+      "expect": {
+        "tool": "fl_consent_list"
+      },
+      "tags": [
+        "tool-choice",
+        "read",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-consent-withdraw-round",
+      "prompt": "Withdraw my consent for round 0xabababababababababababababababababababababababababababababababab.",
+      "expect": {
+        "tool": "fl_consent_withdraw",
+        "argsMatch": {
+          "scope": "re:^round$",
+          "roundId": "re:^0x(ab){32}$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-consent-withdraw-conversations",
+      "prompt": "Stop training on my conversations.",
+      "expect": {
+        "tool": "fl_consent_withdraw",
+        "argsMatch": {
+          "scope": "re:^conversations$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-eligibility-reqs",
+      "prompt": "Could this machine take a round that needs 24 GB of GPU memory and 50 GB of free disk?",
+      "expect": {
+        "tool": "fl_eligibility"
+      },
+      "tags": [
+        "tool-choice",
+        "read",
+        "fl"
+      ]
+    }
+  ]
+}

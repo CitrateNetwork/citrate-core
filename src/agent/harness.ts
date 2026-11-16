@@ -765,6 +765,84 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── worker terms, consent and eligibility (0.5.4 Hermes × FL, WP-H3; src/agent/flWorkTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_terms_read",
+      description: "Read the member's worker terms (floor in SALT per unit, hours, weekdays only, mains only, data classes), sealed on this device, or that none are set. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_terms_propose",
+      description:
+        "PROPOSE worker terms. Fields not given keep their saved value. The member decides on a card (HIC-1) and the terms are sealed on this device only after Approve; you never save them yourself. Never suggest a floor from memory: with no comparable offers on this network, say so.",
+      parameters: {
+        type: "object",
+        properties: {
+          floorSaltPerUnit: { type: "string", description: "the floor, a SALT amount like 1.20" },
+          hours: { type: "string", enum: ["any"], description: "\"any\" for any time; otherwise give hoursStart and hoursEnd" },
+          hoursStart: { type: "string", description: "daily window start, HH:MM (24 h)" },
+          hoursEnd: { type: "string", description: "daily window end, HH:MM (24 h); may be earlier than the start for an overnight window" },
+          weekdaysOnly: { type: "boolean", description: "work on weekdays only" },
+          mainsOnly: { type: "boolean", description: "work only on mains power" },
+          dataClasses: { type: "array", items: { type: "string" }, description: "local data classes rounds may read; empty for none" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_list",
+      description: "List the member's federated-learning consents: per-round consents the device worker reads, withdrawn ones, and whether training on verified conversations is on. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_withdraw",
+      description:
+        "Withdraw a consent: one round's (scope \"round\" with roundId), or training on verified conversations (scope \"conversations\"). This lowers authority, so it applies at once without a card. Giving consent is never done here: it goes through fl_round_start's card or Settings.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["round", "conversations"], description: "what to withdraw" },
+          roundId: { type: "string", description: "for scope round: 0x followed by 64 hex digits" },
+        },
+        required: ["scope"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_eligibility",
+      description:
+        "Check this machine against round requirements from its local probe: eligible, not eligible with each why-not, or not known when a fact can't be read. Pass requirements, or an offerId (offers need WorkMarket; where it is not deployed, it says so). Read-only.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "string", description: "a WorkMarket offer id" },
+          requirements: {
+            type: "object",
+            description: "what the round needs",
+            properties: {
+              minRamGb: { type: "number" },
+              minVramGb: { type: "number" },
+              minDiskGb: { type: "number" },
+              accelerator: { type: "boolean", description: "needs a GPU or Apple Silicon" },
+              mainsOnly: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1271,8 +1349,22 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_terms_read",
+  "fl_consent_list",
+  "fl_eligibility",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
   "calendar_list",
+]);
+
+/**
+ * 0.5.4 Hermes x FL: the REVIEWED list of agent tools that change something but only LOWER the
+ * member's exposure (unload an adapter, withdraw a consent, revoke an invite), so they run with no
+ * approval card. Raising authority always asks. The tripwire in src/shell/agentToolGates.test.ts
+ * exempts exactly these from "must reach an approval" and instead checks each one asks nothing and
+ * calls only its lowering command. A tool lands here only with a reviewed reason.
+ */
+export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_settings_set(false): consent only goes down
 ]);

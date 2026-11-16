@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 90,
+  "count": 97,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -213,6 +213,22 @@
       "sha256": "d3b1984c7ff70643caeb159359a9661551947d3101c7b0964fa186066b636b69"
     },
     {
+      "id": "tc-fl-consent-list",
+      "sha256": "81af01f86ddfc25aa19326be0d18d084d7e5965c5892967b9c9e0dd4048000a1"
+    },
+    {
+      "id": "tc-fl-consent-withdraw-conversations",
+      "sha256": "92d58ced5291ecc9fd945ca818e5a440e7f8dcfc41806b9472c7919fbe70f387"
+    },
+    {
+      "id": "tc-fl-consent-withdraw-round",
+      "sha256": "5098aac62fd084729727ce4eb9c3930dd8d3b4894582a36475b31d4658be142a"
+    },
+    {
+      "id": "tc-fl-eligibility-reqs",
+      "sha256": "f27b82ebf91868d7e8d1f8a6971e35cfcb4989b8683786dc4c75bb93ee26d6d4"
+    },
+    {
       "id": "tc-fl-plan-explain",
       "sha256": "93b55a89f71675090798ac10fc0e241d18f29f995dd97b08b81402de97d3d908"
     },
@@ -223,6 +239,18 @@
     {
       "id": "tc-fl-start-explicit",
       "sha256": "d2c9ff0f012d970443a37907303351d91a2b30ce5f5cd993e4380c80a0a8122b"
+    },
+    {
+      "id": "tc-fl-terms-floor",
+      "sha256": "ef28b89d892d5a17322f885bc756bd4617992b04588d77a415ef816844f71221"
+    },
+    {
+      "id": "tc-fl-terms-night",
+      "sha256": "beebc39d17b5df28fd0be997e57ca0accbccda379239a7a310cd903f9ae1b255"
+    },
+    {
+      "id": "tc-fl-terms-read",
+      "sha256": "a7b0e6c4f0fab5466e15d273b2c357626541efb43eef8f94c2be052bd8e5d1e9"
     },
     {
       "id": "tc-get-code-proxy",

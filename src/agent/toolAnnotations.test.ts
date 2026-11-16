@@ -3,7 +3,7 @@
 // output as untrusted; core keeps ONE reviewed annotation per tool so the downgrade is precise.
 // Enumeration tripwire: a new tool without an annotation, or an effectful tool marked `none`, fails.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
+import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type ToolCall } from "./harness";
 import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./toolAnnotations";
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
@@ -52,6 +52,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        // 0.5.4 WP-H3: terms a card can show.
+        floorSaltPerUnit: "1.20",
+        hours: "any",
       }),
     });
     for (const n of names) {
@@ -64,6 +67,8 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H3: no terms saved yet; the probe answers.
+      vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null, save: async () => ({}) } as never);
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"
@@ -79,6 +84,8 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       await store.handleTool(call(n), "m1", () => {});
       const gated = sig.mock.calls.length + review.mock.calls.length > 0;
       if (gated) expect(annotationFor(n)!.effect, `tool ${n} asks the member, so it has an effect`).not.toBe("none");
+      // An authority-lowering tool changes something without asking (reviewed list in harness.ts).
+      else if (AUTHORITY_LOWERING_AGENT_TOOLS.has(n)) expect(annotationFor(n)!.effect, `tool ${n} lowers authority`).toBe("write");
       else expect(annotationFor(n)!.effect, `tool ${n} never asks, so it must be read-only`).toBe("none");
     }
   });

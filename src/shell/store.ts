@@ -39,6 +39,9 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlWorkTool, runFlWorkTool } from "../agent/flWorkTools";
+import { loadWorkerTerms, saveWorkerTerms } from "../fl/workerTerms";
+import flAddressBook from "../../src-tauri/addresses/40204.json";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -126,7 +129,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_terms_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4048,6 +4051,11 @@ export class Store {
     return r === "approved";
   }
 
+  /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
+  flWorkTerms(): { load: typeof loadWorkerTerms; save: typeof saveWorkerTerms } {
+    return { load: loadWorkerTerms, save: saveWorkerTerms };
+  }
+
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
   everydayInvoke(): EverydayInvoke | null {
     if (BRIDGE_MODE !== "tauri") return null;
@@ -4613,6 +4621,19 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlWorkTool(call.name)) {
+      // 0.5.4 WP-H3: worker terms (sealed in core by fl_work.rs), consent and eligibility. New terms
+      // ask on a card; withdrawing a consent lowers authority and applies at once; reads read.
+      const out = await runFlWorkTool(call.name, args as Record<string, unknown>, ann, {
+        terms: this.flWorkTerms(),
+        flRounds: bridge.flRounds,
+        tier: bridge.tier,
+        book: flAddressBook,
+        ask,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.
