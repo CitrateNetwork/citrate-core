@@ -75,6 +75,8 @@
     { "name": "fl_withdraw_propose", "host": "core", "read_only": false },
     { "name": "fl_claim_propose", "host": "core", "read_only": true },
     { "name": "fl_dispute_propose", "host": "core", "read_only": true },
+    { "name": "fl_round_status", "host": "core", "read_only": true },
+    { "name": "fl_lease_explain", "host": "core", "read_only": true },
     { "name": "belnap_codec", "host": "core", "read_only": true },
     { "name": "gsheets_read", "host": "core", "read_only": true },
     { "name": "gsheets_append", "host": "core", "read_only": false },
