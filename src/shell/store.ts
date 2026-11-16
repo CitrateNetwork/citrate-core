@@ -3385,7 +3385,7 @@ export class Store {
         this.save();
       }
       if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
-      this.toast(on ? "Hermes can run terminal commands; each one asks you first" : "Hermes terminal commands are off");
+      this.toast(on ? "Hermes can run terminal commands; outside the short list of project read and build commands, each one asks you first" : "Hermes terminal commands are off");
     } catch (e) {
       this.setState({ hermesTerminal: before });
       this.save();
@@ -4396,82 +4396,45 @@ export class Store {
       result = JSON.stringify({ local }) + "\n" + fenceUntrusted("on-chain SkillRegistry entries", onChain);
     } else if (call.name === "skill_write") {
       // WRITE (local file only — no chain/keys). Author a reusable instruction-skill on this device.
-      // PBA-L7b-002: a saved skill is a persistent instruction the agent later runs, so it is never
-      // silently overwritten — replacing an existing one needs the member's approval.
+      // PBA-L7b-002: a saved skill is a persistent instruction the agent later runs. V3 (Hermes x FL
+      // gap analysis, 0.5.4): every save waits for the member, a new skill as well as a replacement,
+      // who sees the diff against whatever is saved under that name. Names starting `citrate-` are
+      // Citrate's bundled skills; core refuses them (skills_local.rs), so a saved skill can never
+      // stand in for one.
       const name = String(args.name || "");
       const description = String(args.description || "");
       const instructions = String(args.instructions || "");
-      const existingBody = () => bridge.agentSkills.read(name).catch(() => "");
-      if (hic) {
-        // HIC: even a new skill (normally saved without asking) waits for the member, who sees the
-        // diff against whatever is saved under that name.
-        const before = await existingBody();
-        const r = await ask(
-          {
-            origin: "chat agent",
-            requester: "dashboard agent · tool skill_write",
-            title: before ? "Overwrite a saved skill" : "Save a new skill",
-            chainless: true,
-            rows: [
-              { k: "Skill", v: "“" + name + "”" },
-              { k: "Store", v: "local file on this device" },
-            ],
-            cost: "none — local file",
-            sponsor: "no chain transaction",
-            sponsorColor: "var(--tx-3)",
-          },
-          diffCard("skill_write", ann, "skills/" + name, before, instructions),
-        );
-        status = r;
-        if (r !== "approved") {
-          result = `The member declined; the skill "${name}" was not saved.`;
-        } else {
-          try {
-            const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
-            result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
-            void this.refreshLocalSkills();
-          } catch (e) {
-            result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
-          }
-        }
+      const before = await bridge.agentSkills.read(name).catch(() => "");
+      const r = await ask(
+        {
+          origin: "chat agent",
+          requester: "dashboard agent · tool skill_write",
+          title: before ? "Overwrite a saved skill" : "Save a new skill",
+          chainless: true,
+          rows: [
+            { k: "Skill", v: "“" + name + "”" + (before ? " (already exists — this REPLACES it)" : "") },
+            { k: "Store", v: "local file on this device" },
+          ],
+          cost: "none — local file",
+          sponsor: "no chain transaction",
+          sponsorColor: "var(--tx-3)",
+        },
+        diffCard("skill_write", ann, "skills/" + name, before, instructions),
+      );
+      status = r;
+      if (r !== "approved") {
+        result = before
+          ? `The member declined; the existing skill "${name}" was not overwritten.`
+          : `The member declined; the skill "${name}" was not saved.`;
       } else {
         try {
-          const skill = await bridge.agentSkills.write(name, description, instructions, false);
-          result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+          const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
+          result = before
+            ? `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`
+            : `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval. Run it later with skill_run, or list it with skills_list.`;
           void this.refreshLocalSkills();
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (!msg.startsWith("SKILL_EXISTS")) {
-            result = "couldn't save the skill: " + msg;
-          } else {
-            const before = await existingBody();
-            const r = await ask({
-              origin: "chat agent",
-              requester: "dashboard agent · tool skill_write",
-              title: "Overwrite a saved skill",
-              chainless: true,
-              rows: [
-                { k: "Skill", v: "“" + name + "” (already exists — this REPLACES it)" },
-                { k: "New instructions", v: instructions.slice(0, 600) + (instructions.length > 600 ? " …" : "") },
-                { k: "Store", v: "local file on this device" },
-              ],
-              cost: "none — local file",
-              sponsor: "no chain transaction",
-              sponsorColor: "var(--tx-3)",
-            }, diffCard("skill_write", ann, "skills/" + name, before, instructions));
-            status = r;
-            if (r !== "approved") {
-              result = `The member declined; the existing skill "${name}" was not overwritten.`;
-            } else {
-              try {
-                const skill = await bridge.agentSkills.write(name, description, instructions, true);
-                result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
-                void this.refreshLocalSkills();
-              } catch (e2) {
-                result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
-              }
-            }
-          }
+          result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
         }
       }
     } else if (call.name === "widget_create") {

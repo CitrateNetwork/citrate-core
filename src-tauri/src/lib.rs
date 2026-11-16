@@ -209,6 +209,7 @@ mod hermes_learn;
 mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
+mod hermes_auto_approve;
 mod hermes_terminal;
 mod invite_seal;
 // D-12: group invites, one flow (request and approve).
@@ -898,11 +899,8 @@ pub fn run() {
             device_link_share::device_links_ingest,
             cluster_mesh::cluster_mesh_status,
             cluster_mesh::cluster_mesh_set_enabled,
-            training::training_start,
             training::training_status,
-            training::training_contribute,
             training::training_reward,
-            training::training_claim,
             hermes::hermes_start,
             hermes::hermes_status,
             // 0.5.4: the Hermes setup self-check.
@@ -968,6 +966,10 @@ pub fn run() {
             chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            // V1 (0.5.4): per-project opt-ins for node, npm run and git commit.
+            hermes_auto_approve::hermes_auto_approve_get,
+            hermes_auto_approve::hermes_auto_approve_set,
+            hermes_auto_approve::hermes_auto_approve_rules,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
