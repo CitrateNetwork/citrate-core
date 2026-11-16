@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ModelsSettingsView, type ModelsActions, type ModelsViewProps } from "./ModelsSettings";
 import { EMPTY_CUSTOM, capsToForm } from "./providerModels";
 import type { ProviderUsageSummary } from "../../bridge/domains";
-import { DAY, NOW, usage, vendor } from "./fixtures/providerStates.fixture";
+import { DAY, NOW, delegate, usage, vendor } from "./fixtures/providerStates.fixture";
 
 const noop = () => {};
 const on = new Proxy({}, { get: () => noop }) as ModelsActions;
@@ -60,23 +60,47 @@ const SIX = [
 ];
 
 describe("Settings › Models: the vendor cards", () => {
-  it("one card per vendor core reports, plus Cognition as 'Delegate to Devin', not available yet", () => {
-    const html = render({ statuses: SIX });
+  it("one card per vendor core reports, plus the Cognition delegate card core reports", () => {
+    const html = render({ statuses: [...SIX, delegate()] });
     for (const v of SIX) expect(html).toContain(`provider-card-${v.id}`);
     expect(html).toContain("Muse models on the Meta Model API");
     expect(card(html, "cognition")).toContain("Delegate to Devin");
-    expect(card(html, "cognition")).toContain("not available in this build");
-    expect(card(html, "cognition")).not.toMatch(/<input/);
+    expect(card(html, "cognition")).not.toContain("not available");
   });
 
-  it("only the vendors core reports get a card: OpenAI alone gives the OpenAI card and the static Cognition card, nothing else", () => {
+  it("only the providers core reports get a card, the delegate after the vendors", () => {
     const ids = (html: string) => [...html.matchAll(/data-testid="provider-card-([a-z0-9-]+)"/g)].map((m) => m[1]);
-    expect(ids(render({ statuses: [vendor()] }))).toEqual(["openai", "cognition"]);
+    expect(ids(render({ statuses: [vendor()] }))).toEqual(["openai"]);
+    expect(ids(render({ statuses: [delegate(), vendor()] }))).toEqual(["openai", "cognition"]);
     // A vendor that is not the first of the usual six still renders alone.
     const xaiOnly = [vendor({ id: "xai", name: "xAI", host: "api.x.ai" })];
-    expect(ids(render({ statuses: xaiOnly, usage: summary({ providers: [usage({ id: "xai" })] }) }))).toEqual(["xai", "cognition"]);
-    // Core reporting no vendor at all gives no vendor card.
-    expect(ids(render({ statuses: [] })).filter((id) => id !== "cognition")).toEqual([]);
+    expect(ids(render({ statuses: xaiOnly, usage: summary({ providers: [usage({ id: "xai" })] }) }))).toEqual(["xai"]);
+    // Core reporting no provider at all gives no card.
+    expect(ids(render({ statuses: [] }))).toEqual([]);
+  });
+
+  it("Cognition disconnected: a one-way key box on the keychain path, the Devin key page, and what a hand-off needs", () => {
+    const html = render({ statuses: [delegate()] });
+    const c = card(html, "cognition");
+    expect(stateOf(html, "cognition")).toBe("disconnected");
+    expect(c).toMatch(/<input[^>]*type="password"[^>]*aria-label="Cognition \(Devin\) API key"|<input[^>]*aria-label="Cognition \(Devin\) API key"[^>]*type="password"/);
+    expect(c).toContain("Open the Cognition (Devin) key page");
+    expect(c).toContain("service user key (it starts with cog_)");
+    expect(c).toContain("remote-agent delegate");
+    expect(c).toContain("sent only if you approve it");
+    expect(c).toContain("a ceiling of 5 per task");
+    // No chat models or token prices for a delegate.
+    expect(c).not.toContain("Models and prices");
+  });
+
+  it("Cognition connected: the key is in the keychain, Hermes can offer hand-offs, and it can be removed and revoked", () => {
+    const html = render({ statuses: [delegate({ keyConfigured: true, keySetMs: NOW - DAY })] });
+    const c = card(html, "cognition");
+    expect(stateOf(html, "cognition")).toBe("connected");
+    expect(c).toContain("Key in this computer&#x27;s keychain");
+    expect(c).toContain("Hermes can offer to hand one software task to a Devin session, from your next new chat on.");
+    expect(c).toContain("Remove here and open the Cognition (Devin) revoke page");
+    expect(c).not.toMatch(/<input[^>]*type="password"/);
   });
 
   it("a vendor with no adapter in this build says so and offers no key box", () => {
