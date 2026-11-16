@@ -120,6 +120,7 @@ commands.allow = [
   "trajectories_settings_get",
   "trajectories_settings_set",
   "trajectories_dataset_build",
+  "trajectories_datasets_list",
   "postdeploy_status",
   "postdeploy_receipt",
   "postdeploy_verify",

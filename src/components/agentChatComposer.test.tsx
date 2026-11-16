@@ -129,7 +129,7 @@ describe("AgentChat composer", () => {
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     act(() => void input.dispatchEvent(enter));
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("first line\nsecond line");
+    expect(send).toHaveBeenCalledWith("first line\nsecond line", {});
     expect(enter.defaultPrevented).toBe(true);
   });
 

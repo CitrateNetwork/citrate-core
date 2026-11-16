@@ -10,6 +10,8 @@
 // =====================================================================
 import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
 import { dataClassProblem, newProposalId } from "../agent/workerProposal";
+import { contextPreamble, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
+import { contextKindOf, offTitles } from "../agent/hermesContext";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -912,7 +914,7 @@ export class Store {
       return false;
     }
     this.archiveChat();
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -935,7 +937,7 @@ export class Store {
     }
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [] });
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -3913,8 +3915,9 @@ export class Store {
     });
   }
 
-  async sendChat(text: string): Promise<void> {
+  async sendChat(text: string, opts: { attachments?: ChatAttachment[] } = {}): Promise<void> {
     text = (text || "").trim();
+    const attachments = (opts.attachments ?? []).slice(0, MAX_ATTACHMENTS);
     if (!text || this.state.chatStatus !== "ready") return;
     // HUP-S3.3: `/run <workflow>` runs a track workflow instead of a chat turn.
     const cmd = parseRunCommand(text);
@@ -3933,7 +3936,7 @@ export class Store {
     const ac = new AbortController();
     this.turnAbort = ac;
     const stopped = () => ac.signal.aborted;
-    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
+    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false, ...(attachments.length ? { attachments } : {}) };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
     // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
@@ -4008,8 +4011,9 @@ export class Store {
         messages: withPersonaMessage(
           this.state.chatMsgs
             .filter((m) => !m.streaming && !m.error)
-            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
-            .concat([{ role: "user", content: text }]),
+            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: (m.attachments ? contextPreamble(m.attachments, []) : "") + m.text }))
+            // #690: what the member attached, and what they turned off here, go in front of the message.
+            .concat([{ role: "user", content: contextPreamble(attachments, offTitles(this.state.chatContextOff)) + text }]),
           this.state.hermesPersona,
         ),
         signal: ac.signal,
@@ -4155,6 +4159,11 @@ export class Store {
     return r;
   }
 
+  /** #690: switch a context kind off (or back on) for the chat on screen. */
+  setChatContext(id: string, on: boolean): void {
+    this.setState((s) => ({ chatContextOff: on ? s.chatContextOff.filter((x) => x !== id) : [...new Set([...s.chatContextOff, id])] }));
+  }
+
   // ---------- Board 01 — Stop, Steer now, Queue for after ----------
   private queueSeq = 0;
 
@@ -4164,10 +4173,10 @@ export class Store {
   }
 
   /** Queue a follow-up to send when the live run finishes. Empty text is ignored. */
-  queueChat(text: string): void {
+  queueChat(text: string, attachments: ChatAttachment[] = []): void {
     const t = (text || "").trim();
     if (!t) return;
-    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false }]) }));
+    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, ...(attachments.length ? { attachments } : {}) }]) }));
     if (this.chatInputEl) this.chatInputEl.value = "";
   }
 
@@ -4198,7 +4207,7 @@ export class Store {
     const next = q.find((x) => x.steer) ?? (outcome === "answered" ? q[0] : undefined);
     if (!next) return;
     this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== next.id) }));
-    void this.sendChat(next.text);
+    void this.sendChat(next.text, { attachments: next.attachments });
   }
 
   /** Send a queued follow-up now (only when no run is live). */
@@ -4206,7 +4215,7 @@ export class Store {
     const item = this.state.chatQueue.find((q) => q.id === id);
     if (!item || this.state.chatStatus !== "ready") return;
     this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== id) }));
-    void this.sendChat(item.text);
+    void this.sendChat(item.text, { attachments: item.attachments });
   }
 
   /** #643 — what each conversation (by thread id) has established about deploys. */
@@ -4355,8 +4364,11 @@ export class Store {
     };
     const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> =>
       tracked(() => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal));
-    let held = false;
-    if (hic && !SELF_GATED_TOOLS.has(call.name)) {
+    // #690: a context kind the member turned off for this chat is refused before anything runs.
+    const kind = contextKindOf(call.name);
+    const contextOff = kind && this.state.chatContextOff.includes(kind.id) ? kind : null;
+    let held = contextOff !== null;
+    if (!held && hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
         {
           origin: "chat agent",
@@ -4911,6 +4923,11 @@ export class Store {
     }
     // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
+    if (contextOff) {
+      // #690: the member turned this kind of context off for this chat; nothing was read or run.
+      status = "declined";
+      result = `declined: the member turned off ${contextOff.title} for this chat, so ${call.name} was not run. Nothing was read or changed.`;
+    }
     // Board 01: refused when the member's decision (or the tool's own structured status) said no.
     const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
     this.callRefusals.set(call.id, refused);
