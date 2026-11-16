@@ -195,6 +195,11 @@ export function MatchesView(p: MatchesViewProps) {
             <Card>
               <Eyebrow>Payouts</Eyebrow>
               <span style={{ fontSize: 12.5 }}>{p.state.payouts === "open" ? "Payouts are open on this network" : p.state.payouts === "not-deployed" ? NOT_AVAILABLE : PAYOUTS_DARK}</span>
+              {p.state.payouts === "dark" && p.state.payoutsReason && (
+                <span className="fl-faint" style={{ fontSize: 11.5 }} data-testid="payouts-reason">
+                  {p.state.payoutsReason}
+                </span>
+              )}
               <button type="button" className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => p.go("groups/rounds/payouts")}>
                 Receipts and history
               </button>
