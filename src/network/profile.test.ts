@@ -4,6 +4,7 @@ import { citrate } from "../chain";
 import {
   ACTIVE_PROFILE,
   ACTIVE_PROFILE_ID,
+  FL_PIN_CONTRACTS,
   PROFILES,
   expectedGenesis,
   gateGenesis,
@@ -110,5 +111,38 @@ describe("network profile (K6)", () => {
     expect(citrate.rpcUrls.default.http).toEqual([ACTIVE_PROFILE!.rpcUrl]);
     expect(String(book.genesisHash).toLowerCase()).toBe(expectedGenesis());
     expect(book.chainId).toBe(ACTIVE_PROFILE!.chainId);
+  });
+});
+
+describe("G-SEC payouts flag and FL code pins (PAY-14, PAY-11)", () => {
+  const r1007 = PROFILES.find((p) => p.id === "r1007");
+  it("r1007 ships payoutsOpen false, typed, and no profile opens payouts", () => {
+    expect(r1007?.payoutsOpen).toBe(false);
+    for (const p of PROFILES) expect(p.payoutsOpen === true).toBe(false);
+  });
+  it("r1007 pins exactly the six FL contracts: the three deployed ledgers with a code hash, the rest pending", () => {
+    const pins = r1007?.flCodePins;
+    expect(Object.keys(pins ?? {}).sort()).toEqual([...FL_PIN_CONTRACTS].sort());
+    for (const name of ["FederatedRoundLedger", "PatronageLedger", "LoRAFactory"] as const) {
+      expect(pins?.[name].address).toMatch(/^0x[0-9a-f]{40}$/);
+      expect(pins?.[name].codeHash).toMatch(/^0x[0-9a-f]{64}$/);
+    }
+    for (const name of ["WorkMarket", "FLRoundVerifier", "DatasetRegistry"] as const) {
+      expect(pins?.[name]).toMatchObject({ address: null, codeHash: null });
+      expect(pins?.[name].pending).toContain("not deployed on r1007");
+    }
+  });
+});
+
+describe("a malformed FL pin makes the profile not ready, as in Rust", () => {
+  const r1007 = PROFILES.find((p) => p.id === "r1007") as NetworkProfile;
+  it("an address without its code hash is refused", () => {
+    const bad = { ...r1007, flCodePins: { ...r1007.flCodePins!, LoRAFactory: { address: "0x62e9aabec26288e60db2503f518eacf9cdcc8890", codeHash: null } } } as NetworkProfile;
+    expect(profileProblems(bad)).toContain("flCodePins.LoRAFactory.codeHash is not a code hash");
+    expect(profileProblems(r1007)).toEqual([]);
+  });
+  it("an unpinned contract needs a pending reason, and payoutsOpen must be a bool", () => {
+    const bad = { ...r1007, payoutsOpen: "true", flCodePins: { ...r1007.flCodePins!, WorkMarket: { address: null, codeHash: null } } } as unknown as NetworkProfile;
+    expect(profileProblems(bad)).toEqual(expect.arrayContaining(["payoutsOpen is not true or false", "flCodePins.WorkMarket is not pinned and names no pending reason"]));
   });
 });

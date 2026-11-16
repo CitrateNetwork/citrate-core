@@ -393,3 +393,83 @@ fn only_a_full_match_is_verified_even_if_the_flag_says_otherwise() {
         SourceStatus::Partial
     );
 }
+
+// ---- G-SEC PAY-10: the FL payouts gate on the reader's write path ----
+
+/// The shipped r1007 policy (payouts dark; FederatedRoundLedger, PatronageLedger and LoRAFactory
+/// pinned, WorkMarket not on the network).
+fn r1007_policy() -> crate::payouts_gate::PayoutsPolicy {
+    crate::network_profile::profile("r1007")
+        .expect("r1007")
+        .payouts_policy()
+}
+
+fn calldata(signature: &str) -> Vec<u8> {
+    let mut d = crate::payouts_gate::selector_of(signature).to_vec();
+    d.extend_from_slice(&[0u8; 64]);
+    d
+}
+
+const FRL_R1007: &str = "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5";
+const LORA_R1007: &str = "0x62e9aabec26288e60db2503f518eacf9cdcc8890";
+
+#[test]
+fn a_webview_forged_fl_write_is_not_proposed_while_payouts_are_dark() {
+    let rpc = crate::rpc::RpcClient::with_transport(ScriptedRpc::new(vec![]));
+    let policy = r1007_policy();
+    // A ledger challenge to the pinned FederatedRoundLedger.
+    let e = payouts_gate_for_write(
+        &policy,
+        &rpc,
+        FRL_R1007,
+        &calldata("challengeRules(bytes32,uint32,bytes,bytes32[])"),
+    )
+    .expect_err("dark");
+    assert_eq!(
+        e,
+        "the write was not proposed: FL payouts are not open on network \"r1007\", so this \
+         FederatedRoundLedger challenge call is not signed"
+    );
+    // LoRAFactory.withdrawFees() to the pinned LoRAFactory.
+    assert!(payouts_gate_for_write(&policy, &rpc, LORA_R1007, &calldata("withdrawFees()")).is_err());
+    // A WorkMarket join to any address: r1007 has no WorkMarket.
+    let e = payouts_gate_for_write(&policy, &rpc, ADDR, &calldata("join(uint256,uint128,bytes32[])"))
+        .expect_err("no WorkMarket on r1007");
+    assert!(e.contains("is not the WorkMarket this build pins"), "{e}");
+    assert!(rpc.transport().seen.borrow().is_empty(), "dark reads nothing");
+}
+
+#[test]
+fn reads_of_fl_contracts_pass_and_other_writes_are_proposed() {
+    let rpc = crate::rpc::RpcClient::with_transport(ScriptedRpc::new(vec![(
+        "eth_call",
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": "0x0000000000000000000000000000000000000000000000000000000000000000"}),
+    )]));
+    // A read of PatronageLedger (a view selector): no gate, and the node answers.
+    let out = view_call(&rpc, "0x41f68b9e710585b064459a0ec706148fbf503659", &[0x3a, 0x7f, 0x3c, 0x6b]);
+    assert!(out.is_ok(), "{out:?}");
+    // A non-money write to a pinned FL contract and an ordinary call elsewhere are proposed.
+    let policy = r1007_policy();
+    assert_eq!(
+        payouts_gate_for_write(&policy, &rpc, FRL_R1007, &calldata("finalize(bytes32)")),
+        Ok(())
+    );
+    assert_eq!(
+        payouts_gate_for_write(&policy, &rpc, ADDR, &calldata("transfer(address,uint256)")),
+        Ok(())
+    );
+}
+
+/// Every proposal entry the reader has goes through the gate before the wallet and the estimate.
+#[test]
+fn the_reader_write_path_checks_the_gate_before_the_wallet_and_the_estimate() {
+    let src = include_str!("contract_reader.rs");
+    let body = src
+        .split("pub fn contract_write_propose_sync(")
+        .nth(1)
+        .expect("the propose body");
+    let gate = body.find("payouts_gate_for_write(").expect("gated");
+    let wallet = body.find("address_auto_unlocked").expect("wallet");
+    let estimate = body.find("estimate_write_gas(").expect("estimate");
+    assert!(gate < wallet && gate < estimate);
+}
