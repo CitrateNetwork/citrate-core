@@ -70,3 +70,38 @@ describe("ClusterMap render", () => {
     expect(html).toContain("2 of 3 online: 1 direct, 1 through a relay.");
   });
 });
+
+describe("0.5.4 FL design: map text equivalent, mesh off, not reported", () => {
+  it("states the whole map in one sentence", () => {
+    const m = clusterMapModel([peer("aa", true, "direct"), peer("bb", true, "relayed"), peer("cc", false)]);
+    expect(m.sentence).toBe("Cluster map: 4 devices, 1 direct link, 1 relayed, 3 not reported.");
+    expect(m.nodes.every((n) => !n.reported)).toBe(true);
+  });
+
+  it("one machine and no peers yet", () => {
+    expect(clusterMapModel([]).sentence).toBe("Cluster map: 1 device, this machine, no peers yet.");
+  });
+
+  it("mesh off draws no live edges", () => {
+    const m = clusterMapModel([peer("aa", true, "direct")], { meshOn: false });
+    expect(m.edges).toEqual([]);
+    expect(m.sentence).toBe("Cluster map: 2 devices, mesh off, no live links, 1 not reported.");
+    expect(m.summary).toContain("mesh is off");
+  });
+
+  it("a reported peer drops out of the not-reported count", () => {
+    const m = clusterMapModel([peer("aa", true, "direct"), peer("bb", false)], { reported: new Set(["aa"]) });
+    expect(m.sentence).toContain("1 not reported");
+  });
+
+  it("renders the sentence as the map's label and dots unreported rings", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { ClusterMap } = await import("./ClusterMap");
+    const html = renderToStaticMarkup(createElement(ClusterMap, { peers: [peer("aa", true, "relayed")], selected: "aa" }));
+    expect(html).toContain('aria-label="Cluster map: 2 devices, 0 direct links, 1 relayed, 1 not reported."');
+    expect(html).toContain('data-reported="no"');
+    expect(html).toContain('stroke-dasharray="2 2"');
+    expect(html).not.toMatch(/<animate|transition/);
+  });
+});
