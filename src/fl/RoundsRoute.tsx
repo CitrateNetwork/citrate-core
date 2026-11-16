@@ -20,7 +20,7 @@ import { AdaptersView } from "./Adapters";
 import { NoLiveRound } from "./LiveRound";
 import { PayoutsView, usePayoutsRecords } from "./Payouts";
 import { OpenRoundView } from "./OpenRound";
-import { BLANK_DRAFT, loadRoundDraft, type RoundDraft } from "./roundDraft";
+import { BLANK_DRAFT, loadRoundDraft, openIntent, type RoundDraft } from "./roundDraft";
 import { groupsSlice } from "../shell/slices/groups";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
@@ -107,7 +107,7 @@ function PayoutsRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go
   );
 }
 
-function OpenRoundRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
   const { groups } = groupsSlice.use();
   const [coord, setCoord] = useState<string | null>(null);
   const [draft] = useState<RoundDraft>(() => loadRoundDraft() ?? BLANK_DRAFT);
@@ -130,14 +130,18 @@ function OpenRoundRoute({ state, s, go }: { state: FlNetworkState; s: AppState; 
       roleOf={roleOf}
       coordinatorUrl={coord}
       go={go}
-      onOpen={async () => {
-        throw new Error("opening needs the round's requirements file pinned to IPFS and WorkMarket.open, which this build does not do yet");
+      onOpen={async (d) => {
+        // No round binding source exists yet (the coordinator does not publish one); openIntent
+        // says so, and refuses first while payouts are dark.
+        const intent = openIntent(d, null, state);
+        await store.proposeContractCall(intent);
+        return { kind: "unknown", txHash: null, reason: "sent to the wallet review" };
       }}
     />
   );
 }
 
-function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: string) => void }) {
+function NotLiveSubtab({ route, s, go, store }: { route: string; s: AppState; go: (r: string) => void; store: Store }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
@@ -156,7 +160,7 @@ function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: s
       );
     case ROUNDS_ROUTES.open:
       // Board 07: the four steps; no Open button until WorkMarket is on this network.
-      return <OpenRoundRoute state={state} s={s} go={go} />;
+      return <OpenRoundRoute state={state} s={s} go={go} store={store} />;
     case ROUNDS_ROUTES.datasets:
       return (
         <RoundsNotLive
@@ -183,6 +187,6 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
       // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
       return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
-      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} />;
+      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} store={store} />;
   }
 }
