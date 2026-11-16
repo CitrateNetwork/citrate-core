@@ -48,6 +48,14 @@ pub const DATA_SUBDIRS: &[&str] = &[
 /// checked by name; a test keeps this list equal to `src-tauri/skills/`.
 pub const FIRST_PARTY_SKILLS: &[&str] = &[
     "citrate-belnap-aggregate",
+    // 0.5.4 Hermes x FL WP-H11: the federated-learning skills (names reserved, see skills_local.rs).
+    "citrate-fl-adapters",
+    "citrate-fl-collect",
+    "citrate-fl-datasets",
+    "citrate-fl-diagnose",
+    "citrate-fl-member",
+    "citrate-fl-organizer",
+    "citrate-fl-payouts",
     "citrate-paraconsensus",
     "citrate-precompiles",
     "citrate-sidecar-consensus",

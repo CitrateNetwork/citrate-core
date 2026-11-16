@@ -19,6 +19,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractAnchors } from "../eval/qa";
+import { AGENT_TOOLS } from "../harness";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const skillsRoot = join(repoRoot, "src-tauri", "skills");
@@ -267,4 +268,56 @@ describe("citrate-belnap-aggregate worked example", () => {
     const states = hex.slice(16 * dim).match(/../g)?.map((b) => parseInt(b, 16));
     expect(states).toEqual([1, 3, 0, 1]);
   });
+});
+
+// 0.5.4 Hermes x FL WP-H11: the seven citrate-fl-* skills. Same loader rules and Rule-5 metadata as
+// the literacy skills; every source they cite is pinned; every tool they name in backticks is a real
+// agent tool in this build (a skill must be true of the shipped code); and the FL copy rules hold.
+export const FL_SKILLS = [
+  "citrate-fl-adapters",
+  "citrate-fl-collect",
+  "citrate-fl-datasets",
+  "citrate-fl-diagnose",
+  "citrate-fl-member",
+  "citrate-fl-organizer",
+  "citrate-fl-payouts",
+];
+
+describe("the citrate-fl-* skills", () => {
+  const toolNames = new Set(AGENT_TOOLS.map((t) => t.function.name as string));
+  it("are exactly the bundled citrate-fl-* directories", () => {
+    const dirs = readdirSync(skillsRoot).filter((d) => d.startsWith("citrate-fl-") && statSync(join(skillsRoot, d)).isDirectory());
+    expect(dirs.sort()).toEqual(FL_SKILLS);
+  });
+  for (const name of FL_SKILLS) {
+    describe(name, () => {
+      const text = readFileSync(join(skillsRoot, name, "SKILL.md"), "utf8");
+      const skill = parseSkillMd(text);
+      it("parses under the loader rules, with Rule-5 metadata", () => {
+        expect(skill.fields.get("name")).toBe(name);
+        expect([...(skill.fields.get("description") ?? "")].length).toBeGreaterThan(0);
+        expect([...(skill.fields.get("description") ?? "")].length).toBeLessThanOrEqual(1024);
+        for (const k of ["created", "branch", "author", "status"]) expect(skill.metadata.get(k), k).toBeTruthy();
+        expect(skill.metadata.get("author")).toMatch(/Larry Klosowski/);
+      });
+      it("cites pinned sources", () => {
+        const cites = extractSkillCitations(skill.body);
+        expect(cites.length).toBeGreaterThanOrEqual(1);
+        for (const c of cites) expect(skill.metadata.get(c.source) ?? "", `${c.source} pin`).toMatch(/^[0-9a-f]{40}$/);
+      });
+      it("names only tools that exist in this build", () => {
+        const named = [...skill.body.matchAll(/`([a-z]+_[a-z_]+)`/g)].map((m) => m[1]).filter((n) => /^(fl|group|groups|cluster|contract|explain|decode|address)_/.test(n));
+        for (const n of named) expect(toolNames.has(n), `${name} names ${n}`).toBe(true);
+      });
+      it("follows the FL copy rules: HIC not HITL, SALT not money words, no em dashes or exclamations", () => {
+        expect(text).not.toMatch(/\bHITL\b/);
+        expect(text).not.toContain("\u2014");
+        expect(skill.body).not.toContain("!");
+        expect(skill.body).not.toMatch(/\$\d|\bUSD\b|\bdollars?\b/i);
+        // "earn" appears only where a skill tells Hermes never to say it.
+        expect(skill.body.replace(/"earn"/g, "")).not.toMatch(/\bearn(s|ed|ing|ings)?\b/i);
+        expect(text).not.toMatch(/\busers?\b/i);
+      });
+    });
+  }
 });
