@@ -255,6 +255,8 @@ textarea.input { height: auto; resize: none; line-height: 1.45; display: block; 
 .cc-fade-up { animation: ccFadeUp var(--dur-slow) var(--ease-standard) both; }
 .cc-stamp { animation: ccStamp 700ms var(--ease-spring) both; }
 .cc-row-stroke { animation: ccRowStroke 1.8s var(--ease-standard) 1; }
+/* FL design board 01: the running step of a Hermes run is the only row that pulses. */
+.run-pulse { animation: ccPulse var(--dur-narrative, 1.6s) var(--ease-standard) infinite; }
 
 /* Journal layout — degrades with available width */
 .journal-grid {
@@ -271,6 +273,7 @@ textarea.input { height: auto; resize: none; line-height: 1.45; display: block; 
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .run-pulse { animation: none; }
   *, *::before, *::after {
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;

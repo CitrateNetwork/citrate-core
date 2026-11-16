@@ -21,6 +21,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import type { ChatMsg } from "../state";
+import { parseRun } from "../../agent/runTimeline";
 
 /** The key an earlier development build used for PLAINTEXT history. Read once to move it into the
  *  sealed store, then removed. Nothing writes it. */
@@ -124,6 +125,10 @@ export function archivable(msgs: ChatMsg[]): ChatMsg[] {
       if (m.retryText) keep.retryText = m.retryText;
       if (m.toolchainHelp) keep.toolchainHelp = true;
       if (m.brief) keep.brief = m.brief;
+      // Board 01: the reply's run timeline and model are kept with it (bounded, re-checked).
+      const run = m.run ? parseRun(m.run) : undefined;
+      if (run) keep.run = run;
+      if (typeof m.model === "string" && m.model) keep.model = m.model.slice(0, 120);
       return keep;
     });
 }

@@ -107,7 +107,16 @@ export type TurnActivityEvent =
    *  them). Core-hosted results already pass through `onToolCall`. The chat's final-answer check
    *  (src/agent/deployClaims.ts) reads both, so a deploy claim is checked against what the tools
    *  really said in this turn. */
-  | { kind: "tool_output"; callId: string; tool: string; status: string; content: string };
+  | { kind: "tool_output"; callId: string; tool: string; status: string; content: string }
+  /** FL design board 01 (run timeline): the loop announced a call it runs itself (`sidecar`) or
+   *  runs nowhere (`refused`: no such tool, or one that needs an approval its host cannot ask
+   *  for). Core-hosted calls are reported through `onToolCall` instead. */
+  | { kind: "tool_start"; callId: string; tool: string; host: "sidecar" | "refused" }
+  /** The result of a `refused` call (sidecar-hosted results arrive as `tool_output`). */
+  | { kind: "tool_end"; callId: string; tool: string; status: string; content: string }
+  /** The provider received a page of events at `at` (ms since epoch). The events reported after
+   *  it, until the next page, arrived together, so the gap between two of them is not known. */
+  | { kind: "page"; at: number };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent
@@ -235,7 +244,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "- Node & staking: read the node's sync/validator status, height, peers; the staking position and validator rewards (total and claimable now, from ValidatorRegistry.rewardsOf); the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-time link (whoever opens it asks to join, and the member approves or declines each request in Groups; nobody joins from the link alone), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
-  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
+  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one. When the member asks to put this machine or its GPU to work, talk about rounds, the member's terms and receipts in SALT; when no round is open, say \"Group rounds not live yet\". Never describe the work as a way to make money: an amount is only what a contract escrowed or paid, in SALT, never a projection and never USD.",
   "- Paraconsensus: belnap_codec encodes inputs for the Belnap aggregation precompile 0x0110 and decodes its output (values plus a Neither / True / Both state per dimension), locally and exactly. Keep a Both visible to the member; never average it away.",
   "- Everyday: read a Google spreadsheet range (gsheets_read) and PROPOSE adding rows (gsheets_append); read Hermes's schedule (schedule_list) and PROPOSE an entry (schedule_add); read the member's Google Calendar (calendar_list). Google tools work only after the member connects Google in Settings > Connections; if they are not connected, say so.",
   "- Coding in the member's folders: when the member has shared a folder with you (Hermes > Controls > Details > Terminal & folders) and terminal commands are on, the shell_run tool runs one command in that folder (for example npm test, cargo build, make, git status, python script.py). Use it for coding tasks: build, test, lint and inspect the project, then report what the output shows. The member sees and approves every command before it runs; it runs in a sandbox with no network and may write only inside the shared folder. Give argv as separate entries (no shell, so no pipes or globs) and cwd as the absolute folder path. If shell_run is not offered, say the member needs to share a folder and turn on terminal commands in Hermes > Controls. A declined command did not run: never claim its result.",

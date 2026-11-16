@@ -21,6 +21,8 @@ import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
+import type { RunRecord } from "../agent/runTimeline";
+import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
 import {
@@ -152,6 +154,18 @@ export interface ChatMsg {
   toolchainHelp?: boolean;
   /** HUP-S1.4 — an accepted brief, shown as a card in the thread (text holds its markdown). */
   brief?: Brief;
+  /** FL design board 01: the steps Hermes took for this reply, from the turn's real events
+   *  (src/agent/runTimeline.ts). Absent on replies made before 0.5.4's timeline. */
+  run?: RunRecord;
+  /** Board 01: the model this reply ran on, as the chat header named it when the turn began. */
+  model?: string;
+}
+/** Board 01: a message the member typed while Hermes was working. `steer`: it goes as soon as the
+ *  stopped run has ended; otherwise it waits for the run to finish. Never persisted. */
+export interface QueuedChat {
+  id: string;
+  text: string;
+  steer: boolean;
 }
 /** HUP-S1.4 — the last brief the member accepted (persisted; nothing is built from it yet). */
 export interface AcceptedBrief {
@@ -558,6 +572,11 @@ export interface AppState {
    *  `ask`: the member chooses, for this message only, to restart the local model or send it to
    *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
   chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
+  /** Board 01: follow-ups typed while a run was live, in send order. Not persisted. */
+  chatQueue: QueuedChat[];
+  /** Board 01: why chat is on the no-tools fallback (sidecarLiveness.ts), null when Hermes answers.
+   *  Set each time the provider is rebuilt. Not persisted. */
+  chatHermesDown: SidecarDownReason | null;
   /** K2: the member's chat route, read from core (chat_route.rs) and never stored in the browser.
    *  `ask_first` (default): ask before each message goes to the gateway. `local_only`: never. */
   chatRoute: ChatRoute;
@@ -953,6 +972,8 @@ export function freshState(pid: string): AppState {
     chatThreadId: newThreadId(),
     chatStatus: "ready",
     chatRouteHold: null,
+    chatQueue: [],
+    chatHermesDown: null,
     chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
@@ -1231,7 +1252,7 @@ export function loadState(netKey: string = currentNetKey()): AppState {
       saved.networkNotice = { at, from, to: netKey, node: null, archived };
     }
   }
-  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
+  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null, chatQueue: [], chatHermesDown: null });
   // CLAUDE.md Rule 3: there is no signature-policy setting (every signature goes through the
   // ceremony; the one exception is a budgeted web sign-in). An older build persisted one, so drop
   // whatever was stored rather than carry it in state.
