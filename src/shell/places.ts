@@ -140,6 +140,8 @@ export const PLACES: Place[] = [
     tabs: [
       { label: "Settings", route: "settings" },
       { label: "Connections", route: "settings/connections" },
+      // FL design board 11: terms, consent, the HIC-2 envelope and the payout address.
+      { label: "Work", route: "settings/work" },
     ],
   },
 ];
@@ -330,6 +332,7 @@ const REGISTER_BY_ROUTE: Record<string, "instrument" | "charter"> = {
   "store/models": "instrument",
   settings: "charter",
   "settings/connections": "charter",
+  "settings/work": "charter",
 };
 
 export function registerFor(route: string): "instrument" | "charter" {

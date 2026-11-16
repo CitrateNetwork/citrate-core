@@ -61,6 +61,8 @@ mod deploy_gate;
 mod deploy_records;
 // 0.5.4 — the Hermes chat history, sealed on this device (ML-KEM-768 + AES-256-GCM, key in the keyring).
 mod hermes_history;
+// 0.5.4 FL design board 11 — worker terms and the HIC-2 envelope, sealed the same way.
+mod fl_work;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -811,6 +813,12 @@ pub fn run() {
             hermes_history::hermes_history_delete,
             hermes_history::hermes_history_delete_all,
             hermes_history::hermes_history_set_retention,
+            // 0.5.4 FL design board 11: Settings › Work, sealed on this device.
+            fl_work::fl_work_terms_get,
+            fl_work::fl_work_terms_save,
+            fl_work::fl_work_envelope_get,
+            fl_work::fl_work_envelope_approve,
+            fl_work::fl_work_envelope_off,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,

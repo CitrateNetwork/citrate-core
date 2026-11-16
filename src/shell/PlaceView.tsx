@@ -17,6 +17,7 @@ import { RoundsRoute } from "../fl/RoundsRoute";
 import { Models, StorageFiles, Groups, Cluster, Connections, Community } from "../surfaces";
 import { GroupMembers } from "../surfaces/groups/GroupMembers";
 import { GroupChat } from "../surfaces/groups/GroupChat";
+import { WorkSettings } from "../fl/WorkSettings";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
 import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
@@ -150,6 +151,9 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
       return <Settings store={store} s={{ ...s, sSec: sectionFor(ACCOUNT_SETTINGS, s.sSec) }} sections={ACCOUNT_SETTINGS} />;
     case "settings/connections":
       return <Connections store={store} s={s} />;
+    case "settings/work":
+      // FL design board 11 (src/fl/WorkSettings.tsx).
+      return <WorkSettings store={store} s={s} />;
     default:
       return <Dashboard store={store} s={s} />;
   }

@@ -32,7 +32,7 @@ import { CeremonySheet, outcomeFromBroadcastError, outcomeFromReceipt, outcomeWo
 import { Chip, HicBadge, KV, Unknown, shortHex } from "./primitives";
 import { aboutDuration, saltFromWei, saltText } from "./format";
 import { HIC1, selectAuthority, setEnvelopeForAuthority, subscribeAuthority } from "./authority";
-import { loadWorkerTerms, saveWorkerTerms, TERMS_SAVE_UNAVAILABLE, termsProblem, type WorkerTerms } from "./workerTerms";
+import { loadWorkerTerms, saveWorkerTerms, TERMS_NEED_DESKTOP, termsProblem, type WorkerTerms } from "./workerTerms";
 import { RoundsNotLive } from "./RoundsNotLive";
 import { ContractTable } from "./ContractTable";
 import { FlBand } from "./FlBand";
@@ -422,16 +422,19 @@ describe("authority (HIC-1 by default)", () => {
   });
 });
 
-describe("worker terms (no core storage in this build)", () => {
-  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
-  it("saving is refused with a plain sentence; loading reads nothing", async () => {
-    await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_SAVE_UNAVAILABLE);
-    await expect(loadWorkerTerms()).resolves.toBeNull();
+describe("worker terms outside the desktop app", () => {
+  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["hermes-conversations"] };
+  it("with no sealed store (web/dev), saving and loading say so; nothing is written anywhere", async () => {
+    await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_NEED_DESKTOP);
+    await expect(loadWorkerTerms()).rejects.toThrow(TERMS_NEED_DESKTOP);
   });
   it("malformed terms are refused with the problem", async () => {
     expect(termsProblem(terms)).toBeNull();
     expect(termsProblem({ ...terms, floorSaltPerUnit: "-1" })).toMatch(/floor/);
     expect(termsProblem({ ...terms, hours: { start: "25:00", end: "07:00" } })).toMatch(/Hours/);
+    // The allowlist of data classes this device has (lane 3's proposal card imports it).
+    expect(termsProblem({ ...terms, dataClasses: ["support-tickets"] })).toBe('Data class "support-tickets" is not one this device has (allowed: hermes-conversations)');
+    expect(termsProblem({ ...terms, dataClasses: ["hermes-conversations", "hermes-conversations"] })).toBe("A data class is listed twice");
     await expect(saveWorkerTerms({ ...terms, floorSaltPerUnit: "abc" })).rejects.toThrow(/floor/);
   });
 });
