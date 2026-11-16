@@ -333,7 +333,9 @@ impl Robots {
                         .parse::<f64>()
                         .ok()
                         .filter(|d| d.is_finite() && *d >= 0.0)
-                        .map(Duration::from_secs_f64);
+                        // Too long to represent (`1e100`): longer than any delay honoured, so
+                        // the host is refused rather than the parse panicking.
+                        .map(|d| Duration::try_from_secs_f64(d).unwrap_or(Duration::MAX));
                 }
                 _ => {}
             }
@@ -365,9 +367,13 @@ impl Robots {
     /// Whether `path` (with its query) may be fetched: the longest matching rule wins, `Allow` on
     /// a tie; no rule = allowed.
     pub fn allows(&self, path: &str) -> bool {
+        // RFC 9309 2.2.2: compare with percent-encoded unreserved characters decoded, on both
+        // sides, so `/%70rivate/` is `/private/`.
+        let path = percent_normal(path);
         let mut best: Option<(usize, bool)> = None;
         for (allow, pat) in &self.rules {
-            if robots_match(pat, path) {
+            let pat = percent_normal(pat);
+            if robots_match(&pat, &path) {
                 let len = pat.len();
                 best = match best {
                     Some((l, a)) if l > len || (l == len && a) => Some((l, a)),
@@ -377,6 +383,36 @@ impl Robots {
         }
         best.map(|(_, a)| a).unwrap_or(true)
     }
+}
+
+/// `%XX` decoded when it is an unreserved character (`A-Z a-z 0-9 - . _ ~`); any other escape
+/// kept, with its hex in upper case (so `%2f` and `%2F` compare equal and `%2F` never becomes `/`).
+fn percent_normal(s: &str) -> String {
+    let b = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                let c = h * 16 + l;
+                if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~') {
+                    out.push(c as char);
+                } else {
+                    out.push('%');
+                    out.push(b[i + 1].to_ascii_uppercase() as char);
+                    out.push(b[i + 2].to_ascii_uppercase() as char);
+                }
+                i += 3;
+                continue;
+            }
+        }
+        // Copy one whole UTF-8 character.
+        let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8().max(1);
+    }
+    out
 }
 
 /// RFC 9309 matching: `*` matches any run of characters, a trailing `$` anchors the end.
@@ -617,9 +653,14 @@ fn refused(
     }
 }
 
-/// Per-host robots.txt, read once per check or run.
+/// Per-origin robots.txt (scheme, host and port: RFC 9309 rules belong to an origin), read once
+/// per check or run. Also remembers when each host's robots.txt was fetched, since that request
+/// counts toward the host's pacing.
 #[derive(Default)]
-pub struct RobotsCache(BTreeMap<String, (RobotsState, Option<Robots>)>);
+pub struct RobotsCache(
+    BTreeMap<String, (RobotsState, Option<Robots>)>,
+    BTreeMap<String, Instant>,
+);
 
 impl RobotsCache {
     fn get(
@@ -629,14 +670,18 @@ impl RobotsCache {
         host: &str,
         pinned: &[std::net::IpAddr],
     ) -> (RobotsState, Option<Robots>) {
-        if let Some(v) = self.0.get(host) {
+        let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+        let origin = format!("{}://{host}{port}", u.scheme());
+        if let Some(v) = self.0.get(&origin) {
             return v.clone();
         }
-        let robots_url = match url::Url::parse(&format!("{}://{host}/robots.txt", u.scheme())) {
+        let robots_url = match url::Url::parse(&format!("{origin}/robots.txt")) {
             Ok(r) => r,
             Err(_) => return (RobotsState::Unreadable, None),
         };
-        let v = match http.get(&robots_url, pinned, MAX_ROBOTS_BYTES) {
+        let got = http.get(&robots_url, pinned, MAX_ROBOTS_BYTES);
+        self.1.insert(host.to_string(), Instant::now());
+        let v = match got {
             Ok(f) if f.status == 200 => (
                 RobotsState::Allowed,
                 Some(Robots::parse(&String::from_utf8_lossy(&f.body))),
@@ -644,8 +689,13 @@ impl RobotsCache {
             Ok(f) if f.status == 404 || f.status == 410 => (RobotsState::Missing, None),
             _ => (RobotsState::Unreadable, None),
         };
-        self.0.insert(host.to_string(), v.clone());
+        self.0.insert(origin, v.clone());
         v
+    }
+
+    /// When `host`'s robots.txt was last fetched, if it was.
+    fn fetched_at(&self, host: &str) -> Option<Instant> {
+        self.1.get(host).copied()
     }
 }
 
@@ -1126,7 +1176,15 @@ pub fn run_plan(
             continue;
         }
         let interval = Duration::from_secs(again.interval_secs.max(MIN_INTERVAL.as_secs()));
-        if let Some(t) = last.get(&again.host) {
+        // The last request to this host, robots.txt included (review of #738).
+        let prior = [
+            last.get(&again.host).copied(),
+            cache.fetched_at(&again.host),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        if let Some(t) = prior {
             let since = t.elapsed();
             if since < interval {
                 pause.wait(interval - since);
