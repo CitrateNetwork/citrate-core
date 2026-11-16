@@ -9,6 +9,7 @@ import type { Group } from "../bridge/domains";
 import { readFlNetworkState, type FlNetworkState } from "./networkState";
 import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
 import { OpenRoundView } from "./OpenRound";
+import { saveRoundDraft } from "./roundDraft";
 import { BLANK_DRAFT, clearRoundDraft, draftProblems, leasesCovered, loadRoundDraft, openParamsOf, setRoundDraft, type RoundDraft } from "./roundDraft";
 import type { TxOutcome } from "./CeremonySheet";
 
@@ -200,6 +201,17 @@ describe("round drafts", () => {
     expect(stored!).toMatchObject({ source: "member", budgetSalt: "600", rateSalt: "1.50", draftedBy: "hermes" });
     expect(m.el.textContent).toContain("Drafted by Hermes");
     m.done();
+  });
+  it("PAY-19 (BerryManifold P2): setRoundDraft's source is required; leaving it out does not compile", () => {
+    // Test files are outside tsc, so this checks it at run time: a parameter with a default is not
+    // counted in Function.length, a required one is.
+    expect(setRoundDraft.length).toBe(2);
+  });
+  it("PAY-19 (BerryManifold P2): saveRoundDraft never stores money on a Hermes draft, whoever calls it", () => {
+    saveRoundDraft({ ...BLANK_DRAFT, source: "hermes", dataClass: "photos", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "1", coordinatorBondSalt: "100" });
+    expect(loadRoundDraft()).toMatchObject({ source: "hermes", dataClass: "photos", budgetSalt: "", rateSalt: "", joinBondSalt: "", coordinatorBondSalt: "", draftedBy: "hermes" });
+    saveRoundDraft({ ...BLANK_DRAFT, source: "member", budgetSalt: "600" });
+    expect(loadRoundDraft()!.budgetSalt).toBe("600");
   });
   it("a draft handed in by Hermes is kept on this device for the member to check", () => {
     setRoundDraft({ dataClass: "photos" }, "hermes");
