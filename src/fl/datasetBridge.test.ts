@@ -29,7 +29,7 @@ describe("tauriFlDatasets", () => {
     await tauriFlDatasets.consentList("ds-0123456789abcdef");
     await tauriFlDatasets.consentWithdraw("ds-0123456789abcdef", "c-2");
     await tauriFlDatasets.delete("ds-0123456789abcdef");
-    await tauriFlDatasets.publishCheck("ds-0123456789abcdef", 3, "MIT", "public");
+    await tauriFlDatasets.publishPreview("ds-0123456789abcdef", 3, "MIT", "public");
     await tauriFlDatasets.publish("ds-0123456789abcdef", 3, "MIT", "public", "0x" + "cd".repeat(32));
     await tauriFlDatasets.published("ds-0123456789abcdef");
     expect(invokeMock.mock.calls).toEqual([
@@ -42,7 +42,7 @@ describe("tauriFlDatasets", () => {
       ["fl_dataset_consent_list", { dataset: "ds-0123456789abcdef" }],
       ["fl_dataset_consent_withdraw", { dataset: "ds-0123456789abcdef", consent: "c-2" }],
       ["fl_dataset_delete", { dataset: "ds-0123456789abcdef" }],
-      ["fl_dataset_publish_check", { dataset: "ds-0123456789abcdef", version: 3, license: "MIT", privacy: "public" }],
+      ["fl_dataset_publish_preview", { dataset: "ds-0123456789abcdef", version: 3, license: "MIT", privacy: "public" }],
       ["fl_dataset_publish", { dataset: "ds-0123456789abcdef", version: 3, license: "MIT", privacy: "public", contentHash: "0x" + "cd".repeat(32) }],
       ["fl_dataset_published", { dataset: "ds-0123456789abcdef" }],
     ]);
@@ -74,7 +74,7 @@ describe("simFlDatasets", () => {
       sim.consentList("ds-0123456789abcdef"),
       sim.consentWithdraw("ds-0123456789abcdef", "c-1"),
       sim.delete("ds-0123456789abcdef"),
-      sim.publishCheck("ds-0123456789abcdef", 1, "MIT", "public"),
+      sim.publishPreview("ds-0123456789abcdef", 1, "MIT", "public"),
       sim.publish("ds-0123456789abcdef", 1, "MIT", "public", "0x"),
       sim.published("ds-0123456789abcdef"),
     ];

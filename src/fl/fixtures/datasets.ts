@@ -1,6 +1,6 @@
 // Test fixture (0.5.4 WP-H6): dataset store results in the exact shapes core's fl_dataset_*
 // commands return. Imported only by tests; production reads datasets from core's sealed store.
-import type { FlCleanPreview, FlDataset, FlDatasetList, FlDatasetVersion, FlPublication, FlPublishCheck } from "../datasetTypes";
+import type { FlCleanPreview, FlDataset, FlDatasetList, FlDatasetVersion, FlPublication, FlPublishPreview } from "../datasetTypes";
 
 export const DATASET_ID = "ds-0123456789abcdef";
 export const HASH_A = "0x" + "a1".repeat(32);
@@ -61,7 +61,7 @@ export function cleanPreview(over: Partial<FlCleanPreview> = {}): FlCleanPreview
   };
 }
 
-export function publishCheck(over: Partial<FlPublishCheck> = {}): FlPublishCheck {
+export function publishPreview(over: Partial<FlPublishPreview> = {}): FlPublishPreview {
   return {
     dataset: DATASET_ID,
     name: "Orchard notes",

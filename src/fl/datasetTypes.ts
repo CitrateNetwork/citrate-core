@@ -190,8 +190,8 @@ export interface FlConsentWithdrawn {
   earlierVersionsKept: boolean;
 }
 
-/** What publishing would do, and every reason core refuses it (empty = it may publish). */
-export interface FlPublishCheck {
+/** What publishing would do, and every reason core refuses it: WP-H7's publish gate (fl_dataset_gate.rs), then Public only. Empty = it may publish. */
+export interface FlPublishPreview {
   dataset: string;
   name: string;
   version: number;
@@ -242,7 +242,7 @@ export interface FlDatasetsDomain {
   consentWithdraw(dataset: string, consent: string): Promise<FlConsentWithdrawn>;
   delete(dataset: string): Promise<void>;
   /** Writes nothing. */
-  publishCheck(dataset: string, version: number, license: string, privacy: FlPrivacyLabel): Promise<FlPublishCheck>;
+  publishPreview(dataset: string, version: number, license: string, privacy: FlPrivacyLabel): Promise<FlPublishPreview>;
   /** Only after the member approved the publish card (HIC-1, never in an envelope). Cannot be recalled. */
   publish(dataset: string, version: number, license: string, privacy: FlPrivacyLabel, contentHash: string): Promise<FlPublished>;
   published(dataset: string): Promise<FlPublication[]>;

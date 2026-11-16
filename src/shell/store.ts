@@ -39,6 +39,7 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { FL_DATASET_PUBLISH_TOOL, isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
 import { runPublishTool } from "../fl/datasetPublishTool";
 import flAddressBook from "../../src-tauri/addresses/40204.json";
@@ -129,7 +130,8 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_dataset_create", "fl_dataset_clean_propose", "fl_dataset_publish_propose"]);
+/** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_dataset_publish_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4628,6 +4630,12 @@ export class Store {
         publisher: () => this.state.custodyAddr,
         propose: (i) => this.proposeContractCall(i),
       });
+      status = out.status;
+      result = out.result;
+    } else if (isFlAdapterTool(call.name)) {
+      // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
+      // re-checks the gate), and unloading (lowers authority, no card).
+      const out = await runFlAdapterTool(call.name, args as Record<string, unknown>, ann, { fl: bridge.flRounds, ask });
       status = out.status;
       result = out.result;
     } else if (isFlDatasetTool(call.name)) {

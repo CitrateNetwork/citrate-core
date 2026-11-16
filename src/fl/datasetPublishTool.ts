@@ -2,7 +2,7 @@
 // citrate-core: Hermes's fl_dataset_publish_propose (0.5.4, Hermes x FL WP-H6, gap §5.4)
 //
 // Publishing is irreversible, so it is always HIC-1 and never inside an envelope:
-//  1. core's `fl_dataset_publish_check` names every reason it refuses (license, unknown source
+//  1. core's `fl_dataset_publish_preview` names every reason it refuses (license, unknown source
 //     licenses, the PII scan of exactly these rows, Public only in this build). Any refusal stops
 //     here with no card;
 //  2. the member decides on a card that says a CID cannot be recalled;
@@ -26,7 +26,7 @@ import type { FlBook } from "./networkState";
 import { datasetIdFor, PUBLISH_SIGNATURE, publishCalldata, registryPrev, registryState, type RegistryReads } from "./datasetRegistry";
 
 export interface PublishToolDeps {
-  ds: Pick<FlDatasetsDomain, "list" | "publishCheck" | "publish" | "published">;
+  ds: Pick<FlDatasetsDomain, "list" | "publishPreview" | "publish" | "published">;
   ask: (spec: CerSpec, card: ApprovalCard) => Promise<string>;
   book: FlBook;
   reads: RegistryReads;
@@ -90,7 +90,7 @@ export async function runPublishTool(args: Record<string, unknown>, ann: ToolAnn
   }
   let check;
   try {
-    check = await deps.ds.publishCheck(id, v.version, license, "public");
+    check = await deps.ds.publishPreview(id, v.version, license, "public");
   } catch (e) {
     return { status: "ok", result: "Core could not check the publish, so nothing was proposed: " + msg(e) };
   }

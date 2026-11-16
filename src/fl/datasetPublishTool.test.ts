@@ -8,7 +8,7 @@ import realBook from "../../src-tauri/addresses/40204.json";
 import { runPublishTool, proposeRegistryRecord, type PublishToolDeps } from "./datasetPublishTool";
 import { DATASET_REGISTRY_ABI, PUBLISH_SIGNATURE, datasetIdFor, publishCalldata, registryState } from "./datasetRegistry";
 import { NOT_AVAILABLE } from "./networkState";
-import { DATASET_ID, HASH_B, ZERO, dataset, datasetList, publication, publishCheck } from "./fixtures/datasets";
+import { DATASET_ID, HASH_B, ZERO, dataset, datasetList, publication, publishPreview } from "./fixtures/datasets";
 import type { ApprovalCard } from "../agent/approvalCards";
 import type { CerSpec } from "../shell/state";
 
@@ -20,7 +20,7 @@ function deps(over: Partial<PublishToolDeps> = {}, dsOver: Partial<PublishToolDe
   const ds = {
     list: vi.fn(async () => datasetList()),
     published: vi.fn(async () => []),
-    publishCheck: vi.fn(async () => publishCheck()),
+    publishPreview: vi.fn(async () => publishPreview()),
     publish: vi.fn(async () => ({ version: { ...dataset().versions[0], version: 2 }, name: "Orchard notes", publication: publication(), bundleBytes: 4096 })),
     ...dsOver,
   };
@@ -48,10 +48,10 @@ describe("the shipped network has no DatasetRegistry", () => {
 
 describe("fl_dataset_publish_propose (HIC-1, irreversible)", () => {
   it("stops at core's refusals with no card", async () => {
-    const { d, ds } = deps({}, { publishCheck: vi.fn(async () => publishCheck({ refusals: ["License unknown for 1 source", "No PII scan of these rows yet; the on-device scan must pass first"] })) });
+    const { d, ds } = deps({}, { publishPreview: vi.fn(async () => publishPreview({ refusals: ["source s-2 (https://docs.example.org/x): no license is known for this source", "a source is under CC-BY-SA-4.0, so the dataset must be published under CC-BY-SA-4.0 too"] })) });
     const out = await runPublishTool({ dataset: DATASET_ID, license: "MIT" }, null, d);
     expect(out.result).toMatch(/Core refuses publishing/);
-    expect(out.result).toContain("- License unknown for 1 source");
+    expect(out.result).toContain("- a source is under CC-BY-SA-4.0, so the dataset must be published under CC-BY-SA-4.0 too");
     expect(out.result).toMatch(/you cannot override them/);
     expect(d.ask).not.toHaveBeenCalled();
     expect(ds.publish).not.toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe("fl_dataset_publish_propose (HIC-1, irreversible)", () => {
   it("asks on a card that says it cannot be undone, publishes to IPFS, and says the record waits", async () => {
     const { d, ds, asked } = deps();
     const out = await runPublishTool({ dataset: DATASET_ID, license: "MIT" }, null, d);
-    expect(ds.publishCheck).toHaveBeenCalledWith(DATASET_ID, 1, "MIT", "public");
+    expect(ds.publishPreview).toHaveBeenCalledWith(DATASET_ID, 1, "MIT", "public");
     const card = asked[0].card;
     expect(card.kind === "fields" && card.rows.find((r) => r.k === "cannot be undone")?.v).toMatch(/cannot be recalled/);
     expect(asked[0].spec.title).toMatch(/cannot be undone/);
@@ -83,7 +83,7 @@ describe("fl_dataset_publish_propose (HIC-1, irreversible)", () => {
     const out = await runPublishTool({ dataset: DATASET_ID, license: "MIT" }, null, d);
     expect(out.result).toMatch(/already on IPFS at bafkreiexamplecid/);
     expect(d.ask).not.toHaveBeenCalled();
-    expect(ds.publishCheck).not.toHaveBeenCalled();
+    expect(ds.publishPreview).not.toHaveBeenCalled();
   });
 
   it("checks the id first", async () => {

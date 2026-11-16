@@ -67,6 +67,7 @@ mod deploy_gate_toolchain;
 mod faucet;
 // 0.5.4 WP-H6 — the member's local FL dataset store (sealed, hash-chained manifests).
 mod fl_datasets;
+mod fl_market;
 mod fl_rounds;
 mod fl_trajectories;
 // HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
@@ -177,6 +178,8 @@ mod services;
 // CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
 mod sidecar_logs;
 // #613 review: the secret shapes kept off the disk and out of the diagnostics bundle.
+mod fl_dataset_gate;
+mod pii_scan;
 mod secret_shapes;
 mod shell;
 mod skill_registry;
@@ -757,6 +760,7 @@ pub fn run() {
             template_forge::template_render,
             fork_dry_run::deploy_gate_fork_dry_run,
             // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
+            fl_market::fl_market_offers,
             fl_rounds::fl_overview,
             fl_rounds::fl_coordinator_set,
             fl_rounds::fl_round_plan,
@@ -780,7 +784,7 @@ pub fn run() {
             fl_datasets::fl_dataset_consent_list,
             fl_datasets::fl_dataset_consent_withdraw,
             fl_datasets::fl_dataset_delete,
-            fl_datasets::fl_dataset_publish_check,
+            fl_datasets::fl_dataset_publish_preview,
             fl_datasets::fl_dataset_publish,
             fl_datasets::fl_dataset_published,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
@@ -980,6 +984,12 @@ pub fn run() {
             chat_route::chat_route_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            // WP-H7 / V6 (0.5.4): the on-device private-information scanner.
+            pii_scan::pii_scan_text,
+            // WP-H7 (0.5.4): the dataset PII scan, license check and publish gate.
+            fl_dataset_gate::fl_dataset_pii_scan,
+            fl_dataset_gate::fl_dataset_license_check,
+            fl_dataset_gate::fl_dataset_publish_check,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).

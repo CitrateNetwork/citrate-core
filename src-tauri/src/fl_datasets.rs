@@ -243,7 +243,8 @@ pub struct PiiScanRecord {
     pub content_hash: String,
     /// `true` when no PII was found.
     pub pass: bool,
-    /// Findings per class (email, phone, name, address, government-id, card, secret).
+    /// Findings per class, keyed as the WP-H7 scanner names them (email, phone, name,
+    /// street-address, government-id, card, secret, ...).
     pub counts: BTreeMap<String, u32>,
 }
 
@@ -537,10 +538,11 @@ pub struct ConsentWithdrawn {
     pub earlier_versions_kept: bool,
 }
 
-/// What publishing would do, and every reason core refuses it.
+/// What publishing would do, and every reason core refuses it (WP-H7's gate, then this build's
+/// Public-only rule).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PublishCheck {
+pub struct PublishPreview {
     pub dataset: String,
     pub name: String,
     pub version: u32,
@@ -1977,11 +1979,11 @@ impl<'a> DatasetStore<'a> {
     }
 
     /// Every reason core refuses to publish `version` with `license` and `privacy`. Empty = it
-    /// may publish. The gates (gap §3.1 rule 6, planset 06 §5): the license passes the registry
-    /// rule; no source's license is unknown; a PII scan of exactly these rows passed (the scanner
-    /// decides, never the model); a dataset with personal data is never Public; and this build
-    /// publishes Public only (members and group need encrypted group files, index-only needs the
-    /// registry record alone).
+    /// may publish. The policy is WP-H7's publish gate (`fl_dataset_gate::publish_gate`: the PII
+    /// scan of exactly these rows, the publishable-license list, per-source licenses, ShareAlike,
+    /// personal data never Public); nothing here relaxes it. On top of it, this build publishes
+    /// Public only: members and group need encrypted group files, and index-only needs the
+    /// DatasetRegistry record alone.
     fn publish_refusals(
         &self,
         keys: &KeySet,
@@ -1990,67 +1992,38 @@ impl<'a> DatasetStore<'a> {
         license: &str,
         privacy: PrivacyLabel,
     ) -> Result<Vec<String>, String> {
-        let mut out = Vec::new();
-        if let Err(e) = registry_license_ok(license) {
-            out.push(format!("License: {e}"));
-        }
-        let unknown = v
-            .manifest
-            .sources
-            .iter()
-            .filter(|s| s.license.id.is_none())
-            .count();
-        if unknown > 0 {
-            out.push(format!(
-                "License unknown for {unknown} source{}",
-                if unknown == 1 { "" } else { "s" }
-            ));
-        }
-        match self
+        let scan = self
             .scan(keys, id, v)?
-            .or_else(|| v.manifest.pii_scan.clone())
-        {
-            None => {
-                out.push("No PII scan of these rows yet; the on-device scan must pass first".into())
-            }
-            Some(s) if s.content_hash != v.manifest.content_hash => {
-                out.push("The PII scan is of other rows; scan this version".into())
-            }
-            Some(s) if !s.pass => out.push(format!(
-                "The PII scan found personal data ({}); clean it or keep the dataset local",
-                s.counts
-                    .iter()
-                    .filter(|(_, n)| **n > 0)
-                    .map(|(k, n)| format!("{n} {k}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            Some(_) => {}
-        }
-        if v.manifest.contains_personal_data && privacy == PrivacyLabel::Public {
-            out.push("A dataset that contains personal data can never be Public".into());
-        }
+            .or_else(|| v.manifest.pii_scan.clone());
+        let gate = crate::fl_dataset_gate::publish_gate(
+            &v.manifest,
+            scan.as_ref(),
+            &crate::fl_dataset_gate::PublishRequest { license, privacy },
+        );
+        let mut out = gate.refusals;
         match privacy {
-            PrivacyLabel::Public => {}
+            PrivacyLabel::Public | PrivacyLabel::Private => {}
             PrivacyLabel::Members | PrivacyLabel::Group => out.push(
-                "Publishing to members or a group needs encrypted group files, which are not in this build".into(),
+                "publishing to members or a group needs encrypted group files, which are not in this build".into(),
             ),
             PrivacyLabel::IndexOnly => out.push(
-                "Index-only publishes no file, only the DatasetRegistry record, which is not in this build".into(),
+                "index-only publishes no file, only the DatasetRegistry record, which is not in this build".into(),
             ),
-            PrivacyLabel::Private => out.push("Private datasets are not published".into()),
+        }
+        if !gate.allowed && out.is_empty() {
+            out.push("the publish gate refused it".into());
         }
         Ok(out)
     }
 
     /// What publishing `version` would do and every reason it is refused. Writes nothing.
-    pub fn publish_check(
+    pub fn publish_preview(
         &self,
         id: &str,
         version: u32,
         license: &str,
         privacy: PrivacyLabel,
-    ) -> Result<PublishCheck, String> {
+    ) -> Result<PublishPreview, String> {
         let keys = self.need_keys()?;
         let rec = self.record(&keys, id)?;
         let latest = self.latest(&keys, id)?;
@@ -2067,7 +2040,7 @@ impl<'a> DatasetStore<'a> {
             .read_file(&keys, id, &format!("v{version}.rows"))?
             .map(|r| r.len())
             .unwrap_or(0);
-        Ok(PublishCheck {
+        Ok(PublishPreview {
             dataset: id.to_string(),
             name: rec.name,
             version,
@@ -2701,17 +2674,18 @@ pub async fn fl_dataset_consent_withdraw(
     .await
 }
 
-/// **fl_dataset_publish_check**: every reason core refuses publishing a version. Writes nothing.
+/// **fl_dataset_publish_preview**: what publishing a version would do, and every reason core
+/// refuses it (WP-H7's publish gate, then Public only). Writes nothing.
 #[tauri::command]
-pub async fn fl_dataset_publish_check(
+pub async fn fl_dataset_publish_preview(
     app: tauri::AppHandle,
     dataset: String,
     version: u32,
     license: String,
     privacy: PrivacyLabel,
-) -> Result<PublishCheck, String> {
+) -> Result<PublishPreview, String> {
     with_store(app, move |s, _| {
-        s.publish_check(&dataset, version, &license, privacy)
+        s.publish_preview(&dataset, version, &license, privacy)
     })
     .await
 }
