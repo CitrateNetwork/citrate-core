@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FL hub · three directions</title>
+<!-- V60 UX-0 design mock index. Not part of the app build (scripts/design-fl-hub.test.mjs). -->
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-sans/400.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-sans/500.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/geist-mono/400.css">
+<link rel="stylesheet" href="../../node_modules/@fontsource/space-grotesk/500.css">
+<link rel="stylesheet" href="../../src/styles/foundation.css">
+<link rel="stylesheet" href="../../src/styles/tokens.css">
+<link rel="stylesheet" href="./hub.css">
+<style>
+.wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
+.dirs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 24px; }
+.dir { border: 1px solid var(--line-1); border-radius: var(--r-2); background: var(--srf-1); padding: 18px; }
+.dir h2 { font-family: var(--font-display); font-weight: 500; font-size: 22px; margin: 4px 0 8px; }
+.dir p { font-size: 13px; color: var(--tx-2); margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<div class="mockbar" data-design-mock>
+  <b>Design mock</b><span>V60 UX-0: three FL hub directions for the owner to pick one. Fixture data only; not part of the app build.</span>
+</div>
+<div class="wrap">
+  <img src="../../src/assets/brand/citrate_marquee_black.svg" alt="Citrate" style="height:28px">
+  <h1 style="font-family:var(--font-display);font-weight:500;font-size:40px;margin:18px 0 6px">FL hub: three directions</h1>
+  <p class="muted" style="max-width:720px">Each page draws the same fixture round and offers, with the same parts (round ring, lease dots, challenge clock, Belnap counts, escrow bar, your timeline, matches, join sheet, payouts, Advanced, and the three empty and error states). They differ in what leads and which register carries it. All three use the app's tokens from src/styles, so the one picked is what UX-1 builds.</p>
+  <div class="dirs">
+    <div class="dir"><span class="eyebrow-m">Direction A</span><h2>Instrument</h2><p>Dark register end to end. The live round is the hero, matches beside it. Reads as a gauge.</p><a class="btn btn-primary btn-sm" href="./direction-a.html">Open A</a></div>
+    <div class="dir"><span class="eyebrow-m">Direction B</span><h2>Ledger</h2><p>Paper register in the explorer's direction B: editorial headline, stat receipts with sources, offers as a table, the live round as one dark strip.</p><a class="btn btn-primary btn-sm" href="./direction-b.html">Open B</a></div>
+    <div class="dir"><span class="eyebrow-m">Direction C</span><h2>Lattice</h2><p>Groups and the cluster lead; rounds as lanes across the lifecycle; the selected round opens as a dark panel.</p><a class="btn btn-primary btn-sm" href="./direction-c.html">Open C</a></div>
+  </div>
+  <p class="notice">Serve the repository root (for example <code>python3 -m http.server</code> from citrate-core) and open <code>/design/fl-hub/</code>. Fonts load from node_modules after <code>npm ci</code>; without them the system fallbacks show.</p>
+</div>
+</body>
+</html>
