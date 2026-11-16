@@ -19,6 +19,9 @@ import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { NoLiveRound } from "./LiveRound";
 import { PayoutsView, usePayoutsRecords } from "./Payouts";
+import { OpenRoundView } from "./OpenRound";
+import { BLANK_DRAFT, loadRoundDraft, openIntent, type RoundDraft } from "./roundDraft";
+import { groupsSlice } from "../shell/slices/groups";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
@@ -104,7 +107,41 @@ function PayoutsRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go
   );
 }
 
-function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: string) => void }) {
+function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
+  const { groups } = groupsSlice.use();
+  const [coord, setCoord] = useState<string | null>(null);
+  const [draft] = useState<RoundDraft>(() => loadRoundDraft() ?? BLANK_DRAFT);
+  useEffect(() => {
+    bridge.flRounds.overview().then(
+      (o) => setCoord(o.config.url),
+      () => setCoord(null),
+    );
+  }, []);
+  const roleOf = (id: string | null) => {
+    const g = groups.find((x) => x.id === id);
+    const me = g && s.commsAddr ? g.members.find((m) => m.address.toLowerCase() === s.commsAddr.toLowerCase()) : undefined;
+    return me ? me.role : null;
+  };
+  return (
+    <OpenRoundView
+      state={state}
+      draft={draft}
+      groups={groups}
+      roleOf={roleOf}
+      coordinatorUrl={coord}
+      go={go}
+      onOpen={async (d) => {
+        // No round binding source exists yet (the coordinator does not publish one); openIntent
+        // says so, and refuses first while payouts are dark.
+        const intent = openIntent(d, null, state);
+        await store.proposeContractCall(intent);
+        return { kind: "unknown", txHash: null, reason: "sent to the wallet review" };
+      }}
+    />
+  );
+}
+
+function NotLiveSubtab({ route, s, go, store }: { route: string; s: AppState; go: (r: string) => void; store: Store }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
@@ -122,14 +159,8 @@ function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: s
         </>
       );
     case ROUNDS_ROUTES.open:
-      return (
-        <RoundsNotLive
-          testid="rounds-open-not-live"
-          state={state}
-          headline="Opening a round needs the WorkMarket contract on this network."
-          lead="Owners and admins of a group open rounds. Until WorkMarket is deployed there is no round to open and nothing to sign."
-        />
-      );
+      // Board 07: the four steps; no Open button until WorkMarket is on this network.
+      return <OpenRoundRoute state={state} s={s} go={go} store={store} />;
     case ROUNDS_ROUTES.datasets:
       return (
         <RoundsNotLive
@@ -156,6 +187,6 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
       // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
       return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
-      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} />;
+      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} store={store} />;
   }
 }
