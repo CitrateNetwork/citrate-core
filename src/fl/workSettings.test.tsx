@@ -17,7 +17,7 @@ const reads = { codeSize: async () => 1000, viewCall: async () => "0x" + "0".rep
 const ov = (rounds: string[] = []): FlOverview => ({ config: { url: null, source: "none", settingsUrl: null, note: null }, starts: [], gates: [], activeAdapter: null, rememberedAdapter: null, restoreError: null, consentedRounds: rounds, consentFile: null, consentError: null, storeError: null });
 const fl = (o = ov()): FlRoundsDomain =>
   ({ overview: vi.fn(async () => o), revokeConsent: vi.fn(async () => []), trajectoryStatus: vi.fn(async () => ({ settings: { enabled: false, changedAtMs: null }, recordedFiles: 0, datasets: 0, appliesOnRestart: false, loadError: null })) }) as unknown as FlRoundsDomain;
-const saved: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
+const saved: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["hermes-conversations"] };
 const ENV: EnvelopeRecord = { on: true, name: "Weeknight rounds", joinsPerWeek: 3, maxHoursPerRound: 6, approvedAt: Date.UTC(2026, 10, 15, 21, 25), offAt: null, weekStart: 0, joinsThisWeek: 2 };
 
 async function mount(o: {
@@ -81,7 +81,7 @@ describe("Terms (StateMatrix)", () => {
     await m.click("Save terms");
     const card = m.el.querySelector('[data-testid="terms-confirm"]')!;
     expect(card.textContent).toContain("HIC-1");
-    expect(card.textContent).toContain("Floor 1.20 SALT · 23:00 to 07:00 · weekdays · mains only · support-tickets.");
+    expect(card.textContent).toContain("Floor 1.20 SALT · 23:00 to 07:00 · weekdays · mains only · Verified Hermes conversations on this device.");
     expect(m.save).not.toHaveBeenCalled();
     await m.click("Confirm");
     expect(m.save).toHaveBeenCalledWith(saved);

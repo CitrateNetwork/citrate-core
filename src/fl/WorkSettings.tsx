@@ -18,7 +18,7 @@ import { approveEnvelope, envelopeOff, readEnvelope, type EnvelopeRecord } from 
 import type { FlNetworkState } from "./networkState";
 import { Card, Chip, Eyebrow, HicBadge, Hex, Note, shortHex, Unknown } from "./primitives";
 import { TrajectoryConsent } from "./TrajectoryConsent";
-import { loadWorkerTerms, saveWorkerTerms, termsProblem, type WorkerTerms } from "./workerTerms";
+import { ALLOWED_DATA_CLASSES, dataClassWords, loadWorkerTerms, saveWorkerTerms, termsProblem, type WorkerTerms } from "./workerTerms";
 
 /** The route lanes link to (Hermes policy card, Matches rail). */
 export const SETTINGS_WORK_ROUTE = "settings/work";
@@ -240,10 +240,23 @@ export function WorkSettingsView(p: WorkSettingsViewProps) {
                 <input type="checkbox" checked={terms.mainsOnly} onChange={(e) => setTerms({ ...terms, mainsOnly: e.target.checked })} />
                 Only on mains power
               </label>
-              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, gridColumn: "1 / -1" }}>
-                Data classes rounds may read (comma separated; empty means none)
-                <input className="input mono" data-testid="terms-classes" value={classes} placeholder="support-tickets" onChange={(e) => setClasses(e.target.value)} />
-              </label>
+              <fieldset style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1" }}>
+                <legend style={{ fontSize: 12.5, marginBottom: 4 }}>Data classes rounds may read (none checked means none)</legend>
+                {Object.entries(ALLOWED_DATA_CLASSES).map(([id, words]) => (
+                  <label key={id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}>
+                    <input
+                      type="checkbox"
+                      data-testid={"terms-class-" + id}
+                      checked={classes.split(",").map((c) => c.trim()).includes(id)}
+                      onChange={(e) => {
+                        const cur = classes.split(",").map((c) => c.trim()).filter(Boolean).filter((c) => c !== id);
+                        setClasses((e.target.checked ? [...cur, id] : cur).join(", "));
+                      }}
+                    />
+                    {words}
+                  </label>
+                ))}
+              </fieldset>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button type="button" className="btn btn-primary" disabled={!!problem || termsRead === "reading"} onClick={() => setConfirm(true)}>
@@ -265,7 +278,7 @@ export function WorkSettingsView(p: WorkSettingsViewProps) {
                   </h2>
                 </div>
                 <p style={{ margin: 0, padding: "12px 14px", fontSize: 13 }}>
-                  Floor {draft.floorSaltPerUnit} SALT · {hoursWord(draft)} · {draft.weekdaysOnly ? "weekdays" : "every day"} · {draft.mainsOnly ? "mains only" : "battery allowed"} · {draft.dataClasses.length ? draft.dataClasses.join(", ") : "no data classes"}.
+                  Floor {draft.floorSaltPerUnit} SALT · {hoursWord(draft)} · {draft.weekdaysOnly ? "weekdays" : "every day"} · {draft.mainsOnly ? "mains only" : "battery allowed"} · {draft.dataClasses.length ? draft.dataClasses.map(dataClassWords).join(", ") : "no data classes"}.
                 </p>
                 <div style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--line-1)" }}>
                   <button type="button" className="btn btn-primary btn-sm" onClick={() => void doSave()}>

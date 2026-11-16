@@ -409,7 +409,7 @@ describe("authority (HIC-1 by default)", () => {
 });
 
 describe("worker terms outside the desktop app", () => {
-  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
+  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["hermes-conversations"] };
   it("with no sealed store (web/dev), saving and loading say so; nothing is written anywhere", async () => {
     await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_NEED_DESKTOP);
     await expect(loadWorkerTerms()).rejects.toThrow(TERMS_NEED_DESKTOP);
@@ -418,6 +418,9 @@ describe("worker terms outside the desktop app", () => {
     expect(termsProblem(terms)).toBeNull();
     expect(termsProblem({ ...terms, floorSaltPerUnit: "-1" })).toMatch(/floor/);
     expect(termsProblem({ ...terms, hours: { start: "25:00", end: "07:00" } })).toMatch(/Hours/);
+    // The allowlist of data classes this device has (lane 3's proposal card imports it).
+    expect(termsProblem({ ...terms, dataClasses: ["support-tickets"] })).toBe('Data class "support-tickets" is not one this device has (allowed: hermes-conversations)');
+    expect(termsProblem({ ...terms, dataClasses: ["hermes-conversations", "hermes-conversations"] })).toBe("A data class is listed twice");
     await expect(saveWorkerTerms({ ...terms, floorSaltPerUnit: "abc" })).rejects.toThrow(/floor/);
   });
 });
