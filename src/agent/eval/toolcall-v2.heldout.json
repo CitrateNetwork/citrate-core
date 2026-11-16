@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 92,
+  "count": 93,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -219,6 +219,10 @@
     {
       "id": "tc-fl-offers-list",
       "sha256": "03e90704231fa005509121ccbe57475b53ca5a22f1ae04ad1e08a4a284a518f2"
+    },
+    {
+      "id": "tc-fl-payouts-list",
+      "sha256": "9cc6164f60406e8f2f720e3d5e2a9f8584bfaf40664aced033471f83b444367e"
     },
     {
       "id": "tc-fl-plan-explain",
