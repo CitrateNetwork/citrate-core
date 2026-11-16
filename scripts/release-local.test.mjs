@@ -28,8 +28,8 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-const run = (args) => {
-  const r = spawnSync("bash", [script, "--check-args", ...args], { encoding: "utf8" });
+const run = (args, env = {}) => {
+  const r = spawnSync("bash", [script, "--check-args", ...args], { encoding: "utf8", env: { ...process.env, RELEASE_NOTES: "", ...env } });
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
 const linux = () => ["--linux-dir", path.join(dir, "linux"), "--out", path.join(dir, "out")];
@@ -325,5 +325,123 @@ describe("release-local.sh --publish-target spaces", () => {
   it("a spaces rehearsal cleanup removes only its own prefix", () => {
     expect(src).toContain('s3 s3 rm "s3://$CDN_BUCKET/downloads/rehearsal-$VERSION/" --recursive');
     expect(src).not.toMatch(/s3 rm "s3:\/\/\$CDN_BUCKET\/downloads\/"/);
+  });
+});
+
+// 0.5.4 forced update (owner 2026-11-14): --policy-min signs the update policy at release time.
+describe("release-local.sh --policy-min", () => {
+  const CRIT = { RELEASE_NOTES: "[critical] Citrate Core 0.5.4" };
+  it("accepts a minimum at or below the release's version with [critical] notes", () => {
+    const r = run(["--version", conf.version, "--policy-min", conf.version, ...linux()], CRIT);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain(`update policy: minimum ${conf.version}, signed with the updater key at release time`);
+  });
+  const refusals = [
+    ["a minimum that is not x.y.z", ["--policy-min", "0.5"], CRIT, /--policy-min must be x\.y\.z/],
+    ["a minimum above the release's version", ["--policy-min", "99.0.0"], CRIT, /above --version/],
+    ["notes without [critical]", ["--policy-min", conf.version], { RELEASE_NOTES: "Citrate Core 0.5.4" }, /\[critical\]/],
+    ["no notes", ["--policy-min", conf.version], {}, /\[critical\]/],
+  ];
+  for (const [what, extra, env, msg] of refusals) {
+    it(`refuses ${what}`, () => {
+      const r = run(["--version", conf.version, ...extra, ...linux()], env);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(msg);
+    });
+  }
+  it("signs the policy in the same key subshell as the update files, verifies it, and embeds it", () => {
+    const src = fs.readFileSync(script, "utf8");
+    const keyAt = src.indexOf('TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"');
+    const subStart = src.lastIndexOf("\n(\n", keyAt);
+    const subEnd = src.indexOf("\n)\n", keyAt);
+    const sub = src.slice(subStart, subEnd);
+    expect(sub).toContain('tauri signer sign "$OUT/update-policy.json"');
+    expect(src).toMatch(/minisign -V -q -P "\$PUBKEY" -m "\$OUT\/update-policy\.json"/);
+    expect(src).toContain('POLICY_ARGS=(--policy "$OUT/update-policy.json")');
+    expect(src).toContain('PUB_DATE="$(date -u -r "$RELEASE_TS"');
+    // #698 review: node writes the policy before the key subshell, never inside it, and with the key
+    // variables removed from its environment.
+    expect(sub).not.toMatch(/\bnode\b/);
+    const nodeAt = src.indexOf("node scripts/updater-feed.mjs policy");
+    expect(nodeAt).toBeGreaterThan(0);
+    expect(nodeAt).toBeLessThan(subStart);
+    const nodeCmd = src.slice(src.lastIndexOf("(cd", nodeAt), src.indexOf(">/dev/null", nodeAt));
+    expect(nodeCmd).toMatch(/env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD\s*\\?\s*node scripts\/updater-feed\.mjs policy/);
+    expect(nodeCmd).toContain('--issued-at "$RELEASE_TS"');
+    expect(src.indexOf('RELEASE_TS="$(date -u +%s)"')).toBeLessThan(nodeAt);
+    // The key never reaches argv.
+    expect(src).not.toMatch(/signer sign[^\n]*(-p|--password|-k|--private-key)\b/);
+  });
+});
+
+describe("release-local.sh: the policy writer never sees the updater key (#698 review)", () => {
+  it("running the script's own node invocation with the key exported leaves no key variable in node's environment", () => {
+    const src = fs.readFileSync(script, "utf8");
+    const at = src.indexOf("node scripts/updater-feed.mjs policy");
+    const line = src.slice(src.lastIndexOf("env -u", at), at);
+    // The same env -u prefix, around a node that reports what it sees.
+    const probe = `${line.replace(/\\\s*$/, "")} node -e 'process.stdout.write(JSON.stringify([!!process.env.TAURI_SIGNING_PRIVATE_KEY, !!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD]))'`;
+    const r = spawnSync("bash", ["-c", probe], {
+      encoding: "utf8",
+      env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY: "secret-key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "secret-pass" },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([false, false]);
+  });
+});
+
+// #698 review P1: macOS /bin/bash 3.2 aborts on "${empty[@]}" under `set -u`. The latest.json step is
+// run for real (the script's own lines, real node and updater-feed.mjs) without --policy-min, under
+// /bin/bash when it is 3.x (the release Mac's shell), else under the bash on PATH.
+describe("release-local.sh latest.json step without --policy-min (bash 3.2, set -u)", () => {
+  const bash32 = (() => {
+    const r = spawnSync("/bin/bash", ["-c", "echo ${BASH_VERSINFO[0]}"], { encoding: "utf8" });
+    return r.status === 0 && r.stdout.trim() === "3" ? "/bin/bash" : null;
+  })();
+  const shell = bash32 ?? "bash";
+  const src = fs.readFileSync(script, "utf8");
+  const from = src.indexOf("POLICY_ARGS=()");
+  const to = src.indexOf('> "$OUT/latest.json"', from) + '> "$OUT/latest.json"'.length;
+  const step = src.slice(from, to);
+  const harness = (body) => {
+    const out = path.join(dir, "out");
+    const work = path.join(dir, "work");
+    fs.mkdirSync(out, { recursive: true });
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(
+      path.join(work, "fragment.json"),
+      JSON.stringify({ version: "0.5.4", platforms: { "darwin-aarch64": { signature: "c2ln", url: "https://example.invalid/Citrate-Core.app.tar.gz" } } }),
+    );
+    const prelude = `set -euo pipefail\nROOT=${JSON.stringify(repo)}\nOUT=${JSON.stringify(out)}\nWORK=${JSON.stringify(work)}\nNOTES="Citrate Core 0.5.4"\nPUB_DATE="2026-11-15T00:00:00Z"\nPOLICY_MIN=""\n`;
+    const r = spawnSync(shell, ["-c", prelude + body], { encoding: "utf8" });
+    return { ...r, feed: fs.existsSync(path.join(out, "latest.json")) ? fs.readFileSync(path.join(out, "latest.json"), "utf8") : "" };
+  };
+
+  it("the step is the merge with the guarded policy expansion", () => {
+    expect(step).toContain('${POLICY_ARGS[@]+"${POLICY_ARGS[@]}"}');
+    // Every expansion of the array is the guarded form.
+    const bare = src.split('"${POLICY_ARGS[@]}"').length - 1;
+    const guarded = src.split('${POLICY_ARGS[@]+"${POLICY_ARGS[@]}"}').length - 1;
+    expect(guarded).toBeGreaterThan(0);
+    expect(bare).toBe(guarded);
+  });
+
+  it("writes latest.json with no policy and exits 0", () => {
+    const r = harness(step);
+    expect(r.status, r.stderr).toBe(0);
+    const feed = JSON.parse(r.feed);
+    expect(feed.version).toBe("0.5.4");
+    expect(feed.citrate).toBeUndefined();
+  });
+
+  it.runIf(bash32)("the old bare expansion really aborts under bash 3.2 (the test catches the bug)", () => {
+    const r = harness(step.replace('${POLICY_ARGS[@]+"${POLICY_ARGS[@]}"}', '"${POLICY_ARGS[@]}"'));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/unbound variable/);
+  });
+
+  it("the header says macOS only and bash-3.2 safe", () => {
+    expect(src.slice(0, 2500)).toMatch(/macOS only/);
+    expect(src.slice(0, 2500)).toMatch(/bash 3\.2/);
   });
 });
