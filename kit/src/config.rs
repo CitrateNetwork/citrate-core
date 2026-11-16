@@ -9,7 +9,7 @@
 //! platform result of a keyring probe.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 /// Persisted app config. Field names mirror the TS `AppConfig` and the
@@ -248,9 +248,32 @@ pub fn config_write_sync<R: Runtime>(
     app: AppHandle<R>,
     patch: AppConfigPatch,
 ) -> Result<AppConfig, String> {
+    let autolock_changed = patch.autolock.is_some();
     let merged = load_config(&app)?.apply(patch);
     save_config(&app, &merged)?;
+    // Settings that apply at once, with no restart: the open vault's auto-lock window.
+    let custody = app.try_state::<crate::custody::CustodyState>();
+    apply_live_settings(
+        autolock_changed,
+        &merged,
+        custody.as_ref().map(|s| &s.inner().0),
+    );
     Ok(merged)
+}
+
+/// Apply the saved settings that take effect live. The auto-lock window of the running vault
+/// follows `config.autolock` as soon as it is saved (the vault reads the window at each
+/// unlocked check, so a shorter window can lock a session that is already past it).
+pub fn apply_live_settings(
+    autolock_changed: bool,
+    cfg: &AppConfig,
+    vault: Option<&crate::custody::CustodyVault>,
+) {
+    if autolock_changed {
+        if let Some(v) = vault {
+            v.set_autolock_mins(cfg.autolock);
+        }
+    }
 }
 
 /// OS-keyring availability. Probes the real platform keyring with a benign
