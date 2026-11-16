@@ -20,7 +20,7 @@
     "note": "The app is source-available under BUSL-1.1. Copyleft tools are separate programs it runs as subprocesses or downloads on request; none is linked into the app.",
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-      "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
+      "source": "citrate-core@9ac92518d98f33308e159618da02e14a9107f7f0",
       "packages": 511,
       "lock": "sha256:08464c732b36914555aca080f7ef94e4c0c3936618e78ea49b1fc5b777cd9f24"
     }
@@ -40,7 +40,7 @@
       "gap": "The citrate-chain LICENSE file is Apache-2.0 while the federation NOTICE lists citrate-chain under BUSL-1.1; one of them should change.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-chain@56cc2bc80439c350dd9eca8817f173c1986096e6",
+        "source": "citrate-chain@b2e91167bda2b81d52658c58f6327063a25cbedc",
         "packages": 495
       }
     },
@@ -130,7 +130,7 @@
       "gap": "The citrate-agent-runtime LICENSE file is Apache-2.0 while the federation NOTICE lists it under BUSL-1.1.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-agent-runtime@05243c72bd521a55bc38333eaf6ae6efacee3816",
+        "source": "citrate-agent-runtime@f68d041c408cc37db87c5d2e49a654d795e71654",
         "packages": 485
       }
     },
@@ -213,7 +213,7 @@
       "note": "Added 2026-10-06 (v0.5.0 gate prep): the webview carries the npm packages it imports (React, viem, wagmi, TanStack Query, jose, the Tauri JS API and plugins) and the @fontsource font files (OFL-1.1, unmodified). Their notices are generated from the actual Vite output by scripts/third-party-notices.mjs (release/notices.json npm). MPL-2.0 and proprietary packages in node_modules (for example the MetaMask SDK pulled in by wagmi's connectors) are not in the output, which the generator checks on every run.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-core@76cb57e23f607f21f7fdd6de789ccbc15f4e7f8e",
+        "source": "citrate-core@9ac92518d98f33308e159618da02e14a9107f7f0",
         "packages": 23,
         "lock": "sha256:8c2c65adf6abacd97cbcaa458e79e17765c412957df52faa9db9764ba2fc422e"
       }
