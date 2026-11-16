@@ -4132,6 +4132,8 @@ export class Store {
   /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
   flWorkTerms(): { load: typeof loadWorkerTerms } {
     return { load: loadWorkerTerms };
+  }
+
   /** 0.5.4 Hermes x FL: the FL network state from the shipped address book and eth_getCode (the
    *  boards' own read). A method so the gate tripwires can stand in a 0.6.0 network. */
   flNetworkState(): Promise<FlNetworkState> {
