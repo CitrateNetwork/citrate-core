@@ -112,6 +112,22 @@ fn a_damaged_file_or_a_deleted_folder_never_widens_anything() {
 }
 
 #[test]
+fn turning_off_a_folder_that_no_longer_exists_still_removes_it() {
+    // Codex review of #716: revoking must not require the folder to exist (deleted, moved,
+    // or on a disconnected volume), or "Turn all off" leaves the permission saved.
+    let dir = scratch("revoke-gone");
+    let proj = scratch("revoke-proj");
+    let root = proj.to_string_lossy().to_string();
+    set(&dir, &root, &rules(&["git-commit"]), 1).unwrap();
+    std::fs::remove_dir_all(&proj).unwrap();
+    set(&dir, &root, &[], 2).unwrap();
+    assert!(load(&dir).unwrap().projects.is_empty());
+    // Turning a command on still needs a real folder.
+    assert!(set(&dir, &root, &rules(&["git-commit"]), 3).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_opt_in_ids_match_the_sidecar_rule_names() {
     // The ids are the sidecar list's (`agent-sidecar/policy/auto_approve.toml`, `opt_in = true`).
     assert_eq!(

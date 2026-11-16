@@ -85,7 +85,7 @@ export function ProjectOptInsPanel({ io }: ProjectOptInsPanelProps) {
         setX(got);
         if (got.mode !== "tauri") return;
         const [list, saved] = await Promise.all([
-          got.invoke<{ rules?: ListedRule[] } | null>("hermes_auto_approve_rules", {}).catch((e) => new Error(errorMessage(e))),
+          got.invoke<{ enabled?: boolean; rules?: ListedRule[] } | null>("hermes_auto_approve_rules", {}).catch((e) => new Error(errorMessage(e))),
           got.invoke<OptInsView>("hermes_auto_approve_get", {}),
         ]);
         if (!live) return;

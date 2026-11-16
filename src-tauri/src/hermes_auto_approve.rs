@@ -124,6 +124,23 @@ fn check(root: &str, rules: &[String]) -> Result<(PathBuf, Vec<String>), String>
 
 /// Set the opt-in rules for one project folder (`rules` empty = remove the folder).
 pub fn set(dir: &Path, root: &str, rules: &[String], now_ms: u64) -> Result<OptIns, String> {
+    if rules.is_empty() {
+        // Turning a folder off never needs it to exist (deleted, moved, volume disconnected):
+        // the saved entry is removed by the path as given and, when it still resolves, by its
+        // canonical path.
+        if !Path::new(root).is_absolute() {
+            return Err("the project folder must be an absolute path".into());
+        }
+        let canonical = Path::new(root)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .ok();
+        let mut o = load(dir).unwrap_or_default();
+        o.projects
+            .retain(|p| p.root != root && Some(&p.root) != canonical.as_ref());
+        save(dir, &o)?;
+        return Ok(o);
+    }
     let (canonical, rules) = check(root, rules)?;
     let root = canonical.to_string_lossy().to_string();
     // A damaged file is replaced by the member's new choice (it applied as none meanwhile).
