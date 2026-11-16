@@ -14,10 +14,18 @@ import type { CerSpec } from "../shell/state";
 import { approveAndStartRound, DEFAULT_PROPOSAL, gateSummary } from "./flRounds";
 import { TrajectoryConsent } from "./TrajectoryConsent";
 
+export type FlPanelSection = "trajectories" | "coordinator" | "plan" | "consents" | "gate";
+export const ALL_SECTIONS: FlPanelSection[] = ["trajectories", "coordinator", "plan", "consents", "gate"];
+
 export interface FlRoundsPanelProps {
   fl: FlRoundsDomain;
   requestSig: (spec: CerSpec) => Promise<string>;
   toast: (msg: string) => void;
+  /** Which parts to show (FL design 0.5.4 splits them across Rounds › Advanced, Adapters and
+   *  Settings › Work). Defaults to all, as on the Train surface. */
+  sections?: FlPanelSection[];
+  /** Hide the panel's own header (when the caller gives it one). */
+  bare?: boolean;
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -25,7 +33,8 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };
 const para: React.CSSProperties = { fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 };
 
-export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
+export function FlRoundsPanel({ fl, requestSig, toast, sections = ALL_SECTIONS, bare = false }: FlRoundsPanelProps) {
+  const show = (x: FlPanelSection) => sections.includes(x);
   const [ov, setOv] = useState<FlOverview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [coordInput, setCoordInput] = useState("");
@@ -162,10 +171,12 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
 
   return (
     <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
-        <span style={{ fontSize: 14, fontWeight: 500 }}>Federated rounds with Hermes</span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>you approve every start · adapters load only after the eval gate</span>
-      </div>
+      {!bare && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Federated rounds with Hermes</span>
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>you approve every start · adapters load only after the eval gate</span>
+        </div>
+      )}
       <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
         {err && (
           <p className="mono" data-testid="fl-error" style={{ fontSize: 11, color: "var(--warn)", margin: 0, lineHeight: 1.6 }}>
@@ -173,9 +184,9 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
           </p>
         )}
 
-        <TrajectoryConsent fl={fl} toast={toast} />
+        {show("trajectories") && <TrajectoryConsent fl={fl} toast={toast} />}
 
-        <div data-testid="fl-coordinator" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {show("coordinator") && <div data-testid="fl-coordinator" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="mono" style={label}>Coordinator</span>
           {cfg?.url ? (
             <p style={para}>
@@ -202,9 +213,9 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
               Save
             </button>
           </div>
-        </div>
+        </div>}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {show("plan") && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <input
             className="input"
             data-testid="fl-round-id"
@@ -251,9 +262,9 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
               {receipt.note}
             </p>
           )}
-        </div>
+        </div>}
 
-        <div data-testid="fl-consents" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {show("consents") && <div data-testid="fl-consents" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span className="mono" style={label}>Round consent</span>
           {ov?.consentError ? (
             <p style={{ ...para, color: "var(--warn)" }}>{ov.consentError}</p>
@@ -277,9 +288,9 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
           ) : (
             <p style={para}>No round consent on this device. Joining a plan that names a round writes consent for that round only.</p>
           )}
-        </div>
+        </div>}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {show("gate") && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="mono" style={label}>Round adapter and the eval gate</span>
           <p style={para}>
             Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256 (or the round result the round tool wrote, which names the merged adapter; core checks that the file says Accepted, names at least three devices, and that its chain, bundle and replay digests agree, but does not read the ledger itself), plus the eval scorecards for the base model and for the
@@ -331,7 +342,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
               </button>
             </div>
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );

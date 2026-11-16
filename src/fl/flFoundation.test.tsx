@@ -87,6 +87,9 @@ describe("FL network state: today's book (r1007)", () => {
     expect(contractWords(s.contracts.DatasetRegistry).text).toBe(NOT_AVAILABLE);
     expect(contractSource("WorkMarket", s.contracts.WorkMarket)).toBe("address book");
     expect(contractSource("PatronageLedger", s.contracts.PatronageLedger)).toBe("eth_getCode + totalUnits()");
+    // #685 review: FRL's "no rounds" is labelled with what it is inferred from.
+    expect(contractSource("FederatedRoundLedger", s.contracts.FederatedRoundLedger)).toBe("eth_getCode + no WorkMarket in the address book");
+    expect(contractSource("LoRAFactory", s.contracts.LoRAFactory)).toBe("eth_getCode");
   });
 
   it("a failed code read is unknown with its reason, never zero and never 'not available'", async () => {
@@ -125,6 +128,20 @@ describe("FL network state: 0.6.0 states render only when the data shows them", 
     expect(payoutsEnabledBy(open)).toBe(true);
     const s = await readFlNetworkState(withWorkMarket, reads(), open);
     expect(s.payouts).toBe("open");
+  });
+  it("core's payouts gate (fl_payouts_status) is authoritative over the profile flag", async () => {
+    const flagged = { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile;
+    const shut = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: false, reason: "WorkMarket's code does not match its pin" }) }), flagged);
+    expect(shut.payouts).toBe("dark");
+    expect(shut.payoutsReason).toBe("WorkMarket's code does not match its pin");
+    const opened = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: true, reason: null }) }));
+    expect(opened.payouts).toBe("open");
+    const unread = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => Promise.reject(new Error("no such command")) }), flagged);
+    expect(unread).toMatchObject({ payouts: "dark", payoutsReason: "the payouts gate was not read: no such command" });
+    const g = vi.fn(async () => ({ open: true, reason: null }));
+    const r1007 = await readFlNetworkState(realBook, reads({ payoutsStatus: g }));
+    expect(r1007.payouts).toBe("not-deployed");
+    expect(g).not.toHaveBeenCalled();
   });
   it("a failed WorkMarket read is phase unknown with the reason", async () => {
     const s = await readFlNetworkState(withWorkMarket, reads({ codeSize: async (a) => (a === WM ? Promise.reject(new Error("timeout")) : 10) }));
@@ -294,6 +311,15 @@ describe("Ceremony outcome words (UI truth contract §1)", () => {
     expect(rev.line).toContain("the fee was charged (2.1000 SALT)");
     expect(rev.line).toContain("the round reached max workers");
     expect(outcomeWords(outcomeFromReceipt({ status: 0, blockNumber: 5 })).line).toContain("fee not read");
+    // #685 review: a missing or unexpected status is unknown, never "reverted, fee charged".
+    for (const status of [null, undefined, 2]) {
+      const o = outcomeFromReceipt({ status, blockNumber: 5, gasUsed: 21000n, effectiveGasPrice: 1n, txHash: "0x" + "ab".repeat(32) });
+      expect(o.kind).toBe("unknown");
+      const w = outcomeWords(o);
+      expect(w.word).toMatch(/^Sent, outcome unknown/);
+      expect(w.word + w.line).not.toMatch(/reverted|fee was charged/);
+      expect(w.line).toContain("no usable status");
+    }
     const ns = outcomeWords(outcomeFromBroadcastError("not submitted: insufficient funds"));
     expect(ns.word).toBe("Not sent");
     expect(ns.line).toContain("No fee was charged");
@@ -301,6 +327,7 @@ describe("Ceremony outcome words (UI truth contract §1)", () => {
     const un = outcomeWords(outcomeFromBroadcastError(`ceremony: submitted, outcome unknown (tx ${hash}): timeout`));
     expect(un.word).toBe(`Sent, outcome unknown: check tx ${shortHex(hash)}`);
     expect(un.line).toContain("Nothing is re-sent automatically");
+    expect(un.line).toContain("timeout");
     expect(outcomeWords(outcomeFromBroadcastError(new Error("ipc deadline"))).word).toBe("Sent, outcome unknown");
   });
   it("never says final or settled", () => {

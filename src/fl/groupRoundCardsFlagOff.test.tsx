@@ -6,6 +6,10 @@
 // #653 (0.5.4): the Rounds snapshot was re-taken once on purpose. The book now pins both ledgers, so
 // Train's "Group rounds not live yet" card names the deployed state (UI truth contract §1). Only
 // that paragraph and its source line changed; the flag did not.
+//
+// FL design (0.5.4, core #683): the Rounds snapshot was re-taken on purpose again. Groups › Rounds
+// is now the FL hub (src/fl/Matches.tsx) with its sub-tabs; the flag still only swaps in the round
+// cards, and the chat snapshot is unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WagmiProvider } from "wagmi";

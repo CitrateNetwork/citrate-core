@@ -9,7 +9,13 @@
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { bridge } from "../bridge";
-import { Train } from "../surfaces";
+import { useEffect, useState } from "react";
+import { tierSlice, refreshTier } from "../shell/slices/tier";
+import { useAuthority } from "./authority";
+import { loadWorkerTerms, type WorkerTerms } from "./workerTerms";
+import { machineFrom, readMarket } from "./market";
+import { joinIntent, MatchesView, useMarket } from "./Matches";
+import { downloadText } from "./download";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
@@ -32,8 +38,7 @@ export function isRoundsRoute(route: string): boolean {
 }
 
 function Matches({ store, s }: { store: Store; s: AppState }) {
-  // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS: the address-book-gated ledger card in
-  // place of Train's PatronageLedger read, with the same federated-rounds panel below it.
+  // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS stay as they were.
   if (flRoundCardsEnabled())
     return (
       <>
@@ -43,7 +48,35 @@ function Matches({ store, s }: { store: Store; s: AppState }) {
         </div>
       </>
     );
-  return <Train store={store} s={s} />;
+  return <MatchesRoute store={store} s={s} />;
+}
+
+function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
+  const { state } = useFlNetworkState();
+  const tier = tierSlice.use();
+  const authority = useAuthority();
+  const [terms, setTerms] = useState<WorkerTerms | null>(null);
+  const market = useMarket(state, readMarket);
+  useEffect(() => {
+    if (!tier.loaded) void refreshTier();
+    void loadWorkerTerms().then(setTerms, () => setTerms(null));
+  }, []);
+  return (
+    <MatchesView
+      state={state}
+      band={<FlBand s={s} networkLabel={state.networkLabel} />}
+      market={market}
+      terms={terms}
+      machine={machineFrom(tier.report?.facts)}
+      authority={authority}
+      go={(r) => store.go(r)}
+      save={(name, text) => downloadText(name, text)}
+      onJoin={async (o) => {
+        await store.proposeContractCall(joinIntent(o, state));
+      }}
+      coordinator={<FlRoundsPanel bare sections={["coordinator", "plan", "consents"]} fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />}
+    />
+  );
 }
 
 function NotLiveSubtab({ route, s }: { route: string; s: AppState }) {
