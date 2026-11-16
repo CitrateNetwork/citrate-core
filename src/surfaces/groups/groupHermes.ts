@@ -4,7 +4,7 @@
 // Hermes answers in a group only when a member mentions it, and only on that member's own device:
 // the member's app runs the local model with the GROUP'S context alone (its roster and roles, the
 // cluster's live peer count, the recent group messages, and whether group rounds are live), then
-// posts the answer to the group as a `chermes1` message (groupEnvelope.ts). Nothing from the
+// posts the answer to the group as a Hermes answer message (groupEnvelope.ts: plain text with a final structure line). Nothing from the
 // member's private chats, memory, wallet or sealed worker policies is given to the model, so none
 // of it can reach the group. Other members' devices never run Hermes for someone else's mention.
 //

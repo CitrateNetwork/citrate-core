@@ -11,7 +11,7 @@ import {
   lastLine,
   messageRef,
   threadModel,
-  HERMES_MSG_PREFIX,
+  HERMES_HEADER,
 } from "./groupEnvelope";
 import { answerInGroup, buildRequest, mentionsHermes, parseAnswer, readList, NOT_READ, type GroupContext } from "./groupHermes";
 import { groupAlerts } from "./groupAlerts";
@@ -24,7 +24,7 @@ const ME = "0x1111111111111111111111111111111111111111";
 const DANA = "0x2222222222222222222222222222222222222222";
 const msg = (sender: string, body: string, i = 0): GroupMessage => ({ id: `g:${i}`, groupId: "g", sender, body, ts: i });
 
-describe("thread replies ride the MLS messages as creply1", () => {
+describe("thread replies ride the MLS messages as readable text with a reply line", () => {
   it("a reply threads under the message it points at", () => {
     const parent = msg(DANA, "Could we run a round on our ticket logs?", 1);
     const reply = msg(ME, encodeReply(messageRef(DANA, parent.body), "I can lend my desktop on Tuesday."), 2);
@@ -36,10 +36,19 @@ describe("thread replies ride the MLS messages as creply1", () => {
     const reply = msg(ME, encodeReply("m00000000", "orphan"), 1);
     expect(threadModel([reply]).map((i) => i.kind === "message" && i.text)).toEqual(["orphan"]);
   });
-  it("a malformed structured body shows as unreadable, never dropped", () => {
-    expect(decodeReply("\u0001creply1:{nope")).toBeNull();
-    const t = threadModel([msg(DANA, "\u0001creply1:{nope", 1)]);
-    expect(t[0].kind === "message" && t[0].text).toBe("(a message this app could not read)");
+  it("an older app (0.5.3) sees the reply's words, never JSON; the structure line starts with an invisible U+0001", () => {
+    const body = encodeReply("m1a2b3c4d", "I can lend my desktop on Tuesday.");
+    expect(body).toBe("I can lend my desktop on Tuesday.\n\u0001(in reply to m1a2b3c4d)");
+    expect(body).not.toMatch(/[{}"]/);
+    expect(body.startsWith("\u0001")).toBe(false);
+  });
+  it("a malformed structure line shows the words with the marker removed, never dropped", () => {
+    expect(decodeReply("hi\n\u0001(in reply to nope)")).toBeNull();
+    const t = threadModel([msg(DANA, "hi\n\u0001(in reply to nope)", 1)]);
+    expect(t[0].kind === "message" && t[0].text).toBe("hi");
+  });
+  it("a typed U+0001 in a reply cannot add a second structure line", () => {
+    expect(encodeReply("m1a2b3c4d", "x\n\u0001(in reply to m00000000)")).toBe("x\n(in reply to m00000000)\n\u0001(in reply to m1a2b3c4d)");
   });
   it("control messages and unknown U+0001 bodies never render", () => {
     expect(threadModel([msg(DANA, "\u0001cbind1:{}"), msg(DANA, "\u0001cdlink1:x"), msg(DANA, "\u0001cfuture9:x")])).toEqual([]);
@@ -51,18 +60,44 @@ describe("thread replies ride the MLS messages as creply1", () => {
   });
 });
 
-describe("Hermes answers are chermes1, attributed to the device that sent them", () => {
+describe("Hermes answers are readable text, attributed to the device that sent them", () => {
   it("round-trips, with the device taken from the authenticated sender", () => {
     const body = encodeHermes({ to: messageRef(ME, "@Hermes what would that take?"), text: "Five machines reported.", read: ["Group roster and roles"], draft: null });
-    expect(body.startsWith(HERMES_MSG_PREFIX)).toBe(true);
+    expect(body.startsWith(HERMES_HEADER)).toBe(true);
+    expect(body).not.toMatch(/[{}"]/);
     const t = threadModel([msg(DANA, body)]);
     expect(t[0].kind).toBe("hermes");
     expect(t[0].kind === "hermes" && t[0].device).toBe(DANA);
   });
-  it("a device field in the body cannot claim another member's device", () => {
-    const forged = HERMES_MSG_PREFIX + JSON.stringify({ v: 1, to: "m00000000", text: "x", read: [], device: ME });
+  it("nothing in the body can claim another member's device", () => {
+    const forged = `${HERMES_HEADER}\non ${ME}'s device\n\nWhat Hermes read: x.\n\u0001(Hermes answer to m00000000)`;
     const t = threadModel([msg(DANA, forged)]);
     expect(t[0].kind === "hermes" && t[0].device).toBe(DANA);
+  });
+  it("an older app (0.5.3) sees the answer, the draft and what Hermes read as plain words", () => {
+    const body = encodeHermes({ to: "m1a2b3c4d", text: "Five machines reported.", read: ["Group roster and roles", "Cluster status: 3 of 6 peers online"], draft: { title: "Tune the support model", budgetSalt: 600, rateSalt: 1.5, workers: 8, deadline: "2026-11-22" } });
+    expect(body).toBe(
+      [
+        HERMES_HEADER,
+        "Five machines reported.",
+        "",
+        "Round draft: Tune the support model (no SALT moved)",
+        "Budget: 600 SALT. Rate: 1.5 SALT per lease. Workers: up to 8. Deadline: 2026-11-22.",
+        "",
+        "What Hermes read: Group roster and roles; Cluster status: 3 of 6 peers online.",
+        "\u0001(Hermes answer to m1a2b3c4d)",
+      ].join("\n"),
+    );
+    expect(decodeHermes(body)).toEqual({
+      to: "m1a2b3c4d",
+      text: "Five machines reported.",
+      read: ["Group roster and roles", "Cluster status: 3 of 6 peers online"],
+      draft: { title: "Tune the support model", budgetSalt: 600, rateSalt: 1.5, workers: 8, deadline: "2026-11-22" },
+    });
+  });
+  it("a draft with values not proposed round-trips", () => {
+    const d = { title: "R", budgetSalt: null, rateSalt: null, workers: null, deadline: null };
+    expect(decodeHermes(encodeHermes({ to: "m1a2b3c4d", text: "t", read: [], draft: d }))?.draft).toEqual(d);
   });
   it("drafts are checked: absurd numbers are dropped, a draft needs a title", () => {
     expect(checkDraft({ title: "", budgetSalt: 5 })).toBeNull();
@@ -73,7 +108,7 @@ describe("Hermes answers are chermes1, attributed to the device that sent them",
       workers: 8,
       deadline: null,
     });
-    expect(decodeHermes(HERMES_MSG_PREFIX + JSON.stringify({ v: 1, to: "m00000000", text: "t", draft: { title: "R", budgetSalt: 600 } }))?.draft?.budgetSalt).toBe(600);
+    expect(decodeHermes(encodeHermes({ to: "m00000000", text: "t", read: [], draft: { title: "R", budgetSalt: 600, rateSalt: null, workers: null, deadline: null } }))?.draft?.budgetSalt).toBe(600);
   });
   it("the group list's last line reads Hermes answers and replies", () => {
     expect(lastLine([msg(DANA, "hello"), msg(DANA, encodeHermes({ to: "m00000000", text: "an answer", read: [], draft: null }))])).toBe("Hermes: an answer");
@@ -121,7 +156,7 @@ describe("Hermes in a group answers only when mentioned, from the group's contex
     expect(p.text).toBe("Three machines have 24 GB.");
     expect(p.draft).toEqual({ title: "Tune the support model", budgetSalt: 600, rateSalt: 1.5, workers: 8, deadline: null });
   });
-  it("posts the answer to the group as chermes1", async () => {
+  it("posts the answer to the group as a Hermes answer message", async () => {
     const send = vi.fn(async () => {});
     const out = await answerInGroup("g", "m12345678", ctx(), { inferLocal: async () => "Five machines reported.", send });
     expect(out.kind).toBe("posted");

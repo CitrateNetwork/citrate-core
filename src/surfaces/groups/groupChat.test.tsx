@@ -214,7 +214,7 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
 });
 
 describe("threads, roles and the composer", () => {
-  it("replies collapse under their message and a reply is sent as creply1", async () => {
+  it("replies collapse under their message and a reply is sent as a reply message", async () => {
     const parent = "Could we run a round this week?";
     seed([
       { id: "1", groupId: GROUP.id, sender: DANA, body: parent, ts: 1 },
