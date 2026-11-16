@@ -556,7 +556,7 @@ impl StorageManager {
 // Tauri commands — stateless: each builds a manager from the app data dir.
 // ---------------------------------------------------------------------------
 
-fn build_manager<R: tauri::Runtime>(
+pub(crate) fn build_manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<StorageManager, String> {
     use tauri::Manager;

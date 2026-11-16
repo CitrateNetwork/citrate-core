@@ -8,7 +8,7 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
-import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
+import { DATASET_ID, cleanPreview, datasetList, publishCheck } from "../fl/fixtures/datasets";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -58,6 +58,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         folder: "/home/m/notes",
         dataset: DATASET_ID,
         ops: [{ op: "dedupe" }],
+        license: "MIT",
       }),
     });
     for (const n of names) {
@@ -73,6 +74,8 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
       vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
       vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
+      vi.spyOn(bridge.flDatasets, "published").mockResolvedValue([]);
+      vi.spyOn(bridge.flDatasets, "publishCheck").mockResolvedValue(publishCheck());
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

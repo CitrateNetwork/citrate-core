@@ -66,6 +66,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   fl_dataset_sample: { effect: "none", trust: "untrusted" },
   fl_dataset_create: { effect: "write", trust: "trusted" }, // a granted folder or the verified conversations, sealed locally
   fl_dataset_clean_propose: { effect: "write", trust: "trusted" }, // version N+1 bound to the approved diff
+  fl_dataset_publish_propose: { effect: "write", trust: "trusted" }, // IPFS after the card; core gates license and PII scan
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

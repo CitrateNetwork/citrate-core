@@ -190,6 +190,42 @@ export interface FlConsentWithdrawn {
   earlierVersionsKept: boolean;
 }
 
+/** What publishing would do, and every reason core refuses it (empty = it may publish). */
+export interface FlPublishCheck {
+  dataset: string;
+  name: string;
+  version: number;
+  contentHash: string;
+  rows: number;
+  sources: number;
+  license: string;
+  privacy: FlPrivacyLabel;
+  /** The DatasetRegistry `prev` this publication carries (the last published manifestHash). */
+  registryPrev: string;
+  bundleBytes: number;
+  untrusted: boolean;
+  refusals: string[];
+}
+
+export interface FlPublication {
+  version: number;
+  manifestHash: string;
+  contentHash: string;
+  /** The IPFS CID of the bundle: line 1 the manifest, then the rows. */
+  cid: string;
+  license: string;
+  privacy: FlPrivacyLabel;
+  publishedAtMs: number;
+  registryPrev: string;
+}
+
+export interface FlPublished {
+  version: FlDatasetVersion;
+  name: string;
+  publication: FlPublication;
+  bundleBytes: number;
+}
+
 /** The bridge to core's `fl_dataset_*` commands. */
 export interface FlDatasetsDomain {
   list(): Promise<FlDatasetList>;
@@ -205,4 +241,9 @@ export interface FlDatasetsDomain {
   /** Lowers authority: no card. */
   consentWithdraw(dataset: string, consent: string): Promise<FlConsentWithdrawn>;
   delete(dataset: string): Promise<void>;
+  /** Writes nothing. */
+  publishCheck(dataset: string, version: number, license: string, privacy: FlPrivacyLabel): Promise<FlPublishCheck>;
+  /** Only after the member approved the publish card (HIC-1, never in an envelope). Cannot be recalled. */
+  publish(dataset: string, version: number, license: string, privacy: FlPrivacyLabel, contentHash: string): Promise<FlPublished>;
+  published(dataset: string): Promise<FlPublication[]>;
 }

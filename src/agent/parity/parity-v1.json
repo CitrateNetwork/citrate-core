@@ -58,6 +58,7 @@
     { "name": "fl_dataset_create", "host": "core", "read_only": false },
     { "name": "fl_dataset_sample", "host": "core", "read_only": true },
     { "name": "fl_dataset_clean_propose", "host": "core", "read_only": false },
+    { "name": "fl_dataset_publish_propose", "host": "core", "read_only": false },
     { "name": "belnap_codec", "host": "core", "read_only": true },
     { "name": "gsheets_read", "host": "core", "read_only": true },
     { "name": "gsheets_append", "host": "core", "read_only": false },

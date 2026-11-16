@@ -780,6 +780,9 @@ pub fn run() {
             fl_datasets::fl_dataset_consent_list,
             fl_datasets::fl_dataset_consent_withdraw,
             fl_datasets::fl_dataset_delete,
+            fl_datasets::fl_dataset_publish_check,
+            fl_datasets::fl_dataset_publish,
+            fl_datasets::fl_dataset_published,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,

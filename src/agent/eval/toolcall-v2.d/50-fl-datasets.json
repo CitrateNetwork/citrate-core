@@ -1,34 +1,81 @@
 {
   "added": "2026-11-16",
-  "by": "0.5.4 Hermes x FL WP-H6 (fl_dataset_list, fl_dataset_create, fl_dataset_sample, fl_dataset_clean_propose; lane HD)",
+  "by": "0.5.4 Hermes x FL WP-H6 (fl_dataset_list, fl_dataset_create, fl_dataset_sample, fl_dataset_clean_propose, fl_dataset_publish_propose; lane HD)",
   "note": "Items for the local dataset tools over core's sealed store (src/agent/flDatasetTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
   "tasks": [
     {
       "id": "tc-fl-dataset-list",
       "prompt": "Which training datasets do I have on this computer, and how many versions does each have?",
-      "expect": { "tool": "fl_dataset_list" },
-      "tags": ["tool-choice", "read"]
+      "expect": {
+        "tool": "fl_dataset_list"
+      },
+      "tags": [
+        "tool-choice",
+        "read"
+      ]
     },
     {
       "id": "tc-fl-dataset-create-folder",
       "prompt": "Make a training dataset called Orchard notes, data class orchard-notes, from the folder /Users/member/notes/orchard that I shared with you.",
       "expect": {
         "tool": "fl_dataset_create",
-        "argsMatch": { "dataClass": "orchard-notes", "folder": "re:^/Users/member/notes/orchard/?$" }
+        "argsMatch": {
+          "dataClass": "orchard-notes",
+          "folder": "re:^/Users/member/notes/orchard/?$"
+        }
       },
-      "tags": ["tool-choice", "args", "write"]
+      "tags": [
+        "tool-choice",
+        "args",
+        "write"
+      ]
     },
     {
       "id": "tc-fl-dataset-sample",
       "prompt": "Show me a few rows from my dataset ds-0123456789abcdef.",
-      "expect": { "tool": "fl_dataset_sample", "argsMatch": { "dataset": "ds-0123456789abcdef" } },
-      "tags": ["tool-choice", "args", "read"]
+      "expect": {
+        "tool": "fl_dataset_sample",
+        "argsMatch": {
+          "dataset": "ds-0123456789abcdef"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read"
+      ]
     },
     {
       "id": "tc-fl-dataset-clean-dedupe",
       "prompt": "Remove the duplicate rows from dataset ds-0123456789abcdef.",
-      "expect": { "tool": "fl_dataset_clean_propose", "argsMatch": { "dataset": "ds-0123456789abcdef", "ops": "re:dedupe" } },
-      "tags": ["tool-choice", "args", "write"]
+      "expect": {
+        "tool": "fl_dataset_clean_propose",
+        "argsMatch": {
+          "dataset": "ds-0123456789abcdef",
+          "ops": "re:dedupe"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write"
+      ]
+    },
+    {
+      "id": "tc-fl-dataset-publish",
+      "prompt": "Publish my dataset ds-0123456789abcdef publicly under CC-BY-4.0.",
+      "expect": {
+        "tool": "fl_dataset_publish_propose",
+        "argsMatch": {
+          "dataset": "ds-0123456789abcdef",
+          "license": "CC-BY-4.0"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write"
+      ]
     }
   ]
 }

@@ -13,6 +13,10 @@ import type {
   FlDatasetsDomain,
   FlDatasetVersion,
   FlManifestView,
+  FlPrivacyLabel,
+  FlPublication,
+  FlPublishCheck,
+  FlPublished,
 } from "../../fl/datasetTypes";
 
 export const tauriFlDatasets: FlDatasetsDomain = {
@@ -42,5 +46,14 @@ export const tauriFlDatasets: FlDatasetsDomain = {
   },
   async delete(dataset: string) {
     await invoke("fl_dataset_delete", { dataset });
+  },
+  publishCheck(dataset: string, version: number, license: string, privacy: FlPrivacyLabel) {
+    return invoke<FlPublishCheck>("fl_dataset_publish_check", { dataset, version, license, privacy });
+  },
+  publish(dataset: string, version: number, license: string, privacy: FlPrivacyLabel, contentHash: string) {
+    return invoke<FlPublished>("fl_dataset_publish", { dataset, version, license, privacy, contentHash });
+  },
+  published(dataset: string) {
+    return invoke<FlPublication[]>("fl_dataset_published", { dataset });
   },
 };

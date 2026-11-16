@@ -47,15 +47,15 @@ describe("held-out normalization", () => {
 // compute-pool pins the same value (PARITY_V1_TOOLS in training-worker/src/fl/dataset.rs): the
 // trainer rows name the 35 parity-v1 tools, so a renamed or added tool fails one side until both
 // are updated. CORE-A1/A2 (2026-11-04) added six read-only contract tools (29 -> 35); 0.5.4 WP-H6
-// (2026-11-16) added the four dataset tools (35 -> 39). compute-pool follows in its own PR.
-const PARITY_V1_TOOL_NAMES_SHA256 = "91d7f30b72233139ce2c59c65db2550329a13c17f53a95d871ab4a09cebe2b3a";
+// (2026-11-16) added the five dataset tools (35 -> 40). compute-pool follows in its own PR.
+const PARITY_V1_TOOL_NAMES_SHA256 = "42bedcec5d0e6d46d43aa3ad87c3246bdae20c4c8ffa080df80db793d23f8403";
 
 describe("parity-v1 tool names (the trainer's tool schema)", () => {
-  it("are the 39 names compute-pool trains against", () => {
+  it("are the 40 names compute-pool trains against", () => {
     const parity = JSON.parse(readFileSync(resolve(process.cwd(), "src/agent/parity/parity-v1.json"), "utf8")) as {
       tools: { name: string }[];
     };
-    expect(parity.tools).toHaveLength(39);
+    expect(parity.tools).toHaveLength(40);
     expect(sha(parity.tools.map((t) => t.name).join("\n"))).toBe(PARITY_V1_TOOL_NAMES_SHA256);
   });
 });

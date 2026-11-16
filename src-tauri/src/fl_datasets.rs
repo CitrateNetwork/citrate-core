@@ -118,6 +118,7 @@ const DOMAIN: SealDomain = SealDomain {
 const EXT: &str = "sealed";
 const DATASET_STEM: &str = "dataset";
 const CONSENT_STEM: &str = "consent";
+const PUBLISHED_STEM: &str = "published";
 
 // ------------------------------------------------------------------------------ the schema
 
@@ -534,6 +535,79 @@ pub struct ConsentWithdrawn {
     /// Always true: earlier local versions keep the rows until the dataset is deleted, and a
     /// published CID cannot be recalled.
     pub earlier_versions_kept: bool,
+}
+
+/// What publishing would do, and every reason core refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishCheck {
+    pub dataset: String,
+    pub name: String,
+    pub version: u32,
+    pub content_hash: String,
+    pub rows: u32,
+    pub sources: u32,
+    pub license: String,
+    pub privacy: PrivacyLabel,
+    /// The DatasetRegistry `prev` this publication would carry (last published manifestHash).
+    pub registry_prev: String,
+    pub bundle_bytes: u64,
+    pub untrusted: bool,
+    /// Empty = core may publish.
+    pub refusals: Vec<String>,
+}
+
+/// One publication of a dataset version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Publication {
+    pub version: u32,
+    pub manifest_hash: String,
+    pub content_hash: String,
+    /// The IPFS CID of the bundle (plaintext: Public only in this build).
+    pub cid: String,
+    pub license: String,
+    pub privacy: PrivacyLabel,
+    pub published_at_ms: u64,
+    /// The DatasetRegistry `prev` for this version's record.
+    pub registry_prev: String,
+}
+
+/// A finished publish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Published {
+    pub version: VersionView,
+    pub name: String,
+    pub publication: Publication,
+    pub bundle_bytes: u64,
+}
+
+/// Where a publish bundle goes: IPFS, added and pinned on this node.
+pub trait PublishSink {
+    /// Add `bytes` as the file `name` and pin it on this node. Returns the CID.
+    fn add_and_pin(&self, name: &str, bytes: &[u8]) -> Result<String, String>;
+}
+
+/// The bundled kubo daemon, through core's storage seam (`storage.rs`).
+pub struct IpfsSink(pub crate::storage::StorageManager);
+
+impl PublishSink for IpfsSink {
+    fn add_and_pin(&self, name: &str, bytes: &[u8]) -> Result<String, String> {
+        let out = self.0.add_bytes(name, bytes).map_err(|e| e.to_string())?;
+        self.0.pin_local(&out.cid).map_err(|e| e.to_string())?;
+        Ok(out.cid)
+    }
+}
+
+fn privacy_word(p: PrivacyLabel) -> &'static str {
+    match p {
+        PrivacyLabel::Private => "private",
+        PrivacyLabel::Public => "public",
+        PrivacyLabel::Members => "members",
+        PrivacyLabel::Group => "group",
+        PrivacyLabel::IndexOnly => "index-only",
+    }
 }
 
 // ------------------------------------------------------------------------------ helpers
@@ -1887,6 +1961,244 @@ impl<'a> DatasetStore<'a> {
         })
     }
 
+    fn publications(&self, keys: &KeySet, id: &str) -> Result<Vec<Publication>, String> {
+        match self.read_file(keys, id, PUBLISHED_STEM)? {
+            None => Ok(Vec::new()),
+            Some(p) => serde_json::from_slice(&p)
+                .map_err(|_| format!("the publication records of {id} are damaged")),
+        }
+    }
+
+    /// The publications of one dataset (IPFS CIDs and the registry record each waits for).
+    pub fn published(&self, id: &str) -> Result<Vec<Publication>, String> {
+        let keys = self.need_keys()?;
+        self.record(&keys, id)?;
+        self.publications(&keys, id)
+    }
+
+    /// Every reason core refuses to publish `version` with `license` and `privacy`. Empty = it
+    /// may publish. The gates (gap §3.1 rule 6, planset 06 §5): the license passes the registry
+    /// rule; no source's license is unknown; a PII scan of exactly these rows passed (the scanner
+    /// decides, never the model); a dataset with personal data is never Public; and this build
+    /// publishes Public only (members and group need encrypted group files, index-only needs the
+    /// registry record alone).
+    fn publish_refusals(
+        &self,
+        keys: &KeySet,
+        id: &str,
+        v: &Version,
+        license: &str,
+        privacy: PrivacyLabel,
+    ) -> Result<Vec<String>, String> {
+        let mut out = Vec::new();
+        if let Err(e) = registry_license_ok(license) {
+            out.push(format!("License: {e}"));
+        }
+        let unknown = v
+            .manifest
+            .sources
+            .iter()
+            .filter(|s| s.license.id.is_none())
+            .count();
+        if unknown > 0 {
+            out.push(format!(
+                "License unknown for {unknown} source{}",
+                if unknown == 1 { "" } else { "s" }
+            ));
+        }
+        match self
+            .scan(keys, id, v)?
+            .or_else(|| v.manifest.pii_scan.clone())
+        {
+            None => {
+                out.push("No PII scan of these rows yet; the on-device scan must pass first".into())
+            }
+            Some(s) if s.content_hash != v.manifest.content_hash => {
+                out.push("The PII scan is of other rows; scan this version".into())
+            }
+            Some(s) if !s.pass => out.push(format!(
+                "The PII scan found personal data ({}); clean it or keep the dataset local",
+                s.counts
+                    .iter()
+                    .filter(|(_, n)| **n > 0)
+                    .map(|(k, n)| format!("{n} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Some(_) => {}
+        }
+        if v.manifest.contains_personal_data && privacy == PrivacyLabel::Public {
+            out.push("A dataset that contains personal data can never be Public".into());
+        }
+        match privacy {
+            PrivacyLabel::Public => {}
+            PrivacyLabel::Members | PrivacyLabel::Group => out.push(
+                "Publishing to members or a group needs encrypted group files, which are not in this build".into(),
+            ),
+            PrivacyLabel::IndexOnly => out.push(
+                "Index-only publishes no file, only the DatasetRegistry record, which is not in this build".into(),
+            ),
+            PrivacyLabel::Private => out.push("Private datasets are not published".into()),
+        }
+        Ok(out)
+    }
+
+    /// What publishing `version` would do and every reason it is refused. Writes nothing.
+    pub fn publish_check(
+        &self,
+        id: &str,
+        version: u32,
+        license: &str,
+        privacy: PrivacyLabel,
+    ) -> Result<PublishCheck, String> {
+        let keys = self.need_keys()?;
+        let rec = self.record(&keys, id)?;
+        let latest = self.latest(&keys, id)?;
+        let v = self.version(&keys, id, version)?;
+        let mut refusals = self.publish_refusals(&keys, id, &v, license, privacy)?;
+        if latest.manifest.version != version {
+            refusals.push(format!(
+                "Version {version} is not the latest (v{} is)",
+                latest.manifest.version
+            ));
+        }
+        let pubs = self.publications(&keys, id)?;
+        let rows = self
+            .read_file(&keys, id, &format!("v{version}.rows"))?
+            .map(|r| r.len())
+            .unwrap_or(0);
+        Ok(PublishCheck {
+            dataset: id.to_string(),
+            name: rec.name,
+            version,
+            content_hash: v.manifest.content_hash.clone(),
+            rows: v.manifest.rows,
+            sources: u32::try_from(v.manifest.sources.len()).unwrap_or(u32::MAX),
+            license: license.to_string(),
+            privacy,
+            registry_prev: pubs
+                .last()
+                .map_or_else(|| ZERO_HASH.to_string(), |p| p.manifest_hash.clone()),
+            bundle_bytes: (v.manifest_bytes.len() + 1 + rows) as u64,
+            untrusted: v.manifest.untrusted,
+            refusals,
+        })
+    }
+
+    /// Publish the latest version the member approved: write the publish version N+1 (rows
+    /// unchanged; the license, the label, the PII scan and the registry `prev` in its manifest),
+    /// add its bundle to IPFS through `sink` and pin it on this node, and record the publication.
+    /// `expected_content_hash` is the rows hash the card showed. Refused on any gate.
+    ///
+    /// The bundle is one file: the publish version's manifest bytes, a newline, then its rows file.
+    /// Anyone can check it: keccak256 of the first line is the manifestHash, SHA-256 of the rest is
+    /// the manifest's contentHash. Public only in this build, so the CID holds plaintext.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish(
+        &self,
+        id: &str,
+        version: u32,
+        license: &str,
+        privacy: PrivacyLabel,
+        expected_content_hash: &str,
+        sink: &dyn PublishSink,
+        now_ms: u64,
+    ) -> Result<Published, String> {
+        let _one = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let keys = self.need_keys()?;
+        let rec = self.record(&keys, id)?;
+        let base = self.latest(&keys, id)?;
+        if base.manifest.version != version {
+            return Err(format!(
+                "version {version} is no longer the latest of {id} (v{} is); nothing was published",
+                base.manifest.version
+            ));
+        }
+        if base.manifest.content_hash != expected_content_hash {
+            return Err("the rows differ from the ones you approved; nothing was published".into());
+        }
+        let refusals = self.publish_refusals(&keys, id, &base, license, privacy)?;
+        if !refusals.is_empty() {
+            return Err(format!("not published: {}", refusals.join("; ")));
+        }
+        let mut pubs = self.publications(&keys, id)?;
+        let registry_prev = pubs
+            .last()
+            .map_or_else(|| ZERO_HASH.to_string(), |p| p.manifest_hash.clone());
+        let rows = self.rows(&keys, id, &base)?;
+        // A publish version left by an earlier try whose IPFS add failed is published as it is.
+        let reuse = base.manifest.published_prev.as_deref() == Some(registry_prev.as_str())
+            && base.manifest.license.as_deref() == Some(license)
+            && base.manifest.privacy_label == privacy
+            && !pubs.iter().any(|p| p.version == base.manifest.version);
+        let pv = if reuse {
+            base
+        } else {
+            let scan = self
+                .scan(&keys, id, &base)?
+                .or_else(|| base.manifest.pii_scan.clone())
+                .ok_or_else(|| "no PII scan of these rows".to_string())?;
+            let doc = self.consent_doc(&keys, id)?;
+            let in_force = doc
+                .records
+                .iter()
+                .filter(|c| c.withdrawn_at_ms.is_none())
+                .map(|c| c.id.clone())
+                .collect();
+            let op = DerivedOp {
+                op: "publish".into(),
+                detail: format!("{license}, {}", privacy_word(privacy)),
+                removed: 0,
+                changed: 0,
+                added: 0,
+            };
+            self.write_version(
+                &keys,
+                &rec,
+                Some(&base),
+                base.manifest.sources.clone(),
+                rows.clone(),
+                op,
+                in_force,
+                now_ms,
+                Some((license.to_string(), privacy, scan, registry_prev.clone())),
+            )?
+        };
+        let mut bundle = pv.manifest_bytes.clone();
+        bundle.push(b'\n');
+        bundle.extend_from_slice(&rows_bytes(&rows)?);
+        let cid = sink.add_and_pin(&format!("{id}-v{}.citrate-dataset.jsonl", pv.manifest.version), &bundle).map_err(|e| {
+            format!(
+                "version {} is ready to publish, but IPFS did not take it ({e}); nothing left this device. Try again once IPFS is running.",
+                pv.manifest.version
+            )
+        })?;
+        let publication = Publication {
+            version: pv.manifest.version,
+            manifest_hash: pv.hash.clone(),
+            content_hash: pv.manifest.content_hash.clone(),
+            cid: cid.clone(),
+            license: license.to_string(),
+            privacy,
+            published_at_ms: now_ms,
+            registry_prev: registry_prev.clone(),
+        };
+        pubs.push(publication.clone());
+        self.write_file(
+            &keys,
+            id,
+            PUBLISHED_STEM,
+            &serde_json::to_vec(&pubs).map_err(|e| e.to_string())?,
+            false,
+        )?;
+        Ok(Published {
+            version: self.view(&keys, id, &pv)?,
+            name: rec.name,
+            publication,
+            bundle_bytes: bundle.len() as u64,
+        })
+    }
+
     /// Delete a dataset and every version of it on this device. When it was the last one, the
     /// dataset key is removed from the keychain too, so no leftover copy on this device opens.
     pub fn delete(&self, id: &str) -> Result<(), String> {
@@ -2387,6 +2699,56 @@ pub async fn fl_dataset_consent_withdraw(
         s.consent_withdraw(&dataset, &consent, now_ms())
     })
     .await
+}
+
+/// **fl_dataset_publish_check**: every reason core refuses publishing a version. Writes nothing.
+#[tauri::command]
+pub async fn fl_dataset_publish_check(
+    app: tauri::AppHandle,
+    dataset: String,
+    version: u32,
+    license: String,
+    privacy: PrivacyLabel,
+) -> Result<PublishCheck, String> {
+    with_store(app, move |s, _| {
+        s.publish_check(&dataset, version, &license, privacy)
+    })
+    .await
+}
+
+/// **fl_dataset_publish**: the member approved the publish card (HIC-1, never in an envelope):
+/// write the publish version and add its bundle to IPFS on this node. Cannot be recalled.
+#[tauri::command]
+pub async fn fl_dataset_publish(
+    app: tauri::AppHandle,
+    dataset: String,
+    version: u32,
+    license: String,
+    privacy: PrivacyLabel,
+    content_hash: String,
+) -> Result<Published, String> {
+    with_store(app, move |s, app| {
+        let sink = IpfsSink(crate::storage::build_manager(app)?);
+        s.publish(
+            &dataset,
+            version,
+            &license,
+            privacy,
+            &content_hash,
+            &sink,
+            now_ms(),
+        )
+    })
+    .await
+}
+
+/// **fl_dataset_published**: a dataset's publications (CIDs, and the registry `prev` each carries).
+#[tauri::command]
+pub async fn fl_dataset_published(
+    app: tauri::AppHandle,
+    dataset: String,
+) -> Result<Vec<Publication>, String> {
+    with_store(app, move |s, _| s.published(&dataset)).await
 }
 
 /// **fl_dataset_delete**: delete a dataset and all its versions on this device.
