@@ -51,7 +51,6 @@ pub enum PiiClass {
 
 impl PiiClass {
     /// The stable key a dataset manifest's scan record counts under (`email`, `government-id`).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn key(self) -> &'static str {
         match self {
             PiiClass::Email => "email",
@@ -105,8 +104,6 @@ pub struct Finding {
     pub end: usize,
 }
 
-// The dataset gate (WP-H7, `fl_dataset_gate.rs`) is the in-process caller.
-#[cfg_attr(not(test), allow(dead_code))]
 /// A finding located in one row of a multi-row input (a dataset version).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,13 +114,9 @@ pub struct RowFinding {
     pub end: usize,
 }
 
-// The dataset gate (WP-H7, `fl_dataset_gate.rs`) is the in-process caller.
-#[cfg_attr(not(test), allow(dead_code))]
 /// The most row references a report keeps (the counts are always complete).
 pub const MAX_ROW_REFS: usize = 1000;
 
-// The dataset gate (WP-H7, `fl_dataset_gate.rs`) is the in-process caller.
-#[cfg_attr(not(test), allow(dead_code))]
 /// The result of a scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,8 +169,6 @@ pub fn scan(s: &str) -> Vec<Finding> {
     out
 }
 
-// The dataset gate (WP-H7, `fl_dataset_gate.rs`) is the in-process caller.
-#[cfg_attr(not(test), allow(dead_code))]
 /// Scan many rows (the lines or records of a dataset version) into one report.
 pub fn scan_rows<'a>(rows: impl IntoIterator<Item = &'a str>) -> ScanReport {
     let mut counts: BTreeMap<PiiClass, usize> = BTreeMap::new();
