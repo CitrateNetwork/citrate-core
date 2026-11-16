@@ -97,6 +97,10 @@
       "sha256": "a0415026280cc2e53ef71e424290aa63b9414f3ee362845bec312e8b4e0a0803"
     },
     {
+      "id": "nw-fl-round-open-not-draft",
+      "sha256": "dc27540798be2ce910ce8089941f382196f5833ed100054f4b95bfe79aacc102"
+    },
+    {
       "id": "nw-group-idea",
       "sha256": "65663746e77dfb75ca9ec8c5e2ee46e8c4b2456957e5d15b65ae9841fcea504e"
     },
@@ -251,6 +255,10 @@
     {
       "id": "tc-fl-plan-probe",
       "sha256": "e0f1f459eb8faea4209c73e1e81f7a0239df94f1a33c6f5d0cd3905d619f82d1"
+    },
+    {
+      "id": "tc-fl-round-draft-read",
+      "sha256": "85ac83e272d87949a5b6a7ddfd5f313d82e9d0293cc24ab8859e9325d8ce276d"
     },
     {
       "id": "tc-fl-start-explicit",

@@ -46,6 +46,7 @@ import { loadWorkerTerms } from "../fl/workerTerms";
 import flAddressBook from "../../src-tauri/addresses/40204.json";
 import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
+import { FL_ROUND_DRAFT_READ_TOOL, runFlRoundDraftRead } from "../agent/flRoundDraftTool";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -4698,6 +4699,9 @@ export class Store {
       const out = await runFlDatasetTool(call.name, args as Record<string, unknown>, ann, { ds: bridge.flDatasets, ask });
       status = out.status;
       result = out.result;
+    } else if (call.name === FL_ROUND_DRAFT_READ_TOOL) {
+      // 0.5.4 WP-H5: read the board 07 draft. Writing one is lane 3's card hand-off (#725).
+      result = runFlRoundDraftRead();
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.

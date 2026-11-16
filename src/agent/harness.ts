@@ -900,6 +900,16 @@ export const AGENT_TOOLS = [
   },
   // ── local training datasets (0.5.4 Hermes x FL, WP-H6) ──
   ...FL_DATASET_AGENT_TOOLS,
+  // ── round draft read (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_draft_read",
+      description:
+        "Read the member's Open a round draft for a federated training round on this device: group, template, data class, budget and rate in SALT, workers, deadline, who may join, coordinator, how many leases the budget covers, and what still blocks opening it. Read-only; it never changes the draft. Opening the round is the member's own escrow signature.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1413,6 +1423,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_adapter_gate_read",
   "fl_dataset_list",
   "fl_dataset_sample",
+  "fl_round_draft_read",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
