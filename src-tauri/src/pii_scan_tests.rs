@@ -296,3 +296,21 @@ fn class_keys_match_their_json_names() {
         assert_eq!(serde_json::to_value(c).unwrap(), serde_json::json!(c.key()));
     }
 }
+
+#[test]
+fn an_amex_number_in_its_printed_4_6_5_grouping_is_a_card() {
+    // Codex review of #734 (P2): the published Amex test number, as printed on the card.
+    let amex = ["3782", " ", "822463", " ", "10005"].concat();
+    assert_eq!(found(&format!("amex {amex} exp"), PiiClass::Card), vec![amex.clone()]);
+    // Other uneven groupings are still not cards.
+    assert!(found("ref 37828 22463 10005", PiiClass::Card).is_empty());
+}
+
+#[test]
+fn two_phone_numbers_side_by_side_are_both_found() {
+    // Codex review of #734 (P2): the run of both was consumed and rejected as one too-long number.
+    let a = "202-555-0143";
+    let b = "202-555-0144";
+    assert_eq!(found(&format!("call {a} {b} today"), PiiClass::Phone), vec![a, b]);
+    assert_eq!(found(&format!("call {a} or {b}"), PiiClass::Phone), vec![a, b]);
+}
