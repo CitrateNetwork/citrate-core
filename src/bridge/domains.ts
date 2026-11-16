@@ -10,6 +10,7 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
+import type { FlDatasetsDomain } from "../fl/datasetTypes";
 import type {
   TemplateCatalog,
   TemplateRenderInput,
@@ -3061,6 +3062,8 @@ export interface CxBridge {
   cluster: ClusterDomain;
   training: TrainingDomain;
   flRounds: FlRoundsDomain;
+  /** 0.5.4 WP-H6: the local dataset store (src/fl/datasetTypes.ts). */
+  flDatasets: FlDatasetsDomain;
   agentHarness: AgentHarnessDomain;
   agentSkills: AgentSkillsDomain;
   contracts: ContractsDomain;
