@@ -17,9 +17,16 @@ export function postLabel(recipients: number | null): string {
   return `Post to ${recipients} ${recipients === 1 ? "member" : "members"}`;
 }
 
+const PLURALS: Record<string, string> = {
+  "person's name": "names",
+  "key, token or seed phrase": "keys, tokens or seed phrases",
+  "bank account (IBAN)": "bank accounts (IBAN)",
+};
+
 /** "1 email address, 2 phone numbers". */
 export function foundLine(found: SendPreview["scan"]["found"]): string {
-  return found.map((f) => `${f.count} ${f.label}${f.count === 1 ? "" : "s"}`).join(", ");
+  const plural = (l: string) => PLURALS[l] ?? (l.endsWith("ss") ? l + "es" : l + "s");
+  return found.map((f) => `${f.count} ${f.count === 1 ? f.label : plural(f.label)}`).join(", ");
 }
 
 export function GroupSendCard({ preview, onDecide }: { preview: SendPreview; onDecide: (d: SendDecision) => void }) {

@@ -18,6 +18,7 @@ import { groupsSlice } from "../../shell/slices/groups";
 import type { Store } from "../../shell/store";
 import type { Group, GroupMember, GroupMessage, MyInviteRequest } from "../../bridge/domains";
 import type { DisclosureScan } from "./groupHermes";
+import { foundLine } from "./GroupSendCard";
 
 // V6: the on-device private-information check is Rust (`pii_scan_text`); the board's tests drive
 // its result through this seam.
@@ -287,6 +288,12 @@ describe("Hermes answers only when mentioned, on your device, and says so", () =
 });
 
 describe("V6: the @Hermes send card and the private-information check", () => {
+  it("names what was found, in the plural where there are several", () => {
+    expect(foundLine([{ class: "email", label: "email address", count: 2 }, { class: "phone", label: "phone number", count: 1 }, { class: "name", label: "person's name", count: 3 }])).toBe(
+      "2 email addresses, 1 phone number, 3 names",
+    );
+  });
+
   const ask = async () => {
     await setValue(host.querySelector("#grp-msg") as HTMLTextAreaElement, "@Hermes who should we ask?");
     await act(async () => btn("Send")!.click());
