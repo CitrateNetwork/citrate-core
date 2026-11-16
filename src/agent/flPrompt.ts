@@ -62,6 +62,7 @@ export const FL_GUIDE: readonly FlGuideLine[] = [
     tools: ["round_draft_propose"],
     text: "round_draft_propose puts a draft of a group round on a card; only the member opens it in Groups › Rounds › Open a round and signs it. Nothing is escrowed or opened by the draft.",
   },
+  { tools: ["fl_round_draft_read"], text: "fl_round_draft_read reads the member's saved Open a round draft and what still blocks opening it; it never changes the draft." },
   {
     tools: ["fl_round_open_propose"],
     text: "fl_round_open_propose opens the escrow signature for a drafted round; it is always the member's own signature and never inside an envelope.",
@@ -124,6 +125,11 @@ export const FL_GUIDE: readonly FlGuideLine[] = [
   { tools: ["fl_history_read"], text: "fl_history_read reads this device's FL history: approved starts, consents, gate decisions." },
   { tools: ["fl_patronage_read"], text: "fl_patronage_read reads cooperative patronage units from PatronageLedger, only when the member asks; a failed read is never zero." },
   { tools: ["fl_payouts_list"], text: `fl_payouts_list reads round payouts; until payouts open it says "${PAYOUTS_DARK}" and reads nothing.` },
+  { tools: ["fl_withdraw_propose"], text: "fl_withdraw_propose opens the wallet review for withdrawing the member's settled pull balance, which the member signs; core refuses it, with its reason, until payouts open." },
+  {
+    tools: ["fl_claim_propose", "fl_dispute_propose"],
+    text: "fl_claim_propose and fl_dispute_propose check one payout line and name what is missing; in this build they open nothing, so never say a claim was made or a dispute was filed.",
+  },
 ];
 
 /** The FL tools any lane ships (every tool named by the guide). */
