@@ -14,6 +14,10 @@
 # and falls back to `releases/latest/download/latest.json` (tauri-plugin-updater 2.10.1 skips a
 # non-2xx endpoint), so the release must be the repository's latest, non-prerelease release.
 #
+# macOS only: it runs on the release Mac (codesign, notarytool, the Keychain, BSD `date -r`) under
+# /bin/bash 3.2, so it must stay bash-3.2 safe under `set -u` (no bare "${empty[@]}" expansions;
+# every array it expands is either never empty or guarded as ${a[@]+"${a[@]}"}).
+#
 # Never launches the built app (not even --version: it starts the full app against the owner's own
 # data) and runs no install test.
 #
@@ -32,6 +36,12 @@
 #   --target <commit>   the commit the release points at (default HEAD); GitHub must have it.
 #   --linux-arches <list>   the Linux arches shipped, comma separated (default x86_64,aarch64). An arch
 #                       left out is not in latest.json, so its installs are offered no update.
+#   --policy-min <x.y.z>   0.5.4 forced update (owner 2026-11-14, docs/release/054-FORCED-UPDATE.md):
+#                       write the signed update policy "this version or later" (issuedAt = this
+#                       release's time), sign it with the updater key exactly as the update files
+#                       are signed, verify it against the pinned key, and embed it in latest.json
+#                       as citrate.updatePolicy. Needs RELEASE_NOTES with the [critical] marker
+#                       (0.5.3 and older read only that). The minimum may not exceed --version.
 #   scripts/release-local.sh --check-args ...   validate the arguments and stop (tests).
 #
 # The Linux update files (Citrate-Core-linux-{x86_64,aarch64}.{AppImage,deb}) are built on their own
@@ -69,7 +79,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 die() { echo "release-local: REFUSED: $*" >&2; exit 1; }
 say() { echo "release-local: $*"; }
 
-VERSION="" LINUX_DIR="" OUT="" APP="" TARGET="" SELECT_DMG="" REHEARSAL=0 PUBLISH=0 CLEANUP=0 CHECK_ONLY=0
+VERSION="" LINUX_DIR="" OUT="" APP="" TARGET="" SELECT_DMG="" POLICY_MIN="" REHEARSAL=0 PUBLISH=0 CLEANUP=0 CHECK_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
@@ -84,7 +94,8 @@ while [ $# -gt 0 ]; do
     --cleanup) CLEANUP=1; shift ;;
     --check-args) CHECK_ONLY=1; shift ;;
     --select-dmg) SELECT_DMG="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    --policy-min) POLICY_MIN="${2-}"; shift 2 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
 done
@@ -152,7 +163,19 @@ for f in "${LINUX_FILES[@]}"; do
   [ -f "$LINUX_DIR/$f" ] || die "no $LINUX_DIR/$f"
 done
 [ -n "$OUT" ] || die "--out <dir>"
+# 0.5.4: the forced update. The minimum is a version this very release offers (or older), so no
+# install is gated with nothing to update to, and the notes carry [critical] for 0.5.3 and older.
+if [ -n "$POLICY_MIN" ]; then
+  [[ "$POLICY_MIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--policy-min must be x.y.z (got '$POLICY_MIN')"
+  python3 -c "import sys;a,b=(tuple(map(int,v.split('.'))) for v in sys.argv[1:]);sys.exit(0 if a<=b else 1)" "$POLICY_MIN" "$VERSION" ||
+    die "--policy-min $POLICY_MIN is above --version $VERSION: every app would be gated with nothing to update to"
+  case "${RELEASE_NOTES:-}" in
+    *"[critical]"*) ;;
+    *) die "--policy-min needs RELEASE_NOTES with the [critical] marker (the only push 0.5.3 and older read)" ;;
+  esac
+fi
 if [ "$CHECK_ONLY" -eq 1 ]; then
+  if [ -n "$POLICY_MIN" ]; then say "update policy: minimum $POLICY_MIN, signed with the updater key at release time, embedded in latest.json"; fi
   say "arguments OK (tag $TAG, $([ "$REHEARSAL" -eq 1 ] && echo 'draft prerelease' || echo 'latest release'))"
   if [ "$PUBLISH_TARGET" = "spaces" ]; then
     say "publish target spaces: updater files public-read under s3://$CDN_BUCKET/$UPD_PREFIX/, installers and SHA256SUMS private under s3://$CDN_BUCKET/$INST_PREFIX/; no GitHub release"
@@ -284,7 +307,18 @@ for f in "${LINUX_FILES[@]}"; do cp "$LINUX_DIR/$f" "$OUT/$f"; done
 
 # ---- 4. sign the update files with the v2 updater key, and verify against the pinned key --------
 say "4/7 signing the update files (tauri signer sign) and verifying each against the pinned key"
+# One release time: the feed's pub_date and the update policy's issuedAt.
+RELEASE_TS="$(date -u +%s)"
 PUBKEY="$(python3 -c "import base64,sys;print(base64.b64decode(sys.argv[1]).decode().strip().splitlines()[-1])" "$V052_UPDATER_PUBKEY")"
+# 0.5.4: the policy file is written BEFORE the key subshell (#698 review), with the key variables
+# removed from node's environment even if the caller's shell had them, so node never sees the key.
+if [ -n "$POLICY_MIN" ]; then
+  rm -f "$OUT/update-policy.json" "$OUT/update-policy.json.sig"
+  (cd "$ROOT" && env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+    node scripts/updater-feed.mjs policy --min "$POLICY_MIN" --issued-at "$RELEASE_TS" \
+    --reason "Citrate Core $POLICY_MIN or later is required" --out "$OUT/update-policy.json") >/dev/null
+  [ -f "$OUT/update-policy.json" ] || die "updater-feed.mjs wrote no update-policy.json"
+fi
 (
   # The updater key, for this subshell only (never on argv, never in the build's environment).
   TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
@@ -295,7 +329,18 @@ PUBKEY="$(python3 -c "import base64,sys;print(base64.b64decode(sys.argv[1]).deco
     rm -f "$OUT/$f.sig"
     tauri signer sign "$OUT/$f" >/dev/null
   done
+  # 0.5.4: the update policy (written above, outside this subshell), signed the same way with the
+  # same key (owner 2026-11-14). Only `tauri signer sign` sees the key.
+  if [ -n "$POLICY_MIN" ]; then
+    tauri signer sign "$OUT/update-policy.json" >/dev/null
+  fi
 )
+if [ -n "$POLICY_MIN" ]; then
+  [ -f "$OUT/update-policy.json.sig" ] || die "tauri signer wrote no update-policy.json.sig"
+  base64 -d < "$OUT/update-policy.json.sig" > "$WORK/update-policy.minisig"
+  minisign -V -q -P "$PUBKEY" -m "$OUT/update-policy.json" -x "$WORK/update-policy.minisig" ||
+    die "update-policy.json.sig does not verify against the pinned updater key"
+fi
 for f in Citrate-Core.app.tar.gz "${LINUX_FILES[@]}"; do
   [ -f "$OUT/$f.sig" ] || die "tauri signer wrote no $f.sig"
   base64 -d < "$OUT/$f.sig" > "$WORK/$f.minisig"
@@ -312,8 +357,11 @@ fi
 (cd "$ROOT" && node scripts/updater-feed.mjs fragment --version "$VERSION" --base-url "$BASE_URL" --dir "$OUT" \
   "${PLATFORMS[@]}") > "$WORK/fragment.json"
 NOTES="${RELEASE_NOTES:-Citrate Core $VERSION}"
-PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-(cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" "$WORK/fragment.json") \
+PUB_DATE="$(date -u -r "$RELEASE_TS" +%Y-%m-%dT%H:%M:%SZ)"
+POLICY_ARGS=()
+[ -z "$POLICY_MIN" ] || POLICY_ARGS=(--policy "$OUT/update-policy.json")
+# ${a[@]+"${a[@]}"}: an empty array under `set -u` aborts macOS /bin/bash 3.2 (#698 review P1).
+(cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" ${POLICY_ARGS[@]+"${POLICY_ARGS[@]}"} "$WORK/fragment.json") \
   > "$OUT/latest.json"
 python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" "${PLATFORMS[@]}" <<'PY'
 import json, sys
@@ -325,6 +373,20 @@ for p, e in feed["platforms"].items():
     assert e["url"].startswith(base + "/"), (p, e["url"])
 print("release-local: latest.json names", len(feed["platforms"]), "platforms under", base)
 PY
+if [ -n "$POLICY_MIN" ]; then
+  python3 - "$OUT/latest.json" "$OUT/update-policy.json" "$OUT/update-policy.json.sig" "$POLICY_MIN" "$RELEASE_TS" <<'PY'
+import base64, json, sys
+feed, pol_path, sig_path, want_min, ts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+up = json.load(open(feed))["citrate"]["updatePolicy"]
+raw = open(pol_path, "rb").read()
+assert base64.b64decode(up["policy"]) == raw, "the feed's policy is not the signed file"
+assert up["signature"] == open(sig_path).read().strip(), "the feed's signature is not the signed file's"
+doc = json.loads(raw)
+assert doc["domain"] == "citrate-core-update-policy/v1" and doc["minimumVersion"] == want_min and doc["issuedAt"] == ts, doc
+assert "[critical]" in json.load(open(feed))["notes"], "notes without [critical]"
+print("release-local: latest.json carries the signed update policy: minimum", want_min, "issuedAt", ts)
+PY
+fi
 
 # ---- 6. checksums ----------------------------------------------------------------------------
 say "6/7 SHA256SUMS"

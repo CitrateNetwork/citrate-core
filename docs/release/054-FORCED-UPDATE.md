@@ -1,8 +1,8 @@
 ---
 created: 2026-11-14
-branch: fix/054-forced-update
+branch: fix/054-forced-update (release steps: docs/054-forced-update-release-steps)
 author: Larry Klosowski (Claude Opus 5.5, 0.5.4 Hermes lane)
-status: active (implemented; the signing step and key reuse need security sign-off, @rule8)
+status: active (implemented; owner sign-off 2026-11-14: live in 0.5.4, updater key signs the policy)
 ---
 
 # 0.5.4: forced update to a minimum version
@@ -77,11 +77,54 @@ While gated, the app itself is not rendered at all: the window holds only the up
 exists to focus or click, and app keyboard shortcuts are blocked. The wallet is not reachable,
 read-only or otherwise. Links open in the system browser through core's `open_external`. Nothing on the screen loops: it checks again once every 5 minutes (one timer), and the automatic download starts only when an update is offered, never on its own after an error. Anything unverified gates nothing: it fails open, and the reason is logged.
 
-## Release steps (once per release that raises the minimum)
+## Release steps: 0.5.4 (the release lane runs these)
 
-1. `node scripts/updater-feed.mjs policy --min 0.5.4 --reason "0.5.4 fixes Hermes" --issued-at $(date +%s) --out update-policy.json`
-2. `tauri signer sign update-policy.json` with the updater key (the same step as the artifacts in `scripts/release-local.sh`). Check it with `minisign -V -p <pub> -m update-policy.json -x update-policy.json.sig`, after decoding the base64 `.sig` into a file.
-3. `node scripts/updater-feed.mjs merge --notes "[critical] ..." --pub-date ... --policy update-policy.json <fragments>`. This refuses a policy above the feed's version or one without a signature.
+Owner 2026-11-14: "I also need the forced update to be live as well in this release." This is the
+sign-off on signing the policy with the updater key. `scripts/release-local.sh --policy-min` does
+the whole policy step inside the release, on the release Mac:
+
+- **When it's written:** just before the signing step, outside it, so the node script that writes it never has the key in its environment (`env -u` removes the key variables even if the caller's shell had them). Its `issuedAt` is the release time, the same instant as the feed's `pub_date`.
+- **How it's signed:** with `tauri signer sign`, in the same subshell and with the same key handling as the update files:
+  - The key comes from `UPDATER_KEY_FILE` (default `~/.citrate-updater/citrate-core-v2.key`).
+  - The passphrase comes from the macOS Keychain item `citrate-core-updater-v2`.
+  - Both are set only in that subshell's environment, never on argv.
+- **How it's checked:** with `minisign -V` against the pinned key, then embedded in `latest.json` as `citrate.updatePolicy`. The script then checks that the feed's policy is byte for byte the signed file, with minimum and `issuedAt` as given.
+- **What it refuses:** a minimum above `--version`, and notes without `[critical]`.
+
+Commands, from the 0.5.4 release commit on the release Mac:
+
+```bash
+cd citrate-core
+export RELEASE_NOTES="[critical] Citrate Core 0.5.4: Hermes starts and reports its setup correctly, and from now on the app can require an update. Restart to install."
+
+# 1. Check the arguments (no signing, nothing published).
+scripts/release-local.sh --check-args --version 0.5.4 --linux-arches x86_64 --publish-target spaces \
+  --policy-min 0.5.4 --linux-dir <linux update files> --out <out dir>
+#    expect: "update policy: minimum 0.5.4, signed with the updater key at release time, embedded in latest.json"
+
+# 2. The release, as 0.5.3 was released (053-UPDATER.md), plus --policy-min.
+scripts/release-local.sh --version 0.5.4 --linux-arches x86_64 --publish-target spaces \
+  --policy-min 0.5.4 --linux-dir <linux update files> --out <out dir> --publish
+#    expect: "latest.json carries the signed update policy: minimum 0.5.4 issuedAt <release time>"
+
+# 3. After publishing, check the live feed carries the policy.
+curl -s https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/latest.json \
+  | python3 -c "import json,sys,base64;f=json.load(sys.stdin);print(f['version'],'[critical]' in f['notes'],json.loads(base64.b64decode(f['citrate']['updatePolicy']['policy'])))"
+#    expect: 0.5.4 True {'domain': 'citrate-core-update-policy/v1', 'minimumVersion': '0.5.4', ...}
+```
+
+What this does, honestly:
+
+- **0.5.3 and older can't be forced.** They ignore the policy. `[critical]` in the notes makes them download in the background and show a red card, but each member still has to click Restart.
+- **Nobody is gated by this policy today.** A minimum of 0.5.4 gates only apps older than 0.5.4 that read the policy, and the first app that reads it is 0.5.4 itself. The exception is a 0.5.4 pre-release build (`0.5.4-rc.N`), which counts as older than 0.5.4 and is gated.
+- **What it does do:** it puts a verified, signed minimum on every 0.5.4 install, which proves the path end to end. A later release that raises the minimum (for example `--policy-min 0.5.5`) is what gates 0.5.4 installs.
+- **Feed fallback:** 0.5.3's GitHub feed fallback, and a feed without a policy, are unchanged.
+
+Manual form (only if `release-local.sh` cannot be used; same key handling, never argv):
+
+1. `node scripts/updater-feed.mjs policy --min 0.5.4 --reason "Citrate Core 0.5.4 or later is required" --issued-at "$(date -u +%s)" --out update-policy.json`. This refuses an `issuedAt` more than 24 h ahead.
+2. Sign it with `TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY_FILE")"` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -s citrate-core-updater-v2 -a citrate-updater -w)"` exported in a subshell, then run `tauri signer sign update-policy.json`. Check it: `base64 -d < update-policy.json.sig > p.minisig && minisign -V -P <pinned key> -m update-policy.json -x p.minisig`.
+3. `node scripts/updater-feed.mjs merge --notes "$RELEASE_NOTES" --pub-date <RFC 3339 UTC> --policy update-policy.json <fragments>`. This refuses a policy above the feed's version or one without a signature.
 4. Upload `latest.json` to both endpoints as usual (`053-UPDATER.md`).
 
 ## Lowering or rescinding a minimum
@@ -103,9 +146,10 @@ clients keep checking every 5 minutes, so they pick it up without a restart. Nev
 mistaken policy's feed again afterwards: it is refused by clients that saw the newer one, but a
 fresh install that sees only the old feed would be gated.
 
-`scripts/release-local.sh` does not run steps 1 and 2 yet. They are manual until security signs off.
+For a lower or rescind the manual form above is the way (`release-local.sh --policy-min` only
+writes a minimum for the release it builds).
 
-## Sign-off needed (@rule8)
+## Sign-off (@rule8)
 
-- **Reusing the updater key for the policy.** It adds no power: the updater key already decides which binary every member runs. The domain inside the signed bytes keeps a policy from passing as an artifact, and an artifact from passing as a policy.
+- **Reusing the updater key for the policy: signed off by the owner, 2026-11-14** ("I also need the forced update to be live as well in this release"). It adds no power: the updater key already decides which binary every member runs. The domain inside the signed bytes keeps a policy from passing as an artifact, and an artifact from passing as a policy.
 - **Who may raise the minimum, and when.** A raised minimum blocks every older client until it updates. Raise it only when the feed's version is published on both endpoints for every platform.
