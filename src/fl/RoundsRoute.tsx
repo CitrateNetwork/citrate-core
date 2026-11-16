@@ -94,6 +94,7 @@ function PayoutsRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go
       pullWei={null}
       pullReason="this build does not read the WorkMarket pull balance yet"
       wallet={s.walletAddr}
+      chainNow={null}
       ov={ov}
       ovError={error}
       go={go}
