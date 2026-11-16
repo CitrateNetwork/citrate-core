@@ -653,6 +653,95 @@ pub async fn diagnostics_logs_export(
     .await
 }
 
+// ---------------------------------------------------------------------------
+// One service's log, read back (Node › Advanced)
+// ---------------------------------------------------------------------------
+
+/// Lines one `sidecar_logs_tail` call returns by default, and at most.
+pub const TAIL_DEFAULT_LINES: usize = 300;
+pub const TAIL_MAX_LINES: usize = 2_000;
+/// Newest bytes of a service's log files one call reads.
+const TAIL_BYTES: u64 = 512 * 1024;
+
+/// The supervisor (and so the log file) name of each registry service, by its wire id
+/// (`services::ServiceId`, camelCase). `None` for an id this build does not supervise.
+pub fn sidecar_name(service: &str) -> Option<&'static str> {
+    Some(match service {
+        "node" => "citrate-node",
+        "nodeAgent" => "node-agent",
+        "memory" => "mem-mcp",
+        "llamaChat" => "llama-server",
+        "llamaEmbed" => "llama-embed",
+        "ipfs" => "ipfs",
+        "hermes" => "hermes",
+        "comms" => "comms-member-daemon",
+        "cluster" => "cluster-daemon",
+        _ => return None,
+    })
+}
+
+/// What one service's log read found.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarLogTail {
+    pub service: String,
+    /// The log file's name under the sidecar log folder (`<stem>.log`).
+    pub file: String,
+    /// The newest lines, oldest first, scrubbed again for display.
+    pub lines: Vec<String>,
+    /// Whether the log keeps only lifecycle and error lines (content-bearing sidecars).
+    pub lifecycle_only: bool,
+}
+
+/// Whether a sidecar's log keeps lifecycle lines only (the policy its owner passes to [`attach`]).
+fn lifecycle_only(name: &str) -> bool {
+    matches!(
+        name,
+        "hermes" | "mem-mcp" | "comms-member-daemon" | "llama-server" | "llama-embed"
+    )
+}
+
+/// The newest `lines` of `service`'s log files in `dir`, scrubbed with [`bundle_scrub`]. A service
+/// that has not written a log yet has no lines (not an error); an unknown service is refused.
+pub fn tail_for(
+    dir: &Path,
+    service: &str,
+    lines: usize,
+    home: &str,
+) -> Result<SidecarLogTail, String> {
+    let name = sidecar_name(service)
+        .ok_or_else(|| format!("{service:?} is not a service this build supervises"))?;
+    let file = format!("{}.log", file_stem(name));
+    let raw = tail_of_logs(
+        &dir.join(&file),
+        KEEP_ROTATED,
+        lines.clamp(1, TAIL_MAX_LINES),
+        TAIL_BYTES,
+    );
+    Ok(SidecarLogTail {
+        service: service.to_string(),
+        file,
+        lines: raw.iter().map(|l| bundle_scrub(l, home)).collect(),
+        lifecycle_only: lifecycle_only(name),
+    })
+}
+
+/// **sidecar_logs_tail** — the newest lines of one supervised service's log file (under
+/// `<app log dir>/sidecars/`), for Node › Advanced. The lines were filtered when written
+/// ([`disk_filter`]) and are scrubbed again here. Read-only, local only.
+#[tauri::command]
+pub async fn sidecar_logs_tail(
+    service: String,
+    lines: Option<usize>,
+) -> std::result::Result<SidecarLogTail, String> {
+    crate::blocking::off_main(move || {
+        let dir = log_dir().ok_or_else(|| "the sidecar log folder is not set up".to_string())?;
+        let home = home_from(|k| std::env::var(k).ok());
+        tail_for(dir, &service, lines.unwrap_or(TAIL_DEFAULT_LINES), &home)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     include!("sidecar_logs_tests.rs");
