@@ -98,4 +98,10 @@ describe("ci.yml", () => {
     expect(ci).toMatch(/^ {2}schedule:\n {4}- cron: "\d+ \d+ \* \* [0-6]"$/m);
     expect(ci).toContain("python3 scripts/check-crypto-bigint-users.py");
   });
+
+  // Merge queue on main: merge-gate's required `ci` summary waits for these jobs on the
+  // merge-group commit. Without the trigger a queued group would pass `ci` with no build or test.
+  it("runs on the merge queue (merge_group, checks_requested)", () => {
+    expect(ci).toMatch(/^ {2}merge_group:\n {4}types: \[checks_requested\]$/m);
+  });
 });
