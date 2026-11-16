@@ -20,9 +20,12 @@
 //   node scripts/check-bundle.mjs appimage --appimage <file>        --overlay <conf> --target <triple>
 //       after the build: the staged check again, then every externalBin is an executable in the
 //       bundle's binary folder (Contents/MacOS, usr/bin) and every staged resource is in its
-//       resource folder (Contents/Resources, usr/lib/<productName>; `../` becomes `_up_/`) with
-//       the staged bytes. Executable code (Mach-O, ELF) may differ (code signing, the AppImage's
-//       RPATH patching rewrite it) but must be there and non-empty; nothing else may differ.
+//       resource folder (Contents/Resources, usr/lib/<productName>; `../` becomes `_up_/`), each
+//       the staged file: a .deb byte for byte (sidecars included); a .app or AppImage byte for
+//       byte except executable code, which code signing or RPATH patching rewrites, so there the
+//       code identity must match (Mach-O: each slice's CPU type and LC_UUID; ELF: e_machine and
+//       the GNU build-id; else the text section's sha256). A missing runtime-deps.sha256 is a
+//       refusal, never "no pins".
 //       Read from the filesystem only: a .deb is unpacked with `ar` and `tar`, an AppImage's
 //       squashfs with `unsquashfs` at the offset its ELF header gives. No bundled program is
 //       ever run.
@@ -103,9 +106,10 @@ export function expandGlob(srcTauri, pattern) {
 /** `../a/b` → `_up_/a/b`: where tauri puts a resource from outside src-tauri. */
 const bundledPath = (rel) => rel.replace(/^(\.\.\/)+/, (m) => "_up_/".repeat(m.length / 3));
 
+/** The pins, or null when the file is missing (the caller refuses: never "no pins"). */
 function readPins(file) {
   const pins = [];
-  if (!file || !fs.existsSync(file)) return pins;
+  if (!file || !fs.existsSync(file)) return null;
   for (const l of fs.readFileSync(file, "utf8").split("\n")) {
     const m = l.match(/^([0-9a-f]{64}) {2}(\S+)$/);
     if (m) pins.push({ hex: m[1], name: m[2] });
@@ -114,7 +118,7 @@ function readPins(file) {
 }
 
 /** Executable code (Mach-O or ELF): bundling may rewrite it (macOS code signing, the AppImage's
- *  RPATH patching), so its bytes are not compared; it must still be there and non-empty. */
+ *  RPATH patching), so where that happens its identity is compared instead of its bytes. */
 const isCode = (b) => b.length >= 4 && ["cffaedfe", "cefaedfe", "cafebabe", "bebafeca", "feedfacf", "feedface", "7f454c46"].includes(b.subarray(0, 4).toString("hex"));
 
 function defaults(o) {
@@ -148,7 +152,8 @@ export function checkStaged(o) {
   const exp = expectedFromStaged(o);
   const problems = [];
   const pinned = [];
-  const pins = readPins(o.pins);
+  const pins = readPins(o.pins) ?? [];
+  if (readPins(o.pins) === null) problems.push(`${path.basename(o.pins)} is missing (${o.pins}): the pinned digests cannot be checked`);
   const pinCheck = (rel, abs) => {
     const base = path.basename(abs);
     // A pin names this file when it is the same name, or (for a target-suffixed sidecar, staged as
@@ -192,8 +197,159 @@ export function checkStaged(o) {
   return { problems, pinned, expected: exp };
 }
 
+// ---- code identity (#707 review P2): what bundling keeps of an executable ---------------------
+
+class Unreadable extends Error {}
+const need = (cond) => {
+  if (!cond) throw new Unreadable("truncated or malformed");
+};
+const cstr = (b, off, len) => {
+  const s = b.subarray(off, off + len);
+  const z = s.indexOf(0);
+  return (z >= 0 ? s.subarray(0, z) : s).toString("latin1");
+};
+
+/** One thin Mach-O slice: its CPU type and LC_UUID (code signing keeps both), else __TEXT,__text. */
+function machSlice(b) {
+  need(b.length >= 28);
+  const m = b.subarray(0, 4).toString("hex");
+  const is64 = m === "cffaedfe";
+  need(is64 || m === "cefaedfe");
+  const cpu = b.readUInt32LE(4);
+  const ncmds = b.readUInt32LE(16);
+  let off = is64 ? 32 : 28;
+  let uuid = null;
+  let text = null;
+  for (let i = 0; i < ncmds; i++) {
+    need(off + 8 <= b.length);
+    const cmd = b.readUInt32LE(off);
+    const size = b.readUInt32LE(off + 4);
+    need(size >= 8 && off + size <= b.length);
+    if (cmd === 0x1b) {
+      need(size >= 24);
+      uuid = b.subarray(off + 8, off + 24).toString("hex");
+    } else if (cmd === 0x19 || cmd === 0x1) {
+      const nsects = b.readUInt32LE(off + (cmd === 0x19 ? 64 : 48));
+      const first = off + (cmd === 0x19 ? 72 : 56);
+      const each = cmd === 0x19 ? 80 : 68;
+      for (let k = 0; k < nsects; k++) {
+        const so = first + k * each;
+        need(so + each <= off + size);
+        if (cstr(b, so, 16) === "__text" && cstr(b, so + 16, 16) === "__TEXT") {
+          const sz = cmd === 0x19 ? Number(b.readBigUInt64LE(so + 40)) : b.readUInt32LE(so + 36);
+          const fo = b.readUInt32LE(so + (cmd === 0x19 ? 48 : 40));
+          need(fo + sz <= b.length);
+          text = sha(b.subarray(fo, fo + sz));
+        }
+      }
+    }
+    off += size;
+  }
+  need(uuid !== null || text !== null);
+  return uuid !== null ? `cpu ${cpu} uuid ${uuid}` : `cpu ${cpu} text ${text}`;
+}
+
+/** An ELF file: e_machine and the GNU build-id (RPATH patching keeps it), else the .text bytes. */
+function elfIdentity(b) {
+  need(b.length >= 52 && b.subarray(0, 4).toString("latin1") === "\x7fELF");
+  const is64 = b[4] === 2;
+  need(is64 || b[4] === 1);
+  const le = b[5] === 1;
+  const u16 = (o) => (need(o + 2 <= b.length), le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+  const u32 = (o) => (need(o + 4 <= b.length), le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+  const u64 = (o) => (need(o + 8 <= b.length), Number(le ? b.readBigUInt64LE(o) : b.readBigUInt64BE(o)));
+  const machine = u16(18);
+  const shoff = is64 ? u64(0x28) : u32(0x20);
+  const shentsize = u16(is64 ? 0x3a : 0x2e);
+  const shnum = u16(is64 ? 0x3c : 0x30);
+  const shstrndx = u16(is64 ? 0x3e : 0x32);
+  need(shnum > 0 && shstrndx < shnum && shentsize >= (is64 ? 64 : 40));
+  const sec = (i) => {
+    const o = shoff + i * shentsize;
+    return { name: u32(o), off: is64 ? u64(o + 24) : u32(o + 16), size: is64 ? u64(o + 32) : u32(o + 20) };
+  };
+  const strtab = sec(shstrndx);
+  need(strtab.off + strtab.size <= b.length);
+  let id = null;
+  let text = null;
+  for (let i = 0; i < shnum; i++) {
+    const s = sec(i);
+    const name = cstr(b, strtab.off + s.name, Math.max(0, strtab.size - s.name));
+    if (name === ".note.gnu.build-id") {
+      need(s.off + s.size <= b.length && s.size >= 12);
+      const namesz = u32(s.off);
+      const descsz = u32(s.off + 4);
+      const type = u32(s.off + 8);
+      const desc = s.off + 12 + Math.ceil(namesz / 4) * 4;
+      need(desc + descsz <= s.off + s.size);
+      if (type === 3 && cstr(b, s.off + 12, namesz) === "GNU") id = b.subarray(desc, desc + descsz).toString("hex");
+    } else if (name === ".text") {
+      need(s.off + s.size <= b.length);
+      text = sha(b.subarray(s.off, s.off + s.size));
+    }
+  }
+  need(id !== null || text !== null);
+  return id !== null ? `machine ${machine} build-id ${id}` : `machine ${machine} text ${text}`;
+}
+
+/** What identifies an executable across bundling: per-slice CPU type + LC_UUID for Mach-O
+ *  (thin or fat), e_machine + GNU build-id for ELF (each falling back to the text section's
+ *  sha256). Read from the bytes only. Throws "cannot read" for a malformed file. */
+export function codeIdentity(b) {
+  try {
+    const m = b.subarray(0, 4).toString("hex");
+    if (m === "cafebabe" || m === "cafebabf") {
+      const n = b.readUInt32BE(4);
+      need(n > 0 && n <= 32);
+      const wide = m === "cafebabf";
+      const slices = [];
+      for (let i = 0; i < n; i++) {
+        const e = 8 + i * (wide ? 32 : 20);
+        need(e + (wide ? 32 : 20) <= b.length);
+        const off = wide ? Number(b.readBigUInt64BE(e + 8)) : b.readUInt32BE(e + 8);
+        const size = wide ? Number(b.readBigUInt64BE(e + 16)) : b.readUInt32BE(e + 12);
+        need(off + size <= b.length);
+        slices.push(machSlice(b.subarray(off, off + size)));
+      }
+      return { kind: "macho", slices };
+    }
+    if (m === "cffaedfe" || m === "cefaedfe") return { kind: "macho", slices: [machSlice(b)] };
+    if (m === "7f454c46") return { kind: "elf", slices: [elfIdentity(b)] };
+  } catch (e) {
+    if (!(e instanceof Unreadable) && !(e instanceof RangeError)) throw e;
+  }
+  throw new Error("cannot read its code identity (not a well-formed Mach-O or ELF file)");
+}
+
+/** Compare a staged file with its bundled copy. `exact`: bytes only (a .deb changes nothing). */
+function compareFile(stagedPath, bundledPath, label, exact, problems) {
+  const staged = fs.readFileSync(stagedPath);
+  const bundled = fs.readFileSync(bundledPath);
+  if (exact || !isCode(staged)) {
+    if (sha(bundled) !== sha(staged)) problems.push(`${label} differs from the staged file`);
+    return;
+  }
+  let want;
+  let got;
+  try {
+    want = codeIdentity(staged);
+  } catch (e) {
+    problems.push(`${label}: the staged file: ${e.message}`);
+    return;
+  }
+  try {
+    got = codeIdentity(bundled);
+  } catch (e) {
+    problems.push(`${label}: ${e.message}`);
+    return;
+  }
+  if (JSON.stringify(want) !== JSON.stringify(got)) {
+    problems.push(`${label} is not the staged build (staged ${want.slices.join(", ")}; bundled ${got.slices.join(", ")})`);
+  }
+}
+
 /** A built bundle laid out as `binDir` (executables by bare name) and `resDir` (resources). */
-export function checkLayout(o, binDir, resDir) {
+export function checkLayout(o, binDir, resDir, { exact = false } = {}) {
   o = defaults(o);
   const exp = expectedFromStaged(o);
   const problems = [];
@@ -204,6 +360,7 @@ export function checkLayout(o, binDir, resDir) {
     if (!st || !st.isFile()) problems.push(`${binLabel}/${bin.name} is missing`);
     else if (st.size === 0) problems.push(`${binLabel}/${bin.name} is empty`);
     else if ((st.mode & 0o111) === 0) problems.push(`${binLabel}/${bin.name} is not executable`);
+    else if (fs.existsSync(bin.staged)) compareFile(bin.staged, p, `${binLabel}/${bin.name}`, exact, problems);
   }
   for (const r of exp.resources) {
     const p = path.join(resDir, r.bundled);
@@ -212,12 +369,11 @@ export function checkLayout(o, binDir, resDir) {
       problems.push(`${r.bundled} is missing`);
       continue;
     }
-    const staged = fs.readFileSync(r.staged);
-    if (isCode(staged)) {
-      if (st.size === 0) problems.push(`${r.bundled} is empty`);
+    if (st.size === 0) {
+      problems.push(`${r.bundled} is empty`);
       continue;
     }
-    if (sha(fs.readFileSync(p)) !== sha(staged)) problems.push(`${r.bundled} differs from the staged file`);
+    compareFile(r.staged, p, r.bundled, exact, problems);
   }
   return { problems, checked: { binaries: exp.binaries.length, resources: exp.resources.length } };
 }
@@ -309,7 +465,9 @@ function inspect(cmd, rest, o, staged, usage, keepScratch) {
     binDir = path.join(root, "usr", "bin");
     resDir = path.join(root, "usr", "lib", staged.expected.productName);
   } else usage();
-  const r = checkLayout(o, binDir, resDir);
+  // A .deb copies every file as staged: full bytes, sidecars included. Code signing (.app) and the
+  // AppImage's RPATH patching rewrite executables, so there their code identity is compared.
+  const r = checkLayout(o, binDir, resDir, { exact: cmd === "deb" });
   return { what: `${cmd} bundle`, problems: r.problems, ok: `${r.checked.binaries} sidecars and ${r.checked.resources} resource files present` };
 }
 
