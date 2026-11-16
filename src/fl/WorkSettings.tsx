@@ -123,8 +123,8 @@ export function WorkSettingsView(p: WorkSettingsViewProps) {
         { k: "Name", v: caps.name },
         { k: "Joins per week", v: String(caps.joinsPerWeek) },
         { k: "Machine hours per round", v: String(caps.maxHoursPerRound) },
-        { k: "Always asks", v: "The first join in any new group or with a new poster needs your tap." },
-        { k: "Within your terms", v: "Never below your floor or outside your hours. Offer text can never change it." },
+        { k: "Once rounds are live", v: "The first join in any new group or with a new poster will need your tap, and the envelope will never go below your floor or outside your hours. No round can be joined on this network yet." },
+        { k: "Offer text", v: "Can never change the envelope." },
         { k: "Turn off", v: "Any time, at once, with no card." },
       ],
       cost: "none, no chain transaction",
@@ -355,15 +355,18 @@ export function WorkSettingsView(p: WorkSettingsViewProps) {
                 </div>
               </>
             )}
+            <p style={{ margin: 0, fontSize: 12.5, maxWidth: 820 }} data-testid="env-rules-when">
+              These rules apply once rounds are live on this network. Until then no round can be joined, with or without an envelope.
+            </p>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6, maxWidth: 820 }}>
               <li>
-                <b style={{ fontWeight: 500 }}>Always asks:</b> the first join in any new group or with a new poster needs your tap.
+                <b style={{ fontWeight: 500 }}>Always asks:</b> the first join in any new group or with a new poster will need your tap.
               </li>
               <li>
                 <b style={{ fontWeight: 500 }}>Fixed:</b> offer text can never change the envelope.
               </li>
               <li>
-                <b style={{ fontWeight: 500 }}>Within your terms:</b> the envelope never goes below your floor or outside your hours.
+                <b style={{ fontWeight: 500 }}>Within your terms:</b> the envelope will never go below your floor or outside your hours.
               </li>
             </ul>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

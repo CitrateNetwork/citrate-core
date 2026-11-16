@@ -148,6 +148,18 @@ describe("Envelope (HIC-2)", () => {
     expect(m.el.querySelector('[data-testid="env-state"]')!.textContent).toContain("On");
     m.done();
   });
+  it("#700 review: the rules are said to apply once rounds are live (nothing enforces them yet)", async () => {
+    const m = await mount();
+    await m.click("Envelope (HIC-2)");
+    expect(m.el.querySelector('[data-testid="env-rules-when"]')!.textContent).toBe("These rules apply once rounds are live on this network. Until then no round can be joined, with or without an envelope.");
+    expect(m.el.textContent).toContain("will need your tap");
+    expect(m.el.textContent).not.toContain("never goes below");
+    await m.click("Approve this envelope");
+    const spec = (m.requestSig.mock.calls[0] as unknown[])[0] as { rows: { k: string; v: string }[] };
+    expect(spec.rows.find((r) => r.k === "Once rounds are live")!.v).toContain("No round can be joined on this network yet.");
+    expect(spec.rows.some((r) => r.k === "Always asks")).toBe(false);
+    m.done();
+  });
   it("declining the card changes nothing", async () => {
     const m = await mount({ sig: "rejected" });
     await m.click("Envelope (HIC-2)");
