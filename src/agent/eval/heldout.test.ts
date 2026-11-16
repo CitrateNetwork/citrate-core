@@ -48,15 +48,15 @@ describe("held-out normalization", () => {
 // trainer rows name the 35 parity-v1 tools, so a renamed or added tool fails one side until both
 // are updated. CORE-A1/A2 (2026-11-04) added six read-only contract tools (29 -> 35); 0.5.4 WP-H9
 // (2026-11-15) added the three adapter tools (35 -> 38); WP-H6 (2026-11-16) the four dataset tools
-// (38 -> 42). compute-pool follows in its own PR.
-const PARITY_V1_TOOL_NAMES_SHA256 = "11a30efcf51f5d3998163551777927938474d6f53c37dcd0bde10d2b8081cd3a";
+// (38 -> 42); the 0.5.4 integration (2026-11-16) lands every approved lane's tools (74). compute-pool follows in its own PR.
+const PARITY_V1_TOOL_NAMES_SHA256 = "cf392cbcb0a7be3e0d52eefbce5a69dbf9dc46275e029a8cb1829646e8083187";
 
 describe("parity-v1 tool names (the trainer's tool schema)", () => {
-  it("are the 42 names compute-pool trains against", () => {
+  it("are the 74 names compute-pool trains against", () => {
     const parity = JSON.parse(readFileSync(resolve(process.cwd(), "src/agent/parity/parity-v1.json"), "utf8")) as {
       tools: { name: string }[];
     };
-    expect(parity.tools).toHaveLength(42);
+    expect(parity.tools).toHaveLength(74);
     expect(sha(parity.tools.map((t) => t.name).join("\n"))).toBe(PARITY_V1_TOOL_NAMES_SHA256);
   });
 });
