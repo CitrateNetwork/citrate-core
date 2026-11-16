@@ -20,6 +20,7 @@ import { AdaptersView } from "./Adapters";
 import { NoLiveRound } from "./LiveRound";
 import { PayoutsView, usePayoutsRecords } from "./Payouts";
 import { OpenRoundView } from "./OpenRound";
+import { DatasetsView } from "./Datasets";
 import { BLANK_DRAFT, loadRoundDraft, openIntent, type RoundDraft } from "./roundDraft";
 import { groupsSlice } from "../shell/slices/groups";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
@@ -141,7 +142,7 @@ function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: App
   );
 }
 
-function NotLiveSubtab({ route, s, go, store }: { route: string; s: AppState; go: (r: string) => void; store: Store }) {
+function NotLiveSubtab({ route, s, go, toast, store }: { route: string; s: AppState; go: (r: string) => void; toast: (m: string) => void; store: Store }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
@@ -162,15 +163,8 @@ function NotLiveSubtab({ route, s, go, store }: { route: string; s: AppState; go
       // Board 07: the four steps; no Open button until WorkMarket is on this network.
       return <OpenRoundRoute state={state} s={s} go={go} store={store} />;
     case ROUNDS_ROUTES.datasets:
-      return (
-        <RoundsNotLive
-          testid="rounds-datasets-not-live"
-          state={state}
-          contracts={["DatasetRegistry", "WorkMarket"]}
-          headline="Publishing a dataset needs the DatasetRegistry contract on this network."
-          lead="Datasets stay on this device. Recording one on chain waits for DatasetRegistry."
-        />
-      );
+      // Board 08: local datasets (core's training-set builder) and the honest states for the rest.
+      return <DatasetsView state={state} fl={bridge.flRounds} toast={toast} go={go} />;
     case ROUNDS_ROUTES.payouts:
       // Board 10: receipts (dark or not deployed in this build) and the device's history.
       return <PayoutsRoute state={state} s={s} go={go} />;
@@ -187,6 +181,6 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
       // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
       return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
-      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} store={store} />;
+      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} toast={(m) => store.toast(m)} store={store} />;
   }
 }

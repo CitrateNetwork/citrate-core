@@ -468,7 +468,7 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
   const { store } = await import("../shell/store");
   const { freshState } = await import("../shell/state");
   const html = (route: string) => renderToStaticMarkup(<PlaceView store={store} s={{ ...freshState("p1"), stage: "done", route }} />);
-  for (const route of ["groups/rounds/live", "groups/rounds/datasets"]) {
+  for (const route of ["groups/rounds/live"]) {
     it(`${route}: Group rounds not live yet, the contract table, no banned words`, () => {
       const h = html(route);
       expect(h).toContain("Group rounds not live yet");
@@ -496,6 +496,12 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
   it("#695 review: the Payouts page passes the banned-words check (both panes)", () => {
     const el = document.createElement("div");
     el.innerHTML = html("groups/rounds/payouts");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
+  it("the Datasets page passes the banned-words check", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/datasets");
     el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
     expect(el.textContent ?? "").not.toMatch(BANNED);
   });

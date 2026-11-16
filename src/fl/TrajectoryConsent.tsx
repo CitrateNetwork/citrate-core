@@ -16,12 +16,20 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const label: React.CSSProperties = { fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" };
 const para: React.CSSProperties = { fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 };
 
-export function TrajectoryConsent({ fl, toast }: { fl: FlRoundsDomain; toast: (m: string) => void }) {
-  const [st, setSt] = useState<FlTrajectoryStatus | null>(null);
+export function TrajectoryConsent({ fl, toast, onStatus, onBuilt }: { fl: FlRoundsDomain; toast: (m: string) => void; onStatus?: (s: FlTrajectoryStatus) => void; onBuilt?: (b: FlTrainingSet) => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [deleteRecorded, setDeleteRecorded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [built, setBuilt] = useState<FlTrainingSet | null>(null);
+  const [built, setBuiltState] = useState<FlTrainingSet | null>(null);
+  const setBuilt = (b: FlTrainingSet | null) => {
+    setBuiltState(b);
+    if (b) onBuilt?.(b);
+  };
+  const [st, setStState] = useState<FlTrajectoryStatus | null>(null);
+  const setSt = (x: FlTrajectoryStatus) => {
+    setStState(x);
+    onStatus?.(x);
+  };
 
   useEffect(() => {
     fl.trajectoryStatus().then(
