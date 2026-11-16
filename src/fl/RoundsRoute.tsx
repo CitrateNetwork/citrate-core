@@ -17,6 +17,7 @@ import { machineFrom, readMarket } from "./market";
 import { JOIN_SIGNATURE, joinCalldata, MatchesView, useMarket } from "./Matches";
 import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
+import { NoLiveRound } from "./LiveRound";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
@@ -82,15 +83,21 @@ function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-function NotLiveSubtab({ route, s }: { route: string; s: AppState }) {
+function NotLiveSubtab({ route, s, go }: { route: string; s: AppState; go: (r: string) => void }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
     case ROUNDS_ROUTES.live:
+      // Board 06: the live round view (LiveRound.tsx) needs a joined round; this build has no
+      // per-lease read model, so with WorkMarket deployed it says there is none to show.
       return (
         <>
           {band}
-          <RoundsNotLive testid="rounds-live-not-live" state={state} headline="There is no live round to show on this network yet." lead="A live round appears here once you join one. Rounds are offered through the WorkMarket contract." />
+          {state.phase === "rounds-live" ? (
+            <NoLiveRound go={go} />
+          ) : (
+            <RoundsNotLive testid="rounds-live-not-live" state={state} headline="There is no live round to show on this network yet." lead="A live round appears here once you join one. Rounds are offered through the WorkMarket contract." />
+          )}
         </>
       );
     case ROUNDS_ROUTES.open:
@@ -135,6 +142,6 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
       // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
       return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
-      return <NotLiveSubtab route={route} s={s} />;
+      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} />;
   }
 }
