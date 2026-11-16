@@ -15,6 +15,17 @@ export function saltFromWei(wei: bigint, digits = 2): string {
   return (neg ? "-" : "") + whole.toLocaleString("en-US") + (digits > 0 ? "." + f : "");
 }
 
+/** Wei as SALT with every significant decimal (never truncated): 90000000000000n → "0.00009".
+ *  For screens that show exactly what is signed. At least two decimals. */
+export function saltExact(wei: bigint): string {
+  const neg = wei < 0n;
+  const v = neg ? -wei : wei;
+  const whole = v / WEI;
+  let frac = (v % WEI).toString().padStart(18, "0").replace(/0+$/, "");
+  if (frac.length < 2) frac = frac.padEnd(2, "0");
+  return (neg ? "-" : "") + whole.toLocaleString("en-US") + "." + frac;
+}
+
 /** "10.50 SALT" */
 export function saltText(wei: bigint, digits = 2): string {
   return saltFromWei(wei, digits) + " SALT";

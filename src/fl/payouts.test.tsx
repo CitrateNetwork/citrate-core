@@ -49,6 +49,7 @@ function mount(state: FlNetworkState, extra: { receipts?: Receipt[] | null; pull
         receipts={extra.receipts === undefined ? null : extra.receipts}
         pullWei={extra.pullWei === undefined ? null : extra.pullWei}
         wallet={"0x5b02" + "0".repeat(32) + "19fe"}
+        chainNow={Date.UTC(2026, 10, 20, 10, 0) / 1000}
         ov={extra.ov === undefined ? ov : extra.ov}
         ovError={null}
         go={() => {}}
@@ -96,10 +97,14 @@ describe("Payouts states (StateMatrix)", () => {
     m.done();
   });
   it("Pending: Waiting for dispute window, with a Dispute action", async () => {
-    const m = mount(await open(), { receipts: [{ line, status: "waiting", disputeEndBlock: 1_214_511 }], pullWei: 0n });
+    const m = mount(await open(), { receipts: [{ line, status: "waiting", disputeEndsAt: Date.UTC(2026, 10, 20, 12, 0) / 1000 }], pullWei: 0n });
     expect(m.el.textContent).toContain("Waiting for dispute window");
     m.click("Dispute");
-    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("ends at block 1,214,511");
+    // PAY-13: the window is said in time against the chain's clock, never in blocks.
+    const d = document.querySelector('[role="dialog"]')!;
+    expect(d.textContent).toContain("ends 2026-11-20 12:00 UTC, in about 2 h");
+    expect(d.textContent).not.toMatch(/block/);
+    expect(d.textContent).toContain("A dispute pays the disputer nothing.");
     m.done();
   });
   it("Success: Claimable → the claim review in SALT only → handed to the wallet review", async () => {
@@ -108,7 +113,7 @@ describe("Payouts states (StateMatrix)", () => {
     m.click("Claim");
     const d = document.querySelector('[role="dialog"]')!;
     expect(d.textContent).toContain("HIC-1");
-    expect(d.textContent).toContain("Your WorkMarket pull balance, then withdraw to your wallet");
+    expect(d.textContent).toContain("Your WorkMarket pull balance, with your join bond released, then withdraw to your wallet");
     expect(d.textContent).not.toMatch(/USD|\$|earn/);
     m.click("Sign");
     await act(async () => {});
@@ -123,6 +128,17 @@ describe("Payouts states (StateMatrix)", () => {
     expect(m.el.textContent).toContain("10.50 SALT");
     m.click("Withdraw to wallet");
     expect(document.querySelector('[role="dialog"]')!.textContent).toContain("Withdraw to your wallet");
+    m.done();
+  });
+  it("PAY-15: a second press while signing hands nothing over", async () => {
+    let release!: () => void;
+    const m = mount(await open(), { receipts: [{ line, status: "claimable" }], pullWei: 0n, act: () => new Promise<void>((r) => (release = r)) });
+    m.click("Claim");
+    m.click("Sign");
+    expect([...document.querySelectorAll('[role="dialog"] button')].map((b) => b.textContent)).not.toContain("Sign");
+    expect(document.querySelector('[role="status"]')!.textContent).toContain("Reviewed by you");
+    await act(async () => release());
+    expect(m.actFn).toHaveBeenCalledTimes(1);
     m.done();
   });
   it("Failure: a refused hand-off is Not sent with the reason", async () => {
