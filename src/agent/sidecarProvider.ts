@@ -299,6 +299,8 @@ export function createSidecarProvider(
     // HUP-S1.1 (g1-render): streamed text of the current step. A resumed view missed the start of
     // the step it came back into, so it shows that step's answer from its final event instead.
     let stepText = "";
+    // #681: the sidecar said the next `final` is a corrected answer.
+    let answerChecked = false;
     let streamDeltas = !resumed;
     let shownText = false;
     const show = (text: string) => {
@@ -585,9 +587,22 @@ export function createSidecarProvider(
               started.delete(call.id);
               persist(seq);
             }
+          } else if (type === "answer_check") {
+            // #681: the sidecar's final-answer check corrected this answer; the final that follows
+            // replaces what was streamed, so the uncorrected text never stays on screen.
+            answerChecked = true;
+            const findings = Array.isArray(ev.findings) ? ev.findings.filter((x): x is string => typeof x === "string") : [];
+            callbacks.onActivity?.({ kind: "answer_check", findings });
           } else if (type === "final") {
             final = String(ev.content ?? "");
-            if (runId === null) {
+            if (runId === null && answerChecked && stepText !== "" && callbacks.onRewrite) {
+              callbacks.onStatus("streaming");
+              callbacks.onRewrite(stepText, final);
+              shownText = true;
+              stepText = "";
+              answerChecked = false;
+            } else if (runId === null) {
+              answerChecked = false;
               // Show only what the streamed text has not shown yet (the whole answer when nothing
               // was streamed), so an answer never appears twice.
               const rest =

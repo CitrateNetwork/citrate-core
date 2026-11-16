@@ -65,6 +65,10 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 /// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
 /// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
+/// #681: the 40204 RPC the sidecar's final-answer deploy-claim check reads eth_getCode from.
+pub const HERMES_CHAIN_RPC_ENV: &str = "CITRATE_HERMES_CHAIN_RPC";
+/// #681 review: this executable, so the sidecar can tell core's node MCP server from any other.
+pub const HERMES_CORE_EXE_ENV: &str = "CITRATE_HERMES_CORE_EXE";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -429,6 +433,9 @@ pub struct HermesManager {
     /// K5a: the environment the running child was started with (paths and flags; never a token,
     /// which the child reads from a file). The daemon book reads which host tool sets are on.
     started_env: Mutex<Option<Vec<(String, String)>>>,
+    /// #681 review: the allowlist this Hermes was started with names core's own node entry as
+    /// `node` (and nothing else as `node`). Read before the child starts, cleared on stop.
+    node_entry_core: std::sync::atomic::AtomicBool,
     /// The bearer-authed control transport (production ureq; tests inject a mock).
     control: Box<dyn HermesControl>,
     /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id minted for it.
@@ -494,6 +501,7 @@ impl HermesManager {
             token: Mutex::new(None),
             sup: Mutex::new(None),
             started_env: Mutex::new(None),
+            node_entry_core: std::sync::atomic::AtomicBool::new(false),
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
@@ -645,7 +653,23 @@ impl HermesManager {
                 HERMES_TOKEN_FILE_ENV.to_string(),
                 self.token_path.to_string_lossy().to_string(),
             ),
+            // #681: the sidecar checks every final answer for deploy claims (whoever started the
+            // turn: this app, the `citrate hermes` CLI, or a node MCP client) and reads
+            // eth_getCode on 40204 from the same RPC core's contract_get_code uses.
+            (
+                HERMES_CHAIN_RPC_ENV.to_string(),
+                citrate_core_kit::rpc::CITRATE_RPC_URL.to_string(),
+            ),
         ];
+        // #681 review: the node MCP server core registers runs as this executable
+        // (`hermes_mcp` node entry, `--mcp-stdio`). The sidecar takes MCP results as deploy
+        // evidence only from that server, never from a same-named one.
+        if let Some(exe) = std::env::current_exe().ok().filter(|p| p.is_absolute()) {
+            spec.env.push((
+                HERMES_CORE_EXE_ENV.to_string(),
+                exe.to_string_lossy().to_string(),
+            ));
+        }
         // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.
         if let Some(dir) = &self.capsules_dir {
             spec.env.push((
@@ -769,6 +793,32 @@ impl HermesManager {
             .and_then(|s| s.status().pid)
     }
 
+    /// #681 review: record whether the MCP allowlist in `env` (the one this start hands the child)
+    /// gives the name `node` to core's own node entry, run as this executable.
+    fn note_node_entry(&self, env: &[(String, String)]) {
+        let path = env
+            .iter()
+            .find(|(k, _)| k == crate::hermes_mcp::MCP_CONFIG_ENV)
+            .map(|(_, v)| std::path::PathBuf::from(v));
+        let ours = std::env::current_exe()
+            .ok()
+            .is_some_and(|exe| crate::hermes_mcp::node_entry_in_file(path.as_deref(), &exe));
+        self.node_entry_core
+            .store(ours, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// #681 review: whether this Hermes's `node` MCP server is core's own node entry.
+    pub fn node_server_is_core(&self) -> bool {
+        self.node_entry_core
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test hook: record the node entry from `env` as a start would.
+    #[cfg(test)]
+    pub fn note_node_entry_for_test(&self, env: &[(String, String)]) {
+        self.note_node_entry(env);
+    }
+
     /// Test hook: expose the spec env for the wiring proof (addr + token-file path, never a token).
     #[cfg(test)]
     pub fn spec_env_for_test(&self) -> Vec<(String, String)> {
@@ -831,6 +881,7 @@ impl HermesManager {
             let inherited = std::env::vars_os()
                 .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
             env_used = Some(effective_child_env(inherited, &spec.env));
+            self.note_node_entry(&spec.env);
             let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
             // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
             config.slow_retry = crate::services::slow_retry_every();
@@ -871,6 +922,8 @@ impl HermesManager {
             guard.take()
         };
         *self.started_env.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.node_entry_core
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);

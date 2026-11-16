@@ -258,6 +258,7 @@ commands.allow = [
   "hermes_session_open_cloud",
   "hermes_session_send",
   "hermes_session_events",
+  "hermes_node_mcp_trusted",
   "hermes_session_tool_result",
   "hermes_session_stop",
   "hermes_shell_pending",

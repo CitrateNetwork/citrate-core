@@ -95,6 +95,64 @@ fn start_refuses_when_binary_missing() {
 }
 
 #[test]
+fn spec_env_points_the_answer_check_at_the_40204_rpc() {
+    // #681: the sidecar checks deploy claims in every final answer against eth_getCode here.
+    let (mgr, _dir) = stub_manager("chainrpc");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(HERMES_CHAIN_RPC_ENV).map(String::as_str),
+        Some(citrate_core_kit::rpc::CITRATE_RPC_URL)
+    );
+}
+
+#[test]
+fn spec_env_names_this_executable_for_the_node_server_check() {
+    // #681 review: the sidecar trusts MCP deploy evidence only from the node server that runs as
+    // this executable with --mcp-stdio (the node entry hermes_mcp renders).
+    let (mgr, _dir) = stub_manager("coreexe");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    let exe = std::env::current_exe().expect("exe");
+    assert_eq!(
+        env.get(HERMES_CORE_EXE_ENV).map(String::as_str),
+        Some(exe.to_string_lossy().as_ref())
+    );
+    assert_eq!(crate::node_mcp_http::STDIO_FLAG, "--mcp-stdio");
+    assert_eq!(crate::hermes_mcp::NODE_SERVER_NAME, "node");
+}
+
+#[test]
+fn a_start_records_whether_the_node_server_is_cores_own() {
+    // #681 review 2: the chat view trusts the sidecar's `node` results only when the allowlist
+    // this Hermes was started with names core's own node entry (this executable, --mcp-stdio).
+    let (mgr, dir) = stub_manager("nodeentry");
+    let exe = std::env::current_exe().expect("exe");
+    let path = dir.join("mcp.json");
+    let env = vec![(
+        crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
+        path.to_string_lossy().to_string(),
+    )];
+    let ours = serde_json::json!({"servers": [{"name": "node", "transport": "stdio", "command": exe.to_string_lossy(), "args": ["--mcp-stdio"]}]});
+    std::fs::write(&path, ours.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    assert!(mgr.node_server_is_core());
+    // A member-configured `node` (another program) is not core's.
+    let member = serde_json::json!({"servers": [{"name": "node", "transport": "stdio", "command": "/usr/local/bin/evil-mcp", "args": ["--mcp-stdio"]}]});
+    std::fs::write(&path, member.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    assert!(!mgr.node_server_is_core());
+    // No MCP allowlist at all: no.
+    mgr.note_node_entry_for_test(&[]);
+    assert!(!mgr.node_server_is_core());
+    // Stopping forgets it.
+    std::fs::write(&path, ours.to_string()).expect("write");
+    mgr.note_node_entry_for_test(&env);
+    mgr.stop();
+    assert!(!mgr.node_server_is_core());
+}
+
+#[test]
 fn spec_env_carries_addr_and_token_path_never_the_token() {
     let (mgr, _dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =

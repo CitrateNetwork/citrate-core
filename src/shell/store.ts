@@ -70,7 +70,7 @@ import {
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
-import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
+import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, sidecarToolOrigin, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -3532,6 +3532,8 @@ export class Store {
     };
     // #643: the resumed turn's tool results (what this view saw), for the final-answer check.
     const toolOutputs: TurnToolOutput[] = [];
+    // #681: whether the sidecar's `node` MCP server is core's own node entry.
+    const nodeIsCore = await this.nodeMcpTrusted();
     try {
       const r = await provider.reattach({
         signal: ac.signal,
@@ -3554,7 +3556,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, msgId, ensure, meta);
-              toolOutputs.push({ tool: call.name, content: result });
+              toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3573,7 +3575,7 @@ export class Store {
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
             } else if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
               // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
@@ -3792,6 +3794,7 @@ export class Store {
       },
       handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
       checkReply: (reply, outputs) => this.checkDaemonReply(reply, outputs),
+      nodeMcpTrusted: () => this.nodeMcpTrusted(),
     });
   }
 
@@ -3843,6 +3846,8 @@ export class Store {
     const asstId = "m" + ++this.mid;
     // #643: this turn's tool results, for the final-answer check on deploy claims.
     const toolOutputs: TurnToolOutput[] = [];
+    // #681: whether the sidecar's `node` MCP server is core's own node entry.
+    const nodeIsCore = await this.nodeMcpTrusted();
     let started = false;
     const ensure = () => {
       if (started) return;
@@ -3896,6 +3901,17 @@ export class Store {
             pending += tk;
             if (flushTimer === null) flushTimer = setTimeout(flush, 32);
           },
+          // #681: the sidecar corrected the answer it streamed; the corrected text replaces it.
+          onRewrite: (streamed, replacement) => {
+            if (stopped()) return;
+            ensure();
+            flush();
+            patch((m) => ({
+              ...m,
+              text: streamed !== "" && m.text.endsWith(streamed) ? m.text.slice(0, m.text.length - streamed.length) + replacement : m.text + (m.text ? "\n\n" : "") + replacement,
+            }));
+            this.scrollChat();
+          },
           onToolCall: async (call, meta) => {
             // HUP-S7.6: a call from a stopped turn is not run.
             if (stopped()) return "stopped by the member before this ran; nothing was done.";
@@ -3903,7 +3919,7 @@ export class Store {
             toolStarted(call.id, call.name);
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
-              toolOutputs.push({ tool: call.name, content: result });
+              toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
               return result;
             } catch (e) {
@@ -3931,9 +3947,16 @@ export class Store {
               this.toast(ev.text);
               return;
             }
+            // #681: the sidecar's own check corrected this answer: say so on the reply.
+            if (ev.kind === "answer_check") {
+              ensure();
+              patch((m) => (m.chips.some((c) => c.label === DEPLOY_CLAIM_CHIP) ? m : { ...m, chips: m.chips.concat([{ label: DEPLOY_CLAIM_CHIP, status: "declined" }]) }));
+              if (ev.findings.length) console.warn("#681 sidecar answer check:", ev.findings.join("; "));
+              return;
+            }
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
-              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content });
+              toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
@@ -3995,14 +4018,29 @@ export class Store {
     return l;
   }
 
+  /** #681: whether the MCP server Hermes knows as `node` is core's own node entry (core checked
+   *  the allowlist it started Hermes with). Anything else, an error included, is "no". */
+  private async nodeMcpTrusted(): Promise<boolean> {
+    try {
+      return (await bridge.agentHarness.nodeMcpTrusted()) === true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * #643 — read a turn's tool results into the conversation's deploy ledger and return the
    * evidence for the final-answer check (src/agent/deployClaims.ts).
    */
-  private deployEvidence(outputs: TurnToolOutput[]): DeployEvidence {
+  private deployEvidence(outputs: TurnToolOutput[], answerId?: string): DeployEvidence {
+    // #681 review 3: Hermes's earlier replies (before the answer being checked), so "yes" to
+    // "Shall I deploy it?" reads as a deploy request.
+    const end = answerId === undefined ? -1 : this.state.chatMsgs.findIndex((m) => m.id === answerId);
+    const before = end < 0 ? this.state.chatMsgs : this.state.chatMsgs.slice(0, end);
     return collectDeployEvidence(outputs, {
       ledger: this.deployLedger(),
       memberTexts: this.state.chatMsgs.filter((m) => m.who === "You").map((m) => m.text),
+      assistantTexts: before.filter((m) => m.who !== "You").map((m) => m.text),
       memberWallet: this.state.walletAddr || null,
     });
   }
@@ -4017,7 +4055,7 @@ export class Store {
    * declined, unfunded, ...).
    */
   private async checkAnswerClaims(msgId: string, outputs: TurnToolOutput[]): Promise<void> {
-    const ev = this.deployEvidence(outputs);
+    const ev = this.deployEvidence(outputs, msgId);
     const msg = this.state.chatMsgs.find((m) => m.id === msgId);
     if (!msg || !msg.text) return;
     const checked = await checkDeployClaims(msg.text, ev, (a) => bridge.contracts.getCode(a));

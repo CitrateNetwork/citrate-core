@@ -89,6 +89,10 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async mcpSettings() {
       throw new Error("connected tools for Hermes are set in the desktop app");
     },
+    // #681: no sidecar, so no node MCP server core started; nothing from one is evidence.
+    async nodeMcpTrusted() {
+      return false;
+    },
     async mcpSet() {
       throw new Error("connected tools for Hermes are set in the desktop app");
     },

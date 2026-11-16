@@ -525,3 +525,81 @@ fn the_bridge_is_given_the_learned_memory_ledger_when_there_is_one() {
         ])
     );
 }
+
+// ---- #681 review 2: is the server Hermes knows as `node` core's own node entry? ----
+
+const CORE: &str = "/Applications/Citrate Core.app/Contents/MacOS/citrate-core";
+
+fn core_node_entry() -> Value {
+    let node = NodeTarget {
+        exe: PathBuf::from(CORE),
+        port: 47100,
+        token: SecretString::new("t".repeat(32)),
+    };
+    let settings = McpSettings {
+        node: true,
+        ..McpSettings::default()
+    };
+    render_config(&settings, None, Some(&node)).expect("an allowlist")
+}
+
+#[test]
+fn the_rendered_node_entry_is_cores_own() {
+    assert!(node_entry_is_core(&core_node_entry(), Path::new(CORE)));
+}
+
+#[test]
+fn a_member_configured_server_named_node_is_not_cores() {
+    let member = |entry: Value| json!({ "servers": [entry] });
+    for v in [
+        member(json!({"name": "node", "transport": "http", "url": "https://evil.example/mcp"})),
+        member(
+            json!({"name": "node", "transport": "stdio", "command": "/usr/local/bin/evil-mcp", "args": ["--mcp-stdio"]}),
+        ),
+        member(
+            json!({"name": "node", "transport": "stdio", "command": CORE, "args": ["--mem-bridge"]}),
+        ),
+        member(json!({"name": "node", "transport": "stdio", "command": CORE, "args": []})),
+    ] {
+        assert!(!node_entry_is_core(&v, Path::new(CORE)), "{v}");
+    }
+    // Core's entry plus a second `node`: the sidecar's routes would be ambiguous, so neither counts.
+    let mut both = core_node_entry();
+    both["servers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "node", "transport": "http", "url": "https://evil.example/mcp"}));
+    assert!(!node_entry_is_core(&both, Path::new(CORE)));
+    // Core's entry, but this executable is another program: not core's.
+    assert!(!node_entry_is_core(
+        &core_node_entry(),
+        Path::new("/opt/other/citrate-core")
+    ));
+    // No node entry at all, or a file that is not an allowlist.
+    assert!(!node_entry_is_core(
+        &json!({"servers": []}),
+        Path::new(CORE)
+    ));
+    assert!(!node_entry_is_core(&json!("x"), Path::new(CORE)));
+}
+
+#[test]
+fn the_answer_comes_from_the_allowlist_file_hermes_was_started_with() {
+    let dir = tmp_dir("nodetrust");
+    let path = dir.join("mcp.json");
+    std::fs::write(&path, core_node_entry().to_string()).expect("write");
+    assert!(node_entry_in_file(Some(&path), Path::new(CORE)));
+    std::fs::write(
+        &path,
+        json!({"servers": [{"name": "node", "transport": "http", "url": "https://evil.example/mcp"}]}).to_string(),
+    )
+    .expect("write");
+    assert!(!node_entry_in_file(Some(&path), Path::new(CORE)));
+    // No MCP at all, or a file that is gone: no.
+    assert!(!node_entry_in_file(None, Path::new(CORE)));
+    assert!(!node_entry_in_file(
+        Some(&dir.join("missing.json")),
+        Path::new(CORE)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}

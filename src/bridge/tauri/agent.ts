@@ -104,6 +104,9 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   mcpSettings() {
     return invoke<HermesMcpView>("hermes_mcp_settings");
   },
+  nodeMcpTrusted() {
+    return invoke<boolean>("hermes_node_mcp_trusted");
+  },
   mcpSet(settings) {
     return invoke<HermesMcpView>("hermes_mcp_set", { settings });
   },
