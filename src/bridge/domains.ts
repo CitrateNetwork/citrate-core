@@ -1679,18 +1679,24 @@ export interface AgentHarnessDomain {
   /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
-  sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
+  sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null, history?: SessionSeedTurn[] | null, branchOf?: string[] | null): Promise<string>;
   /** D-11 (ADR P-5/P-6) — the same session on the member's preferred cloud model (core reads it
    *  from its own setting, `providers.preferredGet`). The sidecar gets a loopback route to the core
    *  model proxy, never a key; refused under Local model only, with no preferred model, and when the
    *  provider is not connected in Settings › Models. Returns the session id. */
-  sessionOpenCloud(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
-  sessionSend(id: string, text: string): Promise<void>;
+  sessionOpenCloud(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null, history?: SessionSeedTurn[] | null, branchOf?: string[] | null): Promise<string>;
+  /** Resolves with the run id the sidecar gave the turn (#691: a steer names it), or null from an
+   *  older sidecar. */
+  sessionSend(id: string, text: string): Promise<string | null>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
   /** Hand back a core-hosted tool's result after core's own gates ran it. */
   sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   sessionStop(id: string): Promise<void>;
+  /** #691 — add the member's message to the running turn at its next step boundary. Resolves with
+   *  how many messages wait. Rejects with the sidecar's status in the message ("returned 409": no
+   *  running chat turn can take it; "returned 404": an older sidecar without the route). */
+  sessionSteer(id: string, runId: string, text: string): Promise<number>;
   /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
    *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
   /** K5a: `daemonId` lets core re-check a Store daemon against Hermes's current tools first;
@@ -1929,6 +1935,13 @@ export interface BriefDraft {
 }
 
 /** HUP-S1.1c — one page of a sidecar session's event log. */
+/** #693 review — one earlier message of a branched conversation, opened as session history (never
+ *  the system prompt). Core and the sidecar accept only these two roles, bounded. */
+export interface SessionSeedTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface SessionEventsPage {
   events: { seq: number; event: Record<string, unknown> }[];
   lastSeq: number;

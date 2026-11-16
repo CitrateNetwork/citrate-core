@@ -1255,18 +1255,29 @@ impl HermesManager {
 
     /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
     pub fn session_send(&self, id: &str, text: &str) -> Result<()> {
+        self.session_send_run(id, text).map(|_| ())
+    }
+
+    /// [`Self::session_send`], returning the id the sidecar gave this turn's run (#691: a steer
+    /// for the turn must name it). `None` when the sidecar names none (an older build) or the id
+    /// is malformed.
+    pub fn session_send_run(&self, id: &str, text: &str) -> Result<Option<String>> {
         valid_session_id(id).map_err(|m| HermesError::Control {
             status: 400,
             msg: m,
         })?;
         let bearer = self.bearer()?;
         let body = serde_json::json!({ "text": text }).to_string();
-        Self::check(self.control.post(
+        let resp = Self::check(self.control.post(
             &format!("{}/sessions/{id}/messages", self.control_url()),
             &bearer,
             &body,
         )?)?;
-        Ok(())
+        let run = serde_json::from_str::<serde_json::Value>(&resp.body)
+            .ok()
+            .and_then(|v| v.get("runId").and_then(|r| r.as_str()).map(str::to_string))
+            .filter(|r| valid_run_id(r));
+        Ok(run)
     }
 
     /// `GET /sessions/:id/events?after=N&wait_ms=M` — long-poll; `wait_ms` is capped below the
@@ -1331,6 +1342,41 @@ impl HermesManager {
             "{}",
         )?)?;
         Ok(())
+    }
+
+    /// #691: `POST /sessions/:id/steer` — add a member message to the chat turn running in the
+    /// session, taken at its next step boundary. Returns how many messages wait. The sidecar
+    /// answers 409 when no running chat turn can take it (idle, a workflow, the turn has answered,
+    /// or its queue is full) and 404 when it has no such route (an older sidecar) or session; the
+    /// chat then sends the message as a new turn.
+    pub fn session_steer(&self, id: &str, run_id: &str, text: &str) -> Result<u64> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        if !valid_run_id(run_id) {
+            return Err(HermesError::Control {
+                status: 400,
+                msg: "a steer must name the run it is for".into(),
+            });
+        }
+        let t = text.trim();
+        if t.is_empty() || t.chars().count() > MAX_STEER_CHARS {
+            return Err(HermesError::Control {
+                status: 400,
+                msg: format!("a steering message must be 1 to {MAX_STEER_CHARS} characters"),
+            });
+        }
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({ "runId": run_id, "text": t }).to_string();
+        let resp = Self::check(self.control.post(
+            &format!("{}/sessions/{id}/steer", self.control_url()),
+            &bearer,
+            &body,
+        )?)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+        Ok(v.get("waiting").and_then(|w| w.as_u64()).unwrap_or(0))
     }
 
     /// HUP-S10.3: `DELETE /sessions/:id` — close a session (daemon runs close theirs when done).
@@ -2419,6 +2465,84 @@ pub fn build_session_body(
     .to_string())
 }
 
+/// #691: a run id the sidecar gave a turn (`t-<n>`).
+pub fn valid_run_id(r: &str) -> bool {
+    r.len() <= 32
+        && r.strip_prefix("t-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Matr0xshka on #109: at most this many sessions a branch traces its earlier turns to.
+pub const MAX_BRANCH_PARENTS: usize = 16;
+
+/// #691: the longest steering message core forwards (the sidecar's own limit).
+pub const MAX_STEER_CHARS: usize = 4_000;
+/// #693 review: at most this many earlier messages seed a branched session (the sidecar's limit).
+pub const MAX_SEED_MESSAGES: usize = 40;
+/// Longest seeded message (characters; the sidecar's limit).
+pub const MAX_SEED_CHARS: usize = 4_000;
+
+/// One earlier message of a conversation the member branched, from the webview.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeedTurnInput {
+    pub role: String,
+    pub content: String,
+}
+
+/// #693 review: put a branched conversation's earlier turns into a session body as `history`
+/// (normal earlier turns, never the system prompt). Only `user` and `assistant`, at most
+/// [`MAX_SEED_MESSAGES`] messages of at most [`MAX_SEED_CHARS`] characters; anything else is
+/// refused and nothing is opened. `None` or empty leaves the body unchanged.
+///
+/// `branch_of` names the sidecar sessions those turns came from. The sidecar reads their taint
+/// and starts the branch with it; an empty or absent list means they cannot be traced, and the
+/// sidecar starts the branch tainted (fail closed).
+pub fn with_session_history(
+    body: &str,
+    history: Option<&[SeedTurnInput]>,
+    branch_of: Option<&[String]>,
+) -> std::result::Result<String, String> {
+    let Some(h) = history.filter(|h| !h.is_empty()) else {
+        return Ok(body.to_string());
+    };
+    let parents = branch_of.unwrap_or(&[]);
+    if parents.len() > MAX_BRANCH_PARENTS {
+        return Err(format!(
+            "a branch names at most {MAX_BRANCH_PARENTS} earlier sessions"
+        ));
+    }
+    for p in parents {
+        valid_session_id(p)?;
+    }
+    if h.len() > MAX_SEED_MESSAGES {
+        return Err(format!(
+            "a branch carries at most {MAX_SEED_MESSAGES} earlier messages"
+        ));
+    }
+    let mut turns = Vec::with_capacity(h.len());
+    for (i, m) in h.iter().enumerate() {
+        if m.role != "user" && m.role != "assistant" {
+            return Err(format!(
+                "earlier message {i} has role {:?}; only user and assistant are carried",
+                m.role
+            ));
+        }
+        if m.content.chars().count() > MAX_SEED_CHARS {
+            return Err(format!(
+                "earlier message {i} is longer than {MAX_SEED_CHARS} characters"
+            ));
+        }
+        turns.push(serde_json::json!({ "role": m.role, "content": m.content }));
+    }
+    let mut v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("session body: {e}"))?;
+    let obj = v.as_object_mut().ok_or("session body must be an object")?;
+    obj.insert("history".into(), serde_json::Value::Array(turns));
+    obj.insert("branchOf".into(), serde_json::json!(parents));
+    Ok(v.to_string())
+}
+
 /// K5a: the environment a spawned child sees: `inherited` (the app's own, which the spawn passes
 /// on) overlaid with `set` (core's explicit values, which win). Only `CITRATE_` keys are kept:
 /// those are the ones that turn sidecar features on.
@@ -2677,6 +2801,10 @@ pub async fn hermes_session_open_cloud(
     tools_json: String,
     persona: Option<String>,
     custom_persona: Option<personas::CustomPersonaInput>,
+    // #693 review: a branched conversation's earlier turns (absent = a fresh conversation).
+    history: Option<Vec<SeedTurnInput>>,
+    // Matr0xshka on #109: the sidecar sessions those turns came from (their taint carries over).
+    branch_of: Option<Vec<String>>,
 ) -> std::result::Result<String, String> {
     let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
@@ -2696,8 +2824,9 @@ pub async fn hermes_session_open_cloud(
             &system_prompt,
             &tools_json,
             |body| {
+                let body = with_session_history(body, history.as_deref(), branch_of.as_deref())?;
                 let body = personas::with_session_persona(
-                    body,
+                    &body,
                     persona.as_deref(),
                     custom_persona.as_ref(),
                 )?;
@@ -2724,6 +2853,10 @@ pub async fn hermes_session_open(
     // the body is unchanged.
     persona: Option<String>,
     custom_persona: Option<personas::CustomPersonaInput>,
+    // #693 review: a branched conversation's earlier turns (absent = a fresh conversation).
+    history: Option<Vec<SeedTurnInput>>,
+    // Matr0xshka on #109: the sidecar sessions those turns came from (their taint carries over).
+    branch_of: Option<Vec<String>>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app)
@@ -2742,6 +2875,7 @@ pub async fn hermes_session_open(
             &serve.0.current_model_file(),
             serve.0.ctx_size(),
         )?;
+        let body = with_session_history(&body, history.as_deref(), branch_of.as_deref())?;
         let body =
             personas::with_session_persona(&body, persona.as_deref(), custom_persona.as_ref())?;
         // HUP-S2.1: the member's folder grants travel with the session (an unreadable grant file
@@ -2758,19 +2892,21 @@ pub async fn hermes_session_open(
     .await
 }
 
-/// **hermes_session_send** — run one user turn in the session.
+/// **hermes_session_send** — run one user turn in the session. Returns the run id the sidecar
+/// gave the turn (#691), or none from an older sidecar.
 #[tauri::command]
 pub async fn hermes_session_send(
     app: tauri::AppHandle,
     id: String,
     text: String,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Option<String>, String> {
     let route_dir = crate::chat_route::route_dir(&app)?;
     crate::blocking::off_main(move || {
         // D-11: a cloud session's turn starts only while remote sends are allowed.
         let m = manager(&app)?;
         cloud::check_send(m, &id, &route_dir)?;
-        m.session_send(&id, &text).map_err(|e| e.to_string())
+        // #691: the turn's run id, for a steer (None from an older sidecar).
+        m.session_send_run(&id, &text).map_err(|e| e.to_string())
     })
     .await
 }
@@ -2810,6 +2946,25 @@ pub async fn hermes_session_tool_result(
         crate::hermes_headless::LEASES.view_answered(&id, &call_id, std::time::Instant::now());
         manager(&app)?
             .session_tool_result(&id, &call_id, &status, &content)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_session_steer** — #691: add the member's message to the running turn at its next
+/// step boundary. Returns how many messages wait. Errors carry the sidecar's status (409: no
+/// running chat turn can take it; 404: an older sidecar or a gone session), so the chat can send
+/// the message as a new turn instead.
+#[tauri::command]
+pub async fn hermes_session_steer(
+    app: tauri::AppHandle,
+    id: String,
+    run_id: String,
+    text: String,
+) -> std::result::Result<u64, String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .session_steer(&id, &run_id, &text)
             .map_err(|e| e.to_string())
     })
     .await

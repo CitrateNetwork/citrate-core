@@ -39,7 +39,7 @@ import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
-import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
+import { createSidecarProvider, localSessionStore, STEER_NOT_TAKEN, type SessionSeed } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
@@ -76,7 +76,7 @@ import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/to
 import { DEPLOY_CLAIM_CHIP, checkDeployClaims, collectDeployEvidence, newDeployLedger, type DeployEvidence, type DeployLedger, type TurnToolOutput } from "../agent/deployClaims";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, SessionSeedTurn, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { sidecarAlertText } from "./sidecarAlert";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -115,7 +115,7 @@ import {
 import { modelsSlice } from "./slices/models";
 import { saveWorkerTerms, termsProblem, type WorkerTerms } from "../fl/workerTerms";
 import { routerChoicesFor } from "../agent/modelRouterSources";
-import { newRun, runDraft, runEnd, runModelTime, runThink, runToolEnd, runToolStart, type RunOutcome, type RunRecord } from "../agent/runTimeline";
+import { newRun, runDraft, runEnd, runModelTime, runSteered, runThink, runToolEnd, runToolStart, type RunOutcome, type RunRecord } from "../agent/runTimeline";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { agentSlice } from "./slices/agent";
@@ -647,6 +647,19 @@ export function cloudModelFor(
   return choice;
 }
 
+/** #691: a steer sent for one run of one conversation. */
+interface PendingSteer {
+  text: string;
+  asstId: string;
+  threadId: string;
+  /** Its transcript message, once shown. */
+  msgId: string | null;
+  /** Hermes took it (its `steered` event), possibly before the request returned. */
+  taken: boolean;
+  /** The steer request has not returned yet. */
+  inFlight: boolean;
+}
+
 /** Board 01: the function names of a tool list (OpenAI wrapper shape). */
 function toolNamesOf(tools: readonly unknown[]): string[] {
   return tools.map((t) => (t as { function?: { name?: unknown } }).function?.name).filter((n): n is string => typeof n === "string" && n !== "");
@@ -941,6 +954,8 @@ export class Store {
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
     this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [], chatQueue: [] });
+    // Its earlier turns came from sessions this run never traced (Matr0xshka on #109).
+    this.untraceableThread(thread.id);
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -1389,7 +1404,20 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
-        const sessionStore = localSessionStore();
+        // Matr0xshka on #109: every Hermes session a conversation uses is traced to it, so a branch
+        // can name the sessions its earlier turns came from (the sidecar carries their taint).
+        const savedSession = localSessionStore();
+        const sessionStore: typeof savedSession = {
+          load: () => {
+            const v = savedSession.load();
+            if (v) this.traceHermesSession(v.id);
+            return v;
+          },
+          save: (v) => {
+            if (v) this.traceHermesSession(v.id);
+            savedSession.save(v);
+          },
+        };
         const firstSidecarBuild = !this.sidecarReattachTried;
         this.sidecarReattachTried = true;
         if (!firstSidecarBuild) sessionStore.save(null);
@@ -1400,12 +1428,19 @@ export class Store {
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
-            open: (p, t, persona) =>
+            // #693 review: a branch's earlier turns ride as session history (never the prompt).
+            open: (p, t, persona, history, branchOf) =>
               cloudChoice
-                ? h.sessionOpenCloud(p, t, persona ?? null)
-                : persona
-                  ? h.sessionOpen(p, t, persona)
-                  : h.sessionOpen(p, t),
+                ? history && history.length > 0
+                  ? h.sessionOpenCloud(p, t, persona ?? null, history, branchOf ?? [])
+                  : h.sessionOpenCloud(p, t, persona ?? null)
+                : history && history.length > 0
+                  ? h.sessionOpen(p, t, persona ?? null, history, branchOf ?? [])
+                  : persona
+                    ? h.sessionOpen(p, t, persona)
+                    : h.sessionOpen(p, t),
+            // #691: a member message for the running turn, taken at its next step boundary.
+            steer: (id, runId, text) => h.sessionSteer(id, runId, text),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
@@ -1428,7 +1463,9 @@ export class Store {
           () => this.sidecarSystemPrompt(),
           () => sessionTools,
           () => this.sidecarPersonaChoice(),
-          cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
+          cloudChoice && cloudName
+            ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model }, history: () => this.branchHistory() }
+            : { store: sessionStore, history: () => this.branchHistory() },
         );
         this.reflectProvider();
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
@@ -3179,6 +3216,39 @@ export class Store {
   }
 
   // ---------- Board 01 — edit, retry and branch ----------
+  /** The earlier messages a branch carries into its Hermes sessions as normal earlier turns (the
+   *  sidecar session holds its own history, so a fresh one would otherwise start blank). Given to
+   *  the session open as `history` only while that branch is the conversation on screen; never
+   *  put in the system prompt (#693 review). */
+  private branchSeed: { threadId: string; seed: SessionSeed } | null = null;
+
+  /** The seed for a session opened now, or null. */
+  branchHistory(): SessionSeed | null {
+    const seed = this.branchSeed;
+    if (!seed || seed.threadId !== this.state.chatThreadId) return null;
+    return seed.seed;
+  }
+
+  /** Matr0xshka on #109: the Hermes sidecar sessions each conversation used, in order. `null` = a
+   *  conversation whose earlier sessions are not known (reopened from History): a branch of it
+   *  names none, so the sidecar starts the branch tainted (fail closed). */
+  private threadSessions = new Map<string, string[] | null>();
+
+  /** Record that the conversation on screen uses Hermes session `id`. */
+  traceHermesSession(id: string): void {
+    const t = this.state.chatThreadId;
+    const cur = this.threadSessions.get(t);
+    if (cur === null) return;
+    const ids = cur ?? [];
+    if (!ids.includes(id)) ids.push(id);
+    this.threadSessions.set(t, ids.slice(-16));
+  }
+
+  /** The conversation `threadId`'s earlier sessions are not known (reopened from History). */
+  untraceableThread(threadId: string): void {
+    this.threadSessions.set(threadId, null);
+  }
+
   /**
    * Branch the conversation into a new thread. The original stays in History unchanged. The new
    * thread keeps the messages before `fromMsgId` (`includeFrom` keeps that message too), and when
@@ -3198,6 +3268,15 @@ export class Store {
     const fromThread = this.state.chatThreadId;
     const kept = msgs.slice(0, opts.includeFrom ? idx + 1 : idx).filter((m) => !m.streaming);
     const threadId = newThreadId();
+    // At most 40 earlier messages of at most 4000 characters (core's and the sidecar's limits).
+    const turns: SessionSeedTurn[] = kept
+      .filter((m) => !m.error && m.text.trim() !== "" && (m.who === "You" || m.who === "Agent" || m.who === "Hermes"))
+      .slice(-40)
+      .map((m) => ({ role: m.who === "You" ? ("user" as const) : ("assistant" as const), content: m.text.length > 4000 ? m.text.slice(0, 3999) + "…" : m.text }));
+    // The sessions those turns came from (none when not traceable): the sidecar reads their taint.
+    const branchOf = this.threadSessions.get(fromThread) ?? [];
+    this.branchSeed = turns.length > 0 ? { threadId, seed: { turns, branchOf: branchOf.slice() } } : null;
+    this.threadSessions.set(threadId, []);
     // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
     this.setState({
       chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid, ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}) })),
@@ -3208,15 +3287,10 @@ export class Store {
     this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
     if (this.chatInputEl) this.chatInputEl.value = "";
     await this.rebuildProvider();
-    // Earlier messages are never put in the system prompt. The in-app loops send them as earlier
-    // turns; a Hermes sidecar session starts the branch without them (core #731 passes them as
-    // session history once the bundled sidecar accepts it), and the member is told so.
-    const sidecar = this.activeProviderKind() === "sidecar" || this.activeProviderKind() === "sidecar-cloud";
-    this.toast(
-      sidecar && kept.some((m) => m.who === "You")
-        ? "Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages."
-        : "Branched into a new chat. The original stays in History.",
-    );
+    // Earlier messages are never put in the system prompt: the in-app loops send them as earlier
+    // turns, and a Hermes sidecar session opens with them as `history` (branchHistory). A sidecar
+    // that cannot take history says so when the session opens.
+    this.toast("Branched into a new chat. The original stays in History.");
     // An edited or retried message keeps what was attached to the original (unless given anew).
     const from = msgs[idx];
     const attachments = opts.attachments ?? (from.who === "You" ? from.attachments : undefined);
@@ -3989,6 +4063,7 @@ export class Store {
     };
     ensure();
     let turnOutcome: RunOutcome = "failed";
+    this.liveAsstId = asstId;
     // HUP-S0.6: coalesce streamed tokens — one render per ~frame instead of one full-app render
     // per token (Root subscribes to the whole state).
     let pending = "";
@@ -4063,6 +4138,12 @@ export class Store {
             // Board 01: the run timeline, from the provider's own reports.
             if (ev.kind === "page") {
               clock = ev.at;
+              return;
+            }
+            if (ev.kind === "steered") {
+              // #691: Hermes took a member message into this run.
+              runPatch((r) => runSteered(r, ev.text, evNow()));
+              this.steerTaken(ev.text);
               return;
             }
             if (ev.kind === "tool_start") {
@@ -4143,7 +4224,10 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
+    if (this.liveAsstId === asstId) this.liveAsstId = null;
     patch((m) => ({ ...m, streaming: false, run: m.run ? runEnd(m.run, turnOutcome, Date.now()) : m.run }));
+    // #691: a steer Hermes accepted but never took (the run ended first) goes next, as a message.
+    this.resendUntakenSteers(asstId);
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
     this.save();
@@ -4190,17 +4274,114 @@ export class Store {
   }
 
   /**
-   * Steer now: stop the live run and send this message as soon as it has ended. Hermes's loop takes
-   * no message in the middle of a run (core #691), so steering is Stop plus the next turn; what the
-   * run did before the stop stays in the transcript with its steps.
+   * Steer now (#691): Hermes takes the message into the running turn at its next step boundary
+   * (sidecar `POST /sessions/:id/steer`), and the run keeps going. When it cannot (no sidecar loop,
+   * an older bundled sidecar, the run already finishing), the run stops and the message goes as
+   * the next turn, and a toast says so. What a stopped run did stays in the transcript.
    */
-  steerChat(text: string): void {
+  async steerChat(text: string): Promise<void> {
     const t = (text || "").trim();
     if (!t) return;
-    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId: s.chatThreadId }, ...s.chatQueue.filter((q) => !q.steer)] }));
     if (this.chatInputEl) this.chatInputEl.value = "";
+    // #691: Hermes takes the message into the running turn at its next step; nothing stops.
+    const provider = this.provider;
+    const asstId = this.liveAsstId;
+    // Everything after the await acts only on the conversation and run the steer was typed in.
+    const threadId = this.state.chatThreadId;
+    if (this.chatRunLive() && provider?.steer && asstId) {
+      // Registered before the request, so a `steered` event that beats the response is not lost.
+      const p: PendingSteer = { text: t, asstId, threadId, msgId: null, taken: false, inFlight: true };
+      this.pendingSteers.push(p);
+      const r = await provider.steer(t);
+      p.inFlight = false;
+      const sameRun = this.liveAsstId === asstId;
+      if (r.ok) {
+        if (p.taken) {
+          // Hermes already took it: show it, taken, before the reply it steered.
+          this.forgetPendingSteer(p);
+          this.showSteer(p, "taken");
+          return;
+        }
+        if (sameRun) {
+          this.showSteer(p, "sent");
+          return;
+        }
+        // Accepted for a run that has since ended without taking it: it goes next, in its own
+        // conversation only, as an ordinary message.
+        this.forgetPendingSteer(p);
+        this.queueSteerFor(threadId, t);
+        return;
+      }
+      this.forgetPendingSteer(p);
+      if (p.taken) return;
+      if (!sameRun || this.state.chatThreadId !== threadId) {
+        // The run ended (and perhaps the conversation changed) while the request was out: the
+        // text stays with its own conversation, and nothing else is stopped.
+        this.queueSteerFor(threadId, t);
+        return;
+      }
+      this.toast(`${STEER_NOT_TAKEN} (${r.reason}), so this run stops and your message goes next.`);
+    }
+    this.queueSteerFor(threadId, t);
     if (this.chatRunLive()) this.stopAgentTurn();
     else this.drainChatQueue("answered");
+  }
+
+  /** Queue a steer's text as the next message of conversation `threadId` (sent only there). */
+  private queueSteerFor(threadId: string, t: string): void {
+    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId }, ...s.chatQueue.filter((q) => !(q.steer && q.threadId === threadId))] }));
+    if (this.state.chatThreadId === threadId && this.state.chatStatus === "ready") this.drainChatQueue("answered");
+  }
+
+  /** Put an accepted steer in the transcript, before the reply it steers. */
+  private showSteer(p: PendingSteer, state: "sent" | "taken"): void {
+    if (this.state.chatThreadId !== p.threadId) return;
+    const msg: ChatMsg = { id: "m" + ++this.mid, who: "You", text: p.text, chips: [], streaming: false, steer: state };
+    p.msgId = msg.id;
+    this.setState((s) => {
+      const i = s.chatMsgs.findIndex((m) => m.id === p.asstId);
+      const msgs = s.chatMsgs.slice();
+      msgs.splice(i < 0 ? msgs.length : i, 0, msg);
+      return { chatMsgs: msgs };
+    });
+  }
+
+  private forgetPendingSteer(p: PendingSteer): void {
+    this.pendingSteers = this.pendingSteers.filter((x) => x !== p);
+  }
+
+  /** #691: the assistant message of the chat turn running now (null between turns). */
+  private liveAsstId: string | null = null;
+  /** #691: steers sent for the running turn that Hermes has not taken yet (and ones whose
+   *  request is still out). */
+  private pendingSteers: PendingSteer[] = [];
+
+  /** Hermes took a steer (its `steered` event): mark the first waiting one with that text. It may
+   *  arrive before the steer request has returned; the entry then records it. */
+  private steerTaken(text: string): void {
+    const p = this.pendingSteers.find((x) => !x.taken && x.text === text.trim() && x.asstId === this.liveAsstId);
+    if (!p) return;
+    p.taken = true;
+    if (p.msgId === null) return;
+    this.forgetPendingSteer(p);
+    const id = p.msgId;
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === id ? { ...m, steer: "taken" as const } : m)) }));
+  }
+
+  /** The run ended before Hermes took these steers: they leave the transcript and go next, as
+   *  ordinary messages in their own conversation, so nothing the member sent is lost or shown as
+   *  taken when it was not. A steer whose request is still out is decided when it returns. */
+  private resendUntakenSteers(asstId: string): void {
+    const mine = this.pendingSteers.filter((p) => p.asstId === asstId && !p.inFlight);
+    this.pendingSteers = this.pendingSteers.filter((p) => !mine.includes(p));
+    const left = mine.filter((p) => !p.taken);
+    if (left.length === 0) return;
+    const ids = new Set(left.map((p) => p.msgId).filter((x): x is string => x !== null));
+    this.setState((s) => ({
+      chatMsgs: s.chatMsgs.filter((m) => !ids.has(m.id)),
+      chatQueue: [...left.map((p) => ({ id: "q" + ++this.queueSeq, text: p.text, steer: true, threadId: p.threadId })), ...s.chatQueue],
+    }));
+    this.toast("The run ended before Hermes took your message, so it goes now as a new message.");
   }
 
   /** Take a queued follow-up back out (it is not sent). */

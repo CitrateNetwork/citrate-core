@@ -63,18 +63,22 @@ export const tauriAgentHarness: AgentHarnessDomain = {
     // C1-V3: submitted, outcome unknown; Rust composes the message the sidecar passes on.
     await invoke("hermes_resolve_outcome_unknown", { id, txHash });
   },
-  sessionOpen(systemPrompt, toolsJson, persona) {
+  sessionOpen(systemPrompt, toolsJson, persona, history, branchOf) {
     // HUP-S3.3: the persona travels as `persona` (shipped id) or `customPersona`; none = unchanged.
     const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
-    return invoke<string>("hermes_session_open", { systemPrompt, toolsJson, ...extra });
+    // #693 review: a branch's earlier turns, as session history (absent = a fresh conversation).
+    // Matr0xshka on #109: with the sessions they came from (the sidecar carries their taint).
+    const seed = history && history.length > 0 ? { history, branchOf: branchOf ?? [] } : {};
+    return invoke<string>("hermes_session_open", { systemPrompt, toolsJson, ...extra, ...seed });
   },
-  sessionOpenCloud(systemPrompt, toolsJson, persona) {
+  sessionOpenCloud(systemPrompt, toolsJson, persona, history, branchOf) {
     // D-11: the same persona choice; core reads the provider and model from its own setting.
     const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
-    return invoke<string>("hermes_session_open_cloud", { systemPrompt, toolsJson, ...extra });
+    const seed = history && history.length > 0 ? { history, branchOf: branchOf ?? [] } : {};
+    return invoke<string>("hermes_session_open_cloud", { systemPrompt, toolsJson, ...extra, ...seed });
   },
   async sessionSend(id, text) {
-    await invoke("hermes_session_send", { id, text });
+    return (await invoke<string | null>("hermes_session_send", { id, text })) ?? null;
   },
   sessionEvents(id, after, waitMs) {
     return invoke<SessionEventsPage>("hermes_session_events", { id, after, waitMs });
@@ -84,6 +88,9 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   async sessionStop(id) {
     await invoke("hermes_session_stop", { id });
+  },
+  sessionSteer(id, runId, text) {
+    return invoke<number>("hermes_session_steer", { id, runId, text });
   },
   sessionOpenUnattended(systemPrompt, toolsJson, daemonId, runId) {
     return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson, daemonId: daemonId ?? null, runId: runId ?? null });

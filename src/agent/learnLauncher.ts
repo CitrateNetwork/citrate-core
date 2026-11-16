@@ -85,7 +85,7 @@ export interface TeachDeps {
   sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
   workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
   workflowStatus(sessionId: string, runId: string): Promise<WorkflowRunView>;
-  sessionSend(id: string, text: string): Promise<void>;
+  sessionSend(id: string, text: string): Promise<unknown>;
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
   sessionClose(id: string): Promise<void>;
   /** Wait between status polls (tests pass a no-op). */

@@ -38,18 +38,45 @@ describe("board 01: edit and branch", () => {
   it("editing a past message branches: the earlier messages are kept, the edit is sent, the original stays", async () => {
     const orig = store.state.chatThreadId;
     const record = vi.spyOn(chatHistory, "set");
-    const toast = vi.spyOn(store, "toast");
     expect(await store.branchChat("u2", { text: "Put my GPU to work on rounds, weeknights only." })).toBe(true);
     expect(store.state.chatThreadId).not.toBe(orig);
     expect(store.state.chatMsgs.map((m) => m.text).slice(0, 3)).toEqual(["Network status", "Synced at block 10.", "Put my GPU to work on rounds, weeknights only."]);
     expect(sent).toEqual(["Put my GPU to work on rounds, weeknights only."]);
     // The original thread was archived before the switch.
     expect(record).toHaveBeenCalled();
-    // The branch's history never goes in the system prompt (core #731 sends it as session history).
+    // The new Hermes session opens with the earlier messages as normal earlier turns (the
+    // provider's open gets them as `history`, sidecarProvider.steer.test.ts), never in the prompt.
+    expect(store.branchHistory()?.turns).toEqual([
+      { role: "user", content: "Network status" },
+      { role: "assistant", content: "Synced at block 10." },
+    ]);
     expect(store.sidecarSystemPrompt()).not.toContain("Network status");
     expect(store.sidecarSystemPrompt()).not.toContain("Synced at block 10.");
-    // A sidecar session starts the branch without the earlier messages, and the member is told.
-    expect(toast).toHaveBeenCalledWith("Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages.");
+    // Another conversation on screen gets no seed.
+    store.setState({ chatThreadId: "tother" });
+    expect(store.branchHistory()).toBeNull();
+  });
+
+  it("a branch names the Hermes sessions its earlier turns came from; a reopened chat names none", async () => {
+    // Matr0xshka on #109: the sidecar starts the branch with those sessions' taint, and starts it
+    // tainted when they cannot be traced (a conversation reopened from History).
+    store.setState({ chatThreadId: "ttraced-" + Math.random().toString(36).slice(2) });
+    store.traceHermesSession("s1-ab");
+    store.traceHermesSession("s2-cd");
+    store.traceHermesSession("s1-ab");
+    await store.branchChat("a1", { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual(["s1-ab", "s2-cd"]);
+    // The branch's own sessions are traced too (a branch of a branch carries them).
+    const branch = store.state.chatThreadId;
+    store.traceHermesSession("s3-ef");
+    await store.branchChat(store.state.chatMsgs[1].id, { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual(["s3-ef"]);
+    expect(branch).not.toBe(store.state.chatThreadId);
+    // A chat reopened from History: its earlier sessions are not known, so none are named.
+    store.untraceableThread(store.state.chatThreadId);
+    store.traceHermesSession("s4-gh");
+    await store.branchChat(store.state.chatMsgs[1].id, { includeFrom: true });
+    expect(store.branchHistory()?.branchOf).toEqual([]);
   });
 
   it("Retry sends the answer's member message again in a branch", async () => {

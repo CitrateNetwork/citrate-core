@@ -261,7 +261,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const onSend = () => submit(store.chatInputEl ? store.chatInputEl.value : "");
   const steer = () => {
     if (followUp === null) return;
-    store.steerChat(followUp);
+    void store.steerChat(followUp);
     setFollowUp(null);
   };
   const queue = () => {
@@ -609,6 +609,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <div key={m.id} data-testid={m.who === "You" ? "msg-you" : "msg-agent"} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
               {m.who}
+              {m.steer && (
+                <span data-testid="steer-label" style={{ color: "var(--tx-3)", letterSpacing: ".04em", textTransform: "none" }}>
+                  {m.steer === "taken" ? " · steer, taken mid-run" : " · steer, waiting for the next step"}
+                </span>
+              )}
               {m.model && m.who !== "You" && <span style={{ color: "var(--tx-3)", letterSpacing: ".04em", textTransform: "none" }}> · {m.model}</span>}
             </span>
             {m.run && <RunTimeline run={m.run} onStop={m.run.outcome === null ? () => store.stopAgentTurn() : undefined} />}
@@ -812,7 +817,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <span style={{ flex: 1, minWidth: 180 }}>
             Hermes is working. Your next message: <i>{followUp}</i>
           </span>
-          <button type="button" className="btn btn-sm btn-primary" data-testid="steer-now" onClick={steer} title="Stops this run and sends your message now">
+          <button type="button" className="btn btn-sm btn-primary" data-testid="steer-now" onClick={steer} title="Hermes takes your message at its next step and keeps working. If it cannot, this run stops and your message goes next.">
             Steer now
           </button>
           <button type="button" className="btn btn-sm" data-testid="queue-after" onClick={queue} title="Sends when this run finishes">

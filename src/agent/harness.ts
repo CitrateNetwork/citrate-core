@@ -116,7 +116,9 @@ export type TurnActivityEvent =
   | { kind: "tool_end"; callId: string; tool: string; status: string; content: string }
   /** The provider received a page of events at `at` (ms since epoch). The events reported after
    *  it, until the next page, arrived together, so the gap between two of them is not known. */
-  | { kind: "page"; at: number };
+  | { kind: "page"; at: number }
+  /** #691: a member message the loop took into the running turn, at the start of `step`. */
+  | { kind: "steered"; step: number; text: string };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent
@@ -213,7 +215,14 @@ export interface ChatProvider {
   /** HUP-S1.1 — pick the saved agent session back up after the view reloaded (sidecar loop only;
    *  other providers omit it). */
   reattach?: (opts: WorkflowRunOpts) => Promise<ReattachResult>;
+  /** #691 — add the member's message to the running turn at its next step boundary (sidecar loop
+   *  only). `ok: false` names why it was not taken (no running turn, an older sidecar, …); the
+   *  caller then sends it as a new turn. */
+  steer?: (text: string) => Promise<SteerResult>;
 }
+
+/** #691 — what a steer attempt came to. */
+export type SteerResult = { ok: true; waiting: number } | { ok: false; reason: string };
 
 /** HUP-S1.1 — what picking a saved agent session back up found. */
 export type ReattachResult =
