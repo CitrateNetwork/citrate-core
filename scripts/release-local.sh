@@ -14,6 +14,10 @@
 # and falls back to `releases/latest/download/latest.json` (tauri-plugin-updater 2.10.1 skips a
 # non-2xx endpoint), so the release must be the repository's latest, non-prerelease release.
 #
+# macOS only: it runs on the release Mac (codesign, notarytool, the Keychain, BSD `date -r`) under
+# /bin/bash 3.2, so it must stay bash-3.2 safe under `set -u` (no bare "${empty[@]}" expansions;
+# every array it expands is either never empty or guarded as ${a[@]+"${a[@]}"}).
+#
 # Never launches the built app (not even --version: it starts the full app against the owner's own
 # data) and runs no install test.
 #
@@ -356,7 +360,8 @@ NOTES="${RELEASE_NOTES:-Citrate Core $VERSION}"
 PUB_DATE="$(date -u -r "$RELEASE_TS" +%Y-%m-%dT%H:%M:%SZ)"
 POLICY_ARGS=()
 [ -z "$POLICY_MIN" ] || POLICY_ARGS=(--policy "$OUT/update-policy.json")
-(cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" "${POLICY_ARGS[@]}" "$WORK/fragment.json") \
+# ${a[@]+"${a[@]}"}: an empty array under `set -u` aborts macOS /bin/bash 3.2 (#698 review P1).
+(cd "$ROOT" && node scripts/updater-feed.mjs merge --notes "$NOTES" --pub-date "$PUB_DATE" ${POLICY_ARGS[@]+"${POLICY_ARGS[@]}"} "$WORK/fragment.json") \
   > "$OUT/latest.json"
 python3 - "$OUT/latest.json" "$VERSION" "$BASE_URL" "${PLATFORMS[@]}" <<'PY'
 import json, sys
