@@ -765,6 +765,44 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── LoRA adapters and the eval gate (0.5.4 Hermes x FL, WP-H9) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_gate_read",
+      description:
+        "Read the LoRA adapter eval gate records on this device: for one adapter (sha256) or every adapter from one round (roundId), the ACCEPT or REJECT verdict, the six checks, each metric base to candidate, and what the local model serves now. With neither, lists every adapter's newest decision. Read-only. Running the gate needs files the member picks on Rounds › Adapters; never invent a verdict or a score.",
+      parameters: {
+        type: "object",
+        properties: {
+          sha256: { type: "string", description: "the adapter file's SHA-256, 64 hex characters" },
+          roundId: { type: "string", description: "the round the adapter came from, 0x followed by 64 hex characters" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_load_propose",
+      description:
+        "PROPOSE loading one LoRA adapter into the member's local model. The member decides on an approval card (HIC-1); you never load it yourself. Core loads only an adapter whose newest eval gate decision is ACCEPT on the base model being served, re-hashes the file, and refuses otherwise.",
+      parameters: {
+        type: "object",
+        properties: { sha256: { type: "string", description: "the adapter file's SHA-256, from fl_adapter_gate_read" } },
+        required: ["sha256"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_adapter_unload",
+      description:
+        "Unload the LoRA adapter from the member's local model so the base model serves alone, and stop it being put back after a restart. Needs no approval card because it only removes an adapter; say what you did.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1271,8 +1309,20 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_adapter_gate_read",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
   "calendar_list",
+]);
+
+/**
+ * 0.5.4 Hermes x FL: the REVIEWED list of agent tools that change something but only LOWER the
+ * member's exposure (unload an adapter, withdraw a consent, revoke an invite), so they run with no
+ * approval card. Raising authority always asks. The tripwire in src/shell/agentToolGates.test.ts
+ * exempts exactly these from "must reach an approval" and instead checks each one asks nothing and
+ * calls only its lowering command. A tool lands here only with a reviewed reason.
+ */
+export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "fl_adapter_unload", // core fl_adapter_unload: serve the base model alone and forget the remembered adapter
 ]);
