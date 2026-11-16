@@ -270,7 +270,7 @@ fn a_complete_install_reports_every_required_item_ok() {
     }
     assert_eq!(r.missing_required, 0);
     assert!(state_of(&r.items, "node-mcp").detail.contains("127.0.0.1:47204/mcp"));
-    assert!(state_of(&r.items, "first-party-skills").detail.contains("all 4 bundled"));
+    assert!(state_of(&r.items, "first-party-skills").detail.contains("all 11 bundled"));
 }
 
 #[test]

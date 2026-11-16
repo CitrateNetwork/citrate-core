@@ -399,6 +399,32 @@ pub const SKILL_EXISTS_PREFIX: &str = "SKILL_EXISTS";
 /// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
 /// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
 /// one is an explicit, member-approved `overwrite == true` call.
+/// 0.5.4 Hermes x FL WP-H11: every `citrate-fl-` name is reserved for Citrate's bundled skills.
+pub const RESERVED_SKILL_PREFIX: &str = "citrate-fl-";
+
+/// Why a skill with this name may not be saved or learned, or `None` when it may. The sidecar loads
+/// learned and saved skills before Citrate's bundled ones (first wins, `hermes_learn::skills_env`),
+/// so a saved or learned skill with a bundled skill's name would shadow it. Every bundled name
+/// (`hermes_setup::FIRST_PARTY_SKILLS`) and every `citrate-fl-` name is reserved.
+pub fn reserved_skill_name(name: &str) -> Option<String> {
+    let slug = slugify(name);
+    let bundled = crate::hermes_setup::FIRST_PARTY_SKILLS.contains(&slug.as_str());
+    (bundled || slug.starts_with(RESERVED_SKILL_PREFIX)).then(|| {
+        format!("SKILL_RESERVED: \"{slug}\" is reserved for Citrate's bundled skills; choose another name. Nothing was saved.")
+    })
+}
+
+/// The `name:` of a SKILL.md's frontmatter, if it has one.
+pub fn skill_md_name(skill_md: &str) -> Option<String> {
+    let rest = skill_md.strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    rest[..end].lines().find_map(|l| {
+        l.strip_prefix("name:")
+            .map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
 fn write_skill_file(
     dir: &Path,
     name: &str,
@@ -409,6 +435,9 @@ fn write_skill_file(
     let name = name.trim();
     if name.is_empty() {
         return Err("a skill needs a name".into());
+    }
+    if let Some(why) = reserved_skill_name(name) {
+        return Err(why);
     }
     if name.len() > MAX_NAME || description.len() > MAX_DESC || instructions.len() > MAX_BODY {
         return Err("skill name/description/instructions exceed the allowed size".into());

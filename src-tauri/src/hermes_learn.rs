@@ -1442,6 +1442,24 @@ pub async fn hermes_learn_proposals(app: tauri::AppHandle, all: bool) -> Result<
     crate::blocking::off_main(move || learn_list(manager(&app)?, all)).await
 }
 
+/// 0.5.4 WP-H11: refuse a learned skill whose SKILL.md takes a name reserved for Citrate's bundled
+/// skills (it would shadow them; see `skills_local::reserved_skill_name`).
+pub(crate) fn refuse_reserved_skill(content: &Value) -> Result<(), String> {
+    if content.get("kind").and_then(|k| k.as_str()) != Some("skill") {
+        return Ok(());
+    }
+    let md = content
+        .get("skill_md")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    match crate::skills_local::skill_md_name(md)
+        .and_then(|n| crate::skills_local::reserved_skill_name(&n))
+    {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
 /// **hermes_learn_propose** — propose a skill or memory from a verified run of a session.
 #[tauri::command]
 pub async fn hermes_learn_propose(
@@ -1453,6 +1471,7 @@ pub async fn hermes_learn_propose(
     crate::blocking::off_main(move || {
         let content: Value = serde_json::from_str(&content_json)
             .map_err(|_| "the proposal content must be JSON".to_string())?;
+        refuse_reserved_skill(&content)?;
         learn_propose(manager(&app)?, &session_id, &run_id, &content)
     })
     .await
@@ -1471,7 +1490,19 @@ pub async fn hermes_learn_accept(
             return Err("too many acknowledged conflicts".into());
         }
         let member = member_id(&app);
-        let out = learn_accept_raw(manager(&app)?, &id, &member, &acknowledged)?;
+        // WP-H11: a skill the sidecar proposed with a reserved name is never accepted.
+        let m = manager(&app)?;
+        if let Some(p) = learn_list(m, true)?
+            .get("proposals")
+            .and_then(|a| a.as_array())
+            .and_then(|a| {
+                a.iter()
+                    .find(|p| p.get("id").and_then(|x| x.as_str()) == Some(id.as_str()))
+            })
+        {
+            refuse_reserved_skill(p.get("content").unwrap_or(&Value::Null))?;
+        }
+        let out = learn_accept_raw(m, &id, &member, &acknowledged)?;
         let persisted = out.get("persisted").cloned().unwrap_or(Value::Null);
         if persisted.get("kind").and_then(|k| k.as_str()) == Some("memory") {
             let entry = with_ledger(&app, |l, g| l.accept_record(&persisted, g))?;
