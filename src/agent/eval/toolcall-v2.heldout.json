@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 98,
+  "count": 137,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -97,6 +97,10 @@
       "sha256": "a0415026280cc2e53ef71e424290aa63b9414f3ee362845bec312e8b4e0a0803"
     },
     {
+      "id": "nw-fl-round-open-not-draft",
+      "sha256": "dc27540798be2ce910ce8089941f382196f5833ed100054f4b95bfe79aacc102"
+    },
+    {
       "id": "nw-group-idea",
       "sha256": "65663746e77dfb75ca9ec8c5e2ee46e8c4b2456957e5d15b65ae9841fcea504e"
     },
@@ -169,6 +173,18 @@
       "sha256": "528713a0dd405e13b58017749d46ca4902aeefc644047c6d0d34c4e37a8abb34"
     },
     {
+      "id": "tc-cluster-add-machine",
+      "sha256": "dbe71ca6c54dbe5bc09d9d0713737d1d5ca272bceadb8509ce8db151e01ae59f"
+    },
+    {
+      "id": "tc-cluster-mesh-on",
+      "sha256": "abda80200bd3fc3f3740eca59cb0744b4ac35a942ebc3a2e160dc53b0994d333"
+    },
+    {
+      "id": "tc-cluster-read",
+      "sha256": "39b39119d9f93b5dc9aab257e4c9bf2eeb9974d84b3d20a96e879c4cdffd6193"
+    },
+    {
       "id": "tc-contract-deploy-explicit",
       "sha256": "8b7e4b5d542a9caa045d75361f29d7db4fa41ecaf9b3f58a3ded9b7f05a5a98f"
     },
@@ -229,6 +245,26 @@
       "sha256": "e8f910cc4898c9e8c39327b1b0ba11bfc6474954313c0d7147ed43380e015afb"
     },
     {
+      "id": "tc-fl-claim-propose",
+      "sha256": "7f1704e7021f46c12b33facf6241279d0e05c0de9338a50f18772496101faf1f"
+    },
+    {
+      "id": "tc-fl-collect-plan-pages",
+      "sha256": "7ca539ac8a0b76781bae74362af177071788ec3d068414c73e75b4268455d1a0"
+    },
+    {
+      "id": "tc-fl-consent-list",
+      "sha256": "81af01f86ddfc25aa19326be0d18d084d7e5965c5892967b9c9e0dd4048000a1"
+    },
+    {
+      "id": "tc-fl-consent-withdraw-conversations",
+      "sha256": "92d58ced5291ecc9fd945ca818e5a440e7f8dcfc41806b9472c7919fbe70f387"
+    },
+    {
+      "id": "tc-fl-consent-withdraw-round",
+      "sha256": "5098aac62fd084729727ce4eb9c3930dd8d3b4894582a36475b31d4658be142a"
+    },
+    {
       "id": "tc-fl-dataset-clean-dedupe",
       "sha256": "77cb70da47b850200131656b8a5dca112a39e3e5e741be4fbec864e6c107e4f3"
     },
@@ -237,12 +273,72 @@
       "sha256": "dbfda82cd946c30d974683c4a284182e872d9f87ccf64d28119534bf35df0b91"
     },
     {
+      "id": "tc-fl-dataset-license-check",
+      "sha256": "a3b6f613b7a4699524199d8bcefe402cd9bd770290a02331bf07637fb5ae2130"
+    },
+    {
       "id": "tc-fl-dataset-list",
       "sha256": "1d939b1c12ae487c4eef529e7713ae47ad368dbc7036dcf60ec03d3f136d1ce8"
     },
     {
+      "id": "tc-fl-dataset-pii-scan",
+      "sha256": "dee1badd947a8ccf9abe90fa17542c4c8d926a248e7a10c1184e8fbfc8d439ae"
+    },
+    {
+      "id": "tc-fl-dataset-publish",
+      "sha256": "780650c0d08f98de2341d67ddb354ea3c99535460485e09caaad28f166fc6617"
+    },
+    {
       "id": "tc-fl-dataset-sample",
       "sha256": "156c37e3687f486594651b6514214641e884960370bc94c78828bd431672f7fa"
+    },
+    {
+      "id": "tc-fl-dispute-propose",
+      "sha256": "4af8b8476343855f420a59ee44faca25a10717c39e1f79d3a8cdd3ec4ff44356"
+    },
+    {
+      "id": "tc-fl-eligibility-reqs",
+      "sha256": "f27b82ebf91868d7e8d1f8a6971e35cfcb4989b8683786dc4c75bb93ee26d6d4"
+    },
+    {
+      "id": "tc-fl-envelope-off",
+      "sha256": "9e324233e9e2737f956ee71b34da8e5b5720bae953913afa51a91858f8588bdc"
+    },
+    {
+      "id": "tc-fl-envelope-propose",
+      "sha256": "a623f3fd05f7d71ee543a11b3688e11ee6afc97790421d1869deefa8566c7b5b"
+    },
+    {
+      "id": "tc-fl-envelope-read",
+      "sha256": "58de19c12b9f27af8b26320f84f385ae757e46ea28bddb5b407351058ccf269b"
+    },
+    {
+      "id": "tc-fl-history-payouts",
+      "sha256": "dfe30e14e5f3d8b681d36c5d08a4d265e5b177392c6e52cc552c50b73acecc71"
+    },
+    {
+      "id": "tc-fl-history-read",
+      "sha256": "dcea9284615a57ceb8536484f89daa3353c657a105deedcddadc101c469d6913"
+    },
+    {
+      "id": "tc-fl-join-propose",
+      "sha256": "bbeec0c5aefc36da6a340888d3a603cb310bf249bd5224732e1477964f7c9b76"
+    },
+    {
+      "id": "tc-fl-lease-explain",
+      "sha256": "1ef0434d19b241c74e47b612f7c1e79db7f7ccc7b0adb947d4e2c5a902840463"
+    },
+    {
+      "id": "tc-fl-offers-list",
+      "sha256": "03e90704231fa005509121ccbe57475b53ca5a22f1ae04ad1e08a4a284a518f2"
+    },
+    {
+      "id": "tc-fl-patronage-read",
+      "sha256": "1d3e64d99c19871608b7b83feefd4598435dd7981591da2dea8f60a88a622a99"
+    },
+    {
+      "id": "tc-fl-payouts-list",
+      "sha256": "9cc6164f60406e8f2f720e3d5e2a9f8584bfaf40664aced033471f83b444367e"
     },
     {
       "id": "tc-fl-plan-explain",
@@ -253,8 +349,40 @@
       "sha256": "e0f1f459eb8faea4209c73e1e81f7a0239df94f1a33c6f5d0cd3905d619f82d1"
     },
     {
+      "id": "tc-fl-round-draft-read",
+      "sha256": "85ac83e272d87949a5b6a7ddfd5f313d82e9d0293cc24ab8859e9325d8ce276d"
+    },
+    {
+      "id": "tc-fl-round-open-propose",
+      "sha256": "48f9e3bcec1959c72e33efbe17c7ae344e8cbb65cf52e0ad4a3dcec3ccf7f7ca"
+    },
+    {
+      "id": "tc-fl-round-status-network",
+      "sha256": "23967dd9fd6aa4153c96f459088e45b8cf903dde12f1d4ca60b6da1d0ea1e076"
+    },
+    {
+      "id": "tc-fl-round-status-offer",
+      "sha256": "5b56115ba086c3e1a988b59df45fb4ab0e776b815700c855ecc7e19c847d94dd"
+    },
+    {
+      "id": "tc-fl-round-status-round",
+      "sha256": "25f5aabffa731dfb03be36ab5d4937e3c846a0e80acb0f616b6c01dfd420baa6"
+    },
+    {
+      "id": "tc-fl-source-check-url",
+      "sha256": "c07048219e9b8621ed7b8e56268a0e566bc8dd489325ff72992fed868ab91ebe"
+    },
+    {
       "id": "tc-fl-start-explicit",
       "sha256": "d2c9ff0f012d970443a37907303351d91a2b30ce5f5cd993e4380c80a0a8122b"
+    },
+    {
+      "id": "tc-fl-terms-read",
+      "sha256": "a7b0e6c4f0fab5466e15d273b2c357626541efb43eef8f94c2be052bd8e5d1e9"
+    },
+    {
+      "id": "tc-fl-withdraw-propose",
+      "sha256": "3bf06d119530cbae19d22964c9e3cc2b1565bf4475e6080b7fdf3792270b5ae6"
     },
     {
       "id": "tc-get-code-proxy",
@@ -271,6 +399,26 @@
     {
       "id": "tc-group-invite-explicit",
       "sha256": "35810b5f9bec05fff9862e4ede218d15108144cc40835017c9e2064eb507e7bb"
+    },
+    {
+      "id": "tc-group-invite-revoke",
+      "sha256": "32c43dd3e18da5c41fabfc27e044ed2df1815f7501c4df651275cbd94be56cab"
+    },
+    {
+      "id": "tc-group-invites-open",
+      "sha256": "948374b922651cc018361edf1dab8e21166d0faafb13d976a23da4d01f8aded1"
+    },
+    {
+      "id": "tc-group-join-link",
+      "sha256": "d8001754173c7ebc6898a7f951f8aee9291a2653191f8fefec5470d0ef15dcc7"
+    },
+    {
+      "id": "tc-group-make-admin",
+      "sha256": "dbfa8924b77981b478c7220e2c1fb896cc55012a3d6620545068e48d15dc08c7"
+    },
+    {
+      "id": "tc-group-offboard",
+      "sha256": "1e26ee132366f4de048ac2c89d4d04149f68c89f35a32135c8d8782e352bbe21"
     },
     {
       "id": "tc-group-roster",
@@ -357,6 +505,10 @@
       "sha256": "81b0a730b9d716808f0efd68af1a753791219307f1561d3d51701eb623d71275"
     },
     {
+      "id": "tc-round-draft-tune",
+      "sha256": "14164a396fa6a998cb5db3a670053fa2ed6df4399d06ceedb156e29daed42fed"
+    },
+    {
       "id": "tc-schedule-add-weekly",
       "sha256": "87a8a7343e9e4b0a0981fa5a75d343f6920c6cef8dfb0326d801ef1c5d7acbed"
     },
@@ -395,6 +547,10 @@
     {
       "id": "tc-widget-create-explicit",
       "sha256": "de2720279ddabf1d445453a85e44a460c146207db90abd059a0b0f281f96e822"
+    },
+    {
+      "id": "tc-worker-terms-gpu-night",
+      "sha256": "048bad0ef5fc81ce88c61a03cb9d803e58c5082ae0b65d5d9b76d81cb47e4cf2"
     }
   ]
 }

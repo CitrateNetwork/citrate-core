@@ -145,6 +145,18 @@ pub struct ThreadDoc {
     pub created_at: u64,
     pub updated_at: u64,
     pub msgs: serde_json::Value,
+    /// FL design board 01: set on a branch (edit, retry, "Branch from here"): the thread it came
+    /// from and how many of that thread's messages it kept. Absent on a fresh conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ThreadParent>,
+}
+
+/// Where a branch came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadParent {
+    pub thread_id: String,
+    pub at_index: u32,
 }
 
 /// The sealed settings.
@@ -804,6 +816,11 @@ impl<'a> HistoryStore<'a> {
         }
         if !doc.msgs.is_array() {
             return Err("a conversation's messages must be a list".to_string());
+        }
+        if let Some(p) = &doc.parent {
+            if !valid_thread_id(&p.thread_id) || p.thread_id == doc.id {
+                return Err("that conversation's parent id is not valid".to_string());
+            }
         }
         let plain = Zeroizing::new(serde_json::to_vec(&doc).map_err(|e| e.to_string())?);
         if plain.len() > MAX_THREAD_BYTES {

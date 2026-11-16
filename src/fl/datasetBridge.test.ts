@@ -29,6 +29,9 @@ describe("tauriFlDatasets", () => {
     await tauriFlDatasets.consentList("ds-0123456789abcdef");
     await tauriFlDatasets.consentWithdraw("ds-0123456789abcdef", "c-2");
     await tauriFlDatasets.delete("ds-0123456789abcdef");
+    await tauriFlDatasets.publishPreview("ds-0123456789abcdef", 3, "MIT", "public");
+    await tauriFlDatasets.publish("ds-0123456789abcdef", 3, "MIT", "public", "0x" + "cd".repeat(32));
+    await tauriFlDatasets.published("ds-0123456789abcdef");
     expect(invokeMock.mock.calls).toEqual([
       ["fl_dataset_list", undefined],
       ["fl_dataset_manifest", { dataset: "ds-0123456789abcdef", version: 2 }],
@@ -39,6 +42,9 @@ describe("tauriFlDatasets", () => {
       ["fl_dataset_consent_list", { dataset: "ds-0123456789abcdef" }],
       ["fl_dataset_consent_withdraw", { dataset: "ds-0123456789abcdef", consent: "c-2" }],
       ["fl_dataset_delete", { dataset: "ds-0123456789abcdef" }],
+      ["fl_dataset_publish_preview", { dataset: "ds-0123456789abcdef", version: 3, license: "MIT", privacy: "public" }],
+      ["fl_dataset_publish", { dataset: "ds-0123456789abcdef", version: 3, license: "MIT", privacy: "public", contentHash: "0x" + "cd".repeat(32) }],
+      ["fl_dataset_published", { dataset: "ds-0123456789abcdef" }],
     ]);
   });
 
@@ -47,7 +53,7 @@ describe("tauriFlDatasets", () => {
     const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
     const src = readFileSync("src/bridge/tauri/flDatasets.ts", "utf8");
     const cmds = [...src.matchAll(/invoke(?:<[^>]+>)?\("(fl_dataset_[a-z_]+)"/g)].map((m) => m[1]);
-    expect(cmds.length).toBe(9);
+    expect(cmds.length).toBe(12);
     for (const c of cmds) {
       expect(acl).toContain(`"${c}"`);
       expect(lib).toContain(`fl_datasets::${c},`);
@@ -68,6 +74,9 @@ describe("simFlDatasets", () => {
       sim.consentList("ds-0123456789abcdef"),
       sim.consentWithdraw("ds-0123456789abcdef", "c-1"),
       sim.delete("ds-0123456789abcdef"),
+      sim.publishPreview("ds-0123456789abcdef", 1, "MIT", "public"),
+      sim.publish("ds-0123456789abcdef", 1, "MIT", "public", "0x"),
+      sim.published("ds-0123456789abcdef"),
     ];
     for (const c of calls) await expect(c).rejects.toThrow(DATASETS_NEED_DESKTOP);
   });

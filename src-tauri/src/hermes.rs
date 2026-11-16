@@ -10,8 +10,8 @@
 //! spawn → loopback `/health` liveness → bounded-backoff restart) plus `agent.rs`'s bearer scheme:
 //! a fresh 256-bit token is minted per start, written to a `0600` file (the file IS the IPC channel
 //! — the child adopts it), and the file PATH is handed to the child via ENV (never the token in
-//! argv/env — argv/env leak to `ps`). The control surface + skills are S6.2–S6.4; the `hermes_*`
-//! commands stay honest `not wired` until then. Managed as a process-wide singleton in this module,
+//! argv/env — argv/env leak to `ps`). The control surface and skills (S6.2–S6.4) are the
+//! `hermes_*` commands below. Managed as a process-wide singleton in this module,
 //! so no state wiring in the (s0-owned) `lib.rs` — Lane D stays race-free.
 //
 use std::collections::{BTreeMap, HashMap};
@@ -2420,8 +2420,10 @@ pub fn build_session_body(
     let raw: serde_json::Value =
         serde_json::from_str(tools_json).map_err(|_| "tools must be a JSON array".to_string())?;
     let arr = raw.as_array().ok_or("tools must be a JSON array")?;
-    if arr.len() > 64 {
-        return Err("at most 64 tools".into());
+    // 0.5.4 integration: the landed lanes put 74 annotated tools (plus escalation and delegation)
+    // in a session, past the old 64; still a bound on what the webview may send.
+    if arr.len() > 128 {
+        return Err("at most 128 tools".into());
     }
     let mut tools = Vec::with_capacity(arr.len());
     for t in arr {

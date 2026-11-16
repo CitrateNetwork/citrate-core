@@ -36,7 +36,7 @@ describe("HUP-S0.1b deadlines for the newly-async signing and stop commands", ()
     expect(deadlineFor("sign_and_broadcast")).toBeGreaterThan(60_000);
   });
   it("stop commands outlive their 10 s graceful-shutdown wait", () => {
-    for (const c of ["node_stop", "memory_stop", "ipfs_stop", "model_serve_stop", "agent_stop"]) {
+    for (const c of ["node_stop", "memory_stop", "model_serve_stop", "agent_stop"]) {
       expect(deadlineFor(c)).toBeGreaterThan(10_000);
     }
   });

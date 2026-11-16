@@ -90,6 +90,7 @@ fn doc(id: &str, updated_at: u64, text: &str) -> ThreadDoc {
             {"id": "m1", "who": "You", "text": text, "chips": [], "streaming": false},
             {"id": "m2", "who": "Agent", "text": format!("reply to {text}"), "chips": [], "streaming": false}
         ]),
+        parent: None,
     }
 }
 
@@ -115,6 +116,49 @@ fn sealed_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
 
 fn ids(l: &HistoryList) -> Vec<String> {
     l.threads.iter().map(|t| t.id.clone()).collect()
+}
+
+#[test]
+fn a_branch_keeps_its_parent_link_sealed() {
+    let d = TestDir::new("parent");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    s.save_thread(doc("a1", 10, "original")).unwrap();
+    let mut branch = doc("b2", 20, "edited");
+    branch.parent = Some(ThreadParent {
+        thread_id: "a1".into(),
+        at_index: 2,
+    });
+    s.save_thread(branch.clone()).unwrap();
+    let l = s.list_threads(30).unwrap();
+    assert_eq!(l.threads[0], branch);
+    assert_eq!(l.threads[1].parent, None);
+    // The link is sealed with the rest: not on disk in plaintext.
+    assert!(!contains(&all_bytes(d.path()), b"atIndex"));
+}
+
+#[test]
+fn a_parent_link_must_name_another_valid_thread() {
+    let d = TestDir::new("parent-bad");
+    let kr = MemKeyring::default();
+    let s = HistoryStore::new(d.path(), &kr);
+    let mut own = doc("a1", 10, "x");
+    own.parent = Some(ThreadParent {
+        thread_id: "a1".into(),
+        at_index: 0,
+    });
+    assert!(s.save_thread(own).is_err());
+    let mut bad = doc("a2", 10, "x");
+    bad.parent = Some(ThreadParent {
+        thread_id: "../etc".into(),
+        at_index: 0,
+    });
+    assert!(s.save_thread(bad).is_err());
+    // An older client's document without a parent still parses.
+    let old: ThreadDoc =
+        serde_json::from_str(r#"{"id":"a3","title":"t","createdAt":1,"updatedAt":1,"msgs":[]}"#)
+            .unwrap();
+    assert_eq!(old.parent, None);
 }
 
 #[test]

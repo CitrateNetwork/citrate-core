@@ -107,6 +107,7 @@ const STORAGE_ENTRIES: Record<string, string> = {
   "src/agent/sidecarProvider.ts key": "device: the Hermes sidecar session",
   "src/shell/slices/chatHistory.ts LEGACY_PLAINTEXT_KEY": "removed on load: a development build's plaintext chat history, moved into the sealed store (nothing writes it)",
   "src/shell/netScope.ts NET_ARCHIVE_KEY": "network, keyed by genesis: the previous networks' archive",
+  "src/fl/roundDraft.ts KEY": "device: an Open a round draft not yet signed (FL design board 07)",
   "src/shell/netScope.ts `${NET_ARCHIVE_KEY}.damaged-${entry.archivedAt}`": "a damaged archive set aside",
 };
 

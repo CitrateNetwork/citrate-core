@@ -61,6 +61,12 @@ mod deploy_gate;
 mod deploy_records;
 // 0.5.4 — the Hermes chat history, sealed on this device (ML-KEM-768 + AES-256-GCM, key in the keyring).
 mod hermes_history;
+// 0.5.4 FL design board 11 — worker terms and the HIC-2 envelope, sealed the same way.
+mod fl_work;
+// 0.5.4 FL design board 07 — a round's requirements file, published on the bundled IPFS node.
+mod fl_publish;
+// 0.5.4 Hermes x FL WP-H4 — the HIC-2 envelope evaluator, its own fl_envelope scope (not SIWE).
+mod fl_envelope;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -172,13 +178,15 @@ mod browser;
 mod provisioning;
 mod recovery_kit;
 mod sbt_art;
-mod seam;
 mod serve;
 mod serve_plan;
 mod services;
 // CORE-D5 (0.5.3): sidecar log files and the diagnostics bundle.
 mod sidecar_logs;
 // #613 review: the secret shapes kept off the disk and out of the diagnostics bundle.
+mod fl_collect;
+mod fl_dataset_gate;
+mod pii_scan;
 mod secret_shapes;
 mod shell;
 mod skill_registry;
@@ -230,7 +238,8 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
-// Every in-process vault write targets a slot the webview's custody_put cannot address.
+// Every in-process vault write targets a slot the kit's invoke-path custody_put cannot address
+// (citrate-core no longer registers custody_put; citrate-quorum, which shares the kit, may).
 #[cfg(test)]
 mod main_thread_tripwire;
 #[cfg(test)]
@@ -273,6 +282,9 @@ mod upgrade_r1007_tests;
 // D-9: the liquid staking pool is retired; no pool reference in the crate, its book or the kit.
 #[cfg(test)]
 mod lsp_retired_tests;
+// 0.5.4: unused commands and seam stubs stay removed.
+#[cfg(test)]
+mod removed_commands_tests;
 
 use tauri::Manager;
 
@@ -431,8 +443,8 @@ pub fn run() {
             // RC52 G8: a K1-L update-e2e test build checks, installs and restarts by itself.
             #[cfg(feature = "updater-e2e")]
             updater_e2e::start(app.handle());
-            // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
-            // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
+            // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is in the
+            // address book (it is, on 40204) AND the member turned anchoring on (off by default).
             chain_agent::start_nightly_if_ready(app.handle().clone());
             // HUP-S7.5 (D-27) — meter Hermes's own transactions (gas, SALT) once mined. Installs an
             // observer only; nothing is signed or sent by it.
@@ -633,9 +645,7 @@ pub fn run() {
             // wallet reads gated on it) stay stuck — no user passphrase exists to enter.
             custody::custody_ensure_unlocked,
             custody::custody_lock,
-            custody::custody_put,
             custody::custody_list,
-            custody::custody_keyring_status,
             // auth — real OIDC loopback-PKCE (A3). Replaces the A1 auth seam
             // stubs. Every command returns claim-derived AuthStatus or (); NO
             // command returns a token (ADV-8 boundary; see oidc::tests).
@@ -783,6 +793,7 @@ pub fn run() {
             // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
             fl_trajectories::trajectories_settings_get,
             fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_consent_revoke,
             fl_trajectories::trajectories_dataset_build,
             // 0.5.4 WP-H6 — the local dataset store (create, versions, sample, clean, consent).
             fl_datasets::fl_dataset_list,
@@ -794,6 +805,10 @@ pub fn run() {
             fl_datasets::fl_dataset_consent_list,
             fl_datasets::fl_dataset_consent_withdraw,
             fl_datasets::fl_dataset_delete,
+            fl_datasets::fl_dataset_publish_preview,
+            fl_datasets::fl_dataset_publish,
+            fl_datasets::fl_dataset_published,
+            fl_trajectories::trajectories_datasets_list,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,
@@ -811,10 +826,20 @@ pub fn run() {
             hermes_history::hermes_history_delete,
             hermes_history::hermes_history_delete_all,
             hermes_history::hermes_history_set_retention,
+            // 0.5.4 FL design board 11: Settings › Work, sealed on this device.
+            fl_work::fl_work_terms_get,
+            fl_work::fl_work_terms_save,
+            fl_work::fl_work_envelope_get,
+            fl_work::fl_work_envelope_approve,
+            fl_work::fl_work_envelope_off,
+            fl_publish::fl_requirements_publish,
+            fl_envelope::fl_envelope_status,
+            fl_envelope::fl_envelope_check,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,
             contract_reader::contract_view_call,
+            contract_reader::contract_view_call_at,
             contract_reader::contract_write_propose,
             // G-SEC PAY-14 — whether FL payouts are open, as the signer decides it.
             fl_payouts::fl_payouts_status,
@@ -997,6 +1022,18 @@ pub fn run() {
             hermes_auto_approve::hermes_auto_approve_get,
             hermes_auto_approve::hermes_auto_approve_set,
             hermes_auto_approve::hermes_auto_approve_rules,
+            // WP-H7 / V6 (0.5.4): the on-device private-information scanner.
+            pii_scan::pii_scan_text,
+            // WP-H7 (0.5.4): the dataset PII scan, license check and publish gate.
+            fl_dataset_gate::fl_dataset_pii_scan,
+            fl_dataset_gate::fl_dataset_license_check,
+            fl_dataset_gate::fl_dataset_publish_check,
+            // WP-H8 (0.5.4): the compliant collector.
+            fl_collect::fl_collect_policy,
+            fl_collect::fl_collect_source_check,
+            fl_collect::fl_collect_plan,
+            fl_collect::fl_collect_plan_decide,
+            fl_collect::fl_collect_run,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
@@ -1010,9 +1047,6 @@ pub fn run() {
             node::node_status,
             node::node_start,
             node::node_stop,
-            // W1.1 — the node's proposer identity (coinbase + derived ed25519
-            // proposer pubkey) for the validator status surface + registration.
-            node::node_proposer_identity,
             // W1.3 — activate the member's validator bond (bond-clone model): the
             // ceremony sends MemberBond.activate to the funded clone; the clone (=
             // staker) forwards its principal to registerValidator.
@@ -1227,18 +1261,15 @@ pub fn run() {
             model::model_verify,
             // model-serve — BC-3.2 the bundled llama-server sidecar under the
             // SidecarSupervisor. model_serve_start fails CLOSED unless the model is
-            // verified-Ready AND the binary is bundled; model_serve_status carries
-            // the loopback baseURL + a coarse health flag; model_inference_state
+            // verified-Ready AND the binary is bundled; model_inference_state
             // returns the HONEST route (ready/local-fallback/downloading/
             // gateway-only/no-model/demo). No secret crosses this surface.
             serve::model_serve_start,
             serve::model_serve_stop,
-            serve::model_serve_status,
             serve::model_inference_state,
-            // IPFS — the bundled kubo daemon (artifact/model pin/add on 127.0.0.1:5001).
+            // IPFS — the bundled kubo daemon (artifact/model pin/add on 127.0.0.1:5001). Started
+            // here; it stops with the app.
             ipfs::ipfs_start,
-            ipfs::ipfs_stop,
-            ipfs::ipfs_status,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // wallet activity — REAL indexed 40204 tx history from the CitrateScan
@@ -1246,11 +1277,6 @@ pub fn run() {
             // /api/v1?module=account&action=txlist). Honest empty on a fresh /
             // not-provisioned index; never fabricated (Rule 1). NOT @rule8.
             activity::wallet_activity,
-            // seam domains — honest Unavailable until each later phase (A1.3)
-            seam::chat_backend,
-            seam::membership_entitlement,
-            seam::commissary_catalog,
-            seam::comms_connections,
             popout::popout_open,
             popout_contract::popout_contract_send,
             popout_contract::popout_contract_take,
@@ -1408,8 +1434,18 @@ mod tests {
             defined.len() >= 7,
             "the scan must see the custody commands: {defined:?}"
         );
+        // 0.5.4: kit custody commands citrate-core deliberately does not register (nothing in the
+        // webview called them; custody_put was an invoke-path vault write). citrate-quorum, which
+        // shares the kit, may still register them.
+        let not_registered: std::collections::BTreeSet<String> =
+            ["custody_put", "custody_keyring_status"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let expected: std::collections::BTreeSet<String> =
+            defined.difference(&not_registered).cloned().collect();
         assert_eq!(
-            registered, defined,
+            registered, expected,
             "the registered custody commands differ from those defined in kit custody.rs"
         );
         // The secret-reading API must NEVER be registered as an invoke command.

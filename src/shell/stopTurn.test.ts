@@ -267,7 +267,9 @@ describe("HUP-S7.6 sidecar loop honours Stop", () => {
     const onActivity = vi.fn();
     const p = createSidecarProvider(a, () => "p", () => []);
     await p.send({ messages: [{ role: "user", content: "hi" }], callbacks: { onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(async () => "r"), onActivity } });
-    // No tool call, so no chat plan: only the steps.
-    expect(onActivity.mock.calls.map((c) => c[0])).toEqual([{ kind: "step", step: 1 }, { kind: "step", step: 2 }]);
+    // No tool call, so no chat plan: only the steps (after the page's receive time, board 01).
+    const evs = onActivity.mock.calls.map((c) => c[0]);
+    expect(evs[0]).toMatchObject({ kind: "page" });
+    expect(evs.slice(1)).toEqual([{ kind: "step", step: 1 }, { kind: "step", step: 2 }]);
   });
 });

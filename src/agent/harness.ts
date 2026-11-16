@@ -21,6 +21,7 @@ import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
 import { FL_DATASET_AGENT_TOOLS } from "./flDatasetTools.ts";
+import { FL_PROMPT_SECTION } from "./flPrompt.ts";
 import { ChatPlan } from "./chatPlan.ts";
 import { labelFor as liveLabelFor, noticeFor, type SidecarDownReason } from "./sidecarLiveness.ts";
 
@@ -111,7 +112,16 @@ export type TurnActivityEvent =
   | { kind: "tool_output"; callId: string; tool: string; status: string; content: string }
   /** #681: the sidecar's final-answer check removed deploy claims no receipt or chain read
    *  supports; the next final answer is the corrected one. */
-  | { kind: "answer_check"; findings: string[] };
+  | { kind: "answer_check"; findings: string[] }
+  /** FL design board 01 (run timeline): the loop announced a call it runs itself (`sidecar`) or
+   *  runs nowhere (`refused`: no such tool, or one that needs an approval its host cannot ask
+   *  for). Core-hosted calls are reported through `onToolCall` instead. */
+  | { kind: "tool_start"; callId: string; tool: string; host: "sidecar" | "refused" }
+  /** The result of a `refused` call (sidecar-hosted results arrive as `tool_output`). */
+  | { kind: "tool_end"; callId: string; tool: string; status: string; content: string }
+  /** The provider received a page of events at `at` (ms since epoch). The events reported after
+   *  it, until the next page, arrived together, so the gap between two of them is not known. */
+  | { kind: "page"; at: number };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent
@@ -232,7 +242,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "",
   "# How you operate (human-in-control, non-negotiable)",
   "You PROPOSE; the member DECIDES. You never hold keys and never execute a signature yourself.",
-  "Every state change — a memory assertion, creating a group, making an invite link, a group role change, a chain transaction, a contract deploy, an on-chain registration, saving or replacing a local skill — waits for the member's approval. Say clearly when you've proposed something and that it awaits their approval.",
+  "Every state change — a memory assertion, creating a group, making an invite link, a group role change, a chain transaction, a contract deploy, an on-chain registration, replacing a saved skill — waits for the member's approval in the Signature Ceremony. Every skill save asks first. The one kind of write that does not ask is a change that only lowers the member's exposure (listed under Federated learning). Say clearly when you've proposed something and that it awaits their approval.",
   "Skill names that start with citrate- belong to Citrate's own bundled skills; you cannot save a skill under one.",
   "A notification only points the member to the card; no notification ever carries an approve button.",
   "An approved invite link is copied to the member's clipboard and is never shown to you.",
@@ -244,12 +254,13 @@ export const AGENT_SYSTEM_PROMPT = [
   "- Node & staking: read the node's sync/validator status, height, peers; the staking position and validator rewards (total and claimable now, from ValidatorRegistry.rewardsOf); the wallet address and balances. You have no tool that claims rewards, adds stake or activates the validator bond: the member does those in Node (Rewards and Staking), and you can take them there with app_navigate.",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-time link (whoever opens it asks to join, and the member approves or declines each request in Groups; nobody joins from the link alone), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
-  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
+  "- Learning together: federated learning rounds, datasets and adapters, as set out under Federated learning below.",
   "- Paraconsensus: belnap_codec encodes inputs for the Belnap aggregation precompile 0x0110 and decodes its output (values plus a Neither / True / Both state per dimension), locally and exactly. Keep a Both visible to the member; never average it away.",
   "- Everyday: read a Google spreadsheet range (gsheets_read) and PROPOSE adding rows (gsheets_append); read Hermes's schedule (schedule_list) and PROPOSE an entry (schedule_add); read the member's Google Calendar (calendar_list). Google tools work only after the member connects Google in Settings > Connections; if they are not connected, say so.",
   "- Coding in the member's folders: when the member has shared a folder with you (Hermes > Controls > Details > Terminal & folders) and terminal commands are on, the shell_run tool runs one command in that folder (for example npm test, cargo build, make, git status, python script.py). Use it for coding tasks: build, test, lint and inspect the project, then report what the output shows. Inside a project, a short list of commands may run without a card while this conversation has not read untrusted content (a web page, a tool's output or a group message). Which ones depends on this Hermes build and on what the member turned on for that project in Settings, so never promise that a command will run without asking. Every other command, and every command after you read untrusted content, waits for the member to approve exactly that command. Every command runs in a sandbox with no network and may write only inside the shared folder. Give argv as separate entries (no shell, so no pipes or globs) and cwd as the absolute folder path. If shell_run is not offered, say the member needs to share a folder and turn on terminal commands in Hermes > Controls. A declined command did not run: never claim its result.",
   "- Memory: semantically search and recall the member's memory graph and the bundled Citrate documentation (the 'citrate-docs' tenant); propose remembering a fact (a ceremony-gated write).",
   "- Navigation: move the member to the right surface of the app (wallet, node, groups, storage, commissary, settings) when it helps.",
+  FL_PROMPT_SECTION,
   "",
   "# The network & other agents",
   "Citrate is a member-owned network: every member runs their own node and their own Hermes agent. The on-chain SkillRegistry and ModelRegistry are the shared, verifiable catalog of what agents can load and run — you can read them to see what capabilities and models exist network-wide, and the member can publish their own. Shared inference runs through the Citrate gateway; local inference runs on this node.",
@@ -529,6 +540,88 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── groups and cluster (0.5.4 Hermes × FL, WP-H2; src/agent/groupClusterTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "group_join_propose",
+      description:
+        "PROPOSE asking to join a group with an invite link the member pasted (citrate://invite?...). Core reads the link and the member decides on a card (HIC-1). Approving only ASKS: the inviter approves or declines the request, and the member joins after an approval. If the link can't be read, say \"We couldn't find that invite\".",
+      parameters: {
+        type: "object",
+        properties: { link: { type: "string", description: "the invite link exactly as the member pasted it" } },
+        required: ["link"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_invites_list",
+      description: "List the open invites this device made for a group: id, who it is for, expiry. Read-only. Links are never shown to you.",
+      parameters: { type: "object", properties: { group: { type: "string", description: "group id from groups_list" } }, required: ["group"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_invite_revoke",
+      description: "Revoke one open invite (its id from group_invites_list). Its link stops working at once. This lowers access, so it applies without a card.",
+      parameters: {
+        type: "object",
+        properties: { group: { type: "string", description: "group id" }, id: { type: "string", description: "invite id from group_invites_list" } },
+        required: ["group", "id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_role_propose",
+      description:
+        "PROPOSE a role change for a group member (admin, member or guest), or offboarding them (role \"offboard\", which cannot be undone). The member decides on a card (HIC-1); the grant is signed with their comms key on this device. Only the owner can make admins, and core passes on any refusal.",
+      parameters: {
+        type: "object",
+        properties: {
+          group: { type: "string", description: "group id" },
+          member: { type: "string", description: "the member's address from group_roster" },
+          role: { type: "string", enum: ["admin", "member", "guest", "offboard"], description: "the new role, or offboard" },
+        },
+        required: ["group", "member", "role"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_read",
+      description:
+        "Read a group's machine cluster from the cluster daemon: machines online of total, peers (direct or relayed), each member's linked devices, and whether the cross-machine mesh is on and why. Read-only. A part that can't be read says unknown with its reason.",
+      parameters: { type: "object", properties: { group: { type: "string", description: "group id from groups_list" } }, required: ["group"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_mesh_propose",
+      description:
+        "Turn the cross-machine mesh on (PROPOSE: the member decides on a card) or off (applies at once). Core refuses to turn it on until its security review (CL-S4) is signed off; say so plainly when it does.",
+      parameters: {
+        type: "object",
+        properties: { enabled: { type: "boolean", description: "true to turn on, false to turn off" } },
+        required: ["enabled"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cluster_add_machine_open",
+      description:
+        "Open Groups › Cluster so the member can press Add a machine. The pairing link and code are shown on the member's screen only, never to you, and both machines approve the pairing.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
   {
     type: "function",
     function: {
@@ -774,6 +867,92 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── worker terms, consent and eligibility (0.5.4 Hermes × FL, WP-H3; src/agent/flWorkTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_terms_read",
+      description: "Read the member's worker terms (floor in SALT per unit, hours, weekdays only, mains only, data classes), sealed on this device, or that none are set. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_list",
+      description: "List the member's federated-learning consents: per-round consents the device worker reads, withdrawn ones, and whether training on verified conversations is on. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_withdraw",
+      description:
+        "Withdraw a consent: one round's (scope \"round\" with roundId), or training on verified conversations (scope \"conversations\"). This lowers authority, so it applies at once without a card. Giving consent is never done here: it goes through fl_round_start's card or Settings.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["round", "conversations"], description: "what to withdraw" },
+          roundId: { type: "string", description: "for scope round: 0x followed by 64 hex digits" },
+        },
+        required: ["scope"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_eligibility",
+      description:
+        "Check this machine against round requirements from its local probe: eligible, not eligible with each why-not, or not known when a fact can't be read. Pass requirements, or an offerId (offers need WorkMarket; where it is not deployed, it says so). Read-only.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "string", description: "a WorkMarket offer id" },
+          requirements: {
+            type: "object",
+            description: "what the round needs",
+            properties: {
+              minRamGb: { type: "number" },
+              minVramGb: { type: "number" },
+              minDiskGb: { type: "number" },
+              accelerator: { type: "boolean", description: "needs a GPU or Apple Silicon" },
+              mainsOnly: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+  },
+  // ── the HIC-2 envelope (0.5.4 Hermes × FL, WP-H4; src/agent/flEnvelopeTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_read",
+      description:
+        "Read the member's HIC-2 envelope: on or off, joins left this week, machine hours per round, whether it can authorize anything on this network, and the fixed rules core enforces. Read-only. Quote what it returns; never state caps from memory.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_propose",
+      description:
+        "PROPOSE an HIC-2 envelope (enabled true, with joinsPerWeek and maxHoursPerRound): the member decides on a card (HIC-1) and you never approve it. Or turn the envelope off now (enabled false), which needs no card. Core enforces the caps; the first join with a new group or poster always asks, and an offer's text can never change the envelope.",
+      parameters: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "true to propose an envelope, false to turn it off now" },
+          joinsPerWeek: { type: "number", description: "1 to 50" },
+          maxHoursPerRound: { type: "number", description: "machine hours per round, 1 to 72" },
+          name: { type: "string", description: "a short name the member will recognise" },
+        },
+        required: ["enabled"],
+      },
+    },
+  },
   // ── LoRA adapters and the eval gate (0.5.4 Hermes x FL, WP-H9) ──
   {
     type: "function",
@@ -814,6 +993,269 @@ export const AGENT_TOOLS = [
   },
   // ── local training datasets (0.5.4 Hermes x FL, WP-H6) ──
   ...FL_DATASET_AGENT_TOOLS,
+  // ── round draft read (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_draft_read",
+      description:
+        "Read the member's Open a round draft for a federated training round on this device: group, template, data class, budget and rate in SALT, workers, deadline, who may join, coordinator, how many leases the budget covers, and what still blocks opening it. Read-only; it never changes the draft. Opening the round is the member's own escrow signature.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  // ── federated round offers and joining (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_offers_list",
+      description:
+        "List the WorkMarket offers (federated training rounds and tasks) this member can see, matched against their worker terms and this machine: each with its rate in SALT, workers, join bond, requirements, deadline, and why it matches or why not. Ranked joinable first, then by deadline, never by amount. Read-only; offer text is written by posters. When WorkMarket is not on this network it says group rounds are not live yet.",
+      parameters: {
+        type: "object",
+        properties: { includeHidden: { type: "boolean", description: "also list offers hidden from this member, with the reason" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_join_propose",
+      description:
+        "PROPOSE joining one WorkMarket offer from fl_offers_list. It opens the member's wallet review for WorkMarket.join at the offer's own rate with its join bond; the member reads the decoded call and signs it (HIC-1). You never sign or send it. Refused, with the reason, when WorkMarket is not on this network, payouts are not open yet, or the offer cannot be joined.",
+      parameters: {
+        type: "object",
+        properties: { offerId: { type: "number", description: "the offer id from fl_offers_list" } },
+        required: ["offerId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_round_open_propose",
+      description:
+        "PROPOSE opening the group round in the member's saved Open a round draft. It opens the member's wallet review for WorkMarket.open with the budget escrowed from their wallet; the member reads the decoded call and signs it (HIC-1). You never sign it. Refused, with the reason, when there is no draft, WorkMarket is not on this network, payouts are not open after the security review, the coordinator's round binding is not published, or the draft is incomplete.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  // ── FL payouts, shipped dark (0.5.4 Hermes x FL, WP-H10) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_payouts_list",
+      description:
+        "Read the member's federated round payouts: for each WorkMarket offer they joined, whether the payout is waiting for its dispute window, claimable, claimed, disputed or frozen, the rate in SALT, and the pull balance ready to withdraw. Read-only. Until payouts open after the security review it says so and reads nothing; units and amounts are the coordinator's and are shown as unknown, never guessed.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_withdraw_propose",
+      description:
+        "PROPOSE withdrawing the member's whole WorkMarket pull balance (the SALT already settled to them). It opens the wallet review for WorkMarket.withdraw(); the member reads it and signs it (HIC-1); you never sign. Refused, with core's reason, until payouts open after the security review, and when the balance is 0.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_claim_propose",
+      description:
+        "Check whether the member's payout on one WorkMarket offer can be claimed: core's payouts gate, then every on-chain settle condition (dispute window, open challenges, live payout list). In this release no claim can be signed from the app, because the member's leaf of the coordinator's payout list is not read; it says so and opens nothing. Never say a claim was made.",
+      parameters: {
+        type: "object",
+        properties: { offerId: { type: "number", description: "the offer id from fl_payouts_list" } },
+        required: ["offerId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_dispute_propose",
+      description:
+        "Check whether the member can dispute the payout on one WorkMarket offer. In this release no dispute can be sent from the app, because it needs the coordinator-signed receipt the unbundled training worker keeps; it says so with the line's status and opens nothing. Never say a dispute was filed.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "number", description: "the offer id from fl_payouts_list" },
+          reason: { type: "string", description: "the member's reason, such as a missing leaf" },
+        },
+        required: ["offerId"],
+      },
+    },
+  },
+  // ── federated round reads (0.5.4 Hermes x FL, WP-H5) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_status",
+      description:
+        "Read a federated training round's state, each value tagged by its source: a WorkMarket offer (offerId) with its escrow, workers and rate, a FederatedRoundLedger round record (roundId) with its status, challenge window and fault, and the configured coordinator's own lease counts. With neither id, lists which FL contracts this network has. Read-only. When WorkMarket is not on this network it says group rounds are not live yet; never invent a round, a count or an amount.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "number", description: "the WorkMarket offer id" },
+          roundId: { type: "string", description: "the FederatedRoundLedger round id, 0x followed by 64 hex characters" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_lease_explain",
+      description:
+        "Explain why a federated round, and so a lease in it, was rejected: reads the round ledger's recorded fault (output mismatch, row mismatch, rule violation, participant order) and says what it means. Read-only. Per-lease receipts are the coordinator's and are not read; say so rather than guessing which lease caused it.",
+      parameters: {
+        type: "object",
+        properties: {
+          roundId: { type: "string", description: "the round id, 0x followed by 64 hex characters" },
+          leaseIndex: { type: "number", description: "the lease the member asked about, from 0" },
+        },
+        required: ["roundId"],
+      },
+    },
+  },
+  // ── FL history and patronage (0.5.4 Hermes x FL, WP-H10) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_history_read",
+      description:
+        "Read this device's federated learning history: the round starts the member approved and any consent withdrawn, the rounds consented to, the LoRA eval gate's decisions, and whether there are payouts on this network. filter narrows it to rounds, consent, gate or payouts. Read-only; never invent a round, a payout or an amount.",
+      parameters: {
+        type: "object",
+        properties: { filter: { type: "string", enum: ["all", "rounds", "consent", "gate", "payouts"], description: "which part; defaults to all" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_patronage_read",
+      description:
+        "Read the member's cooperative patronage on PatronageLedger: units recorded and the pending dividend in SALT, plus a group's recorded rounds when groupId is given. Read-only. A failed read is reported with its reason, never as zero; nothing can be claimed from here.",
+      parameters: {
+        type: "object",
+        properties: { groupId: { type: "string", description: "a group id, from groups_list, to also count its recorded rounds" } },
+      },
+    },
+  },
+  // ── 0.5.4 WP-H7: the dataset PII scan and license check (core decides; reads only) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_dataset_pii_scan",
+      description:
+        "Scan one version of a member's dataset for private information, on this device, with core's deterministic scanner (emails, phone numbers, card numbers, government ids, IBANs, IP and street addresses, names, keys and seed phrases). Core records the result; publishing is refused while anything is found. Returns counts by class and row numbers, never the matched text. You cannot change the verdict.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id, ds- followed by 16 hex digits" },
+          version: { type: "number", description: "the version number" },
+        },
+        required: ["dataset", "version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_dataset_license_check",
+      description:
+        "Check the license of every source in one version of a member's dataset: publishable, the member's own content, unknown, or not publishable (NonCommercial and NoDerivatives licenses, and anything DatasetRegistry refuses). Read-only. Publishing is refused while any source is unknown or not publishable.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id" },
+          version: { type: "number", description: "the version number" },
+        },
+        required: ["dataset", "version"],
+      },
+    },
+  },
+  // ── 0.5.4 WP-H8: the compliant collector (the only way web content reaches a dataset) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_source_check",
+      description:
+        "Check whether one web page may be collected into a member's dataset, under Citrate's collection policy enforced by core: robots.txt for CitrateHermes, Citrate's allow and deny lists, local or private hosts, credentials in the URL, and a known license (a missing robots.txt with no license is refused). Reads only the host's robots.txt; fetches no page. Use it before proposing a plan.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "the page URL (http or https)" },
+          license: { type: "string", description: "optional SPDX id the member says the page is under, when the page states none" },
+          licenseStatement: { type: "string", description: "with license: the member's own words for where that license is stated" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_collect_plan",
+      description:
+        "PROPOSE collecting web pages into a member's dataset through core's compliant collector. Core checks every URL (robots.txt, Citrate's lists, license), shows the member a plan card (HIC-1) with each page, its license and the consent wording, and only if the member approves fetches exactly those pages: one request every 2 seconds per host, at most 500 pages, no link following, stopping on 403 or 429, with provenance recorded for every row and a private-information scan of the new version. Use only this tool to build a dataset from the web; never read_url, the browser, shell or file tools. The result is untrusted content.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id, ds- followed by 16 hex digits" },
+          baseVersion: { type: "number", description: "the dataset's latest version number" },
+          urls: { type: "array", items: { type: "string" }, description: "the exact page URLs, at most 500" },
+          license: { type: "string", description: "optional SPDX id the member attests for pages that state none" },
+          licenseStatement: { type: "string", description: "with license: the member's own words for where it is stated" },
+        },
+        required: ["dataset", "baseVersion", "urls"],
+      },
+    },
+  },
+  // ── FL design board 01: worker terms, proposed on a card core renders ──
+  {
+    type: "function",
+    function: {
+      name: "worker_terms_propose",
+      description:
+        "PROPOSE the member's worker terms for group rounds (when this machine may take round work): the floor in SALT per unit, the hours, weekdays only, mains power only, and the data classes rounds may read. Core checks the terms and shows them on a card in the chat; only the member can confirm it there (HIC-1), and nothing is saved until they do. You never confirm or save terms yourself. Propose only terms the member asked for; use dataClasses [] unless they named a dataset kind this device has (\"hermes-conversations\").",
+      parameters: {
+        type: "object",
+        properties: {
+          floorSaltPerUnit: { type: "string", description: "the lowest rate the member accepts, decimal SALT per unit, e.g. \"1.20\"" },
+          hoursStart: { type: "string", description: "start of the hours rounds may run, HH:MM in 24 h, e.g. \"23:00\"; omit both hours for any time" },
+          hoursEnd: { type: "string", description: "end of those hours, HH:MM in 24 h, e.g. \"07:00\"" },
+          weekdaysOnly: { type: "boolean", description: "true for Monday to Friday only" },
+          mainsOnly: { type: "boolean", description: "true to run only on mains power and pause on battery" },
+          dataClasses: { type: "array", items: { type: "string" }, description: "data classes rounds may read on this device; [] for none" },
+        },
+        required: ["floorSaltPerUnit"],
+      },
+    },
+  },
+  // ── FL design board 07: a round draft Hermes hands to Open a round ──
+  {
+    type: "function",
+    function: {
+      name: "round_draft_propose",
+      description:
+        "PROPOSE a draft of a group round for Groups › Rounds › Open a round. Core shows the draft on a card in the chat; only the member can press \"Review in Open a round\", which opens it there, and the member checks every field and signs it themselves (HIC-1). Nothing is escrowed, published or opened by this tool. Fill only what the member asked for; leave the rest out.",
+      parameters: {
+        type: "object",
+        properties: {
+          template: { type: "string", enum: ["tune", "eval", "data"], description: "tune a model, evaluate an adapter, or build a dataset" },
+          dataClass: { type: "string", description: "the data class members train on, e.g. \"hermes-conversations\"" },
+          budgetSalt: { type: "string", description: "the round budget in SALT, decimal, e.g. \"600\"" },
+          rateSalt: { type: "string", description: "the rate per unit in SALT, decimal, e.g. \"1.50\"" },
+          maxWorkers: { type: "number", description: "most workers; at least 3 (the round ledger's floor)" },
+          deadline: { type: "string", description: "YYYY-MM-DD" },
+          who: { type: "string", enum: ["members", "group", "anyone"], description: "who may join" },
+          groupId: { type: "string", description: "the group the round belongs to, from groups_list" },
+        },
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1307,6 +1749,9 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "staking_status",
   "groups_list",
   "group_roster",
+  "group_invites_list",
+  "cluster_read",
+  "cluster_add_machine_open",
   "directory_find",
   "skills_list",
   "skill_run",
@@ -1320,9 +1765,33 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_terms_read",
+  "fl_consent_list",
+  "fl_eligibility",
+  "fl_envelope_read",
   "fl_adapter_gate_read",
   "fl_dataset_list",
   "fl_dataset_sample",
+  "fl_round_draft_read",
+  "fl_offers_list",
+  "fl_payouts_list",
+  // Named-blocked (0.5.4): they check the gate and the line and name what is missing; they open
+  // no card. Wiring a card into either must move it off this list (the annotation test enforces it).
+  "fl_claim_propose",
+  "fl_dispute_propose",
+  "fl_round_status",
+  "fl_lease_explain",
+  "fl_history_read",
+  "fl_patronage_read",
+  // WP-H7: the scan records core's own verdict (no member data changes); the license check reads.
+  "fl_dataset_pii_scan",
+  "fl_dataset_license_check",
+  // WP-H8: reads the host's robots.txt only; no page, no write.
+  "fl_source_check",
+  // Board 01: renders a card core checked; nothing changes until the member confirms it there.
+  "worker_terms_propose",
+  // Board 07: renders a draft card; only the member opens it in Open a round and signs it there.
+  "round_draft_propose",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",
@@ -1337,5 +1806,7 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
  * calls only its lowering command. A tool lands here only with a reviewed reason.
  */
 export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_consent_revoke: both turn-off-only, no switch argument
+  "group_invite_revoke", // core group_invite_revoke: delete the invite's key, so its link stops working
   "fl_adapter_unload", // core fl_adapter_unload: serve the base model alone and forget the remembered adapter
 ]);

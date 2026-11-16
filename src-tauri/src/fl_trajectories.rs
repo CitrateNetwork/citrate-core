@@ -265,6 +265,70 @@ pub fn build_round_dataset(
     })
 }
 
+/// One assembled round training file, as the Hermes chat can attach it (FL design board 01).
+/// Metadata only: the chat never reads the file's lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatasetFile {
+    /// The file name inside `hermes/fl-datasets/` (`<built ms>.jsonl`).
+    pub name: String,
+    /// When it was built (ms since the epoch), from its name.
+    pub built_ms: u64,
+    pub bytes: u64,
+    /// Non-empty lines: one verified conversation each.
+    pub examples: u32,
+    pub sha256: String,
+}
+
+/// Most assembled files listed (newest first).
+pub const MAX_LISTED_DATASETS: usize = 20;
+/// A file larger than this is listed without being read (its examples and hash are not shown).
+const MAX_LISTED_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The assembled round training files on this device, newest first. Files whose name is not
+/// `<digits>.jsonl` are not ours and are left out; a file too large or unreadable is skipped.
+pub fn list_round_datasets(hermes_dir: &Path) -> Vec<DatasetFile> {
+    let Ok(rd) = std::fs::read_dir(hermes_dir.join(DATASETS_DIR)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<DatasetFile> = Vec::new();
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let Ok(built_ms) = stem.parse::<u64>() else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&p) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > MAX_LISTED_FILE_BYTES {
+            continue;
+        }
+        let Ok(body) = std::fs::read(&p) else {
+            continue;
+        };
+        let examples = body
+            .split(|b| *b == b'\n')
+            .filter(|l| l.iter().any(|c| !c.is_ascii_whitespace()))
+            .count();
+        out.push(DatasetFile {
+            name,
+            built_ms,
+            bytes: meta.len(),
+            examples: u32::try_from(examples).unwrap_or(u32::MAX),
+            sha256: hex::encode(Sha256::digest(&body)),
+        });
+    }
+    out.sort_by(|a, b| b.built_ms.cmp(&a.built_ms).then(a.name.cmp(&b.name)));
+    out.truncate(MAX_LISTED_DATASETS);
+    out
+}
+
 fn write_new_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
@@ -353,6 +417,13 @@ pub fn set(
     Ok(status(hermes_dir))
 }
 
+/// Turn training on verified conversations off, and only off: deletes the assembled round files
+/// and keeps the recordings (the member deletes those in Settings). Has no switch argument, so the
+/// only effect any caller can have through it is lowering consent (0.5.4 WP-H3, #712 review).
+pub fn revoke(hermes_dir: &Path, now_ms: u64) -> Result<TrajectoryStatus, String> {
+    set(hermes_dir, false, false, now_ms)
+}
+
 fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     use tauri::Manager;
     app.path()
@@ -393,6 +464,16 @@ pub async fn trajectories_settings_set(
     .await
 }
 
+/// **trajectories_consent_revoke**: turn training on verified conversations off. Takes no switch,
+/// so it can only lower consent; Hermes's fl_consent_withdraw reaches this and never
+/// trajectories_settings_set. Applies to recording at the next Hermes start.
+#[tauri::command]
+pub async fn trajectories_consent_revoke(
+    app: tauri::AppHandle,
+) -> Result<TrajectoryStatus, String> {
+    crate::blocking::off_main(move || revoke(&hermes_dir(&app)?, now_ms())).await
+}
+
 /// **trajectories_dataset_build**: assemble the newest verified turns into one training file
 /// for a round. Refused when the switch is off.
 #[tauri::command]
@@ -404,6 +485,13 @@ pub async fn trajectories_dataset_build(
         build_round_dataset(&hermes_dir(&app)?, max_trajectories, now_ms())
     })
     .await
+}
+
+/// **trajectories_datasets_list**: the assembled round training files, newest first, as names,
+/// sizes, example counts and hashes (board 01: what the member can attach to a Hermes chat).
+#[tauri::command]
+pub async fn trajectories_datasets_list(app: tauri::AppHandle) -> Result<Vec<DatasetFile>, String> {
+    crate::blocking::off_main(move || Ok(list_round_datasets(&hermes_dir(&app)?))).await
 }
 
 #[cfg(test)]

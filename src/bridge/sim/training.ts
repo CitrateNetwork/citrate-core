@@ -8,7 +8,7 @@ export function simTraining(_host: SimHost): TrainingDomain {
       return { groupId, round: 0, phase: "idle", participants: 0 };
     },
     async reward(): Promise<RewardInfo> {
-      return { round: 0, weight: "0", salt: "0" };
+      return { round: 0, weight: "0", salt: "0", pendingWei: "0" };
     },
   };
 }

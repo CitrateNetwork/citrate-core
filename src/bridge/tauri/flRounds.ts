@@ -11,6 +11,7 @@ import type {
   FlRoundsDomain,
   FlStartReceipt,
   FlTrainingSet,
+  FlDatasetFile,
   FlTrajectoryStatus,
 } from "../domains";
 
@@ -48,7 +49,13 @@ export const tauriFlRounds: FlRoundsDomain = {
   setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean) {
     return invoke<FlTrajectoryStatus>("trajectories_settings_set", { enabled, deleteRecorded });
   },
+  revokeTrajectoryConsent() {
+    return invoke<FlTrajectoryStatus>("trajectories_consent_revoke");
+  },
   buildTrainingSet(maxTrajectories: number) {
     return invoke<FlTrainingSet>("trajectories_dataset_build", { maxTrajectories });
+  },
+  datasetsList() {
+    return invoke<FlDatasetFile[]>("trajectories_datasets_list");
   },
 };

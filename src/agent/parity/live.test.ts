@@ -83,7 +83,7 @@ const AI_MAX_TOKENS = 2048;
 export function liveSessionBody(systemPrompt: string, toolsJson: string, baseUrl: string, bearer: string, model: string, contextTokens: number) {
   const raw = JSON.parse(toolsJson) as unknown;
   if (!Array.isArray(raw)) throw new Error("tools must be a JSON array");
-  if (raw.length > 64) throw new Error("at most 64 tools");
+  if (raw.length > 128) throw new Error("at most 128 tools");
   const tools = raw.map((t: Record<string, unknown>) => {
     const f = (t.function as Record<string, unknown> | undefined) ?? t;
     const name = f.name;

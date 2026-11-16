@@ -1013,6 +1013,409 @@ fn version_files_are_never_overwritten() {
     assert!(e.contains("never overwritten"), "{e}");
 }
 
+// ------------------------------------------------------------------ publish (IPFS)
+
+/// Records what was added; fails when told to.
+#[derive(Default)]
+struct MemSink {
+    added: StdMutex<Vec<(String, Vec<u8>)>>,
+    fail: bool,
+}
+
+impl PublishSink for MemSink {
+    fn add_and_pin(&self, name: &str, bytes: &[u8]) -> Result<String, String> {
+        if self.fail {
+            return Err("kubo transport error: connection refused".into());
+        }
+        let mut a = self.added.lock().unwrap();
+        a.push((name.to_string(), bytes.to_vec()));
+        Ok(format!("bafkreitest{}", a.len()))
+    }
+}
+
+fn passing_scan(content_hash: &str) -> PiiScanRecord {
+    PiiScanRecord {
+        scanner: "citrate-pii/1".into(),
+        scanned_at_ms: 5,
+        content_hash: content_hash.into(),
+        pass: true,
+        counts: BTreeMap::new(),
+    }
+}
+
+/// A dataset whose every source has a license (the root LICENSE), scanned clean.
+fn publishable(s: &DatasetStore<'_>, tag: &str) -> (String, VersionView) {
+    let (id, out) = make(s, tag);
+    s.record_pii_scan(&id, 1, &passing_scan(&out.version.content_hash))
+        .unwrap();
+    (id, out.version)
+}
+
+#[test]
+fn publish_is_refused_until_every_gate_passes() {
+    let d = tmp("pubgates");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, out) = make(&s, "pubgatessrc");
+    let v1 = out.version;
+    let c = s
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals
+            .iter()
+            .any(|r| r.contains("has not been scanned")),
+        "{:?}",
+        c.refusals
+    );
+    let mut found = passing_scan(&v1.content_hash);
+    found.pass = false;
+    found.counts.insert("email".into(), 3);
+    s.record_pii_scan(&id, 1, &found).unwrap();
+    let c = s
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals.iter().any(|r| r.contains("scan found 3 email")),
+        "{:?}",
+        c.refusals
+    );
+    s.record_pii_scan(&id, 1, &passing_scan(&v1.content_hash))
+        .unwrap();
+    assert!(s
+        .publish_preview(&id, 1, "MIT", PrivacyLabel::Public)
+        .unwrap()
+        .refusals
+        .is_empty());
+    for (lic, why) in [
+        ("unknown", "not a license"),
+        ("NOASSERTION", "not a license"),
+        ("", "empty"),
+        ("LicenseRef-orchard-1", "not on the list"),
+    ] {
+        let c = s
+            .publish_preview(&id, 1, lic, PrivacyLabel::Public)
+            .unwrap();
+        assert!(
+            c.refusals.iter().any(|r| r.contains(why)),
+            "{lic}: {:?}",
+            c.refusals
+        );
+    }
+    for p in [
+        PrivacyLabel::Members,
+        PrivacyLabel::Group,
+        PrivacyLabel::IndexOnly,
+        PrivacyLabel::Private,
+    ] {
+        assert!(
+            !s.publish_preview(&id, 1, "MIT", p)
+                .unwrap()
+                .refusals
+                .is_empty(),
+            "{p:?}"
+        );
+    }
+    let sink = MemSink::default();
+    let e = s
+        .publish(
+            &id,
+            1,
+            "unknown",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &sink,
+            9,
+        )
+        .unwrap_err();
+    assert!(e.starts_with("not published"), "{e}");
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
+    assert_eq!(
+        s.list().unwrap().datasets[0].versions.len(),
+        1,
+        "a refused publish writes no version"
+    );
+}
+
+#[test]
+fn an_unknown_collected_license_blocks_publishing_but_the_members_own_files_do_not() {
+    // The member's own folder with no license file: theirs to license at publish (WP-H7).
+    let root = tmp("public-nolic").join("plain");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), "hello").unwrap();
+    let d = tmp("public-nolic-store");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let v = s
+        .create(&req("p"), ingest_folder(&root, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(c.refusals.is_empty(), "{:?}", c.refusals);
+    // A connected agent's output with no license is not the member's to license.
+    let mut it = web_item("mcp://agent/notes", "agent text");
+    it.kind = SourceKind::ConnectedAgent;
+    it.license = LicenseRecord::unknown();
+    let consent = ConsentInput::New {
+        source_kind: SourceKind::ConnectedAgent,
+        scope: "agent".into(),
+        statement: "Add the agent's notes.".into(),
+    };
+    let v2 = s.append(&v.dataset, 1, consent, vec![it], 2).unwrap();
+    s.record_pii_scan(&v.dataset, 2, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 2, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals.iter().any(|r| r.contains("no license is known")),
+        "{:?}",
+        c.refusals
+    );
+}
+
+/// Review of #732 (P1): publish goes through WP-H7's gate, so a ShareAlike source can never reach
+/// IPFS under another license (a CID cannot be recalled).
+#[test]
+fn a_share_alike_source_refuses_publishing_under_another_license() {
+    let d = tmp("pubsa");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, _) = make(&s, "pubsasrc");
+    let mut it = web_item("https://docs.example.org/sa", "shared alike");
+    it.license.id = Some("CC-BY-SA-4.0".into());
+    let v2 = s.append(&id, 1, new_web_consent(), vec![it], 2).unwrap();
+    s.record_pii_scan(&id, 2, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&id, 2, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals
+            .iter()
+            .any(|r| r.contains("must be published under CC-BY-SA-4.0")),
+        "{:?}",
+        c.refusals
+    );
+    let sink = MemSink::default();
+    let e = s
+        .publish(
+            &id,
+            2,
+            "MIT",
+            PrivacyLabel::Public,
+            &v2.content_hash,
+            &sink,
+            3,
+        )
+        .unwrap_err();
+    assert!(e.contains("must be published under CC-BY-SA-4.0"), "{e}");
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
+    assert_eq!(
+        s.list().unwrap().datasets[0].versions.len(),
+        2,
+        "no publish version"
+    );
+    // Under the same ShareAlike license it publishes.
+    let p = s
+        .publish(
+            &id,
+            2,
+            "CC-BY-SA-4.0",
+            PrivacyLabel::Public,
+            &v2.content_hash,
+            &sink,
+            4,
+        )
+        .unwrap();
+    assert_eq!(p.publication.license, "CC-BY-SA-4.0");
+}
+
+#[test]
+fn a_personal_data_scan_or_label_never_publishes_public() {
+    let d = tmp("pubpd");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, v1) = publishable(&s, "pubpdsrc");
+    let mut found = passing_scan(&v1.content_hash);
+    found.pass = false;
+    found.counts.insert("street-address".into(), 2);
+    s.record_pii_scan(&id, 1, &found).unwrap();
+    let sink = MemSink::default();
+    let e = s
+        .publish(
+            &id,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &sink,
+            5,
+        )
+        .unwrap_err();
+    assert!(e.contains("2 street-address"), "{e}");
+    assert!(sink.added.lock().unwrap().is_empty());
+}
+
+#[test]
+fn publish_writes_a_publish_version_and_a_verifiable_bundle() {
+    let d = tmp("pub");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, v1) = publishable(&s, "pubsrc");
+    let sink = MemSink::default();
+    let p = s
+        .publish(
+            &id,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &sink,
+            10,
+        )
+        .unwrap();
+    assert_eq!(p.version.version, 2);
+    assert_eq!(p.version.prev, v1.manifest_hash);
+    assert_eq!(
+        p.version.content_hash, v1.content_hash,
+        "a publish version keeps the rows"
+    );
+    assert_eq!(p.version.license.as_deref(), Some("MIT"));
+    assert_eq!(p.version.privacy_label, PrivacyLabel::Public);
+    assert_eq!(
+        p.publication.registry_prev, ZERO_HASH,
+        "the first publication's registry prev is zero"
+    );
+    assert_eq!(p.publication.cid, "bafkreitest1");
+    let m = s.manifest(&id, 2).unwrap();
+    assert_eq!(m.manifest.published_prev.as_deref(), Some(ZERO_HASH));
+    assert!(
+        m.manifest.pii_scan.as_ref().is_some_and(|x| x.pass),
+        "the scan is in the manifest manifestHash covers"
+    );
+    // The bundle: line 1 is the manifest (keccak = manifestHash), the rest is the rows (sha256 = contentHash).
+    let added = sink.added.lock().unwrap();
+    let bundle = &added[0].1;
+    let nl = bundle.iter().position(|b| *b == b'\n').unwrap();
+    assert_eq!(keccak_hex(&bundle[..nl]), p.publication.manifest_hash);
+    assert_eq!(sha256_hex(&bundle[nl + 1..]), p.publication.content_hash);
+    drop(added);
+    assert_eq!(s.published(&id).unwrap(), vec![p.publication.clone()]);
+    // A second publication names the first as its registry prev.
+    let ops = vec![CleanOp::Redact {
+        find: "plum-orchard-77".into(),
+        replace: "[removed]".into(),
+    }];
+    let pre = s.clean_preview(&id, 2, &ops).unwrap();
+    let v3 = s
+        .clean_apply(&id, 2, &ops, &pre.result_content_hash, 11)
+        .unwrap();
+    s.record_pii_scan(&id, 3, &passing_scan(&v3.content_hash))
+        .unwrap();
+    let p2 = s
+        .publish(
+            &id,
+            3,
+            "MIT",
+            PrivacyLabel::Public,
+            &v3.content_hash,
+            &sink,
+            12,
+        )
+        .unwrap();
+    assert_eq!(p2.publication.registry_prev, p.publication.manifest_hash);
+    assert_eq!(p2.version.version, 4);
+    assert!(s.list().unwrap().datasets[0].chain_ok);
+}
+
+#[test]
+fn publish_is_bound_to_the_approved_rows_and_the_latest_version() {
+    let d = tmp("pubbind");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, v1) = publishable(&s, "pubbindsrc");
+    let sink = MemSink::default();
+    assert!(s
+        .publish(&id, 1, "MIT", PrivacyLabel::Public, ZERO_HASH, &sink, 1)
+        .unwrap_err()
+        .contains("differ"));
+    let ops = vec![CleanOp::Dedupe];
+    let pre = s.clean_preview(&id, 1, &ops).unwrap();
+    s.clean_apply(&id, 1, &ops, &pre.result_content_hash, 2)
+        .unwrap();
+    assert!(s
+        .publish(
+            &id,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &sink,
+            3
+        )
+        .unwrap_err()
+        .contains("no longer the latest"));
+    assert!(sink.added.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_ipfs_failure_publishes_nothing_and_the_retry_reuses_the_publish_version() {
+    let d = tmp("pubretry");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let (id, v1) = publishable(&s, "pubretrysrc");
+    let down = MemSink {
+        fail: true,
+        ..Default::default()
+    };
+    let e = s
+        .publish(
+            &id,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &down,
+            1,
+        )
+        .unwrap_err();
+    assert!(e.contains("Nothing is recorded as published"), "{e}");
+    assert!(
+        !e.contains("nothing left this device"),
+        "an add can succeed before the pin fails"
+    );
+    assert!(s.published(&id).unwrap().is_empty());
+    let l = s.list().unwrap();
+    assert_eq!(l.datasets[0].versions.len(), 2, "the publish version waits");
+    let up = MemSink::default();
+    let p = s
+        .publish(
+            &id,
+            2,
+            "MIT",
+            PrivacyLabel::Public,
+            &v1.content_hash,
+            &up,
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        p.version.version, 2,
+        "the waiting publish version is published as it is"
+    );
+    assert_eq!(s.list().unwrap().datasets[0].versions.len(), 2);
+}
 // ------------------------------------------------------------------ review of #715 (Codex)
 
 /// P1: a protected file inside a granted folder (PSReadLine's history, a .netrc-like file) is
@@ -1138,4 +1541,111 @@ fn an_orphan_rows_file_does_not_block_the_next_version() {
     assert_eq!(v2.version, 2);
     assert_eq!(s.sample(&id, 2, 20, 0).unwrap().total_rows, p.kept);
     assert!(s.list().unwrap().datasets[0].chain_ok);
+}
+
+/// Codex review of #732 (P1): the public bundle carries the manifest, so the manifest's text (the
+/// dataset name, folder and file names in locators, license evidence) is scanned too. A clean
+/// note in a folder named after its owner's email never goes public.
+#[test]
+fn private_information_in_the_manifest_blocks_publishing() {
+    let root = tmp("publoc").join("alice@example.org");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("LICENSE"), "MIT License\n").unwrap();
+    std::fs::write(root.join("note.txt"), "Prune in late winter.").unwrap();
+    let d = tmp("publoc-store");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let v = s
+        .create(&req("Notes"), ingest_folder(&root, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v.dataset, 1, &passing_scan(&v.content_hash))
+        .unwrap();
+    let c = s
+        .publish_preview(&v.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c.refusals
+            .iter()
+            .any(|r| r.contains("manifest") && r.contains("email")),
+        "{:?}",
+        c.refusals
+    );
+    let sink = MemSink::default();
+    assert!(s
+        .publish(
+            &v.dataset,
+            1,
+            "MIT",
+            PrivacyLabel::Public,
+            &v.content_hash,
+            &sink,
+            2
+        )
+        .is_err());
+    assert!(
+        sink.added.lock().unwrap().is_empty(),
+        "nothing reached IPFS"
+    );
+    // A dataset name is scanned too.
+    let root2 = tmp("publoc2").join("plain");
+    std::fs::create_dir_all(&root2).unwrap();
+    std::fs::write(root2.join("note.txt"), "Prune in late winter.").unwrap();
+    let v2 = s
+        .create(
+            &req("call 202-555-0143"),
+            ingest_folder(&root2, 1).unwrap(),
+            1,
+        )
+        .unwrap()
+        .version;
+    s.record_pii_scan(&v2.dataset, 1, &passing_scan(&v2.content_hash))
+        .unwrap();
+    let c2 = s
+        .publish_preview(&v2.dataset, 1, "MIT", PrivacyLabel::Public)
+        .unwrap();
+    assert!(
+        c2.refusals.iter().any(|r| r.contains("manifest")),
+        "{:?}",
+        c2.refusals
+    );
+}
+
+/// Review of #732 (P2): ids are skipped by field, never by prefix, so a folder or a dataset name
+/// that merely starts like an id is still scanned.
+#[test]
+fn a_name_that_starts_like_an_id_is_still_scanned() {
+    let root = tmp("pubidlike").join("s-ana@example.org");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("LICENSE"), "MIT License\n").unwrap();
+    std::fs::write(root.join("note.txt"), "Prune in late winter.").unwrap();
+    let d = tmp("pubidlike-store");
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(d.join("datasets"), &kr);
+    let v = s
+        .create(
+            &req("c-call 202-555-0143"),
+            ingest_folder(&root, 1).unwrap(),
+            1,
+        )
+        .unwrap()
+        .version;
+    let m = s.manifest(&v.dataset, 1).unwrap().manifest;
+    let found = manifest_findings(&m, "MIT");
+    assert!(found.get("email").copied().unwrap_or(0) >= 1, "{found:?}");
+    assert!(found.get("phone").copied().unwrap_or(0) >= 1, "{found:?}");
+    // The real ids and hashes are not findings.
+    let root2 = tmp("pubidlike2").join("plain");
+    std::fs::create_dir_all(&root2).unwrap();
+    std::fs::write(root2.join("note.txt"), "Prune in late winter.").unwrap();
+    let v2 = s
+        .create(&req("Notes"), ingest_folder(&root2, 1).unwrap(), 1)
+        .unwrap()
+        .version;
+    let m2 = s.manifest(&v2.dataset, 1).unwrap().manifest;
+    assert!(
+        manifest_findings(&m2, "MIT").is_empty(),
+        "{:?}",
+        manifest_findings(&m2, "MIT")
+    );
 }

@@ -1,0 +1,19 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H5 (fl_offers_list, fl_join_propose; lane HC)",
+  "note": "Items for the WorkMarket offers and join tools (src/agent/flMarketTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-offers-list",
+      "prompt": "Are there any federated training rounds I could put my GPU to work on at night?",
+      "expect": { "tool": "fl_offers_list" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "tc-fl-join-propose",
+      "prompt": "Join offer 12 for me.",
+      "expect": { "tool": "fl_join_propose", "argsMatch": { "offerId": "re:^12$" }, "alsoAccept": ["fl_offers_list"] },
+      "tags": ["tool-choice", "args", "write"]
+    }
+  ]
+}

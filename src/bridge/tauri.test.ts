@@ -441,20 +441,13 @@ describe("tauri adapter — wallet.activity invokes the real CitrateScan read (i
   });
 });
 
-describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", () => {
-  it("every still-unwired seam domain rejects with Unavailable", async () => {
-    const bridge = createTauriBridge();
-    // NOTE: `auth` (CORE-A3) and `node` (CORE-C1.1) are now genuinely wired and
-    // are asserted separately.
-    const calls = [
-      () => bridge.membership.entitlement(),
-      () => bridge.commissary.catalog(),
-      () => bridge.comms.connections(),
-      () => bridge.chat.backend(),
-    ];
-    for (const c of calls) {
-      await expect(c()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    }
+describe("tauri adapter — no dead seam stubs (0.5.4)", () => {
+  it("the stubs that only threw Unavailable and that nothing called are gone", () => {
+    const bridge = createTauriBridge() as unknown as Record<string, Record<string, unknown> | undefined>;
+    expect(bridge.commissary).toBeUndefined();
+    expect(bridge.comms).toBeUndefined();
+    expect(bridge.chat?.backend).toBeUndefined();
+    expect(bridge.membership?.entitlement).toBeUndefined();
   });
 });
 
@@ -767,7 +760,7 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
 // CORE-D3.C — the membership domain's `checkout()` invokes the real
 // `membership_checkout` command (opens the in-app core-membership popup). It
 // returns void — it does NOT report payment success; the money + grant are
-// server-side and the store polls /userinfo. `entitlement()` stays Unavailable.
+// server-side and the store polls /userinfo.
 describe("tauri adapter — membership.checkout opens the real checkout popup (D3.C)", () => {
   it("checkout invokes membership_checkout and resolves to void (no settlement reported)", async () => {
     const bridge = createTauriBridge();
@@ -781,11 +774,6 @@ describe("tauri adapter — membership.checkout opens the real checkout popup (D
     invokeMock.mockClear();
     await bridge.membership.checkout("buyer@corp.com");
     expect(invokeMock).toHaveBeenCalledWith("membership_checkout", { loginHint: "buyer@corp.com" });
-  });
-
-  it("membership.entitlement is still honestly Unavailable (only checkout is wired)", async () => {
-    const bridge = createTauriBridge();
-    await expect(bridge.membership.entitlement()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   // BC-1.3 (@rule8) — grantStatus invokes the real membership_grant_status command
@@ -884,11 +872,6 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
     const bridge = createTauriBridge();
     await bridge.chat.consentDrop("cc_minted");
     expect(invokeMock).toHaveBeenCalledWith("chat_consent_drop", { consentId: "cc_minted" });
-  });
-
-  it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {
-    const bridge = createTauriBridge();
-    await expect(bridge.chat.backend()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   // Q-A.4a item 6 — the DEAD local-model wire is now live: bridge.chat.inferLocal

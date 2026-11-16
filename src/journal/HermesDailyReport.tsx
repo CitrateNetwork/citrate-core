@@ -2,8 +2,9 @@
 // HUP-S7.3 + S7.5 — the Hermes daily report panel in the Journal.
 //
 // Real numbers only (the sidecar's metering via `hermes_metering_daily`); unknowns are shown as
-// unknown. Below the numbers: the nightly anchor state and the BenchmarkRegistry sharing toggle,
-// both off and disabled until their registries are deployed on 40204. A pending anchor card is
+// unknown. Below the numbers: the nightly anchor state and the BenchmarkRegistry sharing toggle.
+// Both registries are in the 40204 address book; both stay off until the member turns them on
+// (each reads its registry from the book and says so when it is missing). A pending anchor card is
 // approved or rejected by its own id; the anchor key signs only inside the anchor ceremony.
 // =====================================================================
 import { useCallback, useEffect, useState } from "react";

@@ -37,8 +37,8 @@ export interface ModelsState {
   downloadPct: number | null;
   /** The id currently being switched to, or null. */
   selectingId: string | null;
-  /** local() isn't wired/available yet — a pending WIRE, not a user-facing error. */
-  localPending: boolean;
+  /** Why the last read of this machine's models (`model_catalog_local`) failed, or null. */
+  localError: string | null;
   /** Whether each downloaded model can be deleted now, by file name (from core). A model with no
    *  entry offers no Delete (web preview, or core could not say). */
   deleteStates: Record<string, ModelDeleteState>;
@@ -59,7 +59,7 @@ const initial: ModelsState = {
   downloadingId: null,
   downloadPct: null,
   selectingId: null,
-  localPending: false,
+  localError: null,
   deleteStates: {},
   deletingFile: null,
   error: null,
@@ -91,15 +91,15 @@ export async function refreshCloudModels(): Promise<void> {
   }
 }
 
-/** Load the locally-present verified models. Honest-empty on a not-wired/sim bridge. */
+/** Load the locally-present verified models. A failed read keeps its reason in `localError`. */
 export async function refreshLocalModels(): Promise<void> {
   try {
     const local = await bridge.modelsCatalog.local();
-    modelsSlice.set({ local, localPending: false, error: null });
-  } catch {
-    // local() is not wired yet (CX-S1 resolver pending) — this is a pending WIRE, not a
-    // user-facing error. Keep the surface calm and honest; search/download/select still work.
-    modelsSlice.set({ localPending: true });
+    modelsSlice.set({ local, localError: null, error: null });
+  } catch (e) {
+    // local() is wired (model_catalog_local): a failure is a real read error, shown with its
+    // reason. Search, download and select still work.
+    modelsSlice.set({ localError: e instanceof Error ? e.message : String(e) });
   }
   await refreshPartials();
   await refreshDeleteStates();

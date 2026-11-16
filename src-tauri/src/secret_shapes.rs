@@ -562,6 +562,15 @@ pub fn redact(s: &str) -> String {
     out
 }
 
+/// The byte span and shape name of every secret shape in `s`, in order (starts and ends on ASCII
+/// bytes). The private-information scanner ([`crate::pii_scan`]) builds on these.
+pub fn spans(s: &str) -> Vec<(usize, usize, &'static str)> {
+    hits(s)
+        .into_iter()
+        .map(|h| (h.start, h.end, h.shape))
+        .collect()
+}
+
 /// The first secret shape left in `s`, if any (the bundle's final check).
 pub fn first_shape(s: &str) -> Option<&'static str> {
     hits(s).first().map(|h| h.shape)

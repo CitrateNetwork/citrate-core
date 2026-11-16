@@ -137,7 +137,6 @@ const LONG: Record<string, number> = {
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
   node_stop: 20_000,
   memory_stop: 20_000,
-  ipfs_stop: 20_000,
   model_serve_stop: 20_000,
   agent_stop: 20_000,
 };

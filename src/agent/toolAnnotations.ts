@@ -38,6 +38,16 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   group_roster: { effect: "none", trust: "untrusted" },
   group_create: { effect: "write", trust: "trusted" },
   group_invite: { effect: "write", trust: "trusted" },
+  // 0.5.4 WP-H2 (src/agent/groupClusterTools.ts). Invite previews, roster rows, peer addresses and
+  // device labels are written by other members, so the reads are untrusted. Invite labels come from
+  // this device, but Hermes may have copied one from untrusted text: untrusted too (conservative).
+  group_join_propose: { effect: "write", trust: "untrusted" }, // its result names the group and inviter from the link
+  group_invites_list: { effect: "none", trust: "untrusted" },
+  group_invite_revoke: { effect: "write", trust: "trusted" }, // lowers authority; no card
+  group_role_propose: { effect: "write", trust: "trusted" }, // a comms-key grant, after the member's card
+  cluster_read: { effect: "none", trust: "untrusted" },
+  cluster_mesh_propose: { effect: "write", trust: "trusted" }, // on after a card; off at once
+  cluster_add_machine_open: { effect: "none", trust: "trusted" }, // moves the UI only; returns no link
   directory_find: { effect: "none", trust: "untrusted" }, // third-party published bindings
   skills_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain SkillRegistry
   skill_write: { effect: "write", trust: "trusted" },
@@ -60,6 +70,15 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // 0.5.4 WP-H3 (src/agent/flWorkTools.ts): the member's own sealed terms and consents, and this
+  // machine's local probe. Nothing another person writes reaches these results.
+  fl_terms_read: { effect: "none", trust: "trusted" },
+  fl_consent_list: { effect: "none", trust: "trusted" },
+  fl_consent_withdraw: { effect: "write", trust: "trusted" }, // lowers authority; no card
+  fl_eligibility: { effect: "none", trust: "trusted" },
+  // 0.5.4 WP-H4 (src/agent/flEnvelopeTools.ts): core's own words over the member's sealed envelope.
+  fl_envelope_read: { effect: "none", trust: "trusted" },
+  fl_envelope_propose: { effect: "write", trust: "trusted" }, // on after the member's card; off at once
   // 0.5.4 WP-H9: gate records are core's, but their reasons can quote the model and dataset names
   // in scorecard files, which may come from someone else, so the read is untrusted.
   fl_adapter_gate_read: { effect: "none", trust: "untrusted" },
@@ -71,6 +90,31 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   fl_dataset_sample: { effect: "none", trust: "untrusted" },
   fl_dataset_create: { effect: "write", trust: "trusted" }, // a granted folder or the verified conversations, sealed locally
   fl_dataset_clean_propose: { effect: "write", trust: "trusted" }, // version N+1 bound to the approved diff
+  fl_round_draft_read: { effect: "none", trust: "untrusted" }, // 0.5.4 WP-H5: a draft can carry a group card's text (fenced)
+  fl_offers_list: { effect: "none", trust: "untrusted" }, // 0.5.4 WP-H5: offer text is written by its poster
+  fl_join_propose: { effect: "spend", trust: "trusted" }, // the join bond; the member signs it in the wallet review
+  fl_round_open_propose: { effect: "spend", trust: "trusted" }, // the escrow; the member signs WorkMarket.open in the wallet review
+  fl_payouts_list: { effect: "none", trust: "trusted" }, // 0.5.4 WP-H10: numbers and fixed status words from WorkMarket
+  fl_withdraw_propose: { effect: "spend", trust: "trusted" }, // the member signs WorkMarket.withdraw() in the wallet review
+  // Named-blocked in 0.5.4: no card, no call built (see flPayoutTools.ts). A card makes them "spend".
+  fl_claim_propose: { effect: "none", trust: "trusted" },
+  fl_dispute_propose: { effect: "none", trust: "trusted" },
+  // 0.5.4 WP-H5: chain reads of numbers, addresses and fixed enum words, plus the coordinator's
+  // typed counts (as fl_round_plan); no free text anyone else writes reaches the model.
+  fl_round_status: { effect: "none", trust: "trusted" },
+  fl_lease_explain: { effect: "none", trust: "trusted" },
+  // 0.5.4 WP-H10: this device's own record (no scorecard text) and ledger numbers.
+  fl_history_read: { effect: "none", trust: "trusted" },
+  fl_patronage_read: { effect: "none", trust: "trusted" },
+  // WP-H7: core's scanner and license check over the member's own dataset; nothing the model
+  // writes reaches the verdict. The scan's record is core's, not a change to the dataset.
+  fl_dataset_pii_scan: { effect: "none", trust: "trusted" },
+  fl_dataset_license_check: { effect: "none", trust: "trusted" },
+  // WP-H8: the verdict is core's (host names from the member's own URLs); a run writes a dataset
+  // version from other people's pages, so its result is untrusted and taints the session.
+  fl_source_check: { effect: "none", trust: "trusted" },
+  fl_collect_plan: { effect: "write", trust: "untrusted" },
+  fl_dataset_publish_propose: { effect: "write", trust: "trusted" }, // IPFS after the card; core gates license and PII scan
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.
@@ -79,6 +123,10 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   schedule_list: { effect: "none", trust: "trusted" },
   schedule_add: { effect: "write", trust: "trusted" }, // after the member's approval card
   calendar_list: { effect: "none", trust: "untrusted" },
+  // Board 01: only renders a card core checked; the member's Confirm on it is the write (HIC-1).
+  worker_terms_propose: { effect: "none", trust: "trusted" },
+  // Board 07: only renders a draft card; the member opens it in Open a round and signs there.
+  round_draft_propose: { effect: "none", trust: "trusted" },
 };
 
 /** The annotation for a tool name, or null for a name core does not offer. */

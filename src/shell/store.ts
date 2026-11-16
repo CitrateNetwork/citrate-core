@@ -8,7 +8,11 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
-import { chatHistory, forgetAllThreads, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
+import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
+import { dataClassProblem, newProposalId } from "../agent/workerProposal";
+import { BLANK_DRAFT, draftProblems, setRoundDraft, type RoundDraft } from "../fl/roundDraft";
+import { contextPreamble, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
+import { contextKindOf, offTitles } from "../agent/hermesContext";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -16,6 +20,8 @@ import {
   AppState,
   CerSpec,
   ChatMsg,
+  ChatProposal,
+  ChatRoundDraft,
   LogLine,
   Persona,
   PERSONAS,
@@ -34,13 +40,31 @@ import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
-import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
+import { approveAndStartRound, DEFAULT_PROPOSAL, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlWorkTool, runFlWorkTool } from "../agent/flWorkTools";
+import { isFlEnvelopeTool, runFlEnvelopeTool, type FlEnvelopeApi, type FlEnvelopeStatus } from "../agent/flEnvelopeTools";
+import { approveEnvelope, envelopeOff, ENVELOPE_NEEDS_DESKTOP } from "../fl/authority";
+import { loadWorkerTerms } from "../fl/workerTerms";
+import flAddressBook from "../../src-tauri/addresses/40204.json";
+import { isGroupClusterTool, runGroupClusterTool } from "../agent/groupClusterTools";
 import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
-import { isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
+import { FL_DATASET_PUBLISH_TOOL, isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
+import { runPublishTool } from "../fl/datasetPublishTool";
+import { FL_ROUND_DRAFT_READ_TOOL, runFlRoundDraftRead } from "../agent/flRoundDraftTool";
+import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
+import { isFlPayoutTool, runFlPayoutTool } from "../agent/flPayoutTools";
+import { FL_ROUND_OPEN_TOOL, runFlRoundOpen } from "../agent/flRoundOpenTool";
+import { loadRoundDraft, type OpenBinding } from "../fl/roundDraft";
+import { latestBlockTime } from "../fl/chainTime";
+import { readFlNetworkState, type FlNetworkState, type PayoutsGateStatus } from "../fl/networkState";
+import { machineFrom, readMarket, type MarketView } from "../fl/market";
+import { isFlRoundTool, runFlRoundTool } from "../agent/flRoundTools";
+import { isFlHistoryTool, runFlHistoryTool } from "../agent/flHistoryTools";
+import { flSnapshot } from "../fl/flSnapshot";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -77,9 +101,12 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { sidecarAlertText } from "./sidecarAlert";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke } from "../bridge/tauri/invoke";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
+import { attestationCardRows, flCollect, planCardRows, runForAgent, sourceCheckForAgent, sourceLine, type FlAttestation, type FlCollectPlan } from "../fl/collect";
+import { datasetGate, licensesForAgent, scanForAgent } from "../fl/datasetGate";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { STALL_MS, SyncTracker } from "./syncProgress";
 import { layoutGraph } from "./memGraph";
@@ -109,6 +136,10 @@ import {
   usageReported,
   verifierReported,
 } from "./slices/turnActivity";
+import { modelsSlice } from "./slices/models";
+import { saveWorkerTerms, termsProblem, type WorkerTerms } from "../fl/workerTerms";
+import { routerChoicesFor } from "../agent/modelRouterSources";
+import { newRun, runDraft, runEnd, runModelTime, runThink, runToolEnd, runToolStart, type RunOutcome, type RunRecord } from "../agent/runTimeline";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
 import { agentSlice } from "./slices/agent";
@@ -129,7 +160,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose", "fl_round_open_propose", "fl_collect_plan", "fl_dataset_publish_propose", "group_join_propose", "group_role_propose", "cluster_mesh_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -640,6 +671,11 @@ export function cloudModelFor(
   return choice;
 }
 
+/** Board 01: the function names of a tool list (OpenAI wrapper shape). */
+function toolNamesOf(tools: readonly unknown[]): string[] {
+  return tools.map((t) => (t as { function?: { name?: unknown } }).function?.name).filter((n): n is string => typeof n === "string" && n !== "");
+}
+
 /** The states in which a local model is set up but its server is not running. */
 const LOCAL_STOPPED_STATES = new Set(["local-stopped", "local-fallback", "local-only-stopped"]);
 
@@ -752,6 +788,13 @@ export function tickPatch(
     });
   }
   return u;
+}
+
+/** WP-H8: the member's license attestation from a tool call, when both parts are given. */
+function attestationFrom(args: Record<string, unknown>): FlAttestation | null {
+  const license = typeof args.license === "string" ? args.license.trim() : "";
+  const statement = typeof args.licenseStatement === "string" ? args.licenseStatement.trim() : "";
+  return license && statement ? { license, statement } : null;
 }
 
 export class Store {
@@ -882,8 +925,11 @@ export class Store {
   archiveChat(): void {
     const s = this.state;
     if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
-    recordThread(s.chatThreadId, s.chatMsgs);
+    recordThread(s.chatThreadId, s.chatMsgs, Date.now(), this.threadParents.get(s.chatThreadId));
   }
+
+  /** Board 01: which thread (and message) each branch of this session came from. */
+  private threadParents = new Map<string, ThreadParent>();
 
   /** Why the thread can't be switched right now, or null. A running turn writes into the current
    *  thread, so it is never swapped from under it. */
@@ -901,7 +947,8 @@ export class Store {
       return false;
     }
     this.archiveChat();
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    // A follow-up queued in the old conversation belongs to it: it is dropped, never sent here.
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -924,7 +971,7 @@ export class Store {
     }
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [], chatQueue: [] });
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -955,7 +1002,7 @@ export class Store {
     }
     const ok = await forgetAllThreads();
     if (!ok) return false;
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -1377,6 +1424,9 @@ export class Store {
         const firstSidecarBuild = !this.sidecarReattachTried;
         this.sidecarReattachTried = true;
         if (!firstSidecarBuild) sessionStore.save(null);
+        const sessionTools = withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady);
+        // Board 01: what Hermes can see in this chat is read from the tools its session is given.
+        this.sessionToolNames = toolNamesOf(sessionTools);
         this.provider = createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
@@ -1407,7 +1457,7 @@ export class Store {
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
-          () => withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady),
+          () => sessionTools,
           () => this.sidecarPersonaChoice(),
           cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
         );
@@ -1468,7 +1518,9 @@ export class Store {
         : p.kind === "real" || p.kind === "agent" || p.kind === "sidecar-cloud"
           ? "real"
           : "demo";
-    this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
+    // Board 01: only the sidecar loop and the gateway agent loop run tools; the others run none.
+    if (p.kind !== "sidecar" && p.kind !== "sidecar-cloud") this.sessionToolNames = p.kind === "agent" ? toolNamesOf(AGENT_TOOLS) : [];
+    this.setState({ chatProviderLabel: p.label, chatProviderKind: kind, chatHermesDown: this.sidecarDown });
   }
 
   /**
@@ -2820,6 +2872,9 @@ export class Store {
       grant: s.hasGrant && grantLockedSalt > 0 ? { amountSalt: grantLockedSalt, unlockBlock: s.s5UnlockBlock, staked: s.bondedStake > 0, activated: s.bondActivated } : null,
       walletAddr: s.walletAddr,
       tier: s.tier,
+      // 0.5.4 WP-H12: what FL contracts this network has, payouts and the envelope, from the
+      // shipped address book and the network profile, so Hermes answers from data.
+      fl: flSnapshot(flAddressBook, ACTIVE_PROFILE),
       membership: {
         grantLockedSalt, // the recoverable grant, locked (e.g. 32000)
         bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Bond locked · not staked · until block N"
@@ -3157,6 +3212,165 @@ export class Store {
     return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
+  // ---------- Board 01 — edit, retry and branch ----------
+  /**
+   * Branch the conversation into a new thread. The original stays in History unchanged. The new
+   * thread keeps the messages before `fromMsgId` (`includeFrom` keeps that message too), and when
+   * `text` is given it is sent there as the next message. Returns false when no switch is allowed
+   * (a run is live) or the message is not in this thread.
+   */
+  async branchChat(fromMsgId: string, opts: { text?: string; includeFrom?: boolean; attachments?: ChatAttachment[] } = {}): Promise<boolean> {
+    const blocked = this.chatSwitchBlocked();
+    if (blocked) {
+      this.toast(blocked);
+      return false;
+    }
+    const msgs = this.state.chatMsgs;
+    const idx = msgs.findIndex((m) => m.id === fromMsgId);
+    if (idx < 0) return false;
+    this.archiveChat();
+    const fromThread = this.state.chatThreadId;
+    const kept = msgs.slice(0, opts.includeFrom ? idx + 1 : idx).filter((m) => !m.streaming);
+    const threadId = newThreadId();
+    // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
+    this.setState({
+      chatMsgs: kept.map((m) => ({
+        ...m,
+        id: "b" + ++this.mid,
+        ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}),
+        ...(m.roundDraft?.state === "pending" ? { roundDraft: { ...m.roundDraft, state: "expired" as const } } : {}),
+      })),
+      chatThreadId: threadId,
+      chatQueue: [],
+    });
+    // The sealed history records where this branch came from.
+    this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    await this.rebuildProvider();
+    // Earlier messages are never put in the system prompt. The in-app loops send them as earlier
+    // turns; a Hermes sidecar session starts the branch without them (core #731 passes them as
+    // session history once the bundled sidecar accepts it), and the member is told so.
+    const sidecar = this.activeProviderKind() === "sidecar" || this.activeProviderKind() === "sidecar-cloud";
+    this.toast(
+      sidecar && kept.some((m) => m.who === "You")
+        ? "Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages."
+        : "Branched into a new chat. The original stays in History.",
+    );
+    // An edited or retried message keeps what was attached to the original (unless given anew).
+    const from = msgs[idx];
+    const attachments = opts.attachments ?? (from.who === "You" ? from.attachments : undefined);
+    if (opts.text !== undefined) await this.sendChat(opts.text, attachments?.length ? { attachments } : {});
+    return true;
+  }
+
+  // ---------- Board 01 — the worker-terms proposal card (core-rendered, HIC-1) ----------
+
+  /**
+   * Put a worker-terms proposal card in the transcript, under reply `msgId` (or as its own Hermes
+   * message). Core checks the terms first; malformed terms are refused with the reason and no card
+   * is shown. Returns what the caller (the proposal tool, once it ships) tells Hermes.
+   * Hermes never confirms: only the card's Confirm calls saveWorkerTerms. The tool that calls this
+   * ships with core's worker-policy storage (core #689).
+   */
+  proposeWorkerTerms(terms: WorkerTerms, msgId?: string): string {
+    const bad = termsProblem(terms) ?? dataClassProblem(terms.dataClasses);
+    if (bad) return `refused: ${bad}. Nothing was shown to the member.`;
+    // Unique across launches, so a card restored from history never shares an id with a new one.
+    const proposal: ChatProposal = { id: newProposalId(), kind: "worker_terms", terms, state: "pending" };
+    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, proposal } : m)) }));
+    } else {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, proposal }]) }));
+    }
+    return "The proposal is on a card in the chat. Nothing changes until the member confirms it there.";
+  }
+
+  private patchProposal(id: string, patch: Partial<ChatProposal>): void {
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.proposal?.id === id ? { ...m, proposal: { ...m.proposal, ...patch } } : m)) }));
+  }
+
+  /** The member pressed Confirm on the card (HIC-1): save the terms, then show the outcome. */
+  async confirmProposal(id: string): Promise<void> {
+    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
+    if (!p || (p.state !== "pending" && p.state !== "failed")) return;
+    this.patchProposal(id, { state: "saving", error: undefined });
+    try {
+      const receipt = await saveWorkerTerms(p.terms);
+      this.patchProposal(id, { state: "confirmed", at: receipt.savedAt || Date.now(), receipt });
+    } catch (e) {
+      this.patchProposal(id, { state: "failed", error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  declineProposal(id: string): void {
+    this.patchProposal(id, { state: "declined", at: Date.now() });
+  }
+
+  reopenProposal(id: string): void {
+    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
+    // An expired card stays expired: only a new proposal can be confirmed.
+    if (!p || p.state === "expired") return;
+    this.patchProposal(id, { state: "pending", at: undefined, error: undefined });
+  }
+
+  // ---------- Board 07 — a round draft from Hermes (core-rendered card) ----------
+  /** Show Hermes's round draft on a card under reply `msgId`. Nothing is saved until the member
+   *  presses "Review in Open a round". */
+  proposeRoundDraft(draft: Partial<RoundDraft>, msgId?: string): string {
+    const card: ChatRoundDraft = { id: newProposalId(), draft, state: "pending" };
+    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, roundDraft: card } : m)) }));
+    } else {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, roundDraft: card }]) }));
+    }
+    const missing = draftProblems({ ...BLANK_DRAFT, ...draft, source: "hermes" });
+    return (
+      "The round draft is on a card in the chat. Nothing is saved or opened until the member presses Review in Open a round and signs it there." +
+      (missing.length ? " Still to fill in: " + missing.join("; ") + "." : "")
+    );
+  }
+
+  private patchRoundDraft(id: string, patch: Partial<ChatRoundDraft>): void {
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.roundDraft?.id === id ? { ...m, roundDraft: { ...m.roundDraft, ...patch } } : m)) }));
+  }
+
+  /** The member pressed "Review in Open a round": the draft goes to that board, marked Hermes's. */
+  openRoundDraft(id: string): void {
+    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
+    if (!c || c.state === "expired" || c.state === "declined") return;
+    try {
+      setRoundDraft({ ...c.draft, draftedFor: "this Hermes chat" }, "hermes");
+    } catch (e) {
+      this.toast("The draft could not be saved on this device: " + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    this.patchRoundDraft(id, { state: "opened", at: Date.now() });
+    this.go("groups/rounds/open");
+  }
+
+  declineRoundDraft(id: string): void {
+    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
+    if (!c || c.state !== "pending") return;
+    this.patchRoundDraft(id, { state: "declined", at: Date.now() });
+  }
+
+  /** Retry an answer as a branch: its member message is sent again, on the current model. */
+  async retryAsBranch(answerId: string): Promise<boolean> {
+    const msgs = this.state.chatMsgs;
+    const idx = msgs.findIndex((m) => m.id === answerId);
+    if (idx < 0) return false;
+    const user = [...msgs.slice(0, idx)].reverse().find((m) => m.who === "You");
+    if (!user) return false;
+    return this.branchChat(user.id, { text: user.text, attachments: user.attachments ?? [] });
+  }
+
+  /** The tools this chat's Hermes session was given (core-hosted), and whether the sidecar
+   *  loop (which also runs its own file, command and MCP tools) is the one answering. */
+  chatToolNames(): string[] {
+    return this.sessionToolNames;
+  }
+  private sessionToolNames: string[] = [];
+
   /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
   sidecarPersonaChoice(): SessionPersonaChoice | null {
     return personaChoice(this.state.hermesPersona);
@@ -3470,8 +3684,10 @@ export class Store {
     if (idx < 0) return;
     const text = msgs[idx].retryText ?? "";
     const userIdx = idx - 1 >= 0 && msgs[idx - 1].who === "You" && msgs[idx - 1].text === text ? idx - 1 : -1;
+    // The retried message keeps its attachments.
+    const attachments = userIdx >= 0 ? msgs[userIdx].attachments : undefined;
     this.setState({ chatMsgs: msgs.filter((_, i) => i !== idx && i !== userIdx) });
-    await this.sendChat(text);
+    await this.sendChat(text, attachments?.length ? { attachments } : {});
   }
 
   /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
@@ -3798,8 +4014,9 @@ export class Store {
     });
   }
 
-  async sendChat(text: string): Promise<void> {
+  async sendChat(text: string, opts: { attachments?: ChatAttachment[] } = {}): Promise<void> {
     text = (text || "").trim();
+    const attachments = (opts.attachments ?? []).slice(0, MAX_ATTACHMENTS);
     if (!text || this.state.chatStatus !== "ready") return;
     // HUP-S3.3: `/run <workflow>` runs a track workflow instead of a chat turn.
     const cmd = parseRunCommand(text);
@@ -3818,7 +4035,7 @@ export class Store {
     const ac = new AbortController();
     this.turnAbort = ac;
     const stopped = () => ac.signal.aborted;
-    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
+    const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false, ...(attachments.length ? { attachments } : {}) };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
     // 0.5.4: never send on the "Hermes is down" fallback from a stale read.
@@ -3838,6 +4055,8 @@ export class Store {
         if (this.turnAbort === ac) this.turnAbort = null;
         this.scrollChat();
         this.save();
+        // Board 01: a Steer now that stopped the held message goes next (it is never left stuck).
+        this.drainChatQueue("stopped");
         return;
       }
       provider = routed.provider;
@@ -3848,14 +4067,28 @@ export class Store {
     const toolOutputs: TurnToolOutput[] = [];
     // #681: whether the sidecar's `node` MCP server is core's own node entry.
     const nodeIsCore = await this.nodeMcpTrusted();
+    // Board 01: the reply's run timeline. The model is named as the header showed it at the start.
+    const turnModel = this.routerActive(routerChoicesFor(modelsSlice.get(), this.state.chatRoute)).label;
     let started = false;
     const ensure = () => {
       if (started) return;
       started = true;
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: asstId, who: "Agent", text: "", chips: [], streaming: true }]) }));
+      this.setState((s) => ({
+        chatMsgs: s.chatMsgs.concat([{ id: asstId, who: "Agent", text: "", chips: [], streaming: true, run: newRun(Date.now()), model: turnModel }]),
+      }));
     };
     const patch = (fn: (m: ChatMsg) => ChatMsg) =>
       this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? fn(m) : m)) }));
+    // Board 01: events of one provider page arrived together, at `clock`; core-run calls are timed
+    // by core itself, so a core call clears the clock until the next page.
+    let clock: number | null = null;
+    const evNow = () => clock ?? Date.now();
+    const runPatch = (fn: (r: RunRecord) => RunRecord) => {
+      ensure();
+      patch((m) => ({ ...m, run: fn(m.run ?? newRun(Date.now())) }));
+    };
+    ensure();
+    let turnOutcome: RunOutcome = "failed";
     // HUP-S0.6: coalesce streamed tokens — one render per ~frame instead of one full-app render
     // per token (Root subscribes to the whole state).
     let pending = "";
@@ -3872,17 +4105,21 @@ export class Store {
       this.scrollChat();
     };
     // HUP-S7.6: Stop resolves this at once, so a wedged model request never holds the chat.
-    const stopSignal = new Promise<"stopped">((resolve) =>
-      ac.signal.addEventListener("abort", () => resolve("stopped"), { once: true }),
-    );
+    // A Stop that landed while the turn was still being set up (the #681 node read above) has
+    // already fired its abort event, so it is read here too.
+    const stopSignal = new Promise<"stopped">((resolve) => {
+      if (ac.signal.aborted) resolve("stopped");
+      else ac.signal.addEventListener("abort", () => resolve("stopped"), { once: true });
+    });
     try {
       const run = provider.send({
         // HUP-S3.3: the chosen persona rides as one leading system message (none = unchanged).
         messages: withPersonaMessage(
           this.state.chatMsgs
             .filter((m) => !m.streaming && !m.error)
-            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
-            .concat([{ role: "user", content: text }]),
+            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: (m.attachments ? contextPreamble(m.attachments, []) : "") + m.text }))
+            // #690: what the member attached, and what they turned off here, go in front of the message.
+            .concat([{ role: "user", content: contextPreamble(attachments, offTitles(this.state.chatContextOff)) + text }]),
           this.state.hermesPersona,
         ),
         signal: ac.signal,
@@ -3892,6 +4129,8 @@ export class Store {
             if (stopped()) return;
             notePhase(st);
             if (st === "streaming") ensure();
+            if (st === "thinking") runPatch((r) => runThink(r, evNow()));
+            else if (st === "streaming") runPatch((r) => runDraft(r, evNow()));
             this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
           },
           onToken: (tk) => {
@@ -3917,13 +4156,17 @@ export class Store {
             if (stopped()) return "stopped by the member before this ran; nothing was done.";
             flush();
             toolStarted(call.id, call.name);
+            clock = null;
+            runPatch((r) => runToolStart(r, call.id, call.name, Date.now(), "core"));
             try {
               const result = await this.handleTool(call, asstId, ensure, meta);
               toolOutputs.push({ tool: call.name, content: result, origin: "core" });
               toolFinished(call.id, true);
+              runPatch((r) => runToolEnd(r, call.id, call.name, this.takeCallOutcome(call.id), result, Date.now()));
               return result;
             } catch (e) {
               toolFinished(call.id, false);
+              runPatch((r) => runToolEnd(r, call.id, call.name, "error", e instanceof Error ? e.message : String(e), Date.now()));
               throw e;
             }
           },
@@ -3931,6 +4174,19 @@ export class Store {
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
+            // Board 01: the run timeline, from the provider's own reports.
+            if (ev.kind === "page") {
+              clock = ev.at;
+              return;
+            }
+            if (ev.kind === "tool_start") {
+              if (!stopped()) runPatch((r) => runToolStart(r, ev.callId, ev.tool, evNow(), "events"));
+              return;
+            }
+            if (ev.kind === "tool_end") {
+              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow()));
+              return;
+            }
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
@@ -3957,6 +4213,7 @@ export class Store {
             // #643: a sidecar-hosted tool's result is evidence for the final-answer check.
             if (ev.kind === "tool_output") {
               toolOutputs.push({ tool: ev.tool, status: ev.status, content: ev.content, origin: sidecarToolOrigin(ev.tool, nodeIsCore) });
+              runPatch((r) => runToolEnd(r, ev.callId, ev.tool, ev.status, ev.content, evNow()));
               return;
             }
             // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
@@ -3965,8 +4222,14 @@ export class Store {
               return;
             }
             if (stopped()) return;
-            if (ev.kind === "step") noteStep(ev.step);
-            else if (ev.kind === "usage") usageReported(ev);
+            if (ev.kind === "step") {
+              noteStep(ev.step);
+              runPatch((r) => runThink(r, evNow(), ev.step));
+            } else if (ev.kind === "usage") {
+              usageReported(ev);
+              // The model server's own time for the call is the think step's duration.
+              if (ev.generationMs !== null) runPatch((r) => runModelTime(r, (ev.promptMs ?? 0) + (ev.generationMs ?? 0)));
+            }
             else if (ev.kind === "plan") planReported(ev.steps, ev.source ?? "workflow");
             else if (ev.kind === "verifier") verifierReported(ev);
           },
@@ -3980,6 +4243,7 @@ export class Store {
       // #643: no deploy claim is kept unless this turn's tools confirmed it (receipt + code).
       await this.checkAnswerClaims(asstId, toolOutputs);
       endTurn("answered");
+      turnOutcome = "answered";
       // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
       this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
@@ -3990,6 +4254,7 @@ export class Store {
       if (e instanceof TurnStopped || stopped()) {
         patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
         endTurn("stopped");
+        turnOutcome = "stopped";
       } else {
         // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
         console.error(e);
@@ -3999,11 +4264,91 @@ export class Store {
       }
     }
     if (this.turnAbort === ac) this.turnAbort = null;
-    patch((m) => ({ ...m, streaming: false }));
+    patch((m) => ({ ...m, streaming: false, run: m.run ? runEnd(m.run, turnOutcome, Date.now()) : m.run }));
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
     this.save();
+    // Board 01: a follow-up typed during the run goes now (a steer, or the queue after a finish).
+    this.drainChatQueue(turnOutcome);
   }
+
+  /** Board 01: the structured outcome of core's last run of a call id: "denied" when the member's
+   *  decision (or the tool's own status) said no, "error" when the tool reported an error status,
+   *  "ok" otherwise. Read once by the run timeline. */
+  private callOutcomes = new Map<string, "ok" | "denied" | "error">();
+
+  /** Take (and forget) the structured outcome of the call `id` ("ok" when none was recorded). */
+  takeCallOutcome(id: string): "ok" | "denied" | "error" {
+    const r = this.callOutcomes.get(id) ?? "ok";
+    this.callOutcomes.delete(id);
+    return r;
+  }
+
+  /** #690: switch a context kind off (or back on) for the chat on screen. */
+  setChatContext(id: string, on: boolean): void {
+    this.setState((s) => ({ chatContextOff: on ? s.chatContextOff.filter((x) => x !== id) : [...new Set([...s.chatContextOff, id])] }));
+  }
+
+  /** Whether the call `id` was refused (and forget its outcome). */
+  takeCallRefusal(id: string): boolean {
+    return this.takeCallOutcome(id) === "denied";
+  }
+
+  // ---------- Board 01 — Stop, Steer now, Queue for after ----------
+  private queueSeq = 0;
+
+  /** Whether a run is live (a message typed now is a steer or a queued follow-up). */
+  chatRunLive(): boolean {
+    return this.state.chatStatus !== "ready" && this.turnAbort !== null;
+  }
+
+  /** Queue a follow-up to send when the live run finishes. Empty text is ignored. */
+  queueChat(text: string, attachments: ChatAttachment[] = []): void {
+    const t = (text || "").trim();
+    if (!t) return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, threadId: s.chatThreadId, ...(attachments.length ? { attachments } : {}) }]) }));
+    if (this.chatInputEl) this.chatInputEl.value = "";
+  }
+
+  /**
+   * Steer now: stop the live run and send this message as soon as it has ended. Hermes's loop takes
+   * no message in the middle of a run (core #691), so steering is Stop plus the next turn; what the
+   * run did before the stop stays in the transcript with its steps.
+   */
+  steerChat(text: string): void {
+    const t = (text || "").trim();
+    if (!t) return;
+    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId: s.chatThreadId }, ...s.chatQueue.filter((q) => !q.steer)] }));
+    if (this.chatInputEl) this.chatInputEl.value = "";
+    if (this.chatRunLive()) this.stopAgentTurn();
+    else this.drainChatQueue("answered");
+  }
+
+  /** Take a queued follow-up back out (it is not sent). */
+  dropQueuedChat(id: string): void {
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((q) => q.id !== id) }));
+  }
+
+  /** After a run: a steer goes at once; queued follow-ups go one per finished run, and wait (for
+   *  the member to send or drop them) when the member stopped the run or it failed. */
+  private drainChatQueue(outcome: RunOutcome): void {
+    // Only this conversation's follow-ups: one typed elsewhere is never sent here.
+    const q = this.state.chatQueue.filter((x) => x.threadId === this.state.chatThreadId);
+    if (q.length === 0 || this.state.chatStatus !== "ready") return;
+    const next = q.find((x) => x.steer) ?? (outcome === "answered" ? q[0] : undefined);
+    if (!next) return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== next.id) }));
+    void this.sendChat(next.text, { attachments: next.attachments });
+  }
+
+  /** Send a queued follow-up now (only when no run is live). */
+  sendQueuedNow(id: string): void {
+    const item = this.state.chatQueue.find((q) => q.id === id);
+    if (!item || item.threadId !== this.state.chatThreadId || this.state.chatStatus !== "ready") return;
+    this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== id) }));
+    void this.sendChat(item.text, { attachments: item.attachments });
+  }
+
   /** #643 — what each conversation (by thread id) has established about deploys. */
   private deployLedgers = new Map<string, DeployLedger>();
 
@@ -4104,6 +4449,48 @@ export class Store {
     return r === "approved";
   }
 
+  /** 0.5.4 WP-H4 — the envelope in core: fl_envelope.rs status, fl_work.rs approve and off. */
+  flEnvelopeApi(): FlEnvelopeApi {
+    return {
+      status: async () => {
+        if (BRIDGE_MODE !== "tauri") throw new Error(ENVELOPE_NEEDS_DESKTOP);
+        const { invoke } = await import("../bridge/tauri/invoke");
+        return invoke<FlEnvelopeStatus>("fl_envelope_status", {});
+      },
+      approve: approveEnvelope,
+      off: envelopeOff,
+    };
+  }
+
+  /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
+  flWorkTerms(): { load: typeof loadWorkerTerms } {
+    return { load: loadWorkerTerms };
+  }
+
+  /** 0.5.4 Hermes x FL: the FL network state from the shipped address book and eth_getCode (the
+   *  boards' own read). A method so the gate tripwires can stand in a 0.6.0 network. */
+  flNetworkState(): Promise<FlNetworkState> {
+    return readFlNetworkState(flAddressBook, {
+      codeSize: (a) => bridge.contracts.codeSize("citrate", a),
+      viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d),
+      // G-SEC: core's Rust payouts gate (#736) decides "open", with its reason; the boards' same read.
+      payoutsStatus: () =>
+        BRIDGE_MODE === "tauri" ? invoke<PayoutsGateStatus>("fl_payouts_status") : Promise.reject(new Error("the payouts gate is read by the desktop app")),
+    });
+  }
+
+  /** 0.5.4 Hermes x FL: the coordinator's round binding for WorkMarket.open. No source publishes one
+   *  yet (the training coordinator does not), so there is none; openIntent then says so. A method
+   *  so a source can be added in one place and the gate tripwires can stand one in. */
+  async flRoundBinding(): Promise<OpenBinding | null> {
+    return null;
+  }
+
+  /** 0.5.4 Hermes x FL: core's WorkMarket offers read model (fl_market_offers). */
+  flMarketOffers(): Promise<MarketView> {
+    return readMarket();
+  }
+
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
   everydayInvoke(): EverydayInvoke | null {
     if (BRIDGE_MODE !== "tauri") return null;
@@ -4154,16 +4541,22 @@ export class Store {
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
     // HUP-S7.6 (US-7.4 AC1): every approval this call asks for shows in the Activity monitor,
     // pending until the member decides. `signal`: a daemon run's; its cards close when the run ends.
+    // Board 01: the member's last decision on this call, the structured source of "refused".
+    let lastDecision: string | null = null;
     const tracked = async (decide: () => Promise<string>): Promise<string> => {
       approvalNoted(call.id, call.name, "pending");
       const r = await decide();
+      lastDecision = r;
       approvalNoted(call.id, call.name, r === "approved" ? "approved" : "declined");
       return r;
     };
     const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> =>
       tracked(() => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal));
-    let held = false;
-    if (hic && !SELF_GATED_TOOLS.has(call.name)) {
+    // #690: a context kind the member turned off for this chat is refused before anything runs.
+    const kind = contextKindOf(call.name);
+    const contextOff = kind && this.state.chatContextOff.includes(kind.id) ? kind : null;
+    let held = contextOff !== null;
+    if (!held && hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
         {
           origin: "chat agent",
@@ -4608,6 +5001,36 @@ export class Store {
     } else if (call.name === "belnap_codec") {
       // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
       result = belnapCodecTool(args as Record<string, unknown>);
+    } else if (call.name === "worker_terms_propose") {
+      // Board 01: core checks the terms and renders the card; only the member's Confirm saves.
+      const a = args as Record<string, unknown>;
+      const hm = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+      const start = hm(a.hoursStart);
+      const end = hm(a.hoursEnd);
+      const terms: WorkerTerms = {
+        floorSaltPerUnit: typeof a.floorSaltPerUnit === "number" ? String(a.floorSaltPerUnit) : hm(a.floorSaltPerUnit),
+        hours: start === "" && end === "" ? "any" : { start, end },
+        weekdaysOnly: a.weekdaysOnly === true,
+        mainsOnly: a.mainsOnly === true,
+        dataClasses: Array.isArray(a.dataClasses) ? a.dataClasses.map((c) => (typeof c === "string" ? c.trim() : "")) : [],
+      };
+      ensure();
+      result = this.proposeWorkerTerms(terms, asstId);
+    } else if (call.name === "round_draft_propose") {
+      // Board 07: core shows the draft; only the member hands it to Open a round and signs there.
+      const a = args as Record<string, unknown>;
+      const str = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 200) : typeof v === "number" && Number.isFinite(v) ? String(v) : undefined);
+      const draft: Partial<RoundDraft> = {};
+      if (a.template === "tune" || a.template === "eval" || a.template === "data") draft.template = a.template;
+      if (str(a.dataClass)) draft.dataClass = str(a.dataClass);
+      if (str(a.budgetSalt)) draft.budgetSalt = str(a.budgetSalt);
+      if (str(a.rateSalt)) draft.rateSalt = str(a.rateSalt);
+      if (typeof a.maxWorkers === "number" && Number.isInteger(a.maxWorkers)) draft.maxWorkers = a.maxWorkers;
+      if (str(a.deadline)) draft.deadline = str(a.deadline);
+      if (a.who === "members" || a.who === "group" || a.who === "anyone") draft.who = a.who;
+      if (typeof a.groupId === "string" && a.groupId.trim()) draft.groupId = a.groupId.trim().slice(0, 128);
+      ensure();
+      result = this.proposeRoundDraft(draft, asstId);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
@@ -4615,6 +5038,86 @@ export class Store {
         result = formatPlanForAgent(plan);
       } catch (e) {
         result = "couldn't plan a round: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_dataset_pii_scan" || call.name === "fl_dataset_license_check") {
+      // WP-H7: core decides (fl_dataset_gate.rs); Hermes gets counts and verdicts in plain words.
+      const dataset = String(args.dataset || "");
+      const version = Number(args.version);
+      try {
+        result =
+          call.name === "fl_dataset_pii_scan"
+            ? scanForAgent(dataset, version, await datasetGate.piiScan(dataset, version))
+            : licensesForAgent(await datasetGate.licenseCheck(dataset, version));
+      } catch (e) {
+        result = `couldn't check ${dataset} v${version}: ` + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_source_check") {
+      // WP-H8: core's verdict on one URL (fl_collect.rs); fetches the host's robots.txt only.
+      try {
+        result = sourceCheckForAgent(await flCollect.sourceCheck(String(args.url || ""), attestationFrom(args)));
+      } catch (e) {
+        result = "couldn't check that page: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_collect_plan") {
+      // WP-H8 (HIC-1): core builds and checks the plan; the member decides on the card; only an
+      // approved plan runs, once, and core checks every page again before it fetches it.
+      const urls = Array.isArray(args.urls) ? (args.urls as unknown[]).map(String) : [];
+      // Review of #739: an attestation comes from the model's arguments, so the member confirms
+      // it, word for word, on its own card first. Declined = the plan is built without it.
+      let attestation = attestationFrom(args);
+      if (attestation) {
+        const a = attestation;
+        const ok = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool fl_collect_plan (license attestation)",
+            title: "Confirm a license you are attesting",
+            chainless: true,
+            rows: attestationCardRows(a, urls),
+            cost: "none",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          fieldsCard("fl_collect_plan", ann, { license: a.license, statement: a.statement }, `attest ${a.license} for pages that state no license`),
+        );
+        if (ok !== "approved") attestation = null;
+      }
+      let plan: FlCollectPlan | null = null;
+      try {
+        plan = await flCollect.plan(String(args.dataset || ""), Number(args.baseVersion), urls, attestation);
+      } catch (e) {
+        result = "couldn't plan the collection: " + (e instanceof Error ? e.message : String(e));
+      }
+      if (plan && plan.pages === 0) {
+        result = "Nothing on that list can be collected, so no plan was shown. " + plan.sources.map(sourceLine).join(" ");
+        await flCollect.decide(plan.id, false).catch(() => undefined);
+      } else if (plan) {
+        const p = plan;
+        const r = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool fl_collect_plan",
+            title: `Collect ${p.pages} web page${p.pages === 1 ? "" : "s"} into a dataset`,
+            chainless: true,
+            rows: planCardRows(p),
+            cost: "none — pages are fetched by this device",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          fieldsCard("fl_collect_plan", ann, { dataset: p.dataset, pages: String(p.pages), consent: p.statement }, `collect ${p.pages} page${p.pages === 1 ? "" : "s"} into ${p.dataset}`),
+        );
+        status = r;
+        if (r !== "approved") {
+          await flCollect.decide(p.id, false).catch(() => undefined);
+          result = "The member declined the collection plan; nothing was fetched.";
+        } else {
+          try {
+            await flCollect.decide(p.id, true);
+            result = runForAgent(await flCollect.run(p.id));
+          } catch (e) {
+            result = "the collection did not run: " + (e instanceof Error ? e.message : String(e));
+          }
+        }
       }
     } else if (call.name === "fl_round_start") {
       // HUP-S9.4 (HIC-1): the member decides on a card showing core's plan; only an Approve asks
@@ -4641,6 +5144,68 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlEnvelopeTool(call.name)) {
+      // 0.5.4 WP-H4: the HIC-2 envelope. Turning one on asks on a card; off applies at once. Core
+      // enforces the caps (fl_envelope.rs); on a network without WorkMarket it authorizes nothing.
+      const out = await runFlEnvelopeTool(call.name, args as Record<string, unknown>, ann, {
+        api: this.flEnvelopeApi(),
+        ask,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlWorkTool(call.name)) {
+      // 0.5.4 WP-H3: worker terms (read; sealed in core by fl_work.rs), consent and eligibility.
+      // Withdrawing a consent lowers authority and applies at once; reads read.
+      const out = await runFlWorkTool(call.name, args as Record<string, unknown>, ann, {
+        terms: this.flWorkTerms(),
+        flRounds: bridge.flRounds,
+        tier: bridge.tier,
+        book: flAddressBook,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlRoundTool(call.name)) {
+      // 0.5.4 WP-H5: reads only. Which contracts exist comes from the address book and eth_getCode;
+      // WorkMarket is read only once it is there; the coordinator's counts are labelled as its own.
+      const view = (address: string, data: string) => bridge.contracts.viewCall("citrate", address, data);
+      result = await runFlRoundTool(call.name, args as Record<string, unknown>, {
+        networkState: () => readFlNetworkState(flAddressBook, { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: view }),
+        call: view,
+        coordinator: async () => {
+          const ov = await bridge.flRounds.overview();
+          if (!ov.config.url) return null;
+          return (await bridge.flRounds.plan(DEFAULT_PROPOSAL)).coordinator;
+        },
+      });
+    } else if (call.name === FL_DATASET_PUBLISH_TOOL) {
+      // 0.5.4 WP-H6: publishing is irreversible, so always HIC-1 and never inside an envelope. Core
+      // refuses on its gates (license, PII scan, Public only); IPFS is real; the DatasetRegistry
+      // record opens in the wallet review only where the book pins it (not on r1007).
+      const out = await runPublishTool(args as Record<string, unknown>, ann, {
+        ds: bridge.flDatasets,
+        ask,
+        book: flAddressBook,
+        reads: { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d) },
+        publisher: () => this.state.custodyAddr,
+        propose: (i) => this.proposeContractCall(i),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isGroupClusterTool(call.name)) {
+      // 0.5.4 WP-H2: groups and cluster. A join request, a role change, an offboard and mesh-on ask
+      // on a card; revoking an invite and mesh-off lower authority and apply at once; reads read.
+      const out = await runGroupClusterTool(call.name, args as Record<string, unknown>, ann, {
+        invites: bridge.invites,
+        groups: bridge.groups,
+        cluster: bridge.cluster,
+        ask,
+        go: (route) => this.go(route),
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
     } else if (isFlAdapterTool(call.name)) {
       // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
       // re-checks the gate), and unloading (lowers authority, no card).
@@ -4653,6 +5218,60 @@ export class Store {
       const out = await runFlDatasetTool(call.name, args as Record<string, unknown>, ann, { ds: bridge.flDatasets, ask });
       status = out.status;
       result = out.result;
+    } else if (call.name === FL_ROUND_DRAFT_READ_TOOL) {
+      // 0.5.4 WP-H5: read the board 07 draft. Writing one is lane 3's card hand-off (#725).
+      result = runFlRoundDraftRead();
+    } else if (call.name === FL_ROUND_OPEN_TOOL) {
+      // 0.5.4 WP-H5: the saved draft through lane 1's openIntent; the member signs the escrow in
+      // the wallet review (HIC-1, never an envelope). Core's payouts gate runs before the card.
+      const out = await runFlRoundOpen({
+        loadDraft: () => loadRoundDraft(),
+        networkState: () => this.flNetworkState(),
+        roleIn: async (groupId) => {
+          const self = (this.state.commsAddr || (await bridge.groups.selfAddress())).toLowerCase();
+          const g = (await bridge.groups.list()).find((x) => x.id === groupId);
+          return g?.members.find((m) => m.address.toLowerCase() === self)?.role ?? null;
+        },
+        binding: () => this.flRoundBinding(),
+        propose: (intent) => this.proposeContractCall(intent),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlPayoutTool(call.name)) {
+      // 0.5.4 WP-H10 (dark): open only when core's Rust payouts gate says so (fl_payouts_status).
+      // Withdraw opens the wallet review, which runs the gate again; claim and dispute are
+      // named-blocked (the leaf and the signed receipt are not read in this release).
+      const out = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
+        networkState: () => this.flNetworkState(),
+        wallet: () => this.state.walletAddr,
+        call: (address, data) => bridge.contracts.viewCall("citrate", address, data),
+        chainNow: () => latestBlockTime(),
+        propose: (intent) => this.proposeContractCall(intent),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlMarketTool(call.name)) {
+      // 0.5.4 WP-H5: offers (read) and join (the member signs the bond in the wallet review; the
+      // shared joinIntent refuses until WorkMarket is here and payouts open).
+      const out = await runFlMarketTool(call.name, args as Record<string, unknown>, {
+        networkState: () => this.flNetworkState(),
+        readMarket: () => this.flMarketOffers(),
+        terms: () => loadWorkerTerms(),
+        machine: async () => machineFrom((await bridge.tier.recommend())?.facts),
+        propose: (intent) => this.proposeContractCall(intent),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlHistoryTool(call.name)) {
+      // 0.5.4 WP-H10: reads only, from fl_overview, PatronageLedger (training_reward) and, for
+      // payouts, the address book, eth_getCode and the network profile.
+      result = await runFlHistoryTool(call.name, args as Record<string, unknown>, {
+        desktop: BRIDGE_MODE === "tauri",
+        overview: () => bridge.flRounds.overview(),
+        networkState: () =>
+          readFlNetworkState(flAddressBook, { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d) }),
+        reward: (g) => bridge.training.reward(g),
+      });
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.
@@ -4687,6 +5306,15 @@ export class Store {
     }
     // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
+    if (contextOff) {
+      // #690: the member turned this kind of context off for this chat; nothing was read or run.
+      status = "declined";
+      result = `declined: the member turned off ${contextOff.title} for this chat, so ${call.name} was not run. Nothing was read or changed.`;
+    }
+    // Board 01: refused when the member's decision (or the tool's own structured status) said no.
+    const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
+    this.callOutcomes.set(call.id, refused ? "denied" : status === "error" || status === "failed" ? "error" : "ok");
+    if (this.callOutcomes.size > 64) this.callOutcomes.delete(this.callOutcomes.keys().next().value as string);
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +
@@ -5482,6 +6110,20 @@ export class Store {
    */
   async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // FL G-SEC PAY-15: one proposal at a time. A second call while core is still opening the
+    // first ceremony (before walletReview is set) is refused, so a double press signs nothing twice.
+    if (this.contractCallInFlight) throw new Error("a contract call is already being prepared; wait for its review");
+    this.contractCallInFlight = true;
+    try {
+      return await this.proposeContractCallOnce(input);
+    } finally {
+      this.contractCallInFlight = false;
+    }
+  }
+
+  private contractCallInFlight = false;
+
+  private async proposeContractCallOnce(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     // The label becomes the review's title, so the main window checks it against the calldata
     // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
     let selector = "";

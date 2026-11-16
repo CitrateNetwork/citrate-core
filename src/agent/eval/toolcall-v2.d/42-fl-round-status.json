@@ -1,0 +1,31 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H5 (fl_round_status, fl_lease_explain; lane HC)",
+  "note": "Items for the round read tools over the address book, FederatedRoundLedger, WorkMarket once deployed, and the coordinator (src/agent/flRoundTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-round-status-round",
+      "prompt": "What state is federated round 0x3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e in?",
+      "expect": { "tool": "fl_round_status", "argsMatch": { "roundId": "re:^0x(3e){32}$" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-round-status-offer",
+      "prompt": "How is offer 7 doing, how many workers joined and what is left in escrow?",
+      "expect": { "tool": "fl_round_status", "argsMatch": { "offerId": "re:^7$" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-round-status-network",
+      "prompt": "Are group training rounds live on this network yet?",
+      "expect": { "tool": "fl_round_status" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "tc-fl-lease-explain",
+      "prompt": "Why was lease 2 in round 0x3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e rejected?",
+      "expect": { "tool": "fl_lease_explain", "argsMatch": { "roundId": "re:^0x(3e){32}$", "leaseIndex": "re:^2$" } },
+      "tags": ["tool-choice", "args", "read"]
+    }
+  ]
+}

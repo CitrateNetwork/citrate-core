@@ -2,7 +2,8 @@
 // citrate-core — bridge domain contracts (CORE-A1 · A1.1)
 //
 // One typed interface per domain: auth, wallet, node, memory, chat,
-// membership, commissary, comms, config. Each declares the async functions
+// membership, config (and the CX domains below). The commissary and comms seam
+// stubs that nothing called were removed in 0.5.4. Each declares the async functions
 // its surface needs — the shapes the current `store.*` methods already imply.
 //
 // A1 wires exactly ONE domain for real (`config`, the round-trip proof). The
@@ -630,8 +631,6 @@ export interface AiProviderStatus {
 }
 
 export interface ChatDomain {
-  /** Which provider transport the harness routes to (real/demo). */
-  backend(): Promise<{ kind: string; label: string }>;
   /**
    * CORE-AI1 (@rule8) — seal a provider's `{baseURL, model, apiKey}` in the OS
    * keyring, binding the key to its https baseURL. Returns nothing — the key is
@@ -808,7 +807,6 @@ export interface EnterpriseLeadInput {
 }
 
 export interface MembershipDomain {
-  entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;
   /**
    * BC-1.3 (@rule8) — read the member's REAL on-chain grant status from 40204
    * (`MembershipStakeVault.attributedStake`/`attributedShares` + `CitrateMemberSBT
@@ -860,14 +858,6 @@ export interface MembershipDomain {
   sbtArt(sub: string): Promise<string | null>;
 }
 
-export interface CommissaryDomain {
-  catalog(): Promise<{ name: string; capabilities: string[] }[]>;
-}
-
-export interface CommsDomain {
-  connections(): Promise<Record<string, boolean>>;
-}
-
 /** One MCP connection's state (W4). Mirrors the Rust `ConnectionStatus`
  * (camelCase). NO token ever crosses this boundary — only connect facts. */
 export interface ConnectionInfo {
@@ -915,8 +905,6 @@ export interface BridgeContract {
   memory: MemoryDomain;
   chat: ChatDomain;
   membership: MembershipDomain;
-  commissary: CommissaryDomain;
-  comms: CommsDomain;
   connections: ConnectionsDomain;
 }
 
@@ -1183,8 +1171,9 @@ export interface GroupsDomain {
    */
   addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
-  /** Change a member's role. Not available yet (#495): the daemon needs a signed role grant and
-   *  nothing signs one, so this rejects with the not-available reason. */
+  /** Change a member's role: `groups_assign_role`, a `grantRole` request the comms daemon signs
+   *  with this device's comms key (#637). The bundled daemon is older than 0.6.0, so it rejects
+   *  with ROLE_CHANGES_NEED_NEWER_DAEMON (groupRoles.ts) until the daemon pin moves. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
   /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
   offboard(groupId: string, address: string): Promise<void>;
@@ -1353,8 +1342,12 @@ export interface RoundStatus {
 }
 export interface RewardInfo {
   round: number;
+  /** Cumulative patronage units (PatronageLedger.units). */
   weight: string;
+  /** Pending dividend in whole SALT, rounded down. */
   salt: string;
+  /** The same pending dividend exactly, in wei (decimal string). */
+  pendingWei: string;
 }
 /** PatronageLedger reads. V5 (0.5.4): no start, contribute or claim here; those were stubs that
  *  always failed. Rounds are joined and claimed through the WorkMarket tools once deployed. */
@@ -1508,9 +1501,23 @@ export interface FlRoundsDomain {
   trajectoryStatus(): Promise<FlTrajectoryStatus>;
   /** Turn the switch on or off. Off deletes assembled training sets now (and, if asked, recordings). */
   setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+  /** Turn the switch off, and only off (core trajectories_consent_revoke: no switch argument).
+   *  Deletes assembled training sets now and keeps recordings. Hermes's consent withdraw uses this. */
+  revokeTrajectoryConsent(): Promise<FlTrajectoryStatus>;
   /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
    *  Core refuses when the switch is off. */
   buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;
+  /** Board 01: the assembled training sets on this device, newest first (names, sizes, example
+   *  counts, sha256; never their lines), for attaching to a Hermes chat. */
+  datasetsList(): Promise<FlDatasetFile[]>;
+}
+/** Board 01 (core fl_trajectories.rs DatasetFile). */
+export interface FlDatasetFile {
+  name: string;
+  builtMs: number;
+  bytes: number;
+  examples: number;
+  sha256: string;
 }
 /** HUP-S9.3 (core fl_trajectories.rs TrajectoryStatus). */
 export interface FlTrajectoryStatus {
@@ -2200,6 +2207,9 @@ export interface ContractsDomain {
   codeSize(target: string, address: string): Promise<number>;
   /** HUP-S6.7 — a read-only eth_call; resolves with the raw `0x` return data. */
   viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** Board 01 — the same eth_call pinned to the RPC's head block (`contract_view_call_at`): the
+   *  data, the block it ran at and the RPC host, so Hermes's answer names its block. */
+  viewCallAt(target: string, address: string, calldata: string): Promise<{ data: string; block: number; rpc: string }>;
   /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
   proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
   /** CORE-A1 — find a contract by name or address: the embedded 40204 book + on-chain registries. */

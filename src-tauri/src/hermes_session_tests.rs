@@ -60,7 +60,7 @@ fn malformed_tool_specs_are_refused() {
     for bad in ["{}", "not json", r#"[{"description":"no name"}]"#, r#"[{"name":"../x","parameters":{}}]"#, r#"[{"name":"a","parameters":"nope"}]"#] {
         assert!(build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m", 8192).is_err(), "{bad}");
     }
-    let many: Vec<serde_json::Value> = (0..65).map(|i| serde_json::json!({"name": format!("t{i}"), "parameters": {}})).collect();
+    let many: Vec<serde_json::Value> = (0..129).map(|i| serde_json::json!({"name": format!("t{i}"), "parameters": {}})).collect();
     assert!(build_session_body("p", &serde_json::to_string(&many).unwrap(), "http://127.0.0.1:1/v1", "", "m", 8192).is_err());
 }
 

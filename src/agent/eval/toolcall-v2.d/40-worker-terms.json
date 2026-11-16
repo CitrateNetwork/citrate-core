@@ -1,0 +1,13 @@
+{
+  "added": "2026-11-15",
+  "by": "FL design board 01 (worker_terms_propose, Lane 3)",
+  "note": "The tool only puts a card core checked in the chat; the member confirms it there (HIC-1). Hermes never says the terms are saved.",
+  "tasks": [
+    {
+      "id": "tc-worker-terms-gpu-night",
+      "prompt": "Put my GPU to work on rounds at night, weeknights only, 23:00 to 07:00, mains power only, and nothing below 1.20 SALT per unit.",
+      "expect": { "tool": "worker_terms_propose", "argsMatch": { "floorSaltPerUnit": "re:^1\\.20?$", "hoursStart": "23:00", "hoursEnd": "07:00" } },
+      "tags": ["tool-choice", "args", "propose"]
+    }
+  ]
+}

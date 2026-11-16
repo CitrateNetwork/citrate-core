@@ -3,8 +3,9 @@
 //
 // Hermes answers in a group only when a member mentions it, and only on that member's own device:
 // the member's app runs the local model with the GROUP'S context alone (its roster and roles, the
-// cluster's live peer count, the recent group messages, and whether group rounds are live), then
-// posts the answer to the group as a Hermes answer message (groupEnvelope.ts: plain text with a final structure line). Nothing from the
+// cluster's live peer count, the recent group messages, and whether group rounds are live). The
+// answer is scanned on this device for private information and shown to the member on a send card
+// ("Post to N members", V6); only the member's choice is posted to the group as a Hermes answer message (groupEnvelope.ts: plain text with a final structure line). Nothing from the
 // member's private chats, memory, wallet or sealed worker policies is given to the model, so none
 // of it can reach the group. Other members' devices never run Hermes for someone else's mention.
 //
@@ -14,7 +15,7 @@
 // does not answer, nothing is posted and the member is told why.
 // =====================================================================
 import type { GroupMember, GroupMessage } from "../../bridge/domains";
-import { checkDraft, encodeHermes, MAX_TEXT, threadModel, type RoundDraft } from "./groupEnvelope";
+import { checkDraft, draftLines, encodeHermes, MAX_TEXT, threadModel, type RoundDraft } from "./groupEnvelope";
 import { roleWord } from "./memberRoles";
 
 // ---- which Hermes answers this device posted ----------------------------------------------------
@@ -135,8 +136,41 @@ export function parseAnswer(raw: string): { text: string; draft: RoundDraft | nu
   return { text, draft };
 }
 
+/** What the on-device private-information scanner found in a text (mirrors Rust `TextScan`,
+ *  src-tauri/src/pii_scan.rs). */
+export interface DisclosureScan {
+  scanner: string;
+  passed: boolean;
+  found: { class: string; label: string; count: number }[];
+  /** The text with every finding replaced by its class, e.g. `<email>`. */
+  redacted: string;
+  coverage: string;
+}
+
+/** What the member sees on the send card before anything reaches the group (V6). */
+export interface SendPreview {
+  groupId: string;
+  /** How many other members will receive it (null when the roster was not read). */
+  recipients: number | null;
+  text: string;
+  draft: RoundDraft | null;
+  /** The round draft's lines exactly as they will be posted (empty when there is no draft). */
+  draftLines?: string[];
+  read: string[];
+  scan: DisclosureScan;
+}
+
+/** The member's decision on the send card. `text` is what to post: the answer as shown, the
+ *  scanner's redaction, or the member's own edit. */
+export type SendDecision = { post: true; text: string } | { post: false };
+
 export interface HermesDeps {
   inferLocal(messagesJson: string, contextJson: string): Promise<string>;
+  /** The on-device scanner (`pii_scan_text`). It runs on the answer and again on whatever text the
+   *  member chooses to post. */
+  scan(text: string): Promise<DisclosureScan>;
+  /** Show the send card and wait for the member (V6: the @mention alone never posts). */
+  confirm(preview: SendPreview): Promise<SendDecision>;
   /** Post the encoded answer to `groupId` (a structured body this module built). */
   send(groupId: string, body: string): Promise<void>;
 }
@@ -144,11 +178,30 @@ export interface HermesDeps {
 export type HermesOutcome =
   | { kind: "posted"; body: string }
   | { kind: "no-answer"; reason: string }
+  | { kind: "held"; reason: string }
   | { kind: "not-sent"; reason: string; body: string };
 
+/** Members who receive a group message: the roster without the asker. */
+export function recipientsOf(c: GroupContext): number | null {
+  if (c.roster.length === 0) return null;
+  const me = c.asker.toLowerCase();
+  return c.roster.filter((r) => r.address.toLowerCase() !== me).length;
+}
+
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
 /**
- * Ask the local model for a group answer to the message with ref `to`, then post it to the group.
- * Never throws: a model failure posts nothing; a send failure says the answer was not sent.
+ * Ask the local model for a group answer to the message with ref `to`, show it to the member on a
+ * send card with the private-information scan, and post it only when the member chooses to (V6,
+ * owner decision 2026-11-16). Never throws.
+ *
+ * - The model's answer, and the exact body it would be posted as (round draft included), are
+ *   scanned on this device before the card opens. If the scanner cannot run, or the draft holds a
+ *   finding, nothing is posted.
+ * - Whatever the member chooses to post is scanned again, and it is posted only if the scan
+ *   passes: a finding blocks the send whatever the card showed (the member can post the
+ *   redaction or edit the text).
+ * - Declining, or closing the card, posts nothing.
  */
 export async function answerInGroup(groupId: string, to: string, c: GroupContext, deps: HermesDeps): Promise<HermesOutcome> {
   const req = buildRequest(c);
@@ -156,15 +209,48 @@ export async function answerInGroup(groupId: string, to: string, c: GroupContext
   try {
     raw = await deps.inferLocal(req.messagesJson, req.contextJson);
   } catch (e) {
-    return { kind: "no-answer", reason: e instanceof Error ? e.message : String(e) };
+    return { kind: "no-answer", reason: errText(e) };
   }
   const { text, draft } = parseAnswer(raw ?? "");
   if (!text && !draft) return { kind: "no-answer", reason: "the local model returned an empty answer" };
-  const body = encodeHermes({ to, text: text || "Here is a round draft for the owners and admins to review.", read: readList(c), draft });
+  const shown = text || "Here is a round draft for the owners and admins to review.";
+  const read = readList(c);
+  // Codex review of #730: the gate scans the exact body that would be posted (the round draft
+  // and the lines Hermes adds included), not only the prose. The prose is also scanned alone so
+  // the card can offer its redaction.
+  const shownBody = encodeHermes({ to, text: shown, read, draft });
+  let scan: DisclosureScan;
+  let whole: DisclosureScan;
+  try {
+    scan = await deps.scan(shown);
+    whole = await deps.scan(shownBody);
+  } catch (e) {
+    return { kind: "held", reason: `the private-information check could not run (${errText(e)}), so nothing was posted` };
+  }
+  if (scan.passed && !whole.passed) {
+    return { kind: "held", reason: `the round draft or the lines Hermes adds hold ${whole.found.map((f) => f.label).join(", ")}, so nothing was posted` };
+  }
+  const decision = await deps
+    .confirm({ groupId, recipients: recipientsOf(c), text: shown, draft, draftLines: draft ? draftLines(draft) : [], read, scan })
+    .catch(() => ({ post: false }) as SendDecision);
+  if (!decision.post) return { kind: "held", reason: "you chose not to post it" };
+  const final = decision.text.trim().slice(0, MAX_TEXT);
+  if (!final) return { kind: "held", reason: "the answer was empty, so nothing was posted" };
+  // What is posted is exactly the body scanned here.
+  const body = encodeHermes({ to, text: final, read, draft });
+  let check: DisclosureScan;
+  try {
+    check = body === shownBody ? whole : await deps.scan(body);
+  } catch (e) {
+    return { kind: "held", reason: `the private-information check could not run (${errText(e)}), so nothing was posted` };
+  }
+  if (!check.passed) {
+    return { kind: "held", reason: `the text still holds ${check.found.map((f) => f.label).join(", ")}, so nothing was posted` };
+  }
   try {
     await deps.send(groupId, body);
     return { kind: "posted", body };
   } catch (e) {
-    return { kind: "not-sent", reason: e instanceof Error ? e.message : String(e), body };
+    return { kind: "not-sent", reason: errText(e), body };
   }
 }

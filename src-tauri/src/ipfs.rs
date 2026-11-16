@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 
-use crate::supervisor::{
-    BackoffPolicy, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
-};
+use crate::supervisor::{BackoffPolicy, SidecarSpec, Supervisor, SupervisorConfig};
 
 /// The env var kubo reads for its repo location.
 const IPFS_PATH_ENV: &str = "IPFS_PATH";
@@ -144,15 +142,6 @@ impl IpfsManager {
             drop(sup);
         }
     }
-
-    /// Supervisor-reported running state (for a status surface).
-    pub fn running(&self) -> bool {
-        let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
-        matches!(
-            guard.as_ref().map(|s| s.status().state),
-            Some(SupervisorState::Running)
-        )
-    }
 }
 
 /// Managed Tauri state: the process-wide IPFS manager.
@@ -211,39 +200,4 @@ pub fn ipfs_start_sync(state: tauri::State<'_, IpfsState>) -> std::result::Resul
         Ok(()) | Err(IpfsError::AlreadyRunning) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
-}
-
-/// Stop the bundled IPFS daemon.
-#[tauri::command]
-pub async fn ipfs_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st0 = tauri::Manager::try_state::<IpfsState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ipfs_stop_sync(st0)
-    })
-    .await
-}
-
-/// Blocking body of [`ipfs_stop`]; reached only through [`crate::blocking::off_main`].
-pub fn ipfs_stop_sync(state: tauri::State<'_, IpfsState>) -> std::result::Result<(), String> {
-    state.0.stop();
-    Ok(())
-}
-
-/// Whether the IPFS daemon is supervised-running (honest — never fabricated).
-#[tauri::command]
-pub async fn ipfs_status(app_h: tauri::AppHandle) -> std::result::Result<bool, String> {
-    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
-    crate::blocking::off_main(move || {
-        let st0 = tauri::Manager::try_state::<IpfsState>(&app_h)
-            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        ipfs_status_sync(st0)
-    })
-    .await
-}
-
-/// Blocking body of [`ipfs_status`]; reached only through [`crate::blocking::off_main`].
-pub fn ipfs_status_sync(state: tauri::State<'_, IpfsState>) -> std::result::Result<bool, String> {
-    Ok(state.0.running())
 }

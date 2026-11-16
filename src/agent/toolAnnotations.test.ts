@@ -9,7 +9,11 @@ import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
-import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
+import { DATASET_ID, cleanPreview, datasetList, publishPreview } from "../fl/fixtures/datasets";
+import { FILLED_DRAFT, ROUND_BINDING, VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
+import { saveRoundDraft } from "../fl/roundDraft";
+import { flCollect } from "../fl/collect";
+import { collectPlan } from "../fl/fixtures/collect";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -54,12 +58,22 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        // 0.5.4 WP-H4: the envelope switch and caps.
+        enabled: true,
+        joinsPerWeek: 3,
+        maxHoursPerRound: 8,
+        // 0.5.4 WP-H2: an invite link, a roster member, a role and the mesh switch.
+        link: "citrate://invite?g=g&t=t&k=k&e=9",
+        member: "0x" + "1".repeat(40),
+        role: "admin",
         sha256: ADAPTER_SHA,
         // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
         dataClass: "orchard-notes",
         folder: "/home/m/notes",
         dataset: DATASET_ID,
         ops: [{ op: "dedupe" }],
+        offerId: 1,
+        license: "MIT",
       }),
     });
     for (const n of names) {
@@ -72,12 +86,43 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H3: no terms saved yet.
+      vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null });
+      // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
+      vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
+        status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
+        approve: async () => ({}) as never,
+        off: async () => null,
+      });
+      // 0.5.4 WP-H2: a readable invite, a roster with the member, a signed-off mesh that is off.
+      vi.spyOn(bridge.invites, "preview").mockResolvedValue({ group: "g", groupName: "G", inviter: "A", expiresAt: 9, expired: false, requested: false });
+      vi.spyOn(bridge.invites, "revoke").mockResolvedValue({ notified: false });
+      vi.spyOn(bridge.groups, "roster").mockResolvedValue([{ address: "0x" + "1".repeat(40), role: "member" }]);
+      vi.spyOn(bridge.cluster, "meshStatus").mockResolvedValue({ on: false, source: "off", signedOff: true, note: "" });
       // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
       vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
       // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
       vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
       vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
+      // 0.5.4 WP-H5: fl_join_propose reaches the wallet review only on a 0.6.0 network with payouts open.
+      vi.spyOn(store, "flNetworkState").mockImplementation(payoutsOpenNetwork);
+      vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
+      vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
+      // 0.5.4 WP-H5: fl_round_open_propose reaches the wallet review with a draft and a binding (test-only).
+      vi.spyOn(store, "flRoundBinding").mockResolvedValue(ROUND_BINDING);
+      store.setState({ commsAddr: "0xme" });
+      vi.spyOn(bridge.groups, "list").mockResolvedValue([{ id: FILLED_DRAFT.groupId, name: "g", owner: "o", kind: "channel", members: [{ address: "0xme", role: "owner" }] }] as never);
+      saveRoundDraft({ ...FILLED_DRAFT });
+      vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
+      // 0.5.4 WP-H10: fl_withdraw_propose reaches the wallet review once payouts are open and the pull balance is not 0.
+      vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue("0x" + (10n ** 18n).toString(16).padStart(64, "0"));
+      store.setState({ walletAddr: "0x" + "5b".repeat(20) });
+      // WP-H8: fl_collect_plan asks only about a plan core built with something to collect.
+      vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
+      vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan({ status: "declined" }));
+      vi.spyOn(bridge.flDatasets, "published").mockResolvedValue([]);
+      vi.spyOn(bridge.flDatasets, "publishPreview").mockResolvedValue(publishPreview());
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

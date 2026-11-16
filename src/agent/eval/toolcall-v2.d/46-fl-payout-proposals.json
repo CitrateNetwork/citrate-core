@@ -1,0 +1,25 @@
+{
+  "added": "2026-11-16",
+  "by": "0.5.4 Hermes x FL WP-H10 (fl_withdraw_propose, fl_claim_propose, fl_dispute_propose; lane HC)",
+  "note": "Items for the payout proposals behind core's payouts gate (src/agent/flPayoutTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-withdraw-propose",
+      "prompt": "Withdraw my WorkMarket pull balance to my wallet.",
+      "expect": { "tool": "fl_withdraw_propose", "alsoAccept": ["fl_payouts_list"] },
+      "tags": ["tool-choice", "write"]
+    },
+    {
+      "id": "tc-fl-claim-propose",
+      "prompt": "Claim my payout from offer 4.",
+      "expect": { "tool": "fl_claim_propose", "argsMatch": { "offerId": "re:^4$" }, "alsoAccept": ["fl_payouts_list"] },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-dispute-propose",
+      "prompt": "My units are missing from the payout list for offer 4, I want to dispute it.",
+      "expect": { "tool": "fl_dispute_propose", "argsMatch": { "offerId": "re:^4$" }, "alsoAccept": ["fl_payouts_list"] },
+      "tags": ["tool-choice", "args", "read"]
+    }
+  ]
+}

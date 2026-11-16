@@ -459,6 +459,50 @@ pub fn is_reserved_display_name(name: &str) -> bool {
     folded.starts_with("citrate")
 }
 
+/// Why a skill with this name may not be saved or learned, or `None` when it may. The sidecar loads
+/// learned and saved skills before Citrate's bundled ones (first wins, `hermes_learn::skills_env`),
+/// so a saved or learned skill reading as a bundled skill's name would shadow it.
+pub fn reserved_skill_name(name: &str) -> Option<String> {
+    let slug = slugify(name);
+    (is_reserved_slug(&slug) || is_reserved_display_name(name)).then(|| {
+        format!("SKILL_RESERVED: \"{slug}\" is reserved for Citrate's bundled skills; choose another name. Nothing was saved.")
+    })
+}
+
+/// The `name:` of a SKILL.md's frontmatter. Fails closed (review of #735, P2): no frontmatter, no
+/// closing fence, no `name:`, an empty name, or more than one top-level `name:` is an error, never a
+/// name that slips past the reserved check.
+pub fn skill_md_name(skill_md: &str) -> Result<String, String> {
+    let bad = |why: &str| {
+        Err(format!(
+            "SKILL_RESERVED: the skill's name cannot be read ({why}); it was refused"
+        ))
+    };
+    let text = skill_md.replace("\r\n", "\n");
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return bad("no frontmatter");
+    };
+    let Some(end) = rest.find("\n---") else {
+        return bad("no closing ---");
+    };
+    let names: Vec<String> = rest[..end]
+        .lines()
+        .filter_map(|l| l.strip_prefix("name:"))
+        .map(|v| {
+            v.trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .trim()
+                .to_string()
+        })
+        .collect();
+    match names.as_slice() {
+        [one] if !one.is_empty() => Ok(one.clone()),
+        [] => bad("no name"),
+        [_] => bad("an empty name"),
+        _ => bad("more than one name"),
+    }
+}
+
 /// Write a skill into `dir`. With `overwrite == false` an existing skill is NEVER replaced
 /// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
 /// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
@@ -473,6 +517,9 @@ fn write_skill_file(
     let name = name.trim();
     if name.is_empty() {
         return Err("a skill needs a name".into());
+    }
+    if let Some(why) = reserved_skill_name(name) {
+        return Err(why);
     }
     if name.len() > MAX_NAME || description.len() > MAX_DESC || instructions.len() > MAX_BODY {
         return Err("skill name/description/instructions exceed the allowed size".into());

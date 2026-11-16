@@ -9,14 +9,32 @@
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { bridge } from "../bridge";
-import { Train } from "../surfaces";
+import { useEffect, useState } from "react";
+import { tierSlice, refreshTier } from "../shell/slices/tier";
+import { useAuthority } from "./authority";
+import { loadWorkerTerms, type WorkerTerms } from "./workerTerms";
+import { machineFrom, readMarket } from "./market";
+import { joinIntent, MatchesView, useMarket } from "./Matches";
+import { downloadText } from "./download";
+import { AdaptersView } from "./Adapters";
+import { LiveRoundView, NoLiveRound } from "./LiveRound";
+import { currentOffer } from "./myWork";
+import { liveRoundFrom, myWorkRefreshKey, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
+import { latestBlockTime } from "./chainTime";
+import { Unknown } from "./primitives";
+import type { Receipt } from "./Payouts";
+import { PayoutsView, usePayoutsRecords } from "./Payouts";
+import { OpenRoundView } from "./OpenRound";
+import { DatasetsView } from "./Datasets";
+import { BLANK_DRAFT, loadRoundDraft, openIntent, type RoundDraft } from "./roundDraft";
+import { groupsSlice } from "../shell/slices/groups";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
 import { FlRoundsPanel } from "./FlRoundsPanel";
 import { FlBand } from "./FlBand";
 import { RoundsNotLive } from "./RoundsNotLive";
 import { useFlNetworkState } from "./useFlNetworkState";
-import { NOT_AVAILABLE, PAYOUTS_DARK } from "./networkState";
+import type { FlNetworkState } from "./networkState";
 
 export const ROUNDS_ROUTES = {
   matches: "groups/rounds",
@@ -32,8 +50,7 @@ export function isRoundsRoute(route: string): boolean {
 }
 
 function Matches({ store, s }: { store: Store; s: AppState }) {
-  // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS: the address-book-gated ledger card in
-  // place of Train's PatronageLedger read, with the same federated-rounds panel below it.
+  // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS stay as they were.
   if (flRoundCardsEnabled())
     return (
       <>
@@ -43,49 +60,160 @@ function Matches({ store, s }: { store: Store; s: AppState }) {
         </div>
       </>
     );
-  return <Train store={store} s={s} />;
+  return <MatchesRoute store={store} s={s} />;
 }
 
-function NotLiveSubtab({ route, s }: { route: string; s: AppState }) {
+function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
+  const { state } = useFlNetworkState();
+  const tier = tierSlice.use();
+  const authority = useAuthority();
+  const [terms, setTerms] = useState<WorkerTerms | null>(null);
+  const market = useMarket(state, readMarket);
+  useEffect(() => {
+    if (!tier.loaded) void refreshTier();
+    void loadWorkerTerms().then(setTerms, () => setTerms(null));
+  }, []);
+  return (
+    <MatchesView
+      state={state}
+      band={<FlBand s={s} networkLabel={state.networkLabel} />}
+      market={market}
+      terms={terms}
+      machine={machineFrom(tier.report?.facts)}
+      authority={authority}
+      go={(r) => store.go(r)}
+      save={(name, text) => downloadText(name, text)}
+      onJoin={async (o) => {
+        await store.proposeContractCall(joinIntent(o, state));
+      }}
+      coordinator={<FlRoundsPanel bare sections={["coordinator", "plan", "consents"]} fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />}
+    />
+  );
+}
+
+/** The latest block's timestamp, read once there is something to compare it with. */
+function useChainNow(when: boolean): number | null {
+  const [t, setT] = useState<number | null>(null);
+  useEffect(() => {
+    if (!when) return;
+    latestBlockTime().then(setT, () => setT(null));
+  }, [when]);
+  return t;
+}
+
+function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
+  const { ov, error } = usePayoutsRecords(bridge.flRounds);
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
+  const read = work.kind === "read" ? work.work : null;
+  const chainNow = useChainNow(work.kind === "read");
+  // Every offer here is one this wallet joined (myOffers). Statuses use the chain's clock; until
+  // the latest block's time is read, a window that might be over is still "waiting".
+  const now = chainNow ?? 0;
+  const receipts = read ? read.offers.map((o) => receiptFrom(o, { joined: true, settled: read.settled[o.id] ?? false }, now)).filter((r): r is Receipt => r !== null) : null;
+  return (
+    <PayoutsView
+      state={state}
+      receipts={receipts}
+      receiptsReason={work.kind === "failed" ? work.reason : "reading WorkMarket"}
+      pullWei={read ? read.pullWei : null}
+      pullReason={work.kind === "failed" ? work.reason : "reading WorkMarket"}
+      wallet={s.walletAddr}
+      chainNow={chainNow}
+      ov={ov}
+      ovError={error}
+      go={go}
+      save={(name, text) => downloadText(name, text)}
+      disputeBlocker="Disputing needs your coordinator-signed receipt, which the training worker keeps; it is not bundled in this release."
+      act={async (kind) => {
+        if (kind !== "withdraw") throw new Error("claiming needs your leaf from the coordinator's payout list, which the app does not read yet");
+        await store.proposeContractCall(withdrawIntent(state, read ? read.pullWei : null));
+      }}
+    />
+  );
+}
+
+function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
+  const { groups } = groupsSlice.use();
+  const [coord, setCoord] = useState<string | null>(null);
+  const [draft] = useState<RoundDraft>(() => loadRoundDraft() ?? BLANK_DRAFT);
+  useEffect(() => {
+    bridge.flRounds.overview().then(
+      (o) => setCoord(o.config.url),
+      () => setCoord(null),
+    );
+  }, []);
+  const roleOf = (id: string | null) => {
+    const g = groups.find((x) => x.id === id);
+    const me = g && s.commsAddr ? g.members.find((m) => m.address.toLowerCase() === s.commsAddr.toLowerCase()) : undefined;
+    return me ? me.role : null;
+  };
+  return (
+    <OpenRoundView
+      state={state}
+      draft={draft}
+      groups={groups}
+      roleOf={roleOf}
+      coordinatorUrl={coord}
+      go={go}
+      onOpen={async (d) => {
+        // No round binding source exists yet (the coordinator does not publish one); openIntent
+        // says so, and refuses first while payouts are dark.
+        const intent = openIntent(d, null, state);
+        await store.proposeContractCall(intent);
+        return { kind: "unknown", txHash: null, reason: "sent to the wallet review" };
+      }}
+    />
+  );
+}
+
+const chainCall = (address: string, calldata: string) => bridge.contracts.viewCall("citrate", address, calldata);
+
+function LiveFromChain({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
+  if (work.kind === "failed")
+    return (
+      <section className="fl-main">
+        <p style={{ margin: 0, fontSize: 13 }}>
+          Your rounds: <Unknown reason={work.reason} />
+        </p>
+      </section>
+    );
+  if (work.kind !== "read")
+    return (
+      <section className="fl-main">
+        <p className="fl-muted" style={{ margin: 0, fontSize: 13 }}>Reading your rounds from WorkMarket.</p>
+      </section>
+    );
+  const o = currentOffer(work.work.offers);
+  if (!o) return <NoLiveRound go={go} />;
+  return <LiveRoundView r={liveRoundFrom(o, work.work.rounds[o.id] ?? null, s.height > 0 ? s.height : null, state.payouts)} go={go} />;
+}
+
+function NotLiveSubtab({ route, s, go, toast, store }: { route: string; s: AppState; go: (r: string) => void; toast: (m: string) => void; store: Store }) {
   const { state } = useFlNetworkState();
   const band = <FlBand s={s} networkLabel={state.networkLabel} />;
   switch (route) {
     case ROUNDS_ROUTES.live:
+      // Board 06: your newest round, read from WorkMarket and FederatedRoundLedger (myWork.ts).
       return (
         <>
           {band}
-          <RoundsNotLive testid="rounds-live-not-live" state={state} headline="There is no live round to show on this network yet." lead="A live round appears here once you join one. Rounds are offered through the WorkMarket contract." />
+          {state.phase === "rounds-live" ? (
+            <LiveFromChain state={state} s={s} go={go} />
+          ) : (
+            <RoundsNotLive testid="rounds-live-not-live" state={state} headline="There is no live round to show on this network yet." lead="A live round appears here once you join one. Rounds are offered through the WorkMarket contract." />
+          )}
         </>
       );
     case ROUNDS_ROUTES.open:
-      return (
-        <RoundsNotLive
-          testid="rounds-open-not-live"
-          state={state}
-          headline="Opening a round needs the WorkMarket contract on this network."
-          lead="Owners and admins of a group open rounds. Until WorkMarket is deployed there is no round to open and nothing to sign."
-        />
-      );
+      // Board 07: the four steps; no Open button until WorkMarket is on this network.
+      return <OpenRoundRoute state={state} s={s} go={go} store={store} />;
     case ROUNDS_ROUTES.datasets:
-      return (
-        <RoundsNotLive
-          testid="rounds-datasets-not-live"
-          state={state}
-          contracts={["DatasetRegistry", "WorkMarket"]}
-          headline="Publishing a dataset needs the DatasetRegistry contract on this network."
-          lead="Datasets stay on this device. Recording one on chain waits for DatasetRegistry."
-        />
-      );
+      // Board 08: local datasets (core's training-set builder) and the honest states for the rest.
+      return <DatasetsView state={state} fl={bridge.flRounds} toast={toast} go={go} />;
     case ROUNDS_ROUTES.payouts:
-      return (
-        <RoundsNotLive
-          testid="rounds-payouts-not-live"
-          state={state}
-          contracts={["WorkMarket", "PatronageLedger"]}
-          headline={state.payouts === "not-deployed" ? `Payouts: ${NOT_AVAILABLE}` : PAYOUTS_DARK}
-          lead="Payouts are paid by WorkMarket in SALT. Nothing here is claimable until rounds run and the security review opens payouts."
-        />
-      );
+      // Board 10: receipts (dark or not deployed in this build) and the device's history.
+      return <PayoutsRoute state={state} s={s} go={go} store={store} />;
     default:
       return null;
   }
@@ -96,13 +224,9 @@ export function RoundsRoute({ route, store, s }: { route: string; store: Store; 
     case ROUNDS_ROUTES.matches:
       return <Matches store={store} s={s} />;
     case ROUNDS_ROUTES.adapters:
-      // The eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
-      return (
-        <div style={{ padding: "20px 26px 24px", maxWidth: 900 }}>
-          <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
-        </div>
-      );
+      // Board 09: the eval gate and adapter load, unload and re-apply on restart (fl_rounds.rs).
+      return <AdaptersView fl={bridge.flRounds} toast={(m) => store.toast(m)} go={(r) => store.go(r)} />;
     default:
-      return <NotLiveSubtab route={route} s={s} />;
+      return <NotLiveSubtab route={route} s={s} go={(r) => store.go(r)} toast={(m) => store.toast(m)} store={store} />;
   }
 }

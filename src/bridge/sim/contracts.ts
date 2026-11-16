@@ -32,6 +32,9 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async viewCall() {
       throw new Error("reading a contract needs the desktop node (no chain in web/dev)");
     },
+    async viewCallAt() {
+      throw new Error("reading a contract needs the desktop node (no chain in web/dev)");
+    },
     async proposeWrite() {
       throw new Error("a contract call needs the desktop node (no chain in web/dev)");
     },

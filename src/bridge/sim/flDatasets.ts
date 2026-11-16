@@ -19,5 +19,8 @@ export function simFlDatasets(_host: SimHost): FlDatasetsDomain {
     consentList: refuse,
     consentWithdraw: refuse,
     delete: refuse,
+    publishPreview: refuse,
+    publish: refuse,
+    published: refuse,
   };
 }
