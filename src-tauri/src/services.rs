@@ -103,7 +103,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: PROCESS_ONLY,
         ready_signal: PROCESS_ONLY_READY,
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
     ServiceDescriptor {
@@ -117,7 +117,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: PROCESS_ONLY,
         ready_signal: PROCESS_ONLY_READY,
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: true,
     },
     ServiceDescriptor {
@@ -131,7 +131,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: "HTTP GET /health on its loopback port; a failing probe restarts it",
         ready_signal: "/health answers 200",
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
     ServiceDescriptor {
@@ -146,7 +146,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: "HTTP GET /health on its loopback port; a failing probe restarts it",
         ready_signal: "/health answers 200",
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
     ServiceDescriptor {
@@ -159,7 +159,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: PROCESS_ONLY,
         ready_signal: PROCESS_ONLY_READY,
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
     ServiceDescriptor {
@@ -173,7 +173,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: "HTTP GET /health on its control address; a failing probe restarts it",
         ready_signal: "/health answers 200",
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: true,
     },
     ServiceDescriptor {
@@ -186,7 +186,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: "Connects to its local socket; a failing probe restarts it",
         ready_signal: "its local socket accepts a connection",
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
     ServiceDescriptor {
@@ -199,7 +199,7 @@ pub const REGISTRY: [ServiceDescriptor; 9] = [
         ],
         probe: "Connects to its local socket; a failing probe restarts it",
         ready_signal: "its local socket accepts a connection",
-        logs_command: None,
+        logs_command: Some("sidecar_logs_tail"),
         controls: false,
     },
 ];
