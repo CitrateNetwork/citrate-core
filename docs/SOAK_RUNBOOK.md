@@ -6,6 +6,7 @@ status: active (proposal: the owner and the DGX lead set the criteria numbers an
 gate: RC52 G9 (soak)
 tool: scripts/soak/soak-monitor.py
 criteria: scripts/soak/soak-criteria.json
+updated: 2026-10-26 (DGX lane: r1006 producers, profile and RPC access)
 ---
 
 # 0.5.2 RC soak runbook (gate G9)
@@ -22,11 +23,17 @@ sends a transaction, never signals the app, and never starts anything.
 ## 1. Prerequisites
 
 - **Rerolled chain.** The new genesis is live under the ceremony runbook (citrate-chain
-  `scripts/genesis/CEREMONY_RUNBOOK.md` §6), with **≥ 4 producers on separate hosts**. You need:
+  `scripts/genesis/CEREMONY_RUNBOOK.md` §6), with **≥ 4 producers on separate hosts**. For the
+  RC52 soak that chain is the **r1006** testnet: seven producers, `citrate-prod-1` to
+  `citrate-prod-7`, on separate hosts in seven regions, all run by one operator (Citrate Inc.).
+  r1006 is prepared, not live; the soak can't start before it is up. You need:
   - the chain id (40204);
-  - the new block-0 hash (the `genesis-2026-12` network profile in
-    `src-tauri/network/profiles.json`);
-  - one RPC URL per producer.
+  - the new block-0 hash, from the `r1006` network profile in
+    `src-tauri/network/profiles.json` once it is filled (citrate-core #518). The 12-01 genesis
+    uses the `genesis-2026-12` profile instead;
+  - one RPC URL per producer. The producers' RPC ports are not public: reach each producer's
+    loopback RPC through an SSH tunnel from a host on the producer SSH allowlist, and name the
+    tunnel's local port in `--rpc`.
 
   Before you start, the chain-side `fleet_agree.sh` must print `FLEET AGREE`.
 - **The RC installed on test machines**, from the RC build in checklist §2:
@@ -55,11 +62,13 @@ fails the run.
 **Fleet monitor** (one, on the DGX or an ops host; chain only):
 
 ```sh
-G=0x<new block-0 hash>
+G=TBD-at-genesis(r1006.genesis_hash)   # the r1006 block-0 hash
 # Keep the host awake: macOS "caffeinate -i", Linux "systemd-inhibit --what=sleep:idle".
 caffeinate -i python3 scripts/soak/soak-monitor.py run \
-    --rpc p1=https://<producer-1 rpc> --rpc p2=https://<producer-2 rpc> \
-    --rpc p3=https://<producer-3 rpc> --rpc p4=https://<producer-4 rpc> \
+    --rpc p1=http://127.0.0.1:<tunnel-1> --rpc p2=http://127.0.0.1:<tunnel-2> \
+    --rpc p3=http://127.0.0.1:<tunnel-3> --rpc p4=http://127.0.0.1:<tunnel-4> \
+    --rpc p5=http://127.0.0.1:<tunnel-5> --rpc p6=http://127.0.0.1:<tunnel-6> \
+    --rpc p7=http://127.0.0.1:<tunnel-7> \
     --rpc public=https://rpc.citrate.ai \
     --chain-id 40204 --genesis-hash "$G" \
     --interval 60 --duration 72h --out ~/soak/rc52-<rc>-fleet
@@ -101,7 +110,9 @@ the machine. If someone has to restart a sidecar, write it down: section 5 expla
 ## 3. Duration
 
 - **Minimum: 24 hours** (`run.min_duration_hours: 24`). A shorter run cannot PASS.
-- **Preferred: 72 hours.** Start the monitors with `--duration 72h`.
+- **Preferred: 72 hours.** Start the monitors with `--duration 72h`. For RC52 the owner set
+  72 hours (federation RC52 planset, decision D-3, 2026-10-26); `min_duration_hours` in the
+  criteria file still reads the proposed 24 until the criteria numbers are set.
 
   A 24-hour run sees one daily cycle. A 72-hour run also catches slow leaks (RSS, file
   descriptors, DB growth) and producer restarts that only happen every day or two.
@@ -124,7 +135,7 @@ reports a peer count fails `peers`, and too little data after warm-up fails `rss
 | `no_fork` | block hash at (lowest head − 6) equal on every endpoint; each endpoint re-reads its previous check height and finds it unchanged. A failed re-read is never read as unchanged: the height is kept and re-read at the next sample, and a height still unverified at the end of the run FAILs | none allowed | `fleet_agree.sh` method. The re-read catches a reorg that reaches the previous check height, which is about lag + one interval of blocks deep (about 36 at r1005's ~30 blocks/min with lag 6 and 60 s sampling). The re-read does not see a shallower reorg; the cross-endpoint comparison catches one only while the endpoints disagree |
 | `head_advances` | per endpoint, blocks gained in every 10-min window | ≥ 100 | r1005 made ~300 per 10 min in the self-check (section 8). 100 leaves room for load and still catches a stall |
 | `finality` | the finalized height rises at least every N min; never goes back; never above head | stall ≤ 10 min | Mode `auto`: checked only once an endpoint reports a finalized height above 0. r1005 reports 0. **If the new genesis turns finality on, set the mode to `required`** |
-| `peers` | `net_peerCount` ≥ min; below the minimum for at most N min | ≥ 3 for ≤ 10 min | 4 producers means each sees at least 3 peers |
+| `peers` | `net_peerCount` ≥ min; below the minimum for at most N min | ≥ 3 for ≤ 10 min | 4 producers means each sees at least 3 peers (r1006 has 7) |
 | `app_alive` | the app PID is running at every sample | always | |
 | `rss_growth` | least-squares RSS slope after a 60-min warm-up, as a % of mean RSS per hour | ≤ 1.0 %/h, with ≥ 60 min of data after warm-up | Over 72 h, 1 %/h is roughly a 70 % rise: the most a soak should allow |
 | `fd_growth` | the same for open file descriptors | ≤ 2.0 %/h | Catches socket and file-handle leaks |
