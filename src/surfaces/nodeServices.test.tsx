@@ -3,7 +3,7 @@
 // - a row with no supervisor reads "Not supervised", a contended read "Unknown", never a phase;
 // - readiness is its own line (SC2): Alive never reads Ready;
 // - controls appear only where the registry allows them, and only for a phase they apply to;
-// - logs: only the node has a log read (N-8); the other eight say "not available yet".
+// - logs: every service has a log read (the node's node_logs, the others' sidecar_logs_tail).
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -34,7 +34,7 @@ function row(id: ServiceId, over: Partial<ServiceEntry> = {}): ServiceEntry {
     probe: "Process exit only: the supervisor restarts it if it exits",
     readySignal: "None: a process-only service reads Not assessed while it is Alive",
     logBudgetLines: 500,
-    logsCommand: id === "node" ? "node_logs" : null,
+    logsCommand: id === "node" ? "node_logs" : "sidecar_logs_tail",
     controls: CONTROLLED.has(id),
     observation: "notSupervised",
     phase: null,
@@ -139,17 +139,15 @@ describe("Node › Services renders the registry snapshot", () => {
     expect(r).not.toMatch(/data-control="start"/);
   });
 
-  it("only the node has logs; the other eight say not available yet (N-8)", () => {
+  it("every service opens its own logs; a row core reports with no log read says so", () => {
     const html = render(snap(IDS.map((id) => row(id))));
     for (const id of IDS) {
       const r = rowHtml(html, id);
-      if (id === "node") {
-        expect(r).toContain('data-logs="node"');
-        expect(r).not.toContain("Logs: not available yet");
-      } else {
-        expect(r).toContain("Logs: not available yet");
-      }
+      expect(r).toContain(`data-logs="${id}"`);
+      expect(r).not.toContain("Logs: not available yet");
     }
+    const none = rowHtml(render(snap([{ ...row("ipfs"), logsCommand: null }])), "ipfs");
+    expect(none).toContain("Logs: not available yet");
   });
 
   it("shows the registry: owner, prerequisites, probe, ready signal and log budget", () => {
