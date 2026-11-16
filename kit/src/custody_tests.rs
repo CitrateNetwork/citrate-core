@@ -569,6 +569,31 @@ fn config_autolock_change_takes_effect() {
     assert!(v.is_unlocked(), "autolock=0 disables the timer");
 }
 
+/// 0.5.4: a saved auto-lock change reaches the running vault at once (no restart), and a write
+/// that does not touch auto-lock leaves the window alone.
+#[test]
+fn a_saved_autolock_change_applies_to_the_running_vault() {
+    let (v, _f, _p) = init_and_unlock(30);
+    let cfg = crate::config::AppConfig {
+        autolock: 15,
+        ..Default::default()
+    };
+    crate::config::apply_live_settings(false, &cfg, Some(&v));
+    assert_eq!(*v.autolock_secs.lock().unwrap(), 30 * 60, "autolock not in the patch");
+    crate::config::apply_live_settings(true, &cfg, Some(&v));
+    assert_eq!(*v.autolock_secs.lock().unwrap(), 15 * 60);
+    // A session already past the new, shorter window locks on the next check.
+    {
+        let mut inner = v.inner.lock().unwrap();
+        if let Some(s) = inner.session.as_mut() {
+            s.unlocked_at = Instant::now() - Duration::from_secs(20 * 60);
+        }
+    }
+    assert!(!v.is_unlocked(), "past the 15 min window");
+    // No vault (an app without custody state) is a no-op.
+    crate::config::apply_live_settings(true, &cfg, None);
+}
+
 // ----- real OS-keyring round-trip — honestly skipped on headless CI ------
 
 #[test]
