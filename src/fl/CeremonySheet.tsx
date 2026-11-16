@@ -44,7 +44,9 @@ export function outcomeWords(o: TxOutcome, success = "The network included it.")
       return {
         tone: "warn",
         word: o.txHash ? `Sent, outcome unknown: check tx ${shortHex(o.txHash, 6, 4)}` : "Sent, outcome unknown",
-        line: "The app cannot prove the network did not accept this. Check the transaction before trying again. Nothing is re-sent automatically.",
+        line:
+          (o.reason ? `${o.reason}. ` : "") +
+          "The app cannot prove the network did not accept this. Check the transaction before trying again. Nothing is re-sent automatically.",
       };
   }
 }
@@ -55,9 +57,11 @@ export function outcomeFromBroadcastError(err: unknown): TxOutcome {
   return f.kind === "not-sent" ? { kind: "not-sent", reason: f.reason } : { kind: "unknown", txHash: f.txHash, reason: f.reason };
 }
 
-/** A receipt as an outcome: status 1 included, status 0 reverted with fee = gasUsed × effectiveGasPrice. */
-export function outcomeFromReceipt(r: { status: number | null; blockNumber: number; gasUsed?: bigint | null; effectiveGasPrice?: bigint | null; reason?: string | null }): TxOutcome {
+/** A receipt as an outcome: status 1 included, status 0 reverted with fee = gasUsed × effectiveGasPrice.
+ *  A missing or unexpected status proves neither, so it is an unknown outcome, never "reverted". */
+export function outcomeFromReceipt(r: { status: number | null | undefined; blockNumber: number; gasUsed?: bigint | null; effectiveGasPrice?: bigint | null; reason?: string | null; txHash?: string | null }): TxOutcome {
   if (r.status === 1) return { kind: "included", block: r.blockNumber };
+  if (r.status !== 0) return { kind: "unknown", txHash: r.txHash ?? null, reason: `the receipt has no usable status (${r.status === null || r.status === undefined ? "none" : String(r.status)})` };
   const fee = r.gasUsed != null && r.effectiveGasPrice != null ? r.gasUsed * r.effectiveGasPrice : null;
   return { kind: "reverted", block: r.blockNumber, feeWei: fee, reason: r.reason ?? null };
 }

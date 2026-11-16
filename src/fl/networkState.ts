@@ -203,5 +203,8 @@ export function contractWords(c: ContractReading): { text: string; unknown?: str
 export function contractSource(name: FlContractName, c: ContractReading): string {
   if (c.kind === "not-in-book") return "address book";
   if (c.kind === "deployed" && name === "PatronageLedger" && c.rounds !== "not-applicable") return "eth_getCode + totalUnits()";
+  // FRL has no round counter: its "no rounds" is inferred from WorkMarket missing from the book,
+  // the only path that offers a round to members. The tag says so.
+  if (c.kind === "deployed" && name === "FederatedRoundLedger" && c.rounds === "none") return "eth_getCode + no WorkMarket in the address book";
   return "eth_getCode";
 }

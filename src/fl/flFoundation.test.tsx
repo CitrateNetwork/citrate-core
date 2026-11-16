@@ -87,6 +87,9 @@ describe("FL network state: today's book (r1007)", () => {
     expect(contractWords(s.contracts.DatasetRegistry).text).toBe(NOT_AVAILABLE);
     expect(contractSource("WorkMarket", s.contracts.WorkMarket)).toBe("address book");
     expect(contractSource("PatronageLedger", s.contracts.PatronageLedger)).toBe("eth_getCode + totalUnits()");
+    // #685 review: FRL's "no rounds" is labelled with what it is inferred from.
+    expect(contractSource("FederatedRoundLedger", s.contracts.FederatedRoundLedger)).toBe("eth_getCode + no WorkMarket in the address book");
+    expect(contractSource("LoRAFactory", s.contracts.LoRAFactory)).toBe("eth_getCode");
   });
 
   it("a failed code read is unknown with its reason, never zero and never 'not available'", async () => {
@@ -294,6 +297,15 @@ describe("Ceremony outcome words (UI truth contract §1)", () => {
     expect(rev.line).toContain("the fee was charged (2.1000 SALT)");
     expect(rev.line).toContain("the round reached max workers");
     expect(outcomeWords(outcomeFromReceipt({ status: 0, blockNumber: 5 })).line).toContain("fee not read");
+    // #685 review: a missing or unexpected status is unknown, never "reverted, fee charged".
+    for (const status of [null, undefined, 2]) {
+      const o = outcomeFromReceipt({ status, blockNumber: 5, gasUsed: 21000n, effectiveGasPrice: 1n, txHash: "0x" + "ab".repeat(32) });
+      expect(o.kind).toBe("unknown");
+      const w = outcomeWords(o);
+      expect(w.word).toMatch(/^Sent, outcome unknown/);
+      expect(w.word + w.line).not.toMatch(/reverted|fee was charged/);
+      expect(w.line).toContain("no usable status");
+    }
     const ns = outcomeWords(outcomeFromBroadcastError("not submitted: insufficient funds"));
     expect(ns.word).toBe("Not sent");
     expect(ns.line).toContain("No fee was charged");
@@ -301,6 +313,7 @@ describe("Ceremony outcome words (UI truth contract §1)", () => {
     const un = outcomeWords(outcomeFromBroadcastError(`ceremony: submitted, outcome unknown (tx ${hash}): timeout`));
     expect(un.word).toBe(`Sent, outcome unknown: check tx ${shortHex(hash)}`);
     expect(un.line).toContain("Nothing is re-sent automatically");
+    expect(un.line).toContain("timeout");
     expect(outcomeWords(outcomeFromBroadcastError(new Error("ipc deadline"))).word).toBe("Sent, outcome unknown");
   });
   it("never says final or settled", () => {
