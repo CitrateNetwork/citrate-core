@@ -9,13 +9,34 @@
 // point at this card; they never carry its buttons. No tool asks for this card yet: the Hermes
 // worker_terms_propose tool ships with core's worker-policy storage (core #689).
 // =====================================================================
-import { HicBadge, KV } from "../fl/primitives";
+import type { ReactNode } from "react";
+import { Hex, HicBadge, KV, Unknown } from "../fl/primitives";
+import { useAuthority } from "../fl/authority";
+import { dataClassWords } from "../agent/workerProposal";
 import type { WorkerTerms } from "../fl/workerTerms";
 import type { ChatProposal } from "../shell/state";
 
 /** Where "Edit fields" and "Change in Settings › Work" go: board 11, Settings › Work. No route ships
  *  on main yet (Lane 1 is building it). If board 11 lands under another name, change it here only. */
 export const SETTINGS_WORK_ROUTE = "settings/work";
+
+/** "Stored" says only what core's save receipt says; nothing is claimed before it. */
+function storedLine(p: ChatProposal): ReactNode {
+  if (p.state === "confirmed" && p.receipt) {
+    return p.receipt.sealed ? (
+      <>
+        Sealed on this device · terms <Hex value={p.receipt.termsHash} />
+      </>
+    ) : (
+      <>
+        Saved on this device, not sealed · terms <Hex value={p.receipt.termsHash} />
+      </>
+    );
+  }
+  if (p.state === "confirmed") return <Unknown reason="no save receipt was returned" />;
+  if (p.state === "failed" || p.state === "declined" || p.state === "expired") return "Nothing was saved";
+  return "Not saved yet. Confirm saves it on this device";
+}
 
 function hoursLine(t: WorkerTerms): string {
   const when = t.hours === "any" ? "Any time" : `${t.hours.start} to ${t.hours.end}`;
@@ -41,6 +62,8 @@ export function PolicyProposalCard({
   onEdit: () => void;
 }) {
   const t = proposal.terms;
+  // Auto-join is the authority in force: HIC-1 asks each time; an envelope the member signed joins inside its caps.
+  const authority = useAuthority();
   const hid = "proposal-h-" + proposal.id;
   return (
     <section
@@ -64,9 +87,9 @@ export function PolicyProposalCard({
           { k: "Floor", v: `${t.floorSaltPerUnit} SALT per unit`, mono: true },
           { k: "Hours", v: hoursLine(t) },
           { k: "Power", v: t.mainsOnly ? "Mains only; pause on battery" : "Mains or battery" },
-          { k: "Data shared", v: t.dataClasses.length === 0 ? "None. A round reads only datasets you add to it, on this device." : t.dataClasses.join(", ") },
-          { k: "Auto-join", v: "Off. Each join asks you (HIC-1)." },
-          { k: "Stored", v: "Sealed on this device; only the floor is enforced on chain" },
+          { k: "Data rounds may read", v: t.dataClasses.length === 0 ? "None. A round reads only datasets you add to it, on this device." : t.dataClasses.map(dataClassWords).join(", ") + ", on this device only" },
+          { k: "Auto-join", v: authority.level === "HIC-2" ? `Inside your envelope "${authority.name}" (HIC-2)` : "Off. Each join asks you (HIC-1)." },
+          { k: "Stored", v: storedLine(proposal) },
         ]}
       />
       <div role="status" aria-live="polite" style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--line-1)", flexWrap: "wrap", alignItems: "center" }}>
@@ -99,6 +122,11 @@ export function PolicyProposalCard({
               Review again
             </button>
           </>
+        )}
+        {proposal.state === "expired" && (
+          <span className="fl-chip" data-testid="proposal-expired">
+            From an earlier session. It can no longer be confirmed; ask Hermes to propose again.
+          </span>
         )}
         {proposal.state === "failed" && (
           <>

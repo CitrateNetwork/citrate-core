@@ -33,8 +33,16 @@ export const MAX_MSGS = 300;
 export const MIN_RETENTION_DAYS = 1;
 export const MAX_RETENTION_DAYS = 3650;
 
+/** Board 01: where a branch came from: the parent thread, and how many of its messages it kept. */
+export interface ThreadParent {
+  threadId: string;
+  atIndex: number;
+}
+
 export interface ChatThread {
   id: string;
+  /** Set on a branch (edit, retry or "Branch from here"). Absent on a conversation started fresh. */
+  parent?: ThreadParent;
   /** The member's first message, one line, trimmed. */
   title: string;
   createdAt: number;
@@ -114,6 +122,11 @@ export function threadTitle(msgs: ChatMsg[]): string {
   return line.length > 80 ? line.slice(0, 79) + "…" : line || "Untitled conversation";
 }
 
+/** An open proposal (pending, saving or failed) becomes expired; a decided one is kept as it is. */
+export function expireOpenProposal(p: NonNullable<ChatMsg["proposal"]>): NonNullable<ChatMsg["proposal"]> {
+  return p.state === "pending" || p.state === "saving" || p.state === "failed" ? { ...p, state: "expired", error: undefined } : p;
+}
+
 /** The messages as they are kept: finished ones only, without UI-only fields. */
 export function archivable(msgs: ChatMsg[]): ChatMsg[] {
   return msgs
@@ -129,8 +142,9 @@ export function archivable(msgs: ChatMsg[]): ChatMsg[] {
       const run = m.run ? parseRun(m.run) : undefined;
       if (run) keep.run = run;
       if (typeof m.model === "string" && m.model) keep.model = m.model.slice(0, 120);
-      // A proposal saved mid-save did not finish saving: it comes back to be decided again.
-      if (m.proposal) keep.proposal = m.proposal.state === "saving" ? { ...m.proposal, state: "pending" } : m.proposal;
+      // A proposal that was still open is kept as expired: a card restored from history can never
+      // be confirmed with terms proposed in another session (Hermes proposes again).
+      if (m.proposal) keep.proposal = expireOpenProposal(m.proposal);
       return keep;
     });
 }
@@ -141,12 +155,13 @@ const sameMsgs = (a: ChatMsg[], b: ChatMsg[]) =>
 const byRecency = (x: ChatThread, y: ChatThread) => y.updatedAt - x.updatedAt;
 
 /** Put `id`'s current messages into the history (newest first). Unchanged threads keep their place. */
-export function upsertThread(threads: ChatThread[], id: string, msgs: ChatMsg[], now: number = Date.now()): ChatThread[] {
+export function upsertThread(threads: ChatThread[], id: string, msgs: ChatMsg[], now: number = Date.now(), parent?: ThreadParent): ChatThread[] {
   if (!hasMemberTurn(msgs)) return threads;
   const kept = archivable(msgs);
   const prev = threads.find((t) => t.id === id);
-  if (prev && sameMsgs(prev.msgs, kept)) return threads;
-  const thread: ChatThread = { id, title: threadTitle(kept), createdAt: prev?.createdAt ?? now, updatedAt: now, msgs: kept };
+  const link = parent ?? prev?.parent;
+  if (prev && sameMsgs(prev.msgs, kept) && (prev.parent?.threadId ?? null) === (link?.threadId ?? null)) return threads;
+  const thread: ChatThread = { id, title: threadTitle(kept), createdAt: prev?.createdAt ?? now, updatedAt: now, msgs: kept, ...(link ? { parent: link } : {}) };
   return [thread, ...threads.filter((t) => t.id !== id)].sort(byRecency).slice(0, MAX_THREADS);
 }
 
@@ -178,13 +193,23 @@ const isThread = (t: unknown): t is ChatThread => {
   return !!o && typeof o.id === "string" && typeof o.title === "string" && typeof o.updatedAt === "number" && Array.isArray(o.msgs);
 };
 
+/** A thread's parent link as kept: a well-formed one stays, anything else is dropped. */
+const cleanParent = (t: ChatThread): ChatThread => {
+  const p = t.parent as unknown as { threadId?: unknown; atIndex?: unknown } | undefined;
+  if (p === undefined) return t;
+  const ok = typeof p?.threadId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(p.threadId) && Number.isSafeInteger(p.atIndex) && (p.atIndex as number) >= 0;
+  if (ok) return t;
+  const { parent: _drop, ...rest } = t;
+  return rest;
+};
+
 const initial: ChatHistoryState = { threads: [], loaded: false, persisted: false, unreadable: [], retentionDays: null, retentionUnreadable: false, error: null };
 export const chatHistory = createSlice<ChatHistoryState>({ ...initial });
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** The thread as core keeps it (`ThreadDoc`): exactly these fields. */
-const toDoc = (t: ChatThread) => ({ id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt, msgs: t.msgs });
+const toDoc = (t: ChatThread) => ({ id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt, msgs: t.msgs, ...(t.parent ? { parent: t.parent } : {}) });
 
 /** Saves are serialized, so a later version of a thread never lands before an earlier one. */
 let saving: Promise<void> = Promise.resolve();
@@ -223,7 +248,7 @@ async function retireLegacyPlaintext(h: HistoryIo): Promise<void> {
   let threads: ChatThread[];
   try {
     const parsed = JSON.parse(raw) as { threads?: unknown[] } | null;
-    threads = Array.isArray(parsed?.threads) ? parsed.threads.filter(isThread).slice(0, MAX_THREADS) : [];
+    threads = Array.isArray(parsed?.threads) ? parsed.threads.filter(isThread).map(cleanParent).slice(0, MAX_THREADS) : [];
   } catch {
     drop();
     return;
@@ -253,7 +278,7 @@ export function loadChatHistory(force = false): Promise<void> {
     }
     try {
       const view = await h.invoke<HistoryListView>("hermes_history_list");
-      const sealed = (view?.threads ?? []).filter(isThread);
+      const sealed = (view?.threads ?? []).filter(isThread).map(cleanParent);
       chatHistory.set((s) => {
         const merged = new Map<string, ChatThread>();
         for (const t of sealed) merged.set(t.id, t);
@@ -281,9 +306,9 @@ export function loadChatHistory(force = false): Promise<void> {
 }
 
 /** Record `id`'s messages (no-op for a greeting-only or unchanged thread) and seal them. */
-export function recordThread(id: string, msgs: ChatMsg[], now: number = Date.now()): void {
+export function recordThread(id: string, msgs: ChatMsg[], now: number = Date.now(), parent?: ThreadParent): void {
   const cur = chatHistory.get().threads;
-  const next = upsertThread(cur, id, msgs, now);
+  const next = upsertThread(cur, id, msgs, now, parent);
   if (next === cur) return;
   chatHistory.set({ threads: next });
   const t = next.find((x) => x.id === id);

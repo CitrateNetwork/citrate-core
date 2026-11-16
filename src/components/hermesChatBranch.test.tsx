@@ -7,6 +7,7 @@ import { AgentChat } from "./AgentChat";
 import { store } from "../shell/store";
 import { freshState, type ChatMsg, type ChatProposal } from "../shell/state";
 import { annotatedAgentTools } from "../agent/toolAnnotations";
+import { setEnvelopeForAuthority } from "../fl/authority";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -139,5 +140,31 @@ describe("board 01 Hermes chat, part 2", () => {
     expect(q("proposal-failed")?.textContent).toBe("Save failed, nothing changed");
     expect(q("policy-proposal")?.textContent).toContain("Saving terms is not available in this build");
     expect(q("proposal-confirm")).toBeNull();
+  });
+
+  it("Stored says only what the save receipt says; Auto-join follows the authority", () => {
+    store.setState({ chatMsgs: [msg("a1", "Agent", "x", { proposal: proposal("pending") })] });
+    render();
+    const card = () => q("policy-proposal")!.textContent ?? "";
+    expect(card()).toContain("Not saved yet");
+    expect(card()).not.toContain("Sealed on this device");
+    expect(card()).toContain("Off. Each join asks you (HIC-1).");
+    act(() => setEnvelopeForAuthority({ on: true, name: "Small rounds", caps: [] }));
+    expect(card()).toContain('Inside your envelope "Small rounds" (HIC-2)');
+    act(() => setEnvelopeForAuthority(null));
+    act(() => store.setState({ chatMsgs: [msg("a1", "Agent", "x", { proposal: proposal("confirmed", { at: 1, receipt: { savedAt: 1, termsHash: "0x" + "ab".repeat(32), sealed: true } }) })] }));
+    render();
+    expect(card()).toContain("Sealed on this device");
+    act(() => store.setState({ chatMsgs: [msg("a1", "Agent", "x", { proposal: proposal("confirmed", { at: 1, receipt: { savedAt: 1, termsHash: "0x" + "ab".repeat(32), sealed: false } }) })] }));
+    render();
+    expect(card()).toContain("Saved on this device, not sealed");
+  });
+
+  it("an expired card offers no buttons and says to ask again", () => {
+    store.setState({ chatMsgs: [msg("a1", "Agent", "x", { proposal: proposal("expired") })] });
+    render();
+    expect(q("proposal-expired")?.textContent).toContain("can no longer be confirmed");
+    expect(q("proposal-confirm")).toBeNull();
+    expect(q("proposal-reopen")).toBeNull();
   });
 });

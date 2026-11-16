@@ -244,7 +244,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "- Node & staking: read the node's sync/validator status, height, peers; the staking position and validator rewards (total and claimable now, from ValidatorRegistry.rewardsOf); the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-time link (whoever opens it asks to join, and the member approves or declines each request in Groups; nobody joins from the link alone), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
-  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one. When the member asks to put this machine or its GPU to work, talk about rounds, the member's terms and receipts in SALT; when no round is open, say \"Group rounds not live yet\". Never describe the work as a way to make money: an amount is only what a contract escrowed or paid, in SALT, never a projection and never USD.",
+  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one. When the member asks to put this machine or its GPU to work, talk about rounds, the member's terms and receipts in SALT, and offer their terms with worker_terms_propose (a card the member confirms); when no round is open, say \"Group rounds not live yet\". Never describe the work as a way to make money: an amount is only what a contract escrowed or paid, in SALT, never a projection and never USD.",
   "- Paraconsensus: belnap_codec encodes inputs for the Belnap aggregation precompile 0x0110 and decodes its output (values plus a Neither / True / Both state per dimension), locally and exactly. Keep a Both visible to the member; never average it away.",
   "- Everyday: read a Google spreadsheet range (gsheets_read) and PROPOSE adding rows (gsheets_append); read Hermes's schedule (schedule_list) and PROPOSE an entry (schedule_add); read the member's Google Calendar (calendar_list). Google tools work only after the member connects Google in Settings > Connections; if they are not connected, say so.",
   "- Coding in the member's folders: when the member has shared a folder with you (Hermes > Controls > Details > Terminal & folders) and terminal commands are on, the shell_run tool runs one command in that folder (for example npm test, cargo build, make, git status, python script.py). Use it for coding tasks: build, test, lint and inspect the project, then report what the output shows. The member sees and approves every command before it runs; it runs in a sandbox with no network and may write only inside the shared folder. Give argv as separate entries (no shell, so no pipes or globs) and cwd as the absolute folder path. If shell_run is not offered, say the member needs to share a folder and turn on terminal commands in Hermes > Controls. A declined command did not run: never claim its result.",
@@ -774,6 +774,27 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── FL design board 01: worker terms, proposed on a card core renders ──
+  {
+    type: "function",
+    function: {
+      name: "worker_terms_propose",
+      description:
+        "PROPOSE the member's worker terms for group rounds (when this machine may take round work): the floor in SALT per unit, the hours, weekdays only, mains power only, and the data classes rounds may read. Core checks the terms and shows them on a card in the chat; only the member can confirm it there (HIC-1), and nothing is saved until they do. You never confirm or save terms yourself. Propose only terms the member asked for; use dataClasses [] unless they named a dataset kind this device has (\"hermes-conversations\").",
+      parameters: {
+        type: "object",
+        properties: {
+          floorSaltPerUnit: { type: "string", description: "the lowest rate the member accepts, decimal SALT per unit, e.g. \"1.20\"" },
+          hoursStart: { type: "string", description: "start of the hours rounds may run, HH:MM in 24 h, e.g. \"23:00\"; omit both hours for any time" },
+          hoursEnd: { type: "string", description: "end of those hours, HH:MM in 24 h, e.g. \"07:00\"" },
+          weekdaysOnly: { type: "boolean", description: "true for Monday to Friday only" },
+          mainsOnly: { type: "boolean", description: "true to run only on mains power and pause on battery" },
+          dataClasses: { type: "array", items: { type: "string" }, description: "data classes rounds may read on this device; [] for none" },
+        },
+        required: ["floorSaltPerUnit"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1280,6 +1301,8 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  // Board 01: renders a card core checked; nothing changes until the member confirms it there.
+  "worker_terms_propose",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

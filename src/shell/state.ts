@@ -22,7 +22,7 @@ import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import type { RunRecord } from "../agent/runTimeline";
-import type { WorkerTerms } from "../fl/workerTerms";
+import type { WorkerTerms, WorkerTermsReceipt } from "../fl/workerTerms";
 import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -168,7 +168,11 @@ export interface ChatProposal {
   id: string;
   kind: "worker_terms";
   terms: WorkerTerms;
-  state: "pending" | "saving" | "confirmed" | "declined" | "failed";
+  /** `expired`: restored from history or carried into a branch; it can no longer be confirmed
+   *  (its terms were proposed in another session), so Hermes must propose again. */
+  state: "pending" | "saving" | "confirmed" | "declined" | "failed" | "expired";
+  /** The receipt core's storage returned on Confirm (what "Stored" may say comes only from it). */
+  receipt?: WorkerTermsReceipt;
   /** When the member decided (ms since epoch). */
   at?: number;
   /** Why saving failed (shown with "Save failed, nothing changed"). */

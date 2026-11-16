@@ -8,7 +8,8 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
-import { chatHistory, forgetAllThreads, forgetThread, newThreadId, recordThread } from "./slices/chatHistory";
+import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
+import { dataClassProblem, newProposalId } from "../agent/workerProposal";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
 import {
@@ -889,8 +890,11 @@ export class Store {
   archiveChat(): void {
     const s = this.state;
     if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
-    recordThread(s.chatThreadId, s.chatMsgs);
+    recordThread(s.chatThreadId, s.chatMsgs, Date.now(), this.threadParents.get(s.chatThreadId));
   }
+
+  /** Board 01: which thread (and message) each branch of this session came from. */
+  private threadParents = new Map<string, ThreadParent>();
 
   /** Why the thread can't be switched right now, or null. A running turn writes into the current
    *  thread, so it is never swapped from under it. */
@@ -3196,6 +3200,7 @@ export class Store {
     const idx = msgs.findIndex((m) => m.id === fromMsgId);
     if (idx < 0) return false;
     this.archiveChat();
+    const fromThread = this.state.chatThreadId;
     const kept = msgs.slice(0, opts.includeFrom ? idx + 1 : idx).filter((m) => !m.streaming);
     const threadId = newThreadId();
     const lines = kept
@@ -3203,7 +3208,14 @@ export class Store {
       .slice(-20)
       .map((m) => `${m.who === "You" ? "Member" : "Hermes"}: ${m.text.length > 1200 ? m.text.slice(0, 1199) + "…" : m.text}`);
     this.branchSeed = lines.length > 0 ? { threadId, text: lines.join("\n") } : null;
-    this.setState({ chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid })), chatThreadId: threadId, chatQueue: [] });
+    // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
+    this.setState({
+      chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid, ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}) })),
+      chatThreadId: threadId,
+      chatQueue: [],
+    });
+    // The sealed history records where this branch came from.
+    this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
     if (this.chatInputEl) this.chatInputEl.value = "";
     await this.rebuildProvider();
     this.toast("Branched into a new chat. The original stays in History.");
@@ -3212,7 +3224,6 @@ export class Store {
   }
 
   // ---------- Board 01 — the worker-terms proposal card (core-rendered, HIC-1) ----------
-  private proposalSeq = 0;
 
   /**
    * Put a worker-terms proposal card in the transcript, under reply `msgId` (or as its own Hermes
@@ -3222,9 +3233,10 @@ export class Store {
    * ships with core's worker-policy storage (core #689).
    */
   proposeWorkerTerms(terms: WorkerTerms, msgId?: string): string {
-    const bad = termsProblem(terms);
+    const bad = termsProblem(terms) ?? dataClassProblem(terms.dataClasses);
     if (bad) return `refused: ${bad}. Nothing was shown to the member.`;
-    const proposal: ChatProposal = { id: "p" + ++this.proposalSeq, kind: "worker_terms", terms, state: "pending" };
+    // Unique across launches, so a card restored from history never shares an id with a new one.
+    const proposal: ChatProposal = { id: newProposalId(), kind: "worker_terms", terms, state: "pending" };
     if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
       this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, proposal } : m)) }));
     } else {
@@ -3243,8 +3255,8 @@ export class Store {
     if (!p || (p.state !== "pending" && p.state !== "failed")) return;
     this.patchProposal(id, { state: "saving", error: undefined });
     try {
-      await saveWorkerTerms(p.terms);
-      this.patchProposal(id, { state: "confirmed", at: Date.now() });
+      const receipt = await saveWorkerTerms(p.terms);
+      this.patchProposal(id, { state: "confirmed", at: receipt.savedAt || Date.now(), receipt });
     } catch (e) {
       this.patchProposal(id, { state: "failed", error: e instanceof Error ? e.message : String(e) });
     }
@@ -3255,6 +3267,9 @@ export class Store {
   }
 
   reopenProposal(id: string): void {
+    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
+    // An expired card stays expired: only a new proposal can be confirmed.
+    if (!p || p.state === "expired") return;
     this.patchProposal(id, { state: "pending", at: undefined, error: undefined });
   }
 
@@ -4814,6 +4829,21 @@ export class Store {
     } else if (call.name === "belnap_codec") {
       // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
       result = belnapCodecTool(args as Record<string, unknown>);
+    } else if (call.name === "worker_terms_propose") {
+      // Board 01: core checks the terms and renders the card; only the member's Confirm saves.
+      const a = args as Record<string, unknown>;
+      const hm = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+      const start = hm(a.hoursStart);
+      const end = hm(a.hoursEnd);
+      const terms: WorkerTerms = {
+        floorSaltPerUnit: typeof a.floorSaltPerUnit === "number" ? String(a.floorSaltPerUnit) : hm(a.floorSaltPerUnit),
+        hours: start === "" && end === "" ? "any" : { start, end },
+        weekdaysOnly: a.weekdaysOnly === true,
+        mainsOnly: a.mainsOnly === true,
+        dataClasses: Array.isArray(a.dataClasses) ? a.dataClasses.map((c) => (typeof c === "string" ? c.trim() : "")) : [],
+      };
+      ensure();
+      result = this.proposeWorkerTerms(terms, asstId);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
