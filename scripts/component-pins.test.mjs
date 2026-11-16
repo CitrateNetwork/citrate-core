@@ -143,8 +143,8 @@ describe("component-pins check", () => {
 
   it("refuses an artifact whose runtime-deps asset has no pin", () => {
     const r = fixture();
-    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-367ad79e3f4c", "  hermes-aarch64-apple-darwin-renamed");
-    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-367ad79e3f4c is pinned 0 times/);
+    edit(r, "src-tauri/runtime-deps.sha256", "  hermes-aarch64-apple-darwin-f68d041c408c", "  hermes-aarch64-apple-darwin-renamed");
+    expect(errorsOf(r)).toMatch(/runtime-deps asset hermes-aarch64-apple-darwin-f68d041c408c is pinned 0 times/);
   });
 
   it("refuses an asset pinned twice (ambiguous)", () => {
@@ -191,7 +191,7 @@ describe("component-pins check", () => {
 
   it("refuses release.yml that does not stage a pinned sidecar", () => {
     const r = fixture();
-    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-367ad79e3f4c\n", "");
+    edit(r, ".github/workflows/release.yml", "              hermes-aarch64-apple-darwin-f68d041c408c\n", "");
     expect(errorsOf(r)).toMatch(/release.yml does not stage 'hermes-sidecar'/);
   });
 

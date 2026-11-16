@@ -273,7 +273,7 @@ jobs:
               mem-mcp-aarch64-apple-darwin-5aeda3172369
               comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
               cluster-daemon-aarch64-apple-darwin-755cf2172260
-              hermes-aarch64-apple-darwin-367ad79e3f4c
+              hermes-aarch64-apple-darwin-f68d041c408c
             )
           fi
           for a in "${ASSETS[@]}"; do
