@@ -84,6 +84,12 @@ describe("Payouts states (StateMatrix)", () => {
     expect([...m.el.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Claim");
     m.done();
   });
+  it("Dark: core's payouts gate refusal is shown", async () => {
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "WorkMarket's code does not match its pin" }) });
+    const m = mount(st);
+    expect(m.el.querySelector('[data-testid="payouts-reason"]')!.textContent).toBe("WorkMarket's code does not match its pin");
+    m.done();
+  });
   it("Unavailable: receipts and the pull balance not read are — with the reason, never 0", async () => {
     const m = mount(await dark());
     expect(m.el.textContent).toContain("this build has no settled-lines read model yet");

@@ -166,6 +166,11 @@ export function PayoutsView(p: PayoutsViewProps) {
                 <span className="fl-muted" style={{ fontSize: 12.5 }}>
                   Claim turns on with a network profile update after the security review. Nothing here can be signed yet.
                 </span>
+                {p.state.payoutsReason && (
+                  <span className="fl-faint" style={{ fontSize: 12 }} data-testid="payouts-reason">
+                    {p.state.payoutsReason}
+                  </span>
+                )}
               </Card>
             )}
             {p.state.payouts === "unknown" && (

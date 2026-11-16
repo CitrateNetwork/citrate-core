@@ -166,3 +166,27 @@ describe("round drafts", () => {
     expect(loadRoundDraft()).toBeNull();
   });
 });
+
+describe("openIntent (WorkMarket.open, HC's fl_round_open_propose calls it)", async () => {
+  const { openIntent, OPEN_NEEDS_BINDING, OPEN_SIGNATURE, WORK_MARKET_OPEN_ABI } = await import("./roundDraft");
+  const { decodeFunctionData, toFunctionSelector } = await import("viem");
+  const filled: RoundDraft = { ...BLANK_DRAFT, groupId: "0x" + "ab".repeat(16), dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1" };
+  const b = { verifier: "0x" + "22".repeat(20), bindRef: "0x" + "3e".repeat(32), jobSpecHash: "0x" + "44".repeat(32), requirementsHash: "0x" + "55".repeat(32), requirementsCid: "bafkreiflm1", groupHash: "0x" + "66".repeat(32), coordinator: "0x" + "cd".repeat(20) };
+  it("refuses while payouts are dark, with core's reason", async () => {
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "payouts are not open on r1007" }) });
+    expect(() => openIntent(filled, b, st)).toThrow("payouts are not open on r1007");
+  });
+  it("refuses with no round binding, then on a bad draft", async () => {
+    const st = await live();
+    expect(() => openIntent(filled, null, st)).toThrow(OPEN_NEEDS_BINDING);
+    expect(() => openIntent(BLANK_DRAFT, b, st)).toThrow(/Choose a group/);
+  });
+  it("encodes WorkMarket.open(OpenParams) with msg.value = the budget", async () => {
+    const st = await live();
+    const i = openIntent(filled, b, st);
+    expect(i).toMatchObject({ address: WM, valueWei: String(600n * 10n ** 18n), label: OPEN_SIGNATURE });
+    expect(i.calldata.slice(0, 10)).toBe(toFunctionSelector(OPEN_SIGNATURE));
+    const d = decodeFunctionData({ abi: WORK_MARKET_OPEN_ABI, data: i.calldata as `0x${string}` });
+    expect(d.args[0]).toMatchObject({ kind: 0, pricePerUnit: 15n * 10n ** 17n, joinBond: 10n ** 17n, requirementsCid: "bafkreiflm1", maxWorkers: 8, disputeWindow: 86_400 });
+  });
+});
