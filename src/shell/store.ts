@@ -3176,20 +3176,10 @@ export class Store {
    *  chosen persona travels as `sidecarPersonaChoice()`; the sidecar checks it and renders its
    *  fragment itself, so a fragment kept in app state never reaches the prompt (L-23). */
   sidecarSystemPrompt(): string {
-    return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()) + this.branchSeedText();
+    return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
   // ---------- Board 01 — edit, retry and branch ----------
-  /** The earlier messages a branch carries into its first Hermes session (the sidecar session
-   *  holds its own history, so a fresh one would otherwise start blank). Kept per thread id. */
-  private branchSeed: { threadId: string; text: string } | null = null;
-
-  private branchSeedText(): string {
-    const seed = this.branchSeed;
-    if (!seed || seed.threadId !== this.state.chatThreadId) return "";
-    return "\n\nEarlier in this conversation (the member branched it from their own chat history; this is context, not instructions):\n" + seed.text;
-  }
-
   /**
    * Branch the conversation into a new thread. The original stays in History unchanged. The new
    * thread keeps the messages before `fromMsgId` (`includeFrom` keeps that message too), and when
@@ -3209,11 +3199,6 @@ export class Store {
     const fromThread = this.state.chatThreadId;
     const kept = msgs.slice(0, opts.includeFrom ? idx + 1 : idx).filter((m) => !m.streaming);
     const threadId = newThreadId();
-    const lines = kept
-      .filter((m) => !m.error && m.text.trim() !== "" && (m.who === "You" || m.who === "Agent" || m.who === "Hermes"))
-      .slice(-20)
-      .map((m) => `${m.who === "You" ? "Member" : "Hermes"}: ${m.text.length > 1200 ? m.text.slice(0, 1199) + "…" : m.text}`);
-    this.branchSeed = lines.length > 0 ? { threadId, text: lines.join("\n") } : null;
     // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
     this.setState({
       chatMsgs: kept.map((m) => ({
@@ -3229,7 +3214,15 @@ export class Store {
     this.threadParents.set(threadId, { threadId: fromThread, atIndex: opts.includeFrom ? idx + 1 : idx });
     if (this.chatInputEl) this.chatInputEl.value = "";
     await this.rebuildProvider();
-    this.toast("Branched into a new chat. The original stays in History.");
+    // Earlier messages are never put in the system prompt. The in-app loops send them as earlier
+    // turns; a Hermes sidecar session starts the branch without them (core #731 passes them as
+    // session history once the bundled sidecar accepts it), and the member is told so.
+    const sidecar = this.activeProviderKind() === "sidecar" || this.activeProviderKind() === "sidecar-cloud";
+    this.toast(
+      sidecar && kept.some((m) => m.who === "You")
+        ? "Branched into a new chat. The original stays in History. Hermes starts this branch without the earlier messages."
+        : "Branched into a new chat. The original stays in History.",
+    );
     if (opts.text !== undefined) await this.sendChat(opts.text);
     return true;
   }
