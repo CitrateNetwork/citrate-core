@@ -8,6 +8,7 @@ import { AGENT_TOOL_ANNOTATIONS, annotatedAgentTools, annotationFor } from "./to
 import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
+import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
 
 const names = AGENT_TOOLS.map((t) => t.function.name as string);
 const EFFECTS = ["none", "write", "spend", "sign"];
@@ -52,6 +53,11 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
+        dataClass: "orchard-notes",
+        folder: "/home/m/notes",
+        dataset: DATASET_ID,
+        ops: [{ op: "dedupe" }],
       }),
     });
     for (const n of names) {
@@ -64,6 +70,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
+      vi.spyOn(bridge.flDatasets, "list").mockResolvedValue(datasetList());
+      vi.spyOn(bridge.flDatasets, "cleanPreview").mockResolvedValue(cleanPreview());
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"
