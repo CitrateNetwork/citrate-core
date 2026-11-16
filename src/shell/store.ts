@@ -4105,9 +4105,12 @@ export class Store {
       this.scrollChat();
     };
     // HUP-S7.6: Stop resolves this at once, so a wedged model request never holds the chat.
-    const stopSignal = new Promise<"stopped">((resolve) =>
-      ac.signal.addEventListener("abort", () => resolve("stopped"), { once: true }),
-    );
+    // A Stop that landed while the turn was still being set up (the #681 node read above) has
+    // already fired its abort event, so it is read here too.
+    const stopSignal = new Promise<"stopped">((resolve) => {
+      if (ac.signal.aborted) resolve("stopped");
+      else ac.signal.addEventListener("abort", () => resolve("stopped"), { once: true });
+    });
     try {
       const run = provider.send({
         // HUP-S3.3: the chosen persona rides as one leading system message (none = unchanged).

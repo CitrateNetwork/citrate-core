@@ -121,6 +121,8 @@ describe("board 01: Steer now and Queue for after", () => {
     await Promise.resolve();
     store.queueChat("also my staking position");
     expect(store.state.chatQueue.map((q) => q.text)).toEqual(["also my staking position"]);
+    // The turn reads core's node entry (#681) before the provider runs, so wait until it has.
+    await vi.waitFor(() => expect(sent).toEqual(["Network status"]));
     release();
     await first;
     await vi.waitFor(() => expect(sent).toEqual(["Network status", "also my staking position"]));
