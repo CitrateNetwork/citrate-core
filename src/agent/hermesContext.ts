@@ -59,7 +59,12 @@ const GROUPS: { id: string; title: string; tools: string[]; detail: string }[] =
   },
   { id: "memory", title: "Your notes and journal", tools: ["memory_search", "memory_recall", "journal_read", "memory_assert", "journal_append"], detail: "read; saving a note asks you first" },
   { id: "groups", title: "Your groups", tools: ["groups_list", "group_roster", "group_create", "group_invite"], detail: "names and rosters, not their messages" },
-  { id: "rounds", title: "Round coordinator", tools: ["fl_round_plan", "fl_round_start", "worker_terms_propose", "round_draft_propose"], detail: "round plans; joining asks you (HIC-1)" },
+  {
+    id: "rounds",
+    title: "Rounds and adapters",
+    tools: ["fl_round_plan", "fl_round_start", "worker_terms_propose", "round_draft_propose", "fl_adapter_gate_read", "fl_adapter_load_propose", "fl_adapter_unload"],
+    detail: "round plans and adapter gate records; joining or loading asks you (HIC-1)",
+  },
   { id: "google", title: "Google sheets and calendar", tools: ["gsheets_read", "calendar_list", "gsheets_append"], detail: "only after you connect Google in Settings" },
 ];
 
