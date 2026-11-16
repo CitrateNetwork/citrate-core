@@ -98,6 +98,14 @@ describe("Live round: all eight states", () => {
   });
 });
 
+describe("Live round: refunded", () => {
+  it("closed with no payout list says refunded, never accepted", () => {
+    const t = text(html(base("closed", { belnap: null })));
+    expect(t).toContain("Closed with no payout list · refunded to the poster");
+    expect(t).not.toContain("Accepted");
+  });
+});
+
 describe("Live round: StateMatrix columns", () => {
   it("Dark: the payout box says Payouts open after the security review", () => {
     expect(text(html(base("accepted", { payouts: "dark" })))).toContain("Payouts open after the security review");

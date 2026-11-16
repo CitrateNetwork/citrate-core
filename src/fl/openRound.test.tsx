@@ -9,7 +9,7 @@ import type { Group } from "../bridge/domains";
 import { readFlNetworkState, type FlNetworkState } from "./networkState";
 import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
 import { OpenRoundView } from "./OpenRound";
-import { BLANK_DRAFT, clearRoundDraft, draftProblems, leasesCovered, loadRoundDraft, openParamsOf, publishRequirements, requirementsOf, setRoundDraft, type RoundDraft } from "./roundDraft";
+import { BLANK_DRAFT, clearRoundDraft, draftProblems, leasesCovered, loadRoundDraft, openParamsOf, publishRequirements, requirementsOf, saveRoundDraft, setRoundDraft, type RoundDraft } from "./roundDraft";
 import type { TxOutcome } from "./CeremonySheet";
 
 const WM = "0x" + "ab".repeat(20);
@@ -19,7 +19,7 @@ const dark = () => readFlNetworkState({ addresses: { ...realBook.addresses, Work
 /** Test-only: a profile that opens payouts (no shipped profile does). */
 const live = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, reads, { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile);
 const G: Group = { id: "0x" + "ab".repeat(16), name: "Orchard Lab", owner: "0x" + "11".repeat(20), kind: "channel", members: [] };
-const ready: RoundDraft = { ...BLANK_DRAFT, groupId: G.id, dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1" };
+const ready: RoundDraft = { ...BLANK_DRAFT, groupId: G.id, dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", architecture: "llama-8b-lora-r8" };
 
 function mount(state: FlNetworkState, o: { draft?: RoundDraft; role?: string | null; onOpen?: (d: RoundDraft) => Promise<TxOutcome>; save?: (d: RoundDraft) => number } = {}) {
   const el = document.createElement("div");
@@ -144,7 +144,10 @@ describe("round drafts", () => {
     expect(leasesCovered("1", "0")).toBeNull();
   });
   it("names what a draft still needs", () => {
-    expect(draftProblems(BLANK_DRAFT)).toEqual(["Choose a group", "Name the data class members train on", "Enter the budget and the rate as SALT amounts", "Set a deadline", "Enter the join bond as a SALT amount (0 for none)"]);
+    expect(draftProblems(BLANK_DRAFT)).toEqual(["Choose a group", "Name the data class members train on", "Enter the budget and the rate as SALT amounts", "Set a deadline", "Enter the join bond as a SALT amount (0 for none)", "Name the architecture as a lowercase label, like llama-8b-lora-r8"]);
+    // #724 review P1: the same label rule the offers read model applies.
+    expect(draftProblems({ ...ready, dataClass: "Support-Tickets" })).toContain("The data class must be a lowercase label (letters, digits, . _ -)");
+    expect(draftProblems({ ...ready, architecture: "Llama-8B" })).toContain("Name the architecture as a lowercase label, like llama-8b-lora-r8");
     expect(draftProblems({ ...ready, disputeWindowHours: 23 })).toContain("The dispute window must be at least 24 hours (WorkMarket's floor)");
     expect(draftProblems({ ...ready, maxWorkers: 2 })).toContain("At least three workers (the round ledger's floor)");
     expect(draftProblems(ready)).toEqual([]);
@@ -159,6 +162,59 @@ describe("round drafts", () => {
     expect((openParamsOf(ready, b) as { params: { coordinatorBond: bigint } }).params.coordinatorBond).toBe(0n);
     expect(openParamsOf(BLANK_DRAFT, b)).toHaveProperty("problems");
   });
+  it("PAY-19 (owner): a Hermes draft never sets money; budget, rate and bonds arrive empty", async () => {
+    setRoundDraft({ dataClass: "support-tickets", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", coordinatorBondSalt: "100" }, "hermes");
+    const d = loadRoundDraft()!;
+    expect(d).toMatchObject({ dataClass: "support-tickets", source: "hermes", budgetSalt: "", rateSalt: "", joinBondSalt: "", coordinatorBondSalt: "" });
+    const m = mount(await live(), { draft: d });
+    m.click("Continue");
+    const inputs = [...m.el.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]')];
+    expect(inputs.every((i) => i.value === "")).toBe(true);
+    m.done();
+    // A member's own draft keeps what the member typed.
+    setRoundDraft({ budgetSalt: "600" }, "member");
+    expect(loadRoundDraft()!.budgetSalt).toBe("600");
+  });
+  it("PAY-19 follow-up: a Hermes hand-in the member fills in and saves becomes the member's; opening alone does not", async () => {
+    setRoundDraft({ dataClass: "support-tickets", budgetSalt: "600" }, "hermes");
+    const handed = loadRoundDraft()!;
+    let stored: RoundDraft | null = null;
+    const save = (d: RoundDraft) => {
+      stored = d;
+      return 1;
+    };
+    // Opening and saving without typing any money keeps it Hermes's.
+    const a = mount(await live(), { draft: handed, save });
+    a.click("Save draft");
+    expect(stored!.source).toBe("hermes");
+    a.done();
+    // The member types the money on the board and saves: it is now the member's, money kept.
+    const m = mount(await live(), { draft: handed, save });
+    m.click("Continue");
+    const [budget, rate] = [...m.el.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]')];
+    const type = (i: HTMLInputElement, v: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(i, v);
+        i.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    type(budget, "600");
+    type(rate, "1.50");
+    m.click("Save draft");
+    expect(stored!).toMatchObject({ source: "member", budgetSalt: "600", rateSalt: "1.50", draftedBy: "hermes" });
+    expect(m.el.textContent).toContain("Drafted by Hermes");
+    m.done();
+  });
+  it("PAY-19 (BerryManifold P2): setRoundDraft's source is required; leaving it out does not compile", () => {
+    // Test files are outside tsc, so this checks it at run time: a parameter with a default is not
+    // counted in Function.length, a required one is.
+    expect(setRoundDraft.length).toBe(2);
+  });
+  it("PAY-19 (BerryManifold P2): saveRoundDraft never stores money on a Hermes draft, whoever calls it", () => {
+    saveRoundDraft({ ...BLANK_DRAFT, source: "hermes", dataClass: "photos", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "1", coordinatorBondSalt: "100" });
+    expect(loadRoundDraft()).toMatchObject({ source: "hermes", dataClass: "photos", budgetSalt: "", rateSalt: "", joinBondSalt: "", coordinatorBondSalt: "", draftedBy: "hermes" });
+    saveRoundDraft({ ...BLANK_DRAFT, source: "member", budgetSalt: "600" });
+    expect(loadRoundDraft()!.budgetSalt).toBe("600");
+  });
   it("a draft handed in by Hermes is kept on this device for the member to check", () => {
     setRoundDraft({ dataClass: "photos" }, "hermes");
     expect(loadRoundDraft()).toMatchObject({ dataClass: "photos", source: "hermes" });
@@ -166,7 +222,31 @@ describe("round drafts", () => {
     expect(loadRoundDraft()).toBeNull();
   });
   it("the requirements file is the read model's version 1 shape; publishing needs the desktop IPFS node", async () => {
-    expect(requirementsOf(ready)).toEqual({ v: 1, dataClasses: ["support-tickets"], architectures: [], minVramGb: 16, estHours: 2 });
+    expect(requirementsOf(ready)).toEqual({ v: 1, dataClasses: ["support-tickets"], architectures: ["llama-8b-lora-r8"], minVramGb: 16, estHours: 2 });
     await expect(publishRequirements(requirementsOf(ready))).rejects.toThrow("publishing needs the desktop app's IPFS node");
+  });
+});
+
+describe("openIntent (WorkMarket.open, HC's fl_round_open_propose calls it)", async () => {
+  const { openIntent, OPEN_NEEDS_BINDING, OPEN_SIGNATURE, WORK_MARKET_OPEN_ABI } = await import("./roundDraft");
+  const { decodeFunctionData, toFunctionSelector } = await import("viem");
+  const filled: RoundDraft = { ...BLANK_DRAFT, groupId: "0x" + "ab".repeat(16), dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", architecture: "llama-8b-lora-r8" };
+  const b = { verifier: "0x" + "22".repeat(20), bindRef: "0x" + "3e".repeat(32), jobSpecHash: "0x" + "44".repeat(32), requirementsHash: "0x" + "55".repeat(32), requirementsCid: "bafkreiflm1", groupHash: "0x" + "66".repeat(32), coordinator: "0x" + "cd".repeat(20) };
+  it("refuses while payouts are dark, with core's reason", async () => {
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "payouts are not open on r1007" }) });
+    expect(() => openIntent(filled, b, st)).toThrow("payouts are not open on r1007");
+  });
+  it("refuses with no round binding, then on a bad draft", async () => {
+    const st = await live();
+    expect(() => openIntent(filled, null, st)).toThrow(OPEN_NEEDS_BINDING);
+    expect(() => openIntent(BLANK_DRAFT, b, st)).toThrow(/Choose a group/);
+  });
+  it("encodes WorkMarket.open(OpenParams) with msg.value = the budget", async () => {
+    const st = await live();
+    const i = openIntent(filled, b, st);
+    expect(i).toMatchObject({ address: WM, valueWei: String(600n * 10n ** 18n), label: OPEN_SIGNATURE });
+    expect(i.calldata.slice(0, 10)).toBe(toFunctionSelector(OPEN_SIGNATURE));
+    const d = decodeFunctionData({ abi: WORK_MARKET_OPEN_ABI, data: i.calldata as `0x${string}` });
+    expect(d.args[0]).toMatchObject({ kind: 0, pricePerUnit: 15n * 10n ** 17n, joinBond: 10n ** 17n, requirementsCid: "bafkreiflm1", maxWorkers: 8, disputeWindow: 86_400 });
   });
 });

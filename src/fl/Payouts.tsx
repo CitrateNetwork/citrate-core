@@ -128,7 +128,7 @@ export function PayoutsView(p: PayoutsViewProps) {
             Payouts
           </h1>
           <span className="fl-muted" style={{ fontSize: 13 }}>
-            SALT the WorkMarket contract escrowed and paid. Never projected.
+            SALT the WorkMarket contract escrowed and paid, as the contract reports it.
           </span>
           <span style={{ flex: 1 }} />
           <span className="fl-faint" style={{ fontSize: 11.5 }}>
@@ -168,6 +168,11 @@ export function PayoutsView(p: PayoutsViewProps) {
                 <span className="fl-muted" style={{ fontSize: 12.5 }}>
                   Claim turns on with a network profile update after the security review. Nothing here can be signed yet.
                 </span>
+                {p.state.payoutsReason && (
+                  <span className="fl-faint" style={{ fontSize: 12 }} data-testid="payouts-reason">
+                    {p.state.payoutsReason}
+                  </span>
+                )}
               </Card>
             )}
             {p.state.payouts === "unknown" && (

@@ -466,22 +466,27 @@ pub fn verify_requirements(
     }
     let r: Requirements =
         serde_json::from_slice(bytes).map_err(|e| RequirementsError::Malformed(e.to_string()))?;
+    match requirements_problem(&r) {
+        Some(p) => Err(RequirementsError::Malformed(p)),
+        None => Ok(r),
+    }
+}
+
+/// Why a requirements file is refused, or `None`. The ONE rule: the reader here and the publisher
+/// (`fl_publish.rs`) both call it, so nothing can be published that no reader accepts.
+pub fn requirements_problem(r: &Requirements) -> Option<String> {
     if r.v != 1 {
-        return Err(RequirementsError::Malformed(format!("version {}", r.v)));
+        return Some(format!("version {}", r.v));
     }
     for list in [&r.data_classes, &r.architectures] {
         if list.is_empty() || list.len() > 32 || !list.iter().all(|s| label_ok(s)) {
-            return Err(RequirementsError::Malformed(
-                "dataClasses and architectures need 1-32 lowercase labels".into(),
-            ));
+            return Some("dataClasses and architectures need 1-32 lowercase labels".into());
         }
     }
     if r.min_vram_gb > 1024 || r.est_hours == 0 || r.est_hours > 24 * 90 {
-        return Err(RequirementsError::Malformed(
-            "minVramGb or estHours out of range".into(),
-        ));
+        return Some("minVramGb or estHours out of range".into());
     }
-    Ok(r)
+    None
 }
 
 /// Where an offer's requirements stand.

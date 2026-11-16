@@ -148,6 +148,12 @@ describe("Matches states (StateMatrix)", () => {
     expect(r.el.textContent).not.toContain("No open rounds right now");
     r.done();
   });
+  it("Dark: core's gate refusal is shown under the payouts card", async () => {
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "payouts are not open on r1007" }) });
+    const r = render(st, { kind: "read", view: { available: true, reason: null, market: WM, offers: [] } });
+    expect(r.el.querySelector('[data-testid="payouts-reason"]')!.textContent).toBe("payouts are not open on r1007");
+    r.done();
+  });
   it("Dark: the payouts card says Payouts open after the security review", async () => {
     const r = render(await live(), { kind: "read", view: { available: true, reason: null, market: WM, offers: [offer(15)] } });
     expect(r.el.textContent).toContain("Payouts open after the security review");

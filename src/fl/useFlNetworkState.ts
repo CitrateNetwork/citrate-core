@@ -3,11 +3,16 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
 import realBook from "../../src-tauri/addresses/40204.json";
-import { bookOnlyState, readFlNetworkState, type FlBook, type FlNetworkState, type FlReads } from "./networkState";
+import { bookOnlyState, readFlNetworkState, type FlBook, type FlNetworkState, type FlReads, type PayoutsGateStatus } from "./networkState";
+import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke } from "../bridge/tauri/invoke";
 
 const chainReads: FlReads = {
   codeSize: (a) => bridge.contracts.codeSize("citrate", a),
   viewCall: (a, data) => bridge.contracts.viewCall("citrate", a, data),
+  // G-SEC: core's Rust payouts gate decides (core #736). Outside the desktop app it rejects, and
+  // the state fails closed to dark.
+  payoutsStatus: () => (BRIDGE_MODE === "tauri" ? invoke<PayoutsGateStatus>("fl_payouts_status") : Promise.reject(new Error("the payouts gate is read by the desktop app"))),
 };
 
 let shared: { book: FlBook; reads: FlReads; promise: Promise<FlNetworkState> } | null = null;

@@ -129,6 +129,20 @@ describe("FL network state: 0.6.0 states render only when the data shows them", 
     const s = await readFlNetworkState(withWorkMarket, reads(), open);
     expect(s.payouts).toBe("open");
   });
+  it("core's payouts gate (fl_payouts_status) is authoritative over the profile flag", async () => {
+    const flagged = { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile;
+    const shut = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: false, reason: "WorkMarket's code does not match its pin" }) }), flagged);
+    expect(shut.payouts).toBe("dark");
+    expect(shut.payoutsReason).toBe("WorkMarket's code does not match its pin");
+    const opened = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: true, reason: null }) }));
+    expect(opened.payouts).toBe("open");
+    const unread = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => Promise.reject(new Error("no such command")) }), flagged);
+    expect(unread).toMatchObject({ payouts: "dark", payoutsReason: "the payouts gate was not read: no such command" });
+    const g = vi.fn(async () => ({ open: true, reason: null }));
+    const r1007 = await readFlNetworkState(realBook, reads({ payoutsStatus: g }));
+    expect(r1007.payouts).toBe("not-deployed");
+    expect(g).not.toHaveBeenCalled();
+  });
   it("a failed WorkMarket read is phase unknown with the reason", async () => {
     const s = await readFlNetworkState(withWorkMarket, reads({ codeSize: async (a) => (a === WM ? Promise.reject(new Error("timeout")) : 10) }));
     expect(s.phase).toBe("unknown");
@@ -477,6 +491,22 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     const h = html("groups/rounds/open");
     expect(h).toContain("Group rounds not live yet. WorkMarket is not available yet on this network, so there is no Open button. You can save this draft.");
     expect(h).not.toContain("Sign escrow and open");
+    const el = document.createElement("div");
+    el.innerHTML = h;
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
+  it("#695 review: the Payouts page passes the banned-words check (both panes)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/payouts");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
+  it("the Datasets page passes the banned-words check", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/datasets");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
   });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");

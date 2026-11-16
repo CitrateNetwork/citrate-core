@@ -20,7 +20,17 @@ export const NOT_ON_CHAIN = {
 };
 
 /** The round states the FL design names (board 06). */
-export type RoundStateWord = "pending" | "running" | "verifying" | "accepted" | "rejected" | "disputed" | "expired";
+export type RoundStateWord =
+  | "pending"
+  | "running"
+  | "verifying"
+  | "accepted"
+  | "rejected"
+  | "disputed"
+  | "expired"
+  /** Closed with no live payout list: refunded to the poster (for example after a dispute), so
+   *  nobody is paid from it. Never "accepted". */
+  | "closed";
 
 /** A round's state from its WorkMarket offer and, for an FL round, its FRL record. */
 export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord {
@@ -33,8 +43,12 @@ export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord
       if (r?.status === "rejected") return "rejected";
       return "running";
     case "payoutPosted":
-    case "closed":
       return "accepted";
+    case "closed":
+      // Closed after a settled payout keeps its payout root; closed after a refund (a dispute
+      // upheld, or the poster reclaiming) has none and paid nobody from a payout list.
+      if (r?.status === "rejected") return "rejected";
+      return /^0x0{64}$/i.test(o.payoutRoot) ? "closed" : "accepted";
     case "disputed":
       return "disputed";
     case "expired":
@@ -45,7 +59,8 @@ export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord
 /** Budget split into paid, reserved for posted units, and refundable (wei). */
 export function escrowOf(o: ChainOffer): { budgetWei: bigint; paidWei: bigint; reservedWei: bigint; refundableWei: bigint } {
   const owedToWorkers = o.payoutUnits * o.pricePerUnit;
-  const reserved = owedToWorkers > o.paid ? owedToWorkers - o.paid : 0n;
+  // Once the poster swept the unsettled reserve, nothing is held back for workers any more.
+  const reserved = !o.reserveSwept && owedToWorkers > o.paid ? owedToWorkers - o.paid : 0n;
   const left = o.budget - o.paid - o.refunded - reserved;
   return { budgetWei: o.budget, paidWei: o.paid, reservedWei: reserved, refundableWei: left > 0n ? left : 0n };
 }

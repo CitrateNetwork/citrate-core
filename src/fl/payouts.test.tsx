@@ -84,6 +84,12 @@ describe("Payouts states (StateMatrix)", () => {
     expect([...m.el.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Claim");
     m.done();
   });
+  it("Dark: core's payouts gate refusal is shown", async () => {
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "WorkMarket's code does not match its pin" }) });
+    const m = mount(st);
+    expect(m.el.querySelector('[data-testid="payouts-reason"]')!.textContent).toBe("WorkMarket's code does not match its pin");
+    m.done();
+  });
   it("Unavailable: receipts and the pull balance not read are — with the reason, never 0", async () => {
     const m = mount(await dark());
     expect(m.el.textContent).toContain("this build has no settled-lines read model yet");
@@ -175,4 +181,29 @@ describe("History", () => {
     expect(e.el.querySelector('[data-testid="history-empty"]')).not.toBeNull();
     e.done();
   });
+});
+
+describe("#695 review: banned words", async () => {
+  const BANNED = /\b(earn|earns|earned|earning|earnings|income|projected|estimate|yield|APY|APR|profit|investment|USD|dormant|Final|Settled|HITL|users?)\b|!|\$/;
+  for (const [name, make] of [
+    ["not deployed", nd],
+    ["dark", dark],
+    ["open", open],
+  ] as const) {
+    it(`${name}: receipts, history and every review sheet pass`, async () => {
+      const m = mount(await make(), { receipts: [{ line, status: "claimable" }, { line: { ...line, round: "15" }, status: "waiting", disputeEndsAt: 1 }], pullWei: 3n * SALT });
+      const texts = [m.el.textContent ?? ""];
+      for (const b of ["Claim", "Dispute", "Withdraw to wallet"]) {
+        const btn = [...document.querySelectorAll("button")].find((x) => x.textContent?.trim() === b && !(x as HTMLButtonElement).disabled);
+        if (!btn) continue;
+        act(() => btn.click());
+        texts.push(document.querySelector('[role="dialog"]')?.textContent ?? "");
+        m.click("Decline");
+      }
+      m.click("History");
+      texts.push(m.el.textContent ?? "");
+      for (const t of texts) expect(t).not.toMatch(BANNED);
+      m.done();
+    });
+  }
 });

@@ -7,6 +7,8 @@
 // it themselves (HIC-1). Stored in this webview's localStorage; a failed read or write is said,
 // never hidden.
 // =====================================================================
+import { encodeFunctionData, type Hex } from "viem";
+import type { FlNetworkState } from "./networkState";
 
 export type RoundTemplate = "tune" | "eval" | "data";
 export type WhoMayJoin = "members" | "group" | "anyone";
@@ -16,6 +18,8 @@ export interface RoundDraft {
   template: RoundTemplate;
   dataClass: string;
   /** What a machine needs (the requirements file members' apps check). */
+  /** The model architecture the round trains, as a lowercase label (e.g. "llama-8b-lora-r8"). */
+  architecture: string;
   minVramGb: number;
   estHours: number;
   /** Decimal SALT, as typed. Never prefilled (G-SEC PAY-19). */
@@ -37,6 +41,8 @@ export interface RoundDraft {
   source: "member" | "hermes";
   /** Who Hermes drafted it for and when, for the banner. */
   draftedFor?: string;
+  /** Set when Hermes handed the draft in; stays after the member makes it theirs (the banner). */
+  draftedBy?: "hermes";
   savedAt?: number;
 }
 
@@ -44,6 +50,7 @@ export const BLANK_DRAFT: RoundDraft = {
   groupId: null,
   template: "tune",
   dataClass: "",
+  architecture: "",
   minVramGb: 16,
   estHours: 2,
   budgetSalt: "",
@@ -74,13 +81,39 @@ export function loadRoundDraft(): RoundDraft | null {
 /** Save a draft on this device. Returns the saved time. Throws when storage refuses. */
 export function saveRoundDraft(d: RoundDraft): number {
   const at = Date.now();
-  localStorage.setItem(KEY, JSON.stringify({ ...d, savedAt: at }));
+  // PAY-19: whoever calls this, a draft still marked Hermes's is stored without money.
+  const safe = d.source === "hermes" ? handedIn(d, "hermes") : d;
+  localStorage.setItem(KEY, JSON.stringify({ ...safe, savedAt: at }));
   return at;
 }
 
 /** Hand a draft in (Hermes or a group card). The member still checks and signs every field. */
-export function setRoundDraft(d: Partial<RoundDraft>, source: RoundDraft["source"] = "member"): void {
-  saveRoundDraft({ ...BLANK_DRAFT, ...d, source });
+/** `source` is required (no default): a caller that leaves it out fails to compile instead of
+ *  skipping the Hermes money clear. */
+export function setRoundDraft(d: Partial<RoundDraft>, source: RoundDraft["source"]): void {
+  saveRoundDraft(handedIn(d, source));
+}
+
+/** The money fields of a draft: only the member types these, on the Open a round screen. */
+export const MONEY_FIELDS = ["budgetSalt", "rateSalt", "joinBondSalt", "coordinatorBondSalt"] as const;
+
+/** A draft as handed in. G-SEC PAY-19 (owner decision): Hermes may never set money, so a Hermes
+ *  draft carries only non-money fields; every money field arrives empty, whatever was passed. */
+export function handedIn(d: Partial<RoundDraft>, source: RoundDraft["source"]): RoundDraft {
+  const out: RoundDraft = { ...BLANK_DRAFT, ...d, source };
+  if (source === "hermes") {
+    for (const k of MONEY_FIELDS) out[k] = "";
+    out.draftedBy = "hermes";
+  }
+  return out;
+}
+
+/** The draft as the member saves it on Open a round. Every money field is typed there by the
+ *  member (a Hermes hand-in arrives with none), so once any money is typed the draft is the
+ *  member's: source "member", money kept. Saving without money keeps its source. */
+export function asSavedByMember(d: RoundDraft): RoundDraft {
+  const typedMoney = MONEY_FIELDS.some((k) => d[k].trim() !== "");
+  return typedMoney ? { ...d, source: "member" } : d;
 }
 
 export function clearRoundDraft(): void {
@@ -96,6 +129,9 @@ export function weiOf(s: string): bigint | null {
   const m = /^(\d{1,12})(?:\.(\d{1,18}))?$/.exec(s.trim());
   return m ? BigInt(m[1]) * 10n ** 18n + BigInt((m[2] ?? "").padEnd(18, "0") || "0") : null;
 }
+
+/** fl_market.rs label_ok: 1 to 64 of lowercase letters, digits, ".", "_" or "-". */
+const LABEL = /^[a-z0-9._-]{1,64}$/;
 
 /** How many leases the budget covers at the rate: floor(budget / rate), exact in wei. */
 export function leasesCovered(budgetSalt: string, rateSalt: string): number | null {
@@ -117,8 +153,11 @@ export function draftProblems(d: RoundDraft): string[] {
   if (weiOf(d.joinBondSalt) === null) out.push("Enter the join bond as a SALT amount (0 for none)");
   if (d.coordinatorBondSalt.trim() !== "" && weiOf(d.coordinatorBondSalt) === null) out.push("The coordinator bond must be a SALT amount, or empty for WorkMarket's default");
   if (!(d.disputeWindowHours >= 24)) out.push("The dispute window must be at least 24 hours (WorkMarket's floor)");
-  if (!(d.minVramGb >= 1 && d.minVramGb <= 1024)) out.push("Minimum GPU memory must be 1 to 1024 GB");
-  if (!(d.estHours >= 1 && d.estHours <= 720)) out.push("Estimated hours must be 1 to 720");
+  // The offers read model's rule (fl_market.rs requirements_problem): lowercase labels.
+  if (d.dataClass.trim() && !LABEL.test(d.dataClass.trim())) out.push("The data class must be a lowercase label (letters, digits, . _ -)");
+  if (!LABEL.test(d.architecture.trim())) out.push("Name the architecture as a lowercase label, like llama-8b-lora-r8");
+  if (!(Number.isInteger(d.minVramGb) && d.minVramGb >= 0 && d.minVramGb <= 1024)) out.push("Minimum GPU memory must be 0 to 1024 GB");
+  if (!(Number.isInteger(d.estHours) && d.estHours >= 1 && d.estHours <= 24 * 90)) out.push("Estimated hours must be 1 to 2160");
   return out;
 }
 
@@ -199,7 +238,7 @@ export interface RequirementsFile {
 }
 
 export function requirementsOf(d: RoundDraft): RequirementsFile {
-  return { v: 1, dataClasses: [d.dataClass.trim()], architectures: [], minVramGb: d.minVramGb, estHours: d.estHours };
+  return { v: 1, dataClasses: [d.dataClass.trim()], architectures: [d.architecture.trim()], minVramGb: d.minVramGb, estHours: d.estHours };
 }
 
 export interface PublishedRequirements {
@@ -215,4 +254,85 @@ export async function publishRequirements(r: RequirementsFile): Promise<Publishe
   if (BRIDGE_MODE !== "tauri") throw new Error("publishing needs the desktop app's IPFS node");
   const { invoke } = await import("../bridge/tauri/invoke");
   return invoke<PublishedRequirements>("fl_requirements_publish", { requirements: r });
+}
+
+// ---------------------------------------------------------------- the open intent (WorkMarket.open)
+
+
+export const WORK_MARKET_OPEN_ABI = [
+  {
+    type: "function",
+    name: "open",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "kind", type: "uint8" },
+          { name: "verifier", type: "address" },
+          { name: "bindRef", type: "bytes32" },
+          { name: "jobSpecHash", type: "bytes32" },
+          { name: "requirementsHash", type: "bytes32" },
+          { name: "requirementsCid", type: "string" },
+          { name: "groupHash", type: "bytes32" },
+          { name: "allowlistRoot", type: "bytes32" },
+          { name: "pricePerUnit", type: "uint128" },
+          { name: "deadline", type: "uint64" },
+          { name: "disputeWindow", type: "uint32" },
+          { name: "maxWorkers", type: "uint32" },
+          { name: "joinBond", type: "uint128" },
+          { name: "coordinator", type: "address" },
+          { name: "coordinatorBond", type: "uint128" },
+          { name: "disputeAdmin", type: "address" },
+        ],
+      },
+    ],
+    outputs: [{ name: "id", type: "uint256" }],
+  },
+] as const;
+
+export const OPEN_SIGNATURE = "open((uint8,address,bytes32,bytes32,bytes32,string,bytes32,bytes32,uint128,uint64,uint32,uint32,uint128,address,uint128,address))";
+
+/** Why a round cannot be opened yet: the coordinator does not publish its round binding. */
+export const OPEN_NEEDS_BINDING =
+  "opening needs the coordinator's round binding (its on-chain address and FederatedRoundLedger cluster), which the training coordinator does not publish yet";
+export const OPEN_WAITS_FOR_GSEC = "Opening escrows SALT, so it opens with payouts after the security review.";
+
+/** The exact WorkMarket.open the wallet review signs (msg.value = the budget), or an Error naming
+ *  why there is none. Fails closed: dark payouts, no WorkMarket, no binding, or a bad draft. The
+ *  Rust payouts gate refuses the same call at the signer regardless. */
+export function openIntent(d: RoundDraft, binding: OpenBinding | null, state: FlNetworkState): { address: string; calldata: string; valueWei: string; label: string } {
+  if (state.payouts !== "open") throw new Error(state.payoutsReason ? `${OPEN_WAITS_FOR_GSEC} ${state.payoutsReason}` : OPEN_WAITS_FOR_GSEC);
+  const wm = state.contracts.WorkMarket;
+  if (wm.kind !== "deployed") throw new Error("WorkMarket is not deployed on this network");
+  if (!binding) throw new Error(OPEN_NEEDS_BINDING);
+  const r = openParamsOf(d, binding);
+  if ("problems" in r) throw new Error(r.problems.join("; "));
+  const p = r.params;
+  const calldata = encodeFunctionData({
+    abi: WORK_MARKET_OPEN_ABI,
+    functionName: "open",
+    args: [
+      {
+        kind: p.kind,
+        verifier: p.verifier as Hex,
+        bindRef: p.bindRef as Hex,
+        jobSpecHash: p.jobSpecHash as Hex,
+        requirementsHash: p.requirementsHash as Hex,
+        requirementsCid: p.requirementsCid,
+        groupHash: p.groupHash as Hex,
+        allowlistRoot: p.allowlistRoot as Hex,
+        pricePerUnit: p.pricePerUnit,
+        deadline: p.deadline,
+        disputeWindow: p.disputeWindow,
+        maxWorkers: p.maxWorkers,
+        joinBond: p.joinBond,
+        coordinator: p.coordinator as Hex,
+        coordinatorBond: p.coordinatorBond,
+        disputeAdmin: p.disputeAdmin as Hex,
+      },
+    ],
+  });
+  return { address: wm.address, calldata, valueWei: r.valueWei.toString(), label: OPEN_SIGNATURE };
 }
