@@ -65,6 +65,8 @@ mod hermes_history;
 mod fl_work;
 // 0.5.4 FL design board 07 — a round's requirements file, published on the bundled IPFS node.
 mod fl_publish;
+// 0.5.4 Hermes x FL WP-H4 — the HIC-2 envelope evaluator, its own fl_envelope scope (not SIWE).
+mod fl_envelope;
 // HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
 mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
@@ -822,6 +824,8 @@ pub fn run() {
             fl_work::fl_work_envelope_approve,
             fl_work::fl_work_envelope_off,
             fl_publish::fl_requirements_publish,
+            fl_envelope::fl_envelope_status,
+            fl_envelope::fl_envelope_check,
             // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
             contract_reader::contract_source,
             contract_reader::contract_code_size,
