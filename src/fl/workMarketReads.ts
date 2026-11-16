@@ -130,6 +130,8 @@ export interface ChainOffer {
 export interface ChainRound {
   status: (typeof FRL_STATUS)[number];
   fault: (typeof FRL_FAULT)[number];
+  /** The chunk a proven challenge failed on (meaningful only when `fault` is not "none"). */
+  faultChunk: number;
   deadlineBlock: number;
   participants: number;
   adapterHash: string;
@@ -198,6 +200,7 @@ export async function getFrlRound(call: ViewCall, frl: string, roundId: string):
   return {
     status: FRL_STATUS[r.status] ?? "none",
     fault: FRL_FAULT[r.fault] ?? "none",
+    faultChunk: r.faultChunk,
     deadlineBlock: Number(r.deadline),
     participants: r.participants,
     adapterHash: r.adapterHash,

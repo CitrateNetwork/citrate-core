@@ -68,13 +68,26 @@ export interface FlNetworkState {
   /** Why the phase is unknown, when it is. */
   phaseReason?: string;
   payouts: PayoutsState;
+  /** Why payouts are not open, in core's words (fl_payouts_status), when core gave one. */
+  payoutsReason?: string;
   /** Network label from the active profile. */
   networkLabel: string;
+}
+
+/** Core's answer to "are FL payouts open here" (kit payouts_gate.rs PayoutsStatus, the fields the
+ *  webview uses): open only when the profile flag is set AND the payout-path contracts' live code
+ *  matches their pins. The signer enforces the same rule on every FL transaction. */
+export interface PayoutsGateStatus {
+  open: boolean;
+  reason: string | null;
 }
 
 export interface FlReads {
   codeSize: (address: string) => Promise<number>;
   viewCall: (address: string, calldata: string) => Promise<string>;
+  /** core's fl_payouts_status. The app always passes it; it is authoritative over the profile flag.
+   *  Without it (tests), the profile flag alone decides. */
+  payoutsStatus?: () => Promise<PayoutsGateStatus>;
 }
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -158,6 +171,18 @@ async function roundsOn(name: FlContractName, address: string, reads: FlReads, w
 
 /** Read every pinned contract's code (and the ledger round reads) and derive the state. */
 export async function readFlNetworkState(book: FlBook, reads: FlReads, profile: NetworkProfile | null = ACTIVE_PROFILE): Promise<FlNetworkState> {
+  const state = await readContracts(book, reads, profile);
+  if (state.contracts.WorkMarket.kind !== "deployed" || !reads.payoutsStatus) return state;
+  try {
+    const g = await reads.payoutsStatus();
+    return g.open ? { ...state, payouts: "open" } : { ...state, payouts: "dark", ...(g.reason ? { payoutsReason: g.reason } : {}) };
+  } catch (e) {
+    // Fail closed: an unread gate is dark, with why.
+    return { ...state, payouts: "dark", payoutsReason: `the payouts gate was not read: ${msg(e)}` };
+  }
+}
+
+async function readContracts(book: FlBook, reads: FlReads, profile: NetworkProfile | null): Promise<FlNetworkState> {
   const first = bookOnlyState(book, profile);
   const contracts = { ...first.contracts };
   await Promise.all(

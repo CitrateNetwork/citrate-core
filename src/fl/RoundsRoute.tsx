@@ -19,15 +19,14 @@ import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { LiveRoundView, NoLiveRound } from "./LiveRound";
 import { currentOffer } from "./myWork";
-import { liveRoundFrom, receiptFrom, useMyWork } from "./myWorkViews";
-import { WITHDRAW_SIGNATURE, withdrawCalldata } from "./workMarketReads";
+import { liveRoundFrom, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
 import { latestBlockTime } from "./chainTime";
 import { Unknown } from "./primitives";
 import type { Receipt } from "./Payouts";
 import { PayoutsView, usePayoutsRecords } from "./Payouts";
 import { OpenRoundView } from "./OpenRound";
 import { DatasetsView } from "./Datasets";
-import { BLANK_DRAFT, loadRoundDraft, type RoundDraft } from "./roundDraft";
+import { BLANK_DRAFT, loadRoundDraft, openIntent, type RoundDraft } from "./roundDraft";
 import { groupsSlice } from "../shell/slices/groups";
 import { flRoundCardsEnabled } from "./roundCardsFlag";
 import { GroupRoundsCard } from "./GroupRoundsCard";
@@ -111,7 +110,6 @@ function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppSt
   // the latest block's time is read, a window that might be over is still "waiting".
   const now = chainNow ?? 0;
   const receipts = read ? read.offers.map((o) => receiptFrom(o, { joined: true, settled: read.settled[o.id] ?? false }, now)).filter((r): r is Receipt => r !== null) : null;
-  const wm = state.contracts.WorkMarket;
   return (
     <PayoutsView
       state={state}
@@ -128,14 +126,13 @@ function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppSt
       disputeBlocker="Disputing needs your coordinator-signed receipt, which the training worker keeps; it is not bundled in this release."
       act={async (kind) => {
         if (kind !== "withdraw") throw new Error("claiming needs your leaf from the coordinator's payout list, which the app does not read yet");
-        if (wm.kind !== "deployed") throw new Error("WorkMarket is not on this network");
-        await store.proposeContractCall({ address: wm.address, calldata: withdrawCalldata(), valueWei: "0", label: WITHDRAW_SIGNATURE });
+        await store.proposeContractCall(withdrawIntent(state, read ? read.pullWei : null));
       }}
     />
   );
 }
 
-function OpenRoundRoute({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
+function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
   const { groups } = groupsSlice.use();
   const [coord, setCoord] = useState<string | null>(null);
   const [draft] = useState<RoundDraft>(() => loadRoundDraft() ?? BLANK_DRAFT);
@@ -158,8 +155,12 @@ function OpenRoundRoute({ state, s, go }: { state: FlNetworkState; s: AppState; 
       roleOf={roleOf}
       coordinatorUrl={coord}
       go={go}
-      onOpen={async () => {
-        throw new Error("opening needs the coordinator's round binding (its on-chain address and FederatedRoundLedger cluster), which the training coordinator does not publish yet");
+      onOpen={async (d) => {
+        // No round binding source exists yet (the coordinator does not publish one); openIntent
+        // says so, and refuses first while payouts are dark.
+        const intent = openIntent(d, null, state);
+        await store.proposeContractCall(intent);
+        return { kind: "unknown", txHash: null, reason: "sent to the wallet review" };
       }}
     />
   );
@@ -206,7 +207,7 @@ function NotLiveSubtab({ route, s, go, toast, store }: { route: string; s: AppSt
       );
     case ROUNDS_ROUTES.open:
       // Board 07: the four steps; no Open button until WorkMarket is on this network.
-      return <OpenRoundRoute state={state} s={s} go={go} />;
+      return <OpenRoundRoute state={state} s={s} go={go} store={store} />;
     case ROUNDS_ROUTES.datasets:
       // Board 08: local datasets (core's training-set builder) and the honest states for the rest.
       return <DatasetsView state={state} fl={bridge.flRounds} toast={toast} go={go} />;

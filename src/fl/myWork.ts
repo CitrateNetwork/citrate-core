@@ -20,7 +20,17 @@ export const NOT_ON_CHAIN = {
 };
 
 /** The round states the FL design names (board 06). */
-export type RoundStateWord = "pending" | "running" | "verifying" | "accepted" | "rejected" | "disputed" | "expired";
+export type RoundStateWord =
+  | "pending"
+  | "running"
+  | "verifying"
+  | "accepted"
+  | "rejected"
+  | "disputed"
+  | "expired"
+  /** Closed with no live payout list: refunded to the poster (for example after a dispute), so
+   *  nobody is paid from it. Never "accepted". */
+  | "closed";
 
 /** A round's state from its WorkMarket offer and, for an FL round, its FRL record. */
 export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord {
@@ -33,8 +43,12 @@ export function liveStateOf(o: ChainOffer, r: ChainRound | null): RoundStateWord
       if (r?.status === "rejected") return "rejected";
       return "running";
     case "payoutPosted":
-    case "closed":
       return "accepted";
+    case "closed":
+      // Closed after a settled payout keeps its payout root; closed after a refund (a dispute
+      // upheld, or the poster reclaiming) has none and paid nobody from a payout list.
+      if (r?.status === "rejected") return "rejected";
+      return /^0x0{64}$/i.test(o.payoutRoot) ? "closed" : "accepted";
     case "disputed":
       return "disputed";
     case "expired":

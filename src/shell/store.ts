@@ -39,11 +39,11 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
 import { isFlPayoutTool, runFlPayoutTool } from "../agent/flPayoutTools";
 import { latestBlockTime } from "../fl/chainTime";
-import { readPayoutsStatus, type PayoutsStatus } from "../fl/payoutsStatus";
-import { readFlNetworkState, type FlNetworkState } from "../fl/networkState";
+import { readFlNetworkState, type FlNetworkState, type PayoutsGateStatus } from "../fl/networkState";
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
 import { loadWorkerTerms } from "../fl/workerTerms";
 import flBook from "../../src-tauri/addresses/40204.json";
@@ -83,6 +83,7 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { sidecarAlertText } from "./sidecarAlert";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke } from "../bridge/tauri/invoke";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
@@ -134,7 +135,8 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_join_propose", "fl_withdraw_propose"]);
+/** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_join_propose", "fl_withdraw_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4062,12 +4064,10 @@ export class Store {
     return readFlNetworkState(flBook, {
       codeSize: (a) => bridge.contracts.codeSize("citrate", a),
       viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d),
+      // G-SEC: core's Rust payouts gate (#736) decides "open", with its reason; the boards' same read.
+      payoutsStatus: () =>
+        BRIDGE_MODE === "tauri" ? invoke<PayoutsGateStatus>("fl_payouts_status") : Promise.reject(new Error("the payouts gate is read by the desktop app")),
     });
-  }
-
-  /** 0.5.4 Hermes x FL: whether payouts are open, as core's Rust payouts gate says (#736). */
-  flPayoutsStatus(): Promise<PayoutsStatus> {
-    return readPayoutsStatus();
   }
 
   /** 0.5.4 Hermes x FL: core's WorkMarket offers read model (fl_market_offers). */
@@ -4640,13 +4640,18 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlAdapterTool(call.name)) {
+      // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
+      // re-checks the gate), and unloading (lowers authority, no card).
+      const out = await runFlAdapterTool(call.name, args as Record<string, unknown>, ann, { fl: bridge.flRounds, ask });
+      status = out.status;
+      result = out.result;
     } else if (isFlPayoutTool(call.name)) {
       // 0.5.4 WP-H10 (dark): open only when core's Rust payouts gate says so (fl_payouts_status).
       // Withdraw opens the wallet review, which runs the gate again; claim and dispute are
       // named-blocked (the leaf and the signed receipt are not read in this release).
       const out = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
         networkState: () => this.flNetworkState(),
-        payoutsStatus: () => this.flPayoutsStatus(),
         wallet: () => this.state.walletAddr,
         call: (address, data) => bridge.contracts.viewCall("citrate", address, data),
         chainNow: () => latestBlockTime(),

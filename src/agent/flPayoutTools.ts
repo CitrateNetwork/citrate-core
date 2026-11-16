@@ -7,8 +7,9 @@
 //   fl_dispute_propose   whether one offer's payout can be disputed, and why not                 (named-blocked, read)
 //
 // Gating (policy in core, never here): whether payouts are open is core's `fl_payouts_status`
-// (the Rust payouts gate, #736): the profile's payoutsOpen AND WorkMarket and FLRoundVerifier
-// pinned with matching live code. While it is not open every tool says "Payouts open after the
+// (the Rust payouts gate, #736: the profile's payoutsOpen AND WorkMarket and FLRoundVerifier
+// pinned with matching live code), read into FlNetworkState.payouts / payoutsReason by the shared
+// networkState.ts read the FL boards use (it fails closed to dark when the gate cannot be read). While it is not open every tool says "Payouts open after the
 // security review" with the gate's own reason and reads nothing more. The withdraw proposal goes
 // through store.proposeContractCall, whose Rust side runs the same gate again before the card,
 // and the signer runs it once more before the signature.
@@ -29,7 +30,6 @@
 import { NOT_AVAILABLE, PAYOUTS_DARK, type FlNetworkState } from "../fl/networkState";
 import { disputeEnd, NOT_ON_CHAIN, PAYOUT_STATUS_WORDS, payoutStatusOf, readMyWork, type MyWork } from "../fl/myWork";
 import { pullBalance, WITHDRAW_SIGNATURE, withdrawCalldata, type ChainOffer, type ViewCall } from "../fl/workMarketReads";
-import type { PayoutsStatus } from "../fl/payoutsStatus";
 import { windowWords } from "../fl/chainTime";
 import { saltText } from "../fl/format";
 
@@ -49,8 +49,6 @@ export interface WithdrawIntent {
 
 export interface FlPayoutDeps {
   networkState: () => Promise<FlNetworkState>;
-  /** Core's fl_payouts_status (the Rust gate's answer). */
-  payoutsStatus: () => Promise<PayoutsStatus>;
   /** This device's wallet address ("" when there is none yet). */
   wallet: () => string;
   call: ViewCall;
@@ -92,13 +90,7 @@ async function gate(deps: FlPayoutDeps): Promise<{ text: string } | Opened> {
   if (wm.kind === "not-in-book" || wm.kind === "no-code") return { text: `Payouts: none to read. WorkMarket is ${NOT_AVAILABLE.toLowerCase()} [address book and eth_getCode].` };
   if (wm.kind === "unknown") return { text: `Payouts: — (whether WorkMarket is on this network is unknown: ${wm.reason})` };
   if (wm.kind === "reading") return { text: "Payouts: — (the WorkMarket code read has not answered yet)" };
-  let st: PayoutsStatus;
-  try {
-    st = await deps.payoutsStatus();
-  } catch (e) {
-    return { text: `Payouts: — (core could not say whether payouts are open: ${msg(e)})` };
-  }
-  if (!st.open) return { text: `Payouts: ${PAYOUTS_DARK}. ${st.reason ?? "core's payouts gate is closed"} ${TAG}` };
+  if (net.payouts !== "open") return { text: `Payouts: ${PAYOUTS_DARK}.${net.payoutsReason ? " " + net.payoutsReason : ""} ${TAG}` };
   const frl = net.contracts.FederatedRoundLedger;
   return { wm: wm.address, frl: frl.kind === "deployed" ? frl.address : null };
 }

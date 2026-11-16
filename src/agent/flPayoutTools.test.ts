@@ -11,7 +11,6 @@ import { CLAIM_NEEDS_LEAF, DISPUTE_NEEDS_RECEIPT, runFlPayoutTool, type FlPayout
 import { readFlNetworkState, type FlReads } from "../fl/networkState";
 import type { MyWork } from "../fl/myWork";
 import { WITHDRAW_SIGNATURE, withdrawCalldata, type ChainOffer } from "../fl/workMarketReads";
-import type { PayoutsStatus } from "../fl/payoutsStatus";
 import { payoutsOpenNetwork } from "../fl/fixtures/market";
 
 const call = (name: FlPayoutToolName, args: Record<string, unknown> = {}): ToolCall => ({ id: "c1", name, arguments: JSON.stringify(args) });
@@ -23,9 +22,10 @@ const ROOT = "0x" + "77".repeat(32);
 const ME = "0x" + "5b".repeat(20);
 const reads: FlReads = { codeSize: async () => 1000, viewCall: async () => ZERO32 };
 const today = () => readFlNetworkState(realBook, reads);
-const withWm = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, reads);
 const DARK_REASON = 'FL payouts are not open on network "r1007" (payoutsOpen is false)';
-const status = (open: boolean, reason: string | null = open ? null : DARK_REASON): PayoutsStatus => ({ network: "r1007", payoutsOpenFlag: open, open, reason, contracts: [] });
+/** WorkMarket deployed, with core's gate answering as given (test-only). */
+const gated = (open: boolean, reason: string | null = open ? null : DARK_REASON) => () =>
+  readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open, reason }) });
 
 const chainOffer = (id: number, over: Partial<ChainOffer> = {}): ChainOffer => ({
   id, kind: "flRound", state: "payoutPosted", poster: "0x" + "11".repeat(20), bindRef: ZERO32, groupHash: ZERO32,
@@ -38,7 +38,6 @@ const work = (offers: ChainOffer[], settled: number[] = [], pullWei = 0n): MyWor
 });
 const deps = (w: MyWork, over: Partial<FlPayoutDeps> = {}): FlPayoutDeps => ({
   networkState: payoutsOpenNetwork,
-  payoutsStatus: async () => status(true),
   wallet: () => ME,
   call: async () => { throw new Error("not called: readMyWork is stood in"); },
   chainNow: async () => 1_700_000_000 + 86_400 + 10,
@@ -66,18 +65,15 @@ describe("schemas and annotations", () => {
 });
 
 describe("the gate, through handleTool", () => {
-  it("on this network every tool says WorkMarket is not available and never asks core's gate", async () => {
+  it("on this network every tool says WorkMarket is not available and proposes nothing", async () => {
     vi.spyOn(store, "flNetworkState").mockImplementation(today);
-    const st = vi.spyOn(store, "flPayoutsStatus");
     const propose = vi.spyOn(store, "proposeContractCall");
     for (const n of ALL) expect(await store.handleTool(call(n, { offerId: 1 }), "m1", noop)).toMatch(/WorkMarket is not available yet on this network/);
-    expect(st).not.toHaveBeenCalled();
     expect(propose).not.toHaveBeenCalled();
   });
 
-  it("with WorkMarket, payouts dark comes from core's gate (not the profile flag) with its reason", async () => {
-    vi.spyOn(store, "flNetworkState").mockImplementation(withWm);
-    vi.spyOn(store, "flPayoutsStatus").mockResolvedValue(status(false, 'WorkMarket code hash 0xaa does not match the pinned 0xbb'));
+  it("with WorkMarket, dark comes from core's gate (not the profile flag) with the gate's reason", async () => {
+    vi.spyOn(store, "flNetworkState").mockImplementation(gated(false, "WorkMarket code hash 0xaa does not match the pinned 0xbb"));
     const propose = vi.spyOn(store, "proposeContractCall");
     for (const n of ALL) {
       const out = await store.handleTool(call(n, { offerId: 1 }), "m1", noop);
@@ -86,9 +82,15 @@ describe("the gate, through handleTool", () => {
     expect(propose).not.toHaveBeenCalled();
   });
 
-  it("a status core cannot give is unknown with its reason, never open", async () => {
-    const out = await runFlPayoutTool("fl_withdraw_propose", {}, deps(work([], [], SALT), { payoutsStatus: async () => { throw new Error("whether payouts are open is decided by the desktop app's core"); } }));
-    expect(out.result).toMatch(/^Payouts: — \(core could not say whether payouts are open/);
+  it("the gate opens the tools even though no shipped profile sets the flag", async () => {
+    const out = await runFlPayoutTool("fl_payouts_list", {}, deps(work([], [], SALT), { networkState: gated(true) }));
+    expect(out.result).toContain("Pull balance, ready to withdraw: 1");
+  });
+
+  it("a gate core cannot read fails closed to dark with why", async () => {
+    const unread = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => { throw new Error("the payouts gate is read by the desktop app"); } });
+    const out = await runFlPayoutTool("fl_withdraw_propose", {}, deps(work([], [], SALT), { networkState: unread }));
+    expect(out.result).toMatch(/^Payouts: Payouts open after the security review\. the payouts gate was not read: the payouts gate is read by the desktop app/);
   });
 });
 

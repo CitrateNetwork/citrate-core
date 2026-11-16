@@ -1,0 +1,38 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H9 (fl_adapter_gate_read, fl_adapter_load_propose, fl_adapter_unload; lane HC)",
+  "note": "Items for the LoRA adapter tools over core's eval gate (src/agent/flAdapterTools.ts). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+  "tasks": [
+    {
+      "id": "tc-fl-adapter-gate-read-sha",
+      "prompt": "Did the eval gate accept the adapter with SHA-256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?",
+      "expect": {
+        "tool": "fl_adapter_gate_read",
+        "argsMatch": { "sha256": "re:^b{64}$" }
+      },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-fl-adapter-gate-read-all",
+      "prompt": "Which LoRA adapters have been through the eval gate on this computer, and is one loaded?",
+      "expect": { "tool": "fl_adapter_gate_read" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "tc-fl-adapter-load-propose",
+      "prompt": "Load the accepted adapter bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb into my local model.",
+      "expect": {
+        "tool": "fl_adapter_load_propose",
+        "argsMatch": { "sha256": "re:^b{64}$" },
+        "alsoAccept": ["fl_adapter_gate_read"]
+      },
+      "tags": ["tool-choice", "args", "write"]
+    },
+    {
+      "id": "tc-fl-adapter-unload",
+      "prompt": "Take the LoRA adapter off my local model, I want the base model back.",
+      "expect": { "tool": "fl_adapter_unload" },
+      "tags": ["tool-choice", "write"]
+    }
+  ]
+}

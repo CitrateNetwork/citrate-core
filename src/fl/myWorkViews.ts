@@ -11,7 +11,7 @@ import { disputeEnd, escrowOf, liveStateOf, NOT_ON_CHAIN, payoutStatusOf, readMy
 import type { FlNetworkState } from "./networkState";
 import type { Receipt } from "./Payouts";
 import { shortHex } from "./primitives";
-import type { ChainOffer, ChainRound, ViewCall } from "./workMarketReads";
+import { WITHDRAW_SIGNATURE, withdrawCalldata, type ChainOffer, type ChainRound, type ViewCall } from "./workMarketReads";
 
 export function liveRoundFrom(o: ChainOffer, r: ChainRound | null, head: number | null, payouts: FlNetworkState["payouts"]): LiveRound {
   const clock =
@@ -79,4 +79,20 @@ export function useMyWork(state: FlNetworkState, wallet: string, call: ViewCall)
     };
   }, [market, ledger, wallet]);
   return w;
+}
+
+/** Withdrawing moves SALT, so it waits for payouts like joining does. */
+export const WITHDRAW_WAITS_FOR_GSEC = "Withdrawing moves SALT, so it opens with payouts after the security review.";
+
+/** The exact WorkMarket.withdraw() the wallet review signs, or an Error naming why there is none.
+ *  Fails closed on its own (withdraw() is a generic selector): payouts not open per core's
+ *  payouts gate (fl_payouts_status, with its reason), WorkMarket absent, or no pull balance read
+ *  above zero. The Rust gate refuses the same call at signing regardless. */
+export function withdrawIntent(state: FlNetworkState, pullWei: bigint | null): { address: string; calldata: string; valueWei: string; label: string } {
+  if (state.payouts !== "open") throw new Error(state.payoutsReason ? `${WITHDRAW_WAITS_FOR_GSEC} ${state.payoutsReason}` : WITHDRAW_WAITS_FOR_GSEC);
+  const wm = state.contracts.WorkMarket;
+  if (wm.kind !== "deployed") throw new Error("WorkMarket is not on this network");
+  if (pullWei === null) throw new Error("your WorkMarket pull balance was not read, so nothing was sent");
+  if (pullWei <= 0n) throw new Error("there is nothing in your WorkMarket pull balance to withdraw");
+  return { address: wm.address, calldata: withdrawCalldata(), valueWei: "0", label: WITHDRAW_SIGNATURE };
 }
