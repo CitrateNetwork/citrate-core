@@ -10,6 +10,7 @@
 // =====================================================================
 import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
 import { dataClassProblem, newProposalId } from "../agent/workerProposal";
+import { BLANK_DRAFT, draftProblems, setRoundDraft, type RoundDraft } from "../fl/roundDraft";
 import { contextPreamble, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
 import { contextKindOf, offTitles } from "../agent/hermesContext";
 import { useSyncExternalStore } from "react";
@@ -20,6 +21,7 @@ import {
   CerSpec,
   ChatMsg,
   ChatProposal,
+  ChatRoundDraft,
   LogLine,
   Persona,
   PERSONAS,
@@ -3212,7 +3214,12 @@ export class Store {
     this.branchSeed = lines.length > 0 ? { threadId, text: lines.join("\n") } : null;
     // A branch never carries an open proposal: its card is expired there (Hermes proposes again).
     this.setState({
-      chatMsgs: kept.map((m) => ({ ...m, id: "b" + ++this.mid, ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}) })),
+      chatMsgs: kept.map((m) => ({
+        ...m,
+        id: "b" + ++this.mid,
+        ...(m.proposal ? { proposal: expireOpenProposal(m.proposal) } : {}),
+        ...(m.roundDraft?.state === "pending" ? { roundDraft: { ...m.roundDraft, state: "expired" as const } } : {}),
+      })),
       chatThreadId: threadId,
       chatQueue: [],
     });
@@ -3273,6 +3280,47 @@ export class Store {
     // An expired card stays expired: only a new proposal can be confirmed.
     if (!p || p.state === "expired") return;
     this.patchProposal(id, { state: "pending", at: undefined, error: undefined });
+  }
+
+  // ---------- Board 07 — a round draft from Hermes (core-rendered card) ----------
+  /** Show Hermes's round draft on a card under reply `msgId`. Nothing is saved until the member
+   *  presses "Review in Open a round". */
+  proposeRoundDraft(draft: Partial<RoundDraft>, msgId?: string): string {
+    const card: ChatRoundDraft = { id: newProposalId(), draft, state: "pending" };
+    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, roundDraft: card } : m)) }));
+    } else {
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, roundDraft: card }]) }));
+    }
+    const missing = draftProblems({ ...BLANK_DRAFT, ...draft, source: "hermes" });
+    return (
+      "The round draft is on a card in the chat. Nothing is saved or opened until the member presses Review in Open a round and signs it there." +
+      (missing.length ? " Still to fill in: " + missing.join("; ") + "." : "")
+    );
+  }
+
+  private patchRoundDraft(id: string, patch: Partial<ChatRoundDraft>): void {
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.roundDraft?.id === id ? { ...m, roundDraft: { ...m.roundDraft, ...patch } } : m)) }));
+  }
+
+  /** The member pressed "Review in Open a round": the draft goes to that board, marked Hermes's. */
+  openRoundDraft(id: string): void {
+    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
+    if (!c || c.state === "expired" || c.state === "declined") return;
+    try {
+      setRoundDraft({ ...c.draft, draftedFor: "this Hermes chat" }, "hermes");
+    } catch (e) {
+      this.toast("The draft could not be saved on this device: " + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    this.patchRoundDraft(id, { state: "opened", at: Date.now() });
+    this.go("groups/rounds/open");
+  }
+
+  declineRoundDraft(id: string): void {
+    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
+    if (!c || c.state !== "pending") return;
+    this.patchRoundDraft(id, { state: "declined", at: Date.now() });
   }
 
   /** Retry an answer as a branch: its member message is sent again, on the current model. */
@@ -4856,6 +4904,21 @@ export class Store {
       };
       ensure();
       result = this.proposeWorkerTerms(terms, asstId);
+    } else if (call.name === "round_draft_propose") {
+      // Board 07: core shows the draft; only the member hands it to Open a round and signs there.
+      const a = args as Record<string, unknown>;
+      const str = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 200) : typeof v === "number" && Number.isFinite(v) ? String(v) : undefined);
+      const draft: Partial<RoundDraft> = {};
+      if (a.template === "tune" || a.template === "eval" || a.template === "data") draft.template = a.template;
+      if (str(a.dataClass)) draft.dataClass = str(a.dataClass);
+      if (str(a.budgetSalt)) draft.budgetSalt = str(a.budgetSalt);
+      if (str(a.rateSalt)) draft.rateSalt = str(a.rateSalt);
+      if (typeof a.maxWorkers === "number" && Number.isInteger(a.maxWorkers)) draft.maxWorkers = a.maxWorkers;
+      if (str(a.deadline)) draft.deadline = str(a.deadline);
+      if (a.who === "members" || a.who === "group" || a.who === "anyone") draft.who = a.who;
+      if (typeof a.groupId === "string" && a.groupId.trim()) draft.groupId = a.groupId.trim().slice(0, 128);
+      ensure();
+      result = this.proposeRoundDraft(draft, asstId);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
