@@ -166,6 +166,18 @@ export async function selectGroup(groupId: string): Promise<void> {
 /** Send a message to the selected group. Echoes it locally at once, then relays + drains. */
 export async function sendMessage(body: string): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
+  if (!groupId) return;
+  await sendMessageTo(groupId, body).catch(() => {
+    /* the error is in the slice */
+  });
+}
+
+/**
+ * Send `body` to `groupId` (not necessarily the selected group): echo it locally at once, relay it,
+ * then drain. Rejects when the relay refused it (the reason is also in `error`), so a caller that
+ * must know (a Hermes answer, a thread reply) can say it was not sent.
+ */
+export async function sendMessageTo(groupId: string, body: string): Promise<void> {
   const text = body.trim();
   if (!groupId || !text) return;
   groupsSlice.set({ sending: true, error: null });
@@ -185,10 +197,16 @@ export async function sendMessage(body: string): Promise<void> {
   try {
     await bridge.groups.send(groupId, text);
     groupsSlice.set({ sending: false });
-    await reloadMessages(groupId);
   } catch (e) {
     groupsSlice.set({ sending: false, error: message(e) });
+    throw e;
   }
+  await reloadMessages(groupId);
+}
+
+/** This member's comms address as the optimistic echo records it (the roster key). */
+export async function mySendAddress(): Promise<string> {
+  return selfAddress();
 }
 
 /** Drain new messages for a group and fold them into retained history. No-op if selection moved on. */
