@@ -104,6 +104,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // version from other people's pages, so its result is untrusted and taints the session.
   fl_source_check: { effect: "none", trust: "trusted" },
   fl_collect_plan: { effect: "write", trust: "untrusted" },
+  fl_dataset_publish_propose: { effect: "write", trust: "trusted" }, // IPFS after the card; core gates license and PII scan
   // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
   // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
   // schedule is written by the member or approved by them.

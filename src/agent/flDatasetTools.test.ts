@@ -45,6 +45,10 @@ describe("the dataset tools are registered and annotated", () => {
     expect(annotationFor("fl_dataset_sample")).toEqual({ effect: "none", trust: "untrusted" });
     expect(annotationFor("fl_dataset_create")?.effect).toBe("write");
     expect(isFlDatasetTool("fl_dataset_publish")).toBe(false);
+    // Publishing runs in src/fl/datasetPublishTool.ts, outside the harness import graph.
+    expect(names).toContain("fl_dataset_publish_propose");
+    expect(isFlDatasetTool("fl_dataset_publish_propose")).toBe(false);
+    expect(READ_ONLY_AGENT_TOOLS.has("fl_dataset_publish_propose")).toBe(false);
   });
 });
 

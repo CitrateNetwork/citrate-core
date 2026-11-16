@@ -95,7 +95,26 @@ export const FL_DATASET_AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "fl_dataset_publish_propose",
+      description:
+        "PROPOSE publishing the latest version of a dataset to IPFS as Public, under a license (an SPDX id such as CC-BY-4.0, or LicenseRef-…). Core refuses unless its publish gate passes: the on-device PII scan of exactly these rows passed, every collected source has a publishable license, the dataset license is on the publishable list, and a ShareAlike source means the dataset takes that same license. You cannot override it. The member decides on a card (HIC-1, never inside an envelope) that says publishing cannot be undone: a CID cannot be recalled. The DatasetRegistry record follows only where this network has DatasetRegistry; otherwise say it is not available on this network yet.",
+      parameters: {
+        type: "object",
+        properties: {
+          dataset: { type: "string", description: "the dataset id" },
+          license: { type: "string", description: "the dataset license, an SPDX id or LicenseRef-…" },
+        },
+        required: ["dataset", "license"],
+      },
+    },
+  },
 ] as const;
+
+/** The publish tool runs in src/fl/datasetPublishTool.ts (it reads the address book and the chain). */
+export const FL_DATASET_PUBLISH_TOOL = "fl_dataset_publish_propose";
 
 export interface FlDatasetDeps {
   ds: Pick<FlDatasetsDomain, "list" | "create" | "sample" | "cleanPreview" | "cleanApply">;
@@ -136,6 +155,8 @@ export function versionLine(v: FlDatasetVersion): string {
   if (v.untrusted) parts.push("holds content other people wrote");
   return "- " + parts.filter(Boolean).join(", ");
 }
+
+export { latest as latestVersion };
 
 /** The list as Hermes reads it. Names are fenced: Hermes may have named a dataset after content. */
 export function formatDatasetList(l: FlDatasetList): string {

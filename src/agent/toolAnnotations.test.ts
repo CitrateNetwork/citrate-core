@@ -9,7 +9,7 @@ import { store } from "../shell/store";
 import { bridge } from "../bridge";
 import { livePlan } from "../fl/fixtures/plan";
 import { ADAPTER_SHA, flOverview, gateRecord } from "../fl/fixtures/gate";
-import { DATASET_ID, cleanPreview, datasetList } from "../fl/fixtures/datasets";
+import { DATASET_ID, cleanPreview, datasetList, publishPreview } from "../fl/fixtures/datasets";
 import { FILLED_DRAFT, ROUND_BINDING, VRAM_24GB_REPORT, oneOfferMarket, payoutsOpenNetwork } from "../fl/fixtures/market";
 import { saveRoundDraft } from "../fl/roundDraft";
 import { flCollect } from "../fl/collect";
@@ -69,6 +69,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         dataset: DATASET_ID,
         ops: [{ op: "dedupe" }],
         offerId: 1,
+        license: "MIT",
       }),
     });
     for (const n of names) {
@@ -111,6 +112,8 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       // WP-H8: fl_collect_plan asks only about a plan core built with something to collect.
       vi.spyOn(flCollect, "plan").mockResolvedValue(collectPlan());
       vi.spyOn(flCollect, "decide").mockResolvedValue(collectPlan({ status: "declined" }));
+      vi.spyOn(bridge.flDatasets, "published").mockResolvedValue([]);
+      vi.spyOn(bridge.flDatasets, "publishPreview").mockResolvedValue(publishPreview());
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

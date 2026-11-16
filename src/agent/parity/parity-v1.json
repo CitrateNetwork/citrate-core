@@ -67,6 +67,7 @@
     { "name": "fl_dataset_create", "host": "core", "read_only": false },
     { "name": "fl_dataset_sample", "host": "core", "read_only": true },
     { "name": "fl_dataset_clean_propose", "host": "core", "read_only": false },
+    { "name": "fl_dataset_publish_propose", "host": "core", "read_only": false },
     { "name": "fl_round_draft_read", "host": "core", "read_only": true },
     { "name": "fl_offers_list", "host": "core", "read_only": true },
     { "name": "fl_join_propose", "host": "core", "read_only": false },
