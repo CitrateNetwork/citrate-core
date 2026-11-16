@@ -52,6 +52,10 @@ describe("fl_adapter_gate_read", () => {
     expect(out).toContain("correct_tool_rate: 0.910 to 0.930 (+0.020)");
     expect(out).toContain("did not read the round ledger");
     expect(out).toContain("serve no adapter");
+    // The base model name is the scorecard file's own text: it reaches the model only fenced.
+    const fenced = out.slice(out.indexOf("<<<UNTRUSTED"), out.indexOf("UNTRUSTED>>>"));
+    expect(fenced).toContain("gemma-4-E4B-it-Q4_0.gguf");
+    expect(out.replace(fenced, "")).not.toContain("gemma-4-E4B-it-Q4_0.gguf");
   });
 
   it("says the round checks were not applicable when no round result was given", async () => {
@@ -90,7 +94,7 @@ describe("fl_adapter_gate_read", () => {
       }),
     );
     const out = await store.handleTool(call("fl_adapter_gate_read"), "m1", noop);
-    expect(out).toContain(`- ${ADAPTER_SHA}: ACCEPT on gemma-4-E4B-it-Q4_0.gguf`);
+    expect(out).toContain(`- ${ADAPTER_SHA}: ACCEPT, round ${ROUND_ID}`);
     expect(out).toContain("Remembered adapter");
     expect(out).toContain("was not put back: the file changed");
   });
@@ -123,7 +127,7 @@ describe("fl_adapter_load_propose (HIC-1)", () => {
     const rows = spec.rows.map((r) => r.k + "=" + r.v).join("\n");
     expect(rows).toContain(ADAPTER_SHA);
     expect(rows).toContain("ACCEPT");
-    expect(rows).toContain("gemma-4-E4B-it-Q4_0.gguf");
+    expect(rows).toContain("measured on (as the scorecard file names it)=gemma-4-E4B-it-Q4_0.gguf");
     expect(load).not.toHaveBeenCalled();
     expect(out).toMatch(/declined/);
   });
@@ -167,11 +171,17 @@ describe("fl_adapter_load_propose (HIC-1)", () => {
 describe("fl_adapter_unload (lowers authority)", () => {
   it("unloads with no card and says the adapter is not put back", async () => {
     const sig = vi.spyOn(store, "requestSig");
-    const unload = vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue();
+    const unload = vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
     const out = await store.handleTool(call("fl_adapter_unload"), "m1", noop);
     expect(sig).not.toHaveBeenCalled();
     expect(unload).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/base model serves alone/);
+  });
+
+  it("says nothing changed when no adapter was loaded or remembered", async () => {
+    vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(false);
+    const out = await store.handleTool(call("fl_adapter_unload"), "m1", noop);
+    expect(out).toMatch(/No adapter was loaded or remembered, so nothing changed/);
   });
 
   it("says so when core could not unload", async () => {
@@ -181,7 +191,7 @@ describe("fl_adapter_unload (lowers authority)", () => {
 
   it("in a tainted session it still waits for the member's card (fail closed)", async () => {
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
-    const unload = vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue();
+    const unload = vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
     await store.handleTool(call("fl_adapter_unload"), "m1", noop, { hic: "required", hicReason: "this session read untrusted content" });
     expect(sig).toHaveBeenCalledTimes(1);
     expect(unload).not.toHaveBeenCalled();

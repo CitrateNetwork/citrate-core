@@ -68,7 +68,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
       // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
-      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue();
+      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

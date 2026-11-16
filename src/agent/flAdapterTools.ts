@@ -85,14 +85,14 @@ export function checkLines(rec: FlAdapterGateRecord): string[] {
 
 const f3 = (v: number | null) => (v === null ? "n/a" : v.toFixed(3));
 
-/** One record, as Hermes reads it. Core's verdict and numbers are outside the fence; the reasons
- *  can quote the scorecard files' model and dataset names, so they are fenced. */
+/** One record, as Hermes reads it. Core's verdict, numbers and checked ids are outside the fence.
+ *  The base model name is the scorecard file's own `model` field, and the reasons can quote the
+ *  scorecards' model and dataset names, so both are fenced: a scorecard may come from someone else. */
 export function formatGateRecord(rec: FlAdapterGateRecord): string {
   const d = rec.decision;
   const lines = [
     `Adapter ${rec.adapterSha256}`,
     `Verdict: ${d.verdict} (mean of shared metrics ${f3(d.compositeBase)} to ${f3(d.compositeCandidate)}), decided ${new Date(rec.decidedAtMs).toISOString()}`,
-    `Base model it was measured on: ${rec.baseModel}`,
     rec.round
       ? `Round ${rec.round.roundId}, record ${rec.round.recordDigest}, ${rec.round.participants} devices, chain ${rec.round.chainId}. Core checked the round result file the member gave; it did not read the round ledger.`
       : "No round result was given, so this adapter is not tied to a round.",
@@ -100,8 +100,8 @@ export function formatGateRecord(rec: FlAdapterGateRecord): string {
     ...checkLines(rec),
     "Metrics (base to candidate):",
     ...d.metrics.map((m) => `- ${m.metric}: ${f3(m.base)} to ${f3(m.candidate)}${m.improvement === null ? "" : ` (${m.improvement >= 0 ? "+" : ""}${m.improvement.toFixed(3)})`}`),
+    fenceUntrusted("from the scorecard files: the base model they name, and the gate's reasons", { measuredOn: rec.baseModel, reasons: d.reasons }),
   ];
-  if (d.reasons.length > 0) lines.push(fenceUntrusted("eval gate reasons, which can quote scorecard files", d.reasons.join("\n")));
   return lines.join("\n");
 }
 
@@ -148,7 +148,7 @@ async function gateRead(args: Record<string, unknown>, deps: FlAdapterDeps): Pro
   const shas = [...new Set(ov.gates.map((g) => g.adapterSha256.toLowerCase()))];
   const rows = shas.map((s) => {
     const r = latestGateFor(ov.gates, s)!;
-    return `- ${s}: ${r.decision.verdict} on ${r.baseModel}${r.round ? `, round ${r.round.roundId}` : ", no round result"}`;
+    return `- ${s}: ${r.decision.verdict}${r.round ? `, round ${r.round.roundId}` : ", no round result"}`;
   });
   return {
     status: "ok",
@@ -170,9 +170,11 @@ async function loadPropose(args: Record<string, unknown>, ann: ToolAnnotation | 
   if (rec.decision.verdict !== "ACCEPT") {
     return { status: "ok", result: `The eval gate's latest decision for adapter ${sha} is REJECT, and core loads only an accepted adapter. Nothing was proposed.\n${formatGateRecord(rec)}` };
   }
+  // The base model name comes from the scorecard file, not from core: the card labels it so and
+  // clips it. Core's authorize_load refuses unless it matches the model actually served.
   const fields: Record<string, unknown> = {
     adapter: sha,
-    "measured on": rec.baseModel,
+    "measured on (as the scorecard file names it)": rec.baseModel.slice(0, 120),
     "eval gate": `ACCEPT, mean of shared metrics ${f3(rec.decision.compositeBase)} to ${f3(rec.decision.compositeCandidate)}`,
     round: rec.round ? `${rec.round.roundId} (${rec.round.participants} devices, from the round result file)` : "none given",
     effect: "restarts the local model with this adapter; it is put back after a restart until you unload it",
@@ -193,7 +195,7 @@ async function loadPropose(args: Record<string, unknown>, ann: ToolAnnotation | 
   }
   try {
     await deps.fl.loadAdapter(sha);
-    return { status: "approved", result: `Loaded adapter ${sha} into the local model on ${rec.baseModel}, after core checked its gate record and re-hashed the file.` };
+    return { status: "approved", result: `Loaded adapter ${sha} into the local model, after core checked its gate record against the base model being served and re-hashed the file.` };
   } catch (e) {
     return { status: "error", result: "Core refused loading the adapter: " + msg(e) };
   }
@@ -201,7 +203,8 @@ async function loadPropose(args: Record<string, unknown>, ann: ToolAnnotation | 
 
 async function unload(deps: FlAdapterDeps): Promise<FlAdapterOutcome> {
   try {
-    await deps.fl.unloadAdapter();
+    const unloaded = await deps.fl.unloadAdapter();
+    if (!unloaded) return { status: "ok", result: "No adapter was loaded or remembered, so nothing changed; the base model serves alone." };
     return { status: "ok", result: "Unloaded the adapter. The base model serves alone, and no adapter is put back after a restart." };
   } catch (e) {
     return { status: "error", result: "couldn't unload the adapter: " + msg(e) };

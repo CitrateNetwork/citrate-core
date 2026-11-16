@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { store } from "./store";
 import { rejectApproval } from "./slices/agent";
+import { SELF_GATED_TOOLS } from "./store";
 import { bridge } from "../bridge";
 import { AGENT_TOOLS, AUTHORITY_LOWERING_AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
@@ -158,16 +159,47 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
     }
   });
 
-  // 0.5.4 Hermes x FL: an authority-lowering tool never opens a signature or a wallet review, so
-  // it cannot be used to move value or raise authority. (Its own test checks the one command.)
-  it("tripwire: authority-lowering tools open no signature and no wallet review", async () => {
+  // 0.5.4 Hermes x FL (#702 review): the authority-lowering exemption is pinned, overlaps neither
+  // reviewed list, and each tool in it may reach ONLY its own lowering command. Adding a tool to
+  // AUTHORITY_LOWERING_AGENT_TOOLS needs a reviewed reason in harness.ts and an entry here.
+  const LOWERING_ALLOWED_CALLS: Record<string, string[]> = {
+    fl_adapter_unload: ["flRounds.unloadAdapter"],
+  };
+
+  it("the authority-lowering set is exactly the reviewed one and overlaps no other gate list", () => {
+    expect([...AUTHORITY_LOWERING_AGENT_TOOLS].sort()).toEqual(["fl_adapter_unload"]);
+    expect(Object.keys(LOWERING_ALLOWED_CALLS).sort()).toEqual([...AUTHORITY_LOWERING_AGENT_TOOLS].sort());
+    for (const n of AUTHORITY_LOWERING_AGENT_TOOLS) {
+      expect(READ_ONLY_AGENT_TOOLS.has(n), n).toBe(false);
+      expect(SELF_GATED_TOOLS.has(n), n).toBe(false);
+    }
+  });
+
+  it("tripwire: an authority-lowering tool asks nothing, signs nothing and calls only its own command", async () => {
     for (const name of AUTHORITY_LOWERING_AGENT_TOOLS) {
       vi.restoreAllMocks();
+      const calls: string[] = [];
+      // Every bridge domain method, recorded (each resolves true).
+      for (const [domain, impl] of Object.entries(bridge as unknown as Record<string, Record<string, unknown>>)) {
+        if (!impl || typeof impl !== "object") continue;
+        for (const method of Object.keys(impl)) {
+          if (typeof impl[method] !== "function") continue;
+          vi.spyOn(impl as Record<string, (...a: unknown[]) => unknown>, method).mockImplementation(async () => {
+            calls.push(`${domain}.${method}`);
+            return true;
+          });
+        }
+      }
+      vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) => {
+        calls.push(`everydayInvoke.${cmd}`);
+        return {};
+      }) as never);
       const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
       const review = vi.spyOn(store, "openWalletReview").mockImplementation(() => {});
-      vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue();
-      await store.handleTool(call(name, {}), "m1", noop);
+      await store.handleTool(call(name, { group: "g", sha256: "b".repeat(64), roundId: "0x" + "c".repeat(64) }), "m1", noop);
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must not ask or sign`).toBe(0);
+      expect(calls.length, `tool ${name} calls its lowering command`).toBeGreaterThan(0);
+      for (const c of calls) expect(LOWERING_ALLOWED_CALLS[name], `tool ${name} called ${c}`).toContain(c);
     }
   });
 });
