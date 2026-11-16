@@ -3,12 +3,14 @@
 //
 // One card, two places: Groups › Rounds ("tab") and the top of a group's chat ("chat"). It shows
 // only what the address book and the chain say about the two round ledgers (groupRoundsLedger.ts):
-// not live, deployed and dormant, or unknown. It shows no round, no amounts and no projections:
-// rounds go live after mainnet, and until then there is nothing to join here.
+// not live, deployed with no rounds, or unknown. It shows no round, no amounts and no projections.
+// #676 (0.5.4): every state that cannot run a round says "Group rounds not live yet" (UI truth
+// contract v1.2 §1), with the allowed "deployed, no rounds" detail for deployed ledgers.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
 import realBook from "../../src-tauri/addresses/40204.json";
+import { DEPLOYED_NO_ROUNDS, ROUNDS_NOT_LIVE } from "./networkState";
 import { bookOnlyReading, readGroupRounds, type GroupRoundsReading, type RoundLedgerBook } from "./groupRoundsLedger";
 
 const SOURCE = "source · address book 40204.json · eth_getCode on 40204";
@@ -52,12 +54,12 @@ function copyFor(r: GroupRoundsReading): { chip: string; tone: string; title: st
         title: "Round ledgers: —",
         body: `Couldn't read the round ledgers on 40204 (${r.reason}). Their state is unknown until the read succeeds.`,
       };
-    case "dormant":
+    case "deployed-no-rounds":
       return {
-        chip: "Deployed · dormant",
-        tone: "var(--tx-2)",
-        title: "Group rounds are not open yet",
-        body: "The round ledgers are deployed on 40204 and dormant while they are audited. Rounds open after mainnet; until then there is no round to join here.",
+        chip: "Not live",
+        tone: "var(--tx-3)",
+        title: ROUNDS_NOT_LIVE,
+        body: `FederatedRoundLedger and PatronageLedger are ${DEPLOYED_NO_ROUNDS} on 40204. Rounds are offered to members through the WorkMarket contract, which is not on this network yet, so there is no round to join here.`,
       };
   }
 }
@@ -71,11 +73,11 @@ export function GroupRoundsView({ reading, variant }: { reading: GroupRoundsRead
         <span className="mono" style={chip(c.tone)}>{c.chip}</span>
       </div>
       <p style={{ fontSize: variant === "chat" ? 12 : 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>{c.body}</p>
-      {reading.kind === "dormant" && variant === "tab" && (
+      {reading.kind === "deployed-no-rounds" && variant === "tab" && (
         <ul className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", margin: 0, paddingLeft: 16, lineHeight: 1.7 }}>
           {reading.ledgers.map((l) => (
             <li key={l.name}>
-              {l.name} · {short(l.address)} · {l.codeSize.toLocaleString("en-US")} bytes of code
+              {l.name} · {short(l.address)} · {DEPLOYED_NO_ROUNDS} ({l.codeSize.toLocaleString("en-US")} bytes of code)
             </li>
           ))}
         </ul>

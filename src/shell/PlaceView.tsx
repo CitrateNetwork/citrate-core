@@ -13,11 +13,8 @@ import { HermesWork } from "../surfaces/hermes/HermesWork";
 import { HermesLearn } from "../surfaces/hermes/HermesLearn";
 import { HermesControls } from "../surfaces/hermes/HermesControls";
 import { agentSlice } from "./slices/agent";
-import { flRoundCardsEnabled } from "../fl/roundCardsFlag";
-import { GroupRoundsCard } from "../fl/GroupRoundsCard";
-import { FlRoundsPanel } from "../fl/FlRoundsPanel";
-import { bridge } from "../bridge";
-import { Models, StorageFiles, Groups, Cluster, Train, Connections, Community, People } from "../surfaces";
+import { RoundsRoute } from "../fl/RoundsRoute";
+import { Models, StorageFiles, Groups, Cluster, Connections, Community, People } from "../surfaces";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
 import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
@@ -102,18 +99,13 @@ function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
     case "groups/chat/alerts":
       return <Comms store={store} s={s} />;
     case "groups/rounds":
-      // FL round cards (0.5.2) behind VITE_FL_ROUND_CARDS: the address-book-gated ledger card in
-      // place of Train's PatronageLedger read, with the same federated-rounds panel below it.
-      if (flRoundCardsEnabled())
-        return (
-          <>
-            <GroupRoundsCard variant="tab" />
-            <div style={{ padding: "16px 26px 24px", maxWidth: 900 }}>
-              <FlRoundsPanel fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />
-            </div>
-          </>
-        );
-      return <Train store={store} s={s} />;
+    case "groups/rounds/live":
+    case "groups/rounds/open":
+    case "groups/rounds/datasets":
+    case "groups/rounds/adapters":
+    case "groups/rounds/payouts":
+      // FL design (0.5.4): Groups › Rounds and its sub-tabs (src/fl/RoundsRoute.tsx).
+      return <RoundsRoute route={route} store={store} s={s} />;
     case "groups/members":
       return <People store={store} s={s} />;
     case "groups/cluster":
