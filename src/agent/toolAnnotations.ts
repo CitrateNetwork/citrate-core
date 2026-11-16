@@ -60,6 +60,15 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // 0.5.4 WP-H3 (src/agent/flWorkTools.ts): the member's own sealed terms and consents, and this
+  // machine's local probe. Nothing another person writes reaches these results.
+  fl_terms_read: { effect: "none", trust: "trusted" },
+  fl_consent_list: { effect: "none", trust: "trusted" },
+  fl_consent_withdraw: { effect: "write", trust: "trusted" }, // lowers authority; no card
+  fl_eligibility: { effect: "none", trust: "trusted" },
+  // 0.5.4 WP-H4 (src/agent/flEnvelopeTools.ts): core's own words over the member's sealed envelope.
+  fl_envelope_read: { effect: "none", trust: "trusted" },
+  fl_envelope_propose: { effect: "write", trust: "trusted" }, // on after the member's card; off at once
   // 0.5.4 WP-H9: gate records are core's, but their reasons can quote the model and dataset names
   // in scorecard files, which may come from someone else, so the read is untrusted.
   fl_adapter_gate_read: { effect: "none", trust: "untrusted" },

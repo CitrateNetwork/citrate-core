@@ -223,3 +223,34 @@ fn the_commands_are_in_the_main_window_acl() {
         );
     }
 }
+
+/// 0.5.4 WP-H3 (#712 review): the revoke-only entry point turns training off and can do nothing
+/// else. It takes no switch argument, so no caller can turn training on through it.
+#[test]
+fn revoke_only_turns_consent_off_keeps_recordings_and_deletes_training_sets() {
+    let d = tmp("revoke");
+    set(&d, true, false, 1).expect("on");
+    record(&d, "sess-a-100.jsonl", &[export_line("one")]);
+    build_round_dataset(&d, 5, 2).expect("built");
+    assert_eq!(status(&d).datasets, 1);
+
+    let s = revoke(&d, 3).expect("revoked");
+    assert!(!s.settings.enabled);
+    assert_eq!(s.settings.changed_at_ms, Some(3));
+    assert_eq!(s.datasets, 0, "assembled training sets are deleted");
+    assert_eq!(s.recorded_files, 1, "recordings are kept");
+    // Already off: it stays off.
+    assert!(!revoke(&d, 4).expect("again").settings.enabled);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn the_revoke_command_takes_no_switch_argument() {
+    let src = include_str!("fl_trajectories.rs");
+    let at = src
+        .find("pub async fn trajectories_consent_revoke(")
+        .expect("trajectories_consent_revoke command");
+    let sig = &src[at..at + src[at..].find('{').expect("body")];
+    assert!(!sig.contains("bool"), "{sig}");
+    assert!(!sig.contains("enabled"), "{sig}");
+}

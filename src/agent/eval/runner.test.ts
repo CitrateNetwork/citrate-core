@@ -38,7 +38,26 @@ function textMsg(content: string): AssistantMessage {
 describe("WRITE_TOOLS is derived from the real harness", () => {
   it("is exactly the non-read-only AGENT_TOOLS", () => {
     expect([...WRITE_TOOLS].sort()).toEqual(
-      ["contract_deploy", "fl_adapter_load_propose", "fl_adapter_unload", "fl_dataset_clean_propose", "fl_dataset_create", "fl_round_start", "group_create", "group_invite", "gsheets_append", "journal_append", "memory_assert", "schedule_add", "skill_write", "widget_create"].sort(),
+      [
+        "contract_deploy",
+        "fl_adapter_load_propose",
+        "fl_adapter_unload",
+        "fl_dataset_clean_propose",
+        "fl_dataset_create",
+        "fl_round_start",
+        "group_create",
+        "group_invite",
+        "gsheets_append",
+        "journal_append",
+        "memory_assert",
+        "schedule_add",
+        "skill_write",
+        "widget_create",
+        // 0.5.4 WP-H3
+        "fl_consent_withdraw",
+        // 0.5.4 WP-H4
+        "fl_envelope_propose",
+      ].sort(),
     );
   });
 });

@@ -1,0 +1,56 @@
+{
+  "added": "2026-11-15",
+  "by": "0.5.4 Hermes x FL WP-H4 (lane HB: fl_envelope_read, fl_envelope_propose)",
+  "note": "Fragment for toolcall-v2 (A50). Single-turn, hand-written, disjoint from any training set.",
+  "tasks": [
+    {
+      "id": "tc-fl-envelope-read",
+      "prompt": "How many joins do I have left in my envelope this week?",
+      "expect": {
+        "tool": "fl_envelope_read"
+      },
+      "tags": [
+        "tool-choice",
+        "read",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-envelope-propose",
+      "prompt": "Let Hermes join up to 3 rounds a week for me without asking, 8 machine hours each at most.",
+      "expect": {
+        "tool": "fl_envelope_propose",
+        "argsMatch": {
+          "enabled": "re:^true$",
+          "joinsPerWeek": "re:^3$",
+          "maxHoursPerRound": "re:^8$"
+        },
+        "alsoAccept": [
+          "fl_envelope_read"
+        ]
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    },
+    {
+      "id": "tc-fl-envelope-off",
+      "prompt": "Turn my envelope off right now.",
+      "expect": {
+        "tool": "fl_envelope_propose",
+        "argsMatch": {
+          "enabled": "re:^false$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write",
+        "fl"
+      ]
+    }
+  ]
+}

@@ -146,6 +146,12 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
+      vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
+        status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
+        approve: async () => ({}) as never,
+        off: async () => null,
+      });
       // 0.5.4 WP-H9: fl_adapter_load_propose asks only about an adapter the gate accepted.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
       // 0.5.4 WP-H6: the dataset writes ask about a dataset core lists and a clean core previewed.
@@ -167,6 +173,9 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
           rows: [["a", 1]],
           title: "Weekly review",
           start: "2099-01-05T09:00",
+          enabled: true,
+          joinsPerWeek: 3,
+          maxHoursPerRound: 8,
           sha256: ADAPTER_SHA,
           // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
           dataClass: "orchard-notes",
@@ -186,10 +195,13 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
   // AUTHORITY_LOWERING_AGENT_TOOLS needs a reviewed reason in harness.ts and an entry here.
   const LOWERING_ALLOWED_CALLS: Record<string, string[]> = {
     fl_adapter_unload: ["flRounds.unloadAdapter"],
+    // 0.5.4 WP-H3: one round's consent off, or conversation training off (re-read under the start lock).
+    // Both are turn-off-only by construction: neither command takes a switch (#712 review).
+    fl_consent_withdraw: ["flRounds.revokeConsent", "flRounds.trajectoryStatus", "flRounds.revokeTrajectoryConsent"],
   };
 
   it("the authority-lowering set is exactly the reviewed one and overlaps no other gate list", () => {
-    expect([...AUTHORITY_LOWERING_AGENT_TOOLS].sort()).toEqual(["fl_adapter_unload"]);
+    expect([...AUTHORITY_LOWERING_AGENT_TOOLS].sort()).toEqual(["fl_adapter_unload", "fl_consent_withdraw"]);
     expect(Object.keys(LOWERING_ALLOWED_CALLS).sort()).toEqual([...AUTHORITY_LOWERING_AGENT_TOOLS].sort());
     for (const n of AUTHORITY_LOWERING_AGENT_TOOLS) {
       expect(READ_ONLY_AGENT_TOOLS.has(n), n).toBe(false);
@@ -218,7 +230,10 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       }) as never);
       const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
       const review = vi.spyOn(store, "openWalletReview").mockImplementation(() => {});
-      await store.handleTool(call(name, { group: "g", sha256: "b".repeat(64), roundId: "0x" + "c".repeat(64) }), "m1", noop);
+      // Every scope a lowering tool takes (fl_consent_withdraw: a round, or conversation training).
+      for (const scope of ["round", "conversations"]) {
+        await store.handleTool(call(name, { group: "g", scope, sha256: "b".repeat(64), roundId: "0x" + "c".repeat(64) }), "m1", noop);
+      }
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must not ask or sign`).toBe(0);
       expect(calls.length, `tool ${name} calls its lowering command`).toBeGreaterThan(0);
       for (const c of calls) expect(LOWERING_ALLOWED_CALLS[name], `tool ${name} called ${c}`).toContain(c);

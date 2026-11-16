@@ -257,6 +257,10 @@
       "sha256": "d2c9ff0f012d970443a37907303351d91a2b30ce5f5cd993e4380c80a0a8122b"
     },
     {
+      "id": "tc-fl-terms-read",
+      "sha256": "a7b0e6c4f0fab5466e15d273b2c357626541efb43eef8f94c2be052bd8e5d1e9"
+    },
+    {
       "id": "tc-get-code-proxy",
       "sha256": "89fdb8769490105cbdbdbd9ddaf61883a9ad35e0c22741761d82b8c8372d7e6e"
     },

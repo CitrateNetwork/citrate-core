@@ -54,6 +54,10 @@ describe("Feature: every agent tool is annotated (A8)", () => {
         rows: [["a", 1]],
         title: "Weekly review",
         start: "2099-01-05T09:00",
+        // 0.5.4 WP-H4: the envelope switch and caps.
+        enabled: true,
+        joinsPerWeek: 3,
+        maxHoursPerRound: 8,
         sha256: ADAPTER_SHA,
         // 0.5.4 WP-H6: a dataset create from a granted folder, and a clean of a listed dataset.
         dataClass: "orchard-notes",
@@ -72,6 +76,14 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1", origin: "o", kind: "transaction", chainId: 40204, decoded: { action: "a", cost: "c", destination: "d" }, requiresRawAck: false } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      // 0.5.4 WP-H3: no terms saved yet.
+      vi.spyOn(store, "flWorkTerms").mockReturnValue({ load: async () => null });
+      // 0.5.4 WP-H4: an envelope status core could return on r1007 (WorkMarket not pinned).
+      vi.spyOn(store, "flEnvelopeApi").mockReturnValue({
+        status: async () => ({ scope: "fl_envelope", envelope: null, joinsLeft: null, workMarketPinned: false, authorizes: false, note: "n", rules: [] }),
+        approve: async () => ({}) as never,
+        off: async () => null,
+      });
       // 0.5.4 WP-H9: an adapter the gate accepted, and an unload core completes.
       vi.spyOn(bridge.flRounds, "overview").mockResolvedValue(flOverview({ gates: [gateRecord()] }));
       vi.spyOn(bridge.flRounds, "unloadAdapter").mockResolvedValue(true);

@@ -789,6 +789,7 @@ pub fn run() {
             // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
             fl_trajectories::trajectories_settings_get,
             fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_consent_revoke,
             fl_trajectories::trajectories_dataset_build,
             // 0.5.4 WP-H6 — the local dataset store (create, versions, sample, clean, consent).
             fl_datasets::fl_dataset_list,

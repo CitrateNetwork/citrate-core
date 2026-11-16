@@ -39,6 +39,11 @@ import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvid
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { isFlWorkTool, runFlWorkTool } from "../agent/flWorkTools";
+import { isFlEnvelopeTool, runFlEnvelopeTool, type FlEnvelopeApi, type FlEnvelopeStatus } from "../agent/flEnvelopeTools";
+import { approveEnvelope, envelopeOff, ENVELOPE_NEEDS_DESKTOP } from "../fl/authority";
+import { loadWorkerTerms } from "../fl/workerTerms";
+import flAddressBook from "../../src-tauri/addresses/40204.json";
 import { isFlAdapterTool, runFlAdapterTool } from "../agent/flAdapterTools";
 import { isFlDatasetTool, runFlDatasetTool } from "../agent/flDatasetTools";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
@@ -129,7 +134,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4104,6 +4109,24 @@ export class Store {
     return r === "approved";
   }
 
+  /** 0.5.4 WP-H4 — the envelope in core: fl_envelope.rs status, fl_work.rs approve and off. */
+  flEnvelopeApi(): FlEnvelopeApi {
+    return {
+      status: async () => {
+        if (BRIDGE_MODE !== "tauri") throw new Error(ENVELOPE_NEEDS_DESKTOP);
+        const { invoke } = await import("../bridge/tauri/invoke");
+        return invoke<FlEnvelopeStatus>("fl_envelope_status", {});
+      },
+      approve: approveEnvelope,
+      off: envelopeOff,
+    };
+  }
+
+  /** 0.5.4 WP-H3 — the sealed worker terms in core (fl_work.rs via src/fl/workerTerms.ts). */
+  flWorkTerms(): { load: typeof loadWorkerTerms } {
+    return { load: loadWorkerTerms };
+  }
+
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
   everydayInvoke(): EverydayInvoke | null {
     if (BRIDGE_MODE !== "tauri") return null;
@@ -4641,6 +4664,28 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isFlEnvelopeTool(call.name)) {
+      // 0.5.4 WP-H4: the HIC-2 envelope. Turning one on asks on a card; off applies at once. Core
+      // enforces the caps (fl_envelope.rs); on a network without WorkMarket it authorizes nothing.
+      const out = await runFlEnvelopeTool(call.name, args as Record<string, unknown>, ann, {
+        api: this.flEnvelopeApi(),
+        ask,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
+    } else if (isFlWorkTool(call.name)) {
+      // 0.5.4 WP-H3: worker terms (read; sealed in core by fl_work.rs), consent and eligibility.
+      // Withdrawing a consent lowers authority and applies at once; reads read.
+      const out = await runFlWorkTool(call.name, args as Record<string, unknown>, ann, {
+        terms: this.flWorkTerms(),
+        flRounds: bridge.flRounds,
+        tier: bridge.tier,
+        book: flAddressBook,
+        toast: (text) => this.toast(text),
+      });
+      status = out.status;
+      result = out.result;
     } else if (isFlAdapterTool(call.name)) {
       // 0.5.4 WP-H9: the eval gate's records (read), loading an ACCEPTED adapter (HIC-1 card, core
       // re-checks the gate), and unloading (lowers authority, no card).

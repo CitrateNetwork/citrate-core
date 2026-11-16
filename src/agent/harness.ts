@@ -774,6 +774,92 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── worker terms, consent and eligibility (0.5.4 Hermes × FL, WP-H3; src/agent/flWorkTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_terms_read",
+      description: "Read the member's worker terms (floor in SALT per unit, hours, weekdays only, mains only, data classes), sealed on this device, or that none are set. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_list",
+      description: "List the member's federated-learning consents: per-round consents the device worker reads, withdrawn ones, and whether training on verified conversations is on. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_consent_withdraw",
+      description:
+        "Withdraw a consent: one round's (scope \"round\" with roundId), or training on verified conversations (scope \"conversations\"). This lowers authority, so it applies at once without a card. Giving consent is never done here: it goes through fl_round_start's card or Settings.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["round", "conversations"], description: "what to withdraw" },
+          roundId: { type: "string", description: "for scope round: 0x followed by 64 hex digits" },
+        },
+        required: ["scope"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_eligibility",
+      description:
+        "Check this machine against round requirements from its local probe: eligible, not eligible with each why-not, or not known when a fact can't be read. Pass requirements, or an offerId (offers need WorkMarket; where it is not deployed, it says so). Read-only.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "string", description: "a WorkMarket offer id" },
+          requirements: {
+            type: "object",
+            description: "what the round needs",
+            properties: {
+              minRamGb: { type: "number" },
+              minVramGb: { type: "number" },
+              minDiskGb: { type: "number" },
+              accelerator: { type: "boolean", description: "needs a GPU or Apple Silicon" },
+              mainsOnly: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+  },
+  // ── the HIC-2 envelope (0.5.4 Hermes × FL, WP-H4; src/agent/flEnvelopeTools.ts) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_read",
+      description:
+        "Read the member's HIC-2 envelope: on or off, joins left this week, machine hours per round, whether it can authorize anything on this network, and the fixed rules core enforces. Read-only. Quote what it returns; never state caps from memory.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_envelope_propose",
+      description:
+        "PROPOSE an HIC-2 envelope (enabled true, with joinsPerWeek and maxHoursPerRound): the member decides on a card (HIC-1) and you never approve it. Or turn the envelope off now (enabled false), which needs no card. Core enforces the caps; the first join with a new group or poster always asks, and an offer's text can never change the envelope.",
+      parameters: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "true to propose an envelope, false to turn it off now" },
+          joinsPerWeek: { type: "number", description: "1 to 50" },
+          maxHoursPerRound: { type: "number", description: "machine hours per round, 1 to 72" },
+          name: { type: "string", description: "a short name the member will recognise" },
+        },
+        required: ["enabled"],
+      },
+    },
+  },
   // ── LoRA adapters and the eval gate (0.5.4 Hermes x FL, WP-H9) ──
   {
     type: "function",
@@ -1320,6 +1406,10 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "decode_log",
   "explain_tx",
   "fl_round_plan",
+  "fl_terms_read",
+  "fl_consent_list",
+  "fl_eligibility",
+  "fl_envelope_read",
   "fl_adapter_gate_read",
   "fl_dataset_list",
   "fl_dataset_sample",
@@ -1337,5 +1427,6 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
  * calls only its lowering command. A tool lands here only with a reviewed reason.
  */
 export const AUTHORITY_LOWERING_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  "fl_consent_withdraw", // core fl_round_consent_revoke / trajectories_consent_revoke: both turn-off-only, no switch argument
   "fl_adapter_unload", // core fl_adapter_unload: serve the base model alone and forget the remembered adapter
 ]);

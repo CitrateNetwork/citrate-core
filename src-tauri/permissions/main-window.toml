@@ -121,6 +121,7 @@ commands.allow = [
   "fl_adapter_unload",
   "trajectories_settings_get",
   "trajectories_settings_set",
+  "trajectories_consent_revoke",
   "trajectories_dataset_build",
   "fl_dataset_list",
   "fl_dataset_manifest",
