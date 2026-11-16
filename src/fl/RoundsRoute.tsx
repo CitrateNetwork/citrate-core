@@ -19,7 +19,7 @@ import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { LiveRoundView, NoLiveRound } from "./LiveRound";
 import { currentOffer } from "./myWork";
-import { liveRoundFrom, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
+import { liveRoundFrom, myWorkRefreshKey, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
 import { latestBlockTime } from "./chainTime";
 import { Unknown } from "./primitives";
 import type { Receipt } from "./Payouts";
@@ -103,7 +103,7 @@ function useChainNow(when: boolean): number | null {
 
 function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppState; go: (r: string) => void; store: Store }) {
   const { ov, error } = usePayoutsRecords(bridge.flRounds);
-  const work = useMyWork(state, s.walletAddr, chainCall);
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
   const read = work.kind === "read" ? work.work : null;
   const chainNow = useChainNow(work.kind === "read");
   // Every offer here is one this wallet joined (myOffers). Statuses use the chain's clock; until
@@ -169,7 +169,7 @@ function OpenRoundRoute({ state, s, go, store }: { state: FlNetworkState; s: App
 const chainCall = (address: string, calldata: string) => bridge.contracts.viewCall("citrate", address, calldata);
 
 function LiveFromChain({ state, s, go }: { state: FlNetworkState; s: AppState; go: (r: string) => void }) {
-  const work = useMyWork(state, s.walletAddr, chainCall);
+  const work = useMyWork(state, s.walletAddr, chainCall, myWorkRefreshKey(s.height, s.walletReview !== null));
   if (work.kind === "failed")
     return (
       <section className="fl-main">

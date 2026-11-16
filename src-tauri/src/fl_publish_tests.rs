@@ -76,34 +76,34 @@ fn publishes_the_exact_bytes_the_read_model_accepts_and_their_keccak() {
 fn bad_requirements_are_refused_before_anything_is_added() {
     let k = FakeKubo::default();
     for (r, why) in [
-        (Requirements { v: 2, ..req() }, "version 1"),
+        (Requirements { v: 2, ..req() }, "version 2"),
         (
             Requirements {
                 data_classes: vec![],
                 ..req()
             },
-            "data classes",
+            "lowercase labels",
         ),
         (
             Requirements {
                 data_classes: vec!["has space".into()],
                 ..req()
             },
-            "data classes",
+            "lowercase labels",
         ),
         (
             Requirements {
-                min_vram_gb: 0,
+                min_vram_gb: 1025,
                 ..req()
             },
-            "GPU memory",
+            "out of range",
         ),
         (
             Requirements {
                 est_hours: 0,
                 ..req()
             },
-            "hours",
+            "out of range",
         ),
     ] {
         assert!(publish(&r, &k).unwrap_err().contains(why));
@@ -133,4 +133,45 @@ fn unknown_fields_are_refused() {
         "v": 1, "dataClasses": ["a"], "architectures": [], "minVramGb": 1, "estHours": 1, "extra": 1
     }));
     assert!(r.is_err());
+}
+
+// #724 review P1: what the publisher accepts, every reader accepts (one validator).
+#[test]
+fn every_published_file_is_one_the_offers_read_model_accepts() {
+    let k = FakeKubo::default();
+    let out = publish(&req(), &k).unwrap();
+    let bytes = k.added.lock().unwrap()[0].clone();
+    assert!(crate::fl_market::verify_requirements(&bytes, &out.requirements_hash).is_ok());
+}
+
+#[test]
+fn the_publisher_refuses_what_the_reader_refuses() {
+    let k = FakeKubo::default();
+    for r in [
+        Requirements {
+            architectures: vec![],
+            ..req()
+        },
+        Requirements {
+            architectures: vec!["Llama-8B".into()],
+            ..req()
+        },
+        Requirements {
+            data_classes: vec!["Support-Tickets".into()],
+            ..req()
+        },
+        Requirements {
+            est_hours: 24 * 90 + 1,
+            ..req()
+        },
+    ] {
+        let err = publish(&r, &k).unwrap_err();
+        let reader = crate::fl_market::requirements_problem(&r);
+        assert_eq!(
+            Some(err),
+            reader,
+            "publisher and reader must give the same refusal"
+        );
+    }
+    assert!(k.added.lock().unwrap().is_empty());
 }

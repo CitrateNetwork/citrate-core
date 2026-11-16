@@ -89,6 +89,11 @@ describe("state words", () => {
   it("escrow: reserved for posted units, the rest refundable", () => {
     expect(escrowOf(o("payoutPosted", { payoutUnits: 7n }))).toEqual({ budgetWei: 600n * SALT, paidWei: 0n, reservedWei: (21n * SALT) / 2n, refundableWei: 600n * SALT - (21n * SALT) / 2n });
   });
+  it("escrow: a swept reserve holds nothing back (#701 review P2)", () => {
+    const e = escrowOf(o("closed", { payoutUnits: 7n, paid: 3n * SALT, reserveSwept: true, refunded: 600n * SALT - 3n * SALT }));
+    expect(e.reservedWei).toBe(0n);
+    expect(e.paidWei).toBe(3n * SALT);
+  });
   it("payouts: claimable only when every settle precondition holds", () => {
     const live = "0x" + "77".repeat(32);
     const posted = o("payoutPosted", { payoutPostedAt: 1_000, disputeWindow: 100, payoutRoot: live });

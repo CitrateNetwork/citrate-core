@@ -59,8 +59,18 @@ export function receiptFrom(o: ChainOffer, slot: { joined: boolean; settled: boo
 
 export type MyWorkRead = { kind: "idle" } | { kind: "reading" } | { kind: "read"; work: MyWork } | { kind: "failed"; reason: string };
 
-/** Read the member's work once WorkMarket is deployed (addresses from the shipped book). */
-export function useMyWork(state: FlNetworkState, wallet: string, call: ViewCall): MyWorkRead {
+/** Re-read every this many blocks (about 20 s at 2 s blocks), and whenever a wallet review closes. */
+export const REREAD_EVERY_BLOCKS = 10;
+
+/** The key that re-reads the member's work: new blocks, and a wallet review closing (a join,
+ *  claim or withdraw that may have landed). */
+export function myWorkRefreshKey(height: number, reviewOpen: boolean): string {
+  return `${Math.floor(Math.max(0, height) / REREAD_EVERY_BLOCKS)}:${reviewOpen ? 1 : 0}`;
+}
+
+/** Read the member's work once WorkMarket is deployed (addresses from the shipped book), and
+ *  again whenever `refreshKey` changes. A re-read keeps the last answer on screen until it lands. */
+export function useMyWork(state: FlNetworkState, wallet: string, call: ViewCall, refreshKey = ""): MyWorkRead {
   const [w, setW] = useState<MyWorkRead>({ kind: "idle" });
   const wm = state.contracts.WorkMarket;
   const frl = state.contracts.FederatedRoundLedger;
@@ -69,7 +79,7 @@ export function useMyWork(state: FlNetworkState, wallet: string, call: ViewCall)
   useEffect(() => {
     if (!market) return;
     let on = true;
-    setW({ kind: "reading" });
+    setW((prev) => (prev.kind === "read" ? prev : { kind: "reading" }));
     readMyWork({ workMarket: market, frl: ledger }, wallet, call).then(
       (work) => on && setW({ kind: "read", work }),
       (e) => on && setW({ kind: "failed", reason: e instanceof Error ? e.message : String(e) }),
@@ -77,7 +87,7 @@ export function useMyWork(state: FlNetworkState, wallet: string, call: ViewCall)
     return () => {
       on = false;
     };
-  }, [market, ledger, wallet]);
+  }, [market, ledger, wallet, refreshKey]);
   return w;
 }
 

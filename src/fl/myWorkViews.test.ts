@@ -1,7 +1,12 @@
 // The board views of the member's own rounds and payouts (myWorkViews.ts), from on-chain reads.
 // TEST-ONLY offers; on r1007 nothing reads (no WorkMarket in the shipped book).
 import { describe, expect, it } from "vitest";
-import { liveRoundFrom, receiptFrom, WITHDRAW_WAITS_FOR_GSEC, withdrawIntent } from "./myWorkViews";
+import { liveRoundFrom, myWorkRefreshKey, receiptFrom, useMyWork, WITHDRAW_WAITS_FOR_GSEC, withdrawIntent } from "./myWorkViews";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { vi } from "vitest";
+import { encodeFunctionResult, decodeFunctionData, type Hex } from "viem";
+import { WORK_MARKET_ABI } from "./workMarketReads";
 import { readFlNetworkState } from "./networkState";
 import { WITHDRAW_SIGNATURE, withdrawCalldata } from "./workMarketReads";
 import realBook from "../../src-tauri/addresses/40204.json";
@@ -78,5 +83,37 @@ describe("withdrawIntent fails closed on its own (#724 review P2)", () => {
     expect(() => withdrawIntent(st, null)).toThrow(/not read/);
     expect(() => withdrawIntent(st, 0n)).toThrow(/nothing/);
     expect(withdrawIntent(st, 5n * SALT)).toEqual({ address: WM, calldata: withdrawCalldata(), valueWei: "0", label: WITHDRAW_SIGNATURE });
+  });
+});
+
+describe("useMyWork re-reads (#724 review P2)", () => {
+  it("the key changes every 10 blocks and when a wallet review closes", () => {
+    expect(myWorkRefreshKey(1_204_311, false)).toBe(myWorkRefreshKey(1_204_319, false));
+    expect(myWorkRefreshKey(1_204_311, false)).not.toBe(myWorkRefreshKey(1_204_320, false));
+    expect(myWorkRefreshKey(5, true)).not.toBe(myWorkRefreshKey(5, false));
+  });
+  it("a new key reads again: a withdrawal shows the new pull balance", async () => {
+    const WM = "0x" + "ab".repeat(20);
+    let pull = 5n * SALT;
+    const call = vi.fn(async (_to: string, data: string) => {
+      const d = decodeFunctionData({ abi: WORK_MARKET_ABI, data: data as Hex });
+      if (d.functionName === "nextOfferId") return encodeFunctionResult({ abi: WORK_MARKET_ABI, functionName: "nextOfferId", result: 0n });
+      return encodeFunctionResult({ abi: WORK_MARKET_ABI, functionName: "balanceOf", result: pull });
+    });
+    const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { codeSize: async () => 1000, viewCall: async () => Z32 });
+    const seen: bigint[] = [];
+    function Probe({ k }: { k: string }) {
+      const w = useMyWork(st, "0x" + "5b".repeat(20), call, k);
+      if (w.kind === "read") seen.push(w.work.pullWei);
+      return null;
+    }
+    const el = document.createElement("div");
+    const root = createRoot(el);
+    await act(async () => root.render(createElement(Probe, { k: "a" })));
+    pull = 0n;
+    await act(async () => root.render(createElement(Probe, { k: "b" })));
+    expect(seen[0]).toBe(5n * SALT);
+    expect(seen[seen.length - 1]).toBe(0n);
+    act(() => root.unmount());
   });
 });
