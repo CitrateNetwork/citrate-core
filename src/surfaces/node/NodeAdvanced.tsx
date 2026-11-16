@@ -9,6 +9,7 @@
 //     genesis reset in node_genesis.rs) when the node's chain data was moved aside;
 //   - crash records: node_last_crash (the last record; a list is not exposed yet, N-8);
 //   - full log: node_logs, folded into AppState by Store.refreshNode (`s.logs`);
+//   - service logs: sidecar_logs_tail, each supervised service's log file (ServiceLogs.tsx);
 //   - old network data: node_old_network_data / node_remove_old_network_data (OldNetworkData.tsx);
 //   - configuration: the existing Node configuration section (config_read / config_write).
 // =====================================================================
@@ -24,6 +25,7 @@ import type { AppState } from "../../shell/state";
 import { Settings } from "../Settings";
 import { BoundedLog, PAGE, Panel, Row, StateCard, errText, logCaption } from "./parts";
 import { LIVE_OLD_NETWORK_DATA, OldNetworkData } from "./OldNetworkData";
+import { LIVE_SERVICE_LOGS, ServiceLogs } from "./ServiceLogs";
 
 /** The two reads this tab makes itself (the log comes from the store's poll). */
 export interface AdvancedReads {
@@ -50,6 +52,7 @@ export function NodeAdvanced({ store, s }: { store: Store; s: AppState }) {
       expectedGenesis={expected}
       reads={LIVE_READS}
       oldData={<OldNetworkData reads={LIVE_OLD_NETWORK_DATA} mode={BRIDGE_MODE} />}
+      serviceLogs={<ServiceLogs io={LIVE_SERVICE_LOGS} />}
       config={<Settings store={store} s={{ ...s, sSec: sectionFor(NODE_SETTINGS, s.sSec) }} sections={NODE_SETTINGS} heading="Configuration" />}
     />
   );
@@ -64,6 +67,7 @@ export function NodeAdvancedView({
   reads,
   config,
   oldData,
+  serviceLogs,
 }: {
   s: AppState;
   mode: "tauri" | "sim";
@@ -74,6 +78,8 @@ export function NodeAdvancedView({
   config?: ReactNode;
   /** CORE-N3 follow-up: the "Old network data" panel (OldNetworkData.tsx). */
   oldData?: ReactNode;
+  /** 0.5.4: the "Service logs" panel (ServiceLogs.tsx). */
+  serviceLogs?: ReactNode;
 }) {
   const [notice, setNotice] = useState<Read<string | null>>({ state: "reading" });
   const [crash, setCrash] = useState<Read<{ reason: string; atUnixMs: number } | null>>({ state: "reading" });
@@ -204,9 +210,10 @@ export function NodeAdvancedView({
               <BoundedLog testid="full-log" lines={s.logs} empty={s.node === "off" ? "The node is off, so there is no output." : "No output yet."} />
             </div>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "0 18px 12px" }}>
-              source: node_logs (~/.citrate/core/node.log). The other services' logs are not available yet.
+              source: node_logs (~/.citrate/core/node.log). Every service's log file is under Service logs.
             </span>
           </Panel>
+          {serviceLogs}
         </div>
       </div>
       {config}

@@ -17,8 +17,8 @@
 //   offers Reset (the owner's stop, which releases the slot), and Start appears once the slot is
 //   empty. A control in flight says "requested" until the next snapshot shows what happened; the
 //   state word never moves ahead of it. A refused control shows the owner's reason on its row.
-// - Logs: only the node has a full log read (`node_logs`, on Node › Advanced). The other eight say
-//   "not available yet" (N-8, SC4).
+// - Logs: every service has a log read on Node › Advanced (the node's live `node_logs`, and each
+//   service's log file through `sidecar_logs_tail`); "Open its logs" opens that service's log.
 // - Health (CORE-D4): a second section reads `sidecars_health` (Rust `services.rs`): for every
 //   sidecar its state, retry counters, last crash, the slow retry after Failed (CORE-D3), the node's
 //   liveness note (CORE-D2) and the last lines its supervisor captured, scrubbed in Rust. Alerts
@@ -33,6 +33,7 @@ import type { Store } from "../shell/store";
 import { bridge, isUnavailable } from "../bridge";
 import { startRuntime, stopRuntime } from "../shell/slices/agent";
 import { sidecarAlertText, untilText } from "../shell/sidecarAlert";
+import { openServiceLogs } from "./node/ServiceLogs";
 import type { DiagnosticsExport, ServiceEntry, ServiceId, ServicePhase, ServiceReadiness, ServicesSnapshot, SidecarAlert, SidecarHealth, SidecarsHealth } from "../bridge/domains";
 
 /** How often the tab re-reads the snapshot while it is open. */
@@ -176,7 +177,7 @@ function ServiceRow({
   pending: ControlAction | undefined;
   refusal: Refusal | undefined;
   onControl: (id: ServiceId, action: ControlAction) => void;
-  onOpenLogs: () => void;
+  onOpenLogs: (id: ServiceId) => void;
 }) {
   const action = controlFor(e);
   const observedRow = e.observation === "observed";
@@ -243,7 +244,7 @@ function ServiceRow({
       )}
       <span style={{ fontSize: 12 }}>
         {e.logsCommand ? (
-          <button className="btn btn-ghost btn-sm" data-logs={e.id} onClick={onOpenLogs}>
+          <button className="btn btn-ghost btn-sm" data-logs={e.id} onClick={() => onOpenLogs(e.id)}>
             Open its logs on Node › Advanced
           </button>
         ) : (
@@ -285,7 +286,7 @@ export function ServicesView({
   pending: Partial<Record<ServiceId, ControlAction>>;
   refusals: Partial<Record<ServiceId, Refusal>>;
   onControl: (id: ServiceId, action: ControlAction) => void;
-  onOpenLogs: () => void;
+  onOpenLogs: (id: ServiceId) => void;
 }) {
   return (
     <div data-testid="node-services" style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 960 }}>
@@ -581,7 +582,10 @@ export function NodeServices({ store }: SurfaceProps) {
 
   return (
     <>
-      <ServicesView snapshot={snapshot} error={error} pending={pending} refusals={refusals} onControl={onControl} onOpenLogs={() => store.go("node/advanced")} />
+      <ServicesView snapshot={snapshot} error={error} pending={pending} refusals={refusals} onControl={onControl} onOpenLogs={(id) => {
+          openServiceLogs(id);
+          store.go("node/advanced");
+        }} />
       <div style={{ padding: "0 26px 24px", maxWidth: 960 }}>
         <SidecarsHealthSection />
       </div>
