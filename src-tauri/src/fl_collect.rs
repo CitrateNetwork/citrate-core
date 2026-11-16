@@ -18,6 +18,8 @@
 //!    (`fl-collect/source-policy.json`, [`SourcePolicy`]). A denied host is refused. A host that
 //!    is on neither list needs the member's tap: the plan card names it, and the member approves
 //!    the plan.
+//!    DNS is resolved once per check and vetted ([`vet_addrs`]); every fetch for that source is
+//!    pinned to the vetted addresses ([`PinnedResolver`]), so a rebinding answer is never used.
 //! 4. **Never collect:**
 //!    - anything behind authentication: the collector sends no cookies and no credentials, and a
 //!      401 stops that source;
@@ -237,49 +239,50 @@ pub fn check_url(raw: &str) -> Result<(url::Url, String), String> {
     Ok((u, host))
 }
 
-/// Whether every address `host` resolves to is public (no loopback, private, link-local, CGNAT,
-/// multicast or unique-local address). DNS rebinding between this check and the fetch is not
-/// closed here; the fetch has no credentials to lose.
-pub fn resolves_public(host: &str) -> Result<(), String> {
-    use std::net::{IpAddr, ToSocketAddrs};
-    let addrs: Vec<IpAddr> = (host, 443)
-        .to_socket_addrs()
-        .map_err(|_| format!("{host} does not resolve"))?
-        .map(|a| a.ip())
-        .collect();
+/// Whether `ip` is a public address (no loopback, private, link-local, CGNAT, multicast,
+/// documentation, unique-local or IPv4-mapped address).
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            !(v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || v.is_multicast()
+                || v.is_documentation()
+                || (o[0] == 100 && (64..=127).contains(&o[1])))
+        }
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            !(v.is_loopback()
+                || v.is_unspecified()
+                || v.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || v.to_ipv4_mapped().is_some())
+        }
+    }
+}
+
+/// Check the addresses a host resolved to: at least one, and every one public. Returns them: they
+/// are the only addresses the fetch may connect to (review of #738: DNS is resolved once, the
+/// connection is pinned to the vetted answer, so a second, rebound answer is never used).
+pub fn vet_addrs(
+    host: &str,
+    addrs: Vec<std::net::IpAddr>,
+) -> Result<Vec<std::net::IpAddr>, String> {
     if addrs.is_empty() {
         return Err(format!("{host} does not resolve"));
     }
-    for ip in addrs {
-        let public = match ip {
-            IpAddr::V4(v) => {
-                let o = v.octets();
-                !(v.is_loopback()
-                    || v.is_private()
-                    || v.is_link_local()
-                    || v.is_unspecified()
-                    || v.is_broadcast()
-                    || v.is_multicast()
-                    || v.is_documentation()
-                    || (o[0] == 100 && (64..=127).contains(&o[1])))
-            }
-            IpAddr::V6(v) => {
-                let s = v.segments();
-                !(v.is_loopback()
-                    || v.is_unspecified()
-                    || v.is_multicast()
-                    || (s[0] & 0xfe00) == 0xfc00
-                    || (s[0] & 0xffc0) == 0xfe80
-                    || v.to_ipv4_mapped().is_some())
-            }
-        };
-        if !public {
-            return Err(format!(
-                "{host} resolves to a local or private address; it is never collected"
-            ));
-        }
+    if addrs.iter().any(|ip| !is_public_ip(*ip)) {
+        return Err(format!(
+            "{host} resolves to a local or private address; it is never collected"
+        ));
     }
-    Ok(())
+    Ok(addrs)
 }
 
 // ------------------------------------------------------------------------------ robots.txt
@@ -416,11 +419,53 @@ pub struct Fetched {
 
 /// The collector's network seam. Production is [`LiveHttp`]; tests pass a fixed table.
 pub trait CollectHttp: Send + Sync {
+    /// Resolve `host` (DNS). Called once per source check; the answer is vetted by
+    /// [`vet_addrs`] and then pinned.
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String>;
     /// GET `url` with [`USER_AGENT`], no cookies, no credentials, no redirects, at most `limit`
-    /// bytes.
-    fn get(&self, url: &url::Url, limit: u64) -> Result<Fetched, String>;
-    /// Whether `host` resolves only to public addresses.
-    fn public_host(&self, host: &str) -> Result<(), String>;
+    /// bytes, connecting **only** to `pinned` (the vetted addresses; the URL's host name is still
+    /// the Host header and the TLS server name). The implementation must not resolve again.
+    fn get(
+        &self,
+        url: &url::Url,
+        pinned: &[std::net::IpAddr],
+        limit: u64,
+    ) -> Result<Fetched, String>;
+}
+
+/// A ureq resolver that answers only the vetted addresses, whatever the host name.
+#[derive(Debug)]
+pub struct PinnedResolver(pub Vec<std::net::SocketAddr>);
+
+impl ureq::unversioned::resolver::Resolver for PinnedResolver {
+    fn resolve(
+        &self,
+        _uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let mut out = self.empty();
+        // ureq keeps at most 16 addresses (its MAX_ADDRS); `push` panics past that.
+        for a in self.0.iter().take(16) {
+            out.push(*a);
+        }
+        if out.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(out)
+    }
+}
+
+/// The socket addresses a pinned fetch of `url` connects to.
+pub fn pinned_socket_addrs(
+    url: &url::Url,
+    pinned: &[std::net::IpAddr],
+) -> Vec<std::net::SocketAddr> {
+    let port = url.port_or_known_default().unwrap_or(443);
+    pinned
+        .iter()
+        .map(|ip| std::net::SocketAddr::new(*ip, port))
+        .collect()
 }
 
 /// The production network: ureq, no proxy from the environment, no redirects followed, statuses
@@ -428,16 +473,37 @@ pub trait CollectHttp: Send + Sync {
 pub struct LiveHttp;
 
 impl CollectHttp for LiveHttp {
-    fn get(&self, url: &url::Url, limit: u64) -> Result<Fetched, String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        use std::net::ToSocketAddrs;
+        (host, 443)
+            .to_socket_addrs()
+            .map(|a| a.map(|x| x.ip()).collect())
+            .map_err(|_| format!("{host} does not resolve"))
+    }
+
+    fn get(
+        &self,
+        url: &url::Url,
+        pinned: &[std::net::IpAddr],
+        limit: u64,
+    ) -> Result<Fetched, String> {
+        if pinned.is_empty() || pinned.iter().any(|ip| !is_public_ip(*ip)) {
+            return Err("no vetted public address to connect to".into());
+        }
+        let config = ureq::Agent::config_builder()
             .max_redirects(0)
             .max_redirects_will_error(false)
             .proxy(None)
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
-            .build()
-            .into();
+            .build();
+        // The connection goes only to the vetted addresses; ureq's own DNS lookup is replaced.
+        let agent = ureq::Agent::with_parts(
+            config,
+            ureq::unversioned::transport::DefaultConnector::new(),
+            PinnedResolver(pinned_socket_addrs(url, pinned)),
+        );
         let mut resp = agent
             .get(url.as_str())
             .header("User-Agent", USER_AGENT)
@@ -472,10 +538,6 @@ impl CollectHttp for LiveHttp {
             retry_after,
             body,
         })
-    }
-
-    fn public_host(&self, host: &str) -> Result<(), String> {
-        resolves_public(host)
     }
 }
 
@@ -529,6 +591,10 @@ pub struct SourceCheck {
     pub license: LicenseRecord,
     /// Seconds between requests to this host on a run.
     pub interval_secs: u64,
+    /// The vetted public addresses the host resolved to in this check; every fetch for this
+    /// source connects only to these (never sent to the webview).
+    #[serde(skip)]
+    pub pinned: Vec<std::net::IpAddr>,
 }
 
 fn refused(
@@ -547,6 +613,7 @@ fn refused(
         robots,
         license: LicenseRecord::unknown(),
         interval_secs: MIN_INTERVAL.as_secs(),
+        pinned: Vec::new(),
     }
 }
 
@@ -560,6 +627,7 @@ impl RobotsCache {
         http: &dyn CollectHttp,
         u: &url::Url,
         host: &str,
+        pinned: &[std::net::IpAddr],
     ) -> (RobotsState, Option<Robots>) {
         if let Some(v) = self.0.get(host) {
             return v.clone();
@@ -568,7 +636,7 @@ impl RobotsCache {
             Ok(r) => r,
             Err(_) => return (RobotsState::Unreadable, None),
         };
-        let v = match http.get(&robots_url, MAX_ROBOTS_BYTES) {
+        let v = match http.get(&robots_url, pinned, MAX_ROBOTS_BYTES) {
             Ok(f) if f.status == 200 => (
                 RobotsState::Allowed,
                 Some(Robots::parse(&String::from_utf8_lossy(&f.body))),
@@ -611,15 +679,18 @@ pub fn check_source(
             format!("{host} is on Citrate's do-not-collect list: {}", d.reason),
         );
     }
-    if let Err(e) = http.public_host(&host) {
-        return refused(
-            raw,
-            &host,
-            PolicyClass::NeedsMemberApproval,
-            RobotsState::NotChecked,
-            e,
-        );
-    }
+    let pinned = match http.resolve(&host).and_then(|a| vet_addrs(&host, a)) {
+        Ok(a) => a,
+        Err(e) => {
+            return refused(
+                raw,
+                &host,
+                PolicyClass::NeedsMemberApproval,
+                RobotsState::NotChecked,
+                e,
+            )
+        }
+    };
     let allow = policy.allowed(&host);
     let class = if allow.is_some() {
         PolicyClass::Allowlisted
@@ -659,7 +730,7 @@ pub fn check_source(
         },
         (None, None) => LicenseRecord::unknown(),
     };
-    let (state, rules) = robots.get(http, &u, &host);
+    let (state, rules) = robots.get(http, &u, &host, &pinned);
     let path = match u.query() {
         Some(q) => format!("{}?{q}", u.path()),
         None => u.path().to_string(),
@@ -715,6 +786,7 @@ pub fn check_source(
         robots: state,
         license,
         interval_secs: delay.as_secs().max(MIN_INTERVAL.as_secs()),
+        pinned,
     }
 }
 
@@ -1063,14 +1135,14 @@ pub fn run_plan(
         let Ok(u) = url::Url::parse(&again.url) else {
             continue;
         };
-        let mut got = http.get(&u, MAX_PAGE_BYTES);
+        let mut got = http.get(&u, &again.pinned, MAX_PAGE_BYTES);
         last.insert(again.host.clone(), Instant::now());
         fetched += 1;
         if let Ok(f) = &got {
             if f.status == 503 {
                 if let Some(wait) = f.retry_after.filter(|w| *w <= MAX_RETRY_WAIT) {
                     pause.wait(wait.max(interval));
-                    got = http.get(&u, MAX_PAGE_BYTES);
+                    got = http.get(&u, &again.pinned, MAX_PAGE_BYTES);
                     last.insert(again.host.clone(), Instant::now());
                     fetched += 1;
                 }
