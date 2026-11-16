@@ -46,6 +46,8 @@ import { peerStateLabel } from "./clusterReachability";
 import { ClusterMap, THIS_MACHINE } from "./ClusterMap";
 import { AddMachineSheet } from "./AddMachineSheet";
 import { capacityModel, eligibilityModel, hardwareLine, type ProbeReading, type RoundRequirements } from "./clusterBoard";
+import { Card, Chip, Eyebrow, KV, Note, Unknown, type KVRow } from "../fl/primitives";
+import { useFlNetworkState, type UseFlNetworkStateOptions } from "../fl/useFlNetworkState";
 import { meshSwitchModel } from "./meshSwitch";
 
 function shortAddr(a: string): string {
@@ -186,12 +188,10 @@ function YourDevices({ store }: { store: Store }) {
   );
 }
 
-/** Why a member's machine shows no hardware: there is no source for it today. */
-export const NOT_REPORTED_REASON = "— (not reported: members' machines do not share hardware reports yet)";
+/** Why a member's machine shows no hardware (shown after "—"): there is no source for it today. */
+export const NOT_REPORTED_REASON = "not reported: members' machines do not share hardware reports yet";
 
-const card = { padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 } as const;
-const eyebrow = { fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 } as const;
-const kv = { display: "grid", gridTemplateColumns: "88px minmax(0,1fr)", gap: "6px 12px", margin: 0, fontSize: 12.5 } as const;
+const card = { padding: "14px 16px", gap: 10 } as const;
 
 function Tile({ value, label, testId }: { value: string; label: string; testId?: string }) {
   return (
@@ -211,10 +211,13 @@ export interface ClusterProps {
   requirements?: RoundRequirements | null;
   /** Desktop app (the probe and pairing need it). Defaults to the bridge mode. */
   desktop?: boolean;
+  /** The FL network-state reads (defaults to the address book and chain). Tests pass their own. */
+  flNetwork?: UseFlNetworkStateOptions;
 }
 
-export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE_MODE === "tauri" }: ClusterProps) {
+export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE_MODE === "tauri", flNetwork }: ClusterProps) {
   const st = clusterSlice.use();
+  const { state: fl } = useFlNetworkState(flNetwork);
   const chatGroup = groupsSlice.use().selectedId;
   const [selected, setSelected] = useState<string>(THIS_MACHINE);
   const [sheet, setSheet] = useState<"add" | "join" | null>(null);
@@ -294,28 +297,28 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
   const meshOn = st.mesh?.on ?? false;
   const sw = meshSwitchModel(st.mesh);
   const cap = capacityModel(probe, st.peers.length, paired);
-  const elig = eligibilityModel(probe, requirements);
+  const elig = eligibilityModel(probe, requirements, { phase: fl.phase, reason: fl.phaseReason });
   const peer = st.peers.find((p) => p.address === selected) ?? null;
   const sel = selected === THIS_MACHINE || !peer ? THIS_MACHINE : peer.address;
 
-  const selectedRows: [string, string][] =
+  const selectedRows: KVRow[] =
     sel === THIS_MACHINE
       ? [
-          ["Owner", "You"],
-          ["Hardware", probe.kind === "ok" ? hardwareLine(probe.facts) : probe.kind === "failed" ? `— (the probe failed: ${probe.reason})` : "Reading…"],
-          ["Link", "this device"],
-          ["Reported", probe.kind === "ok" ? "this session, by this machine's probe" : "—"],
+          { k: "Owner", v: "You" },
+          { k: "Hardware", v: probe.kind === "ok" ? hardwareLine(probe.facts) : probe.kind === "failed" ? <Unknown reason={`the probe failed: ${probe.reason}`} /> : "Reading…" },
+          { k: "Link", v: "this device" },
+          { k: "Reported", v: probe.kind === "ok" ? "this session, by this machine's probe" : <Unknown reason="no probe result yet" /> },
         ]
       : [
-          ["Owner", peer!.member ? shortAddr(peer!.member) : shortAddr(peer!.address)],
-          ["Hardware", NOT_REPORTED_REASON],
-          ["Link", meshOn ? peerStateLabel(peer!) : "mesh off"],
-          ["Reported", "never"],
+          { k: "Owner", v: peer!.member ? shortAddr(peer!.member) : shortAddr(peer!.address) },
+          { k: "Hardware", v: <Unknown reason={NOT_REPORTED_REASON} /> },
+          { k: "Link", v: meshOn ? peerStateLabel(peer!) : "mesh off" },
+          { k: "Reported", v: "never" },
         ];
 
   return (
-    <div style={{ padding: "20px 26px 24px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "flex-start", boxSizing: "border-box" }}>
-      <main style={{ flex: "1 1 480px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+    <div className="fl-cols">
+      <main className="fl-main">
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>{label ? `${label} cluster` : "Cluster"}</h1>
           <span style={{ flex: 1 }} />
@@ -378,9 +381,9 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
         )}
 
         <div className="surface" data-testid="cluster-mesh-panel" style={{ display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: "10px 16px 0", ...eyebrow }}>
+          <Eyebrow style={{ padding: "10px 16px 0" }}>
             {st.status ? `${st.status.online} of ${st.status.total} peers online · ${st.status.sharedFiles.length} shared files` : st.loading ? "Reading the cluster…" : "Cluster map"}
-          </div>
+          </Eyebrow>
           {st.peers.length === 0 && (
             <p data-testid="cluster-empty" style={{ margin: 0, padding: "8px 16px 0", fontSize: 12.5, color: "var(--tx-2)" }}>
               One machine, no peers yet. Other members' machines appear here as the group's roster admits them.
@@ -413,22 +416,15 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
         </details>
       </main>
 
-      <aside aria-label="Device and capacity" style={{ flex: "0 1 320px", minWidth: 260, display: "flex", flexDirection: "column", gap: 12 }}>
-        <section className="surface" data-testid="cluster-selected" style={card}>
-          <span style={eyebrow}>Selected device</span>
+      <aside className="fl-rail" aria-label="Device and capacity">
+        <Card as="section" testid="cluster-selected" style={card}>
+          <Eyebrow>Selected device</Eyebrow>
           <span style={{ fontSize: 14, fontWeight: 500 }}>{sel === THIS_MACHINE ? "This machine" : memberOfDevice.get(sel) ?? shortAddr(sel)}</span>
-          <dl style={kv}>
-            {selectedRows.map(([k, v]) => (
-              <div key={k} style={{ display: "contents" }}>
-                <dt style={{ color: "var(--tx-3)" }}>{k}</dt>
-                <dd style={{ margin: 0 }}>{v}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
+          <KV rows={selectedRows} />
+        </Card>
 
-        <section className="surface" data-testid="cluster-capacity" style={card}>
-          <span style={eyebrow}>Combined capacity · receipts</span>
+        <Card as="section" testid="cluster-capacity" style={card}>
+          <Eyebrow>Combined capacity · receipts</Eyebrow>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Tile value={String(cap.reported)} label="machines reported" testId="cap-reported" />
             <Tile value={cap.accelerator} label="GPU memory reported" testId="cap-accel" />
@@ -444,13 +440,13 @@ export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE
               ))}
             </ul>
           )}
-          <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>Only devices that reported are counted. Unknown is not zero.</span>
-        </section>
+          <Note>Only devices that reported are counted. Unknown is not zero.</Note>
+        </Card>
 
-        <section className="surface" data-testid="cluster-eligibility" data-kind={elig.kind} style={card}>
-          <span style={eyebrow}>Can this machine take part?</span>
-          <span className="mono" style={{ alignSelf: "flex-start", fontSize: 10.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + (elig.kind === "eligible" ? "var(--ok)" : elig.kind === "not-eligible" ? "var(--warn)" : "var(--line-2)"), color: elig.kind === "eligible" ? "var(--ok)" : elig.kind === "not-eligible" ? "var(--warn)" : "var(--tx-2)" }}>
-            {elig.word}
+        <section className="fl-card" data-testid="cluster-eligibility" data-kind={elig.kind} style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+          <Eyebrow>Can this machine take part?</Eyebrow>
+          <span>
+            <Chip tone={elig.kind === "eligible" ? "ok" : elig.kind === "not-eligible" ? "warn" : "neutral"}>{elig.word}</Chip>
           </span>
           <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, lineHeight: 1.6 }}>
             {elig.lines.map((l) => (

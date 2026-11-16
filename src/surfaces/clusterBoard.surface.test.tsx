@@ -158,6 +158,18 @@ describe("Groups › Cluster board (StateMatrix: Cluster)", () => {
     expect(byTest("cluster-eligibility")?.textContent).toContain("needs 48 GB GPU memory for round 16 (this machine has 24 GB)");
   });
 
+  it("0.6.0 fixture: with WorkMarket on the network and no requirements read, it does not say rounds are not live", async () => {
+    stubBridge([], MESH_ON);
+    const book = { addresses: { WorkMarket: "0x" + "1".repeat(40), FederatedRoundLedger: "0x" + "2".repeat(40) } };
+    const reads = { codeSize: async () => 100, viewCall: async () => "0x" + "0".repeat(64) };
+    const store = { toast: () => {}, linkThisDevice: vi.fn(), clearPendingPairLink: vi.fn() } as unknown as Store;
+    await act(async () => root.render(<Cluster store={store} s={freshState("p1")} fleet={fleet()} desktop flNetwork={{ book, reads }} />));
+    for (let i = 0; i < 4; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
+    const e = byTest("cluster-eligibility")!;
+    expect(e.textContent).toContain("No open round's requirements have been read");
+    expect(e.textContent).not.toContain(NO_ROUNDS_REASON);
+  });
+
   it("outside the desktop app, Add a machine is off and says why", async () => {
     stubBridge([], MESH_ON);
     await mount(fleet(), false);

@@ -1,7 +1,7 @@
 // 0.5.4 FL design, board 04: the cluster board's pure models. The 0.6.0 states (a live round's
 // requirements) are fixtures here only; the app passes no requirements while Group rounds are not live.
 import { describe, expect, it } from "vitest";
-import { GIB, NO_ROUNDS_REASON, acceleratorBytes, capacityModel, eligibilityModel, hardwareLine, isGroupSeed, joinOutcome, newlyPaired } from "./clusterBoard";
+import { GIB, NO_ROUNDS_REASON, noRequirementsReason, acceleratorBytes, capacityModel, eligibilityModel, hardwareLine, isGroupSeed, joinOutcome, newlyPaired } from "./clusterBoard";
 import type { HardwareFacts } from "../bridge/domains";
 import type { FleetDevice, JoinResult } from "../bridge/tauri/fleet";
 
@@ -57,6 +57,17 @@ describe("eligibilityModel", () => {
     const e = eligibilityModel({ kind: "ok", facts: noGpu }, { round: "round 15", minAcceleratorBytes: 16 * GIB });
     expect(e.kind).toBe("unknown");
     expect(e.lines[0]).toBe("GPU memory not reported, so the 16 GB minimum of round 15 can't be checked");
+  });
+
+  it("the Today reason uses the required wording and follows the network's phase", () => {
+    expect(NO_ROUNDS_REASON.startsWith("Group rounds not live yet")).toBe(true);
+    expect(noRequirementsReason({ phase: "today" })).toBe(NO_ROUNDS_REASON);
+    expect(noRequirementsReason({ phase: "unknown", reason: "WorkMarket: rpc down" })).toContain("unknown (WorkMarket: rpc down)");
+    expect(noRequirementsReason({ phase: "reading" })).toContain("Reading whether group rounds are live");
+    expect(noRequirementsReason({ phase: "rounds-live" })).toContain("No open round's requirements");
+    const e = eligibilityModel({ kind: "ok", facts: gpu24 }, null, { phase: "unknown", reason: "x" });
+    expect(e.word).toBe("Not known");
+    expect(e.lines[0]).not.toBe(NO_ROUNDS_REASON);
   });
 
   it("while the probe runs it says so", () => {

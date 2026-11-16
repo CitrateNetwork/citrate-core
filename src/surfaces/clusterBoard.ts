@@ -4,12 +4,14 @@
 //   - this machine's hardware: `fleet_probe` (its TierReport facts). Probed locally, no network.
 //   - your paired machines: `fleet_roster` (label + tier class from the pairing).
 //   - the group's machines: `cluster_peers` (online, direct / relayed) and `cluster_devices` (labels).
-//   - round requirements: none today. Group rounds are not live, so there is nothing to check this
-//     machine against. `RoundRequirements` is the interface a live round will fill (FL lane 1).
+//   - whether rounds are live: the FL network state (src/fl/networkState.ts, `useFlNetworkState`),
+//     read from the address book and the chain. Phase "today": Group rounds not live yet, so there
+//     is nothing to check this machine against. `RoundRequirements` is what a live round fills.
 // Members' machines do not share hardware reports today, so they are "not reported": shown as "—"
 // with the reason and never counted as zero (unknown is not zero).
 import type { HardwareFacts } from "../bridge/domains";
 import type { FleetDevice, JoinResult } from "../bridge/tauri/fleet";
+import { ROUNDS_NOT_LIVE, type FlPhase } from "../fl/networkState";
 
 export const GIB = 2 ** 30;
 
@@ -57,9 +59,29 @@ export interface Eligibility {
   reprobe: boolean;
 }
 
-export const NO_ROUNDS_REASON = "Group rounds not live yet, so there are no round requirements to check this machine against.";
+export const NO_ROUNDS_REASON = `${ROUNDS_NOT_LIVE}, so there are no round requirements to check this machine against.`;
 
-export function eligibilityModel(probe: ProbeReading, req: RoundRequirements | null): Eligibility {
+/** What the FL network state says about rounds (its phase, and why when it is unknown). */
+export interface RoundsContext {
+  phase: FlPhase;
+  reason?: string;
+}
+
+/** Why there is nothing to check against yet, from the network's phase (requirements absent). */
+export function noRequirementsReason(rounds: RoundsContext): string {
+  switch (rounds.phase) {
+    case "today":
+      return NO_ROUNDS_REASON;
+    case "reading":
+      return "Reading whether group rounds are live on this network.";
+    case "unknown":
+      return `Whether group rounds are live is unknown (${rounds.reason ?? "a contract read failed"}), so this machine can't be checked yet.`;
+    case "rounds-live":
+      return "No open round's requirements have been read for this machine yet.";
+  }
+}
+
+export function eligibilityModel(probe: ProbeReading, req: RoundRequirements | null, rounds: RoundsContext = { phase: "today" }): Eligibility {
   if (probe.kind === "loading") return { kind: "checking", word: "Checking", lines: ["Reading this machine's hardware."], reprobe: false };
   if (probe.kind === "failed") {
     return {
@@ -70,7 +92,7 @@ export function eligibilityModel(probe: ProbeReading, req: RoundRequirements | n
     };
   }
   const f = probe.facts;
-  if (!req) return { kind: "unknown", word: "Not known", lines: [NO_ROUNDS_REASON, `This machine reported: ${hardwareLine(f)}.`], reprobe: false };
+  if (!req) return { kind: "unknown", word: "Not known", lines: [noRequirementsReason(rounds), `This machine reported: ${hardwareLine(f)}.`], reprobe: false };
 
   const lines: string[] = [];
   let miss = false;
