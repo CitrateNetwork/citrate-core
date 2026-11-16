@@ -2420,8 +2420,10 @@ pub fn build_session_body(
     let raw: serde_json::Value =
         serde_json::from_str(tools_json).map_err(|_| "tools must be a JSON array".to_string())?;
     let arr = raw.as_array().ok_or("tools must be a JSON array")?;
-    if arr.len() > 64 {
-        return Err("at most 64 tools".into());
+    // 0.5.4 integration: the landed lanes put 74 annotated tools (plus escalation and delegation)
+    // in a session, past the old 64; still a bound on what the webview may send.
+    if arr.len() > 128 {
+        return Err("at most 128 tools".into());
     }
     let mut tools = Vec::with_capacity(arr.len());
     for t in arr {
