@@ -3242,6 +3242,21 @@ export class Store {
     this.save();
   }
 
+  /**
+   * A finished run of an entry on Hermes's schedule (the daemon tick claims it in core). An
+   * answered run posts its reply in the chat; any other outcome says how the run ended.
+   */
+  postScheduledRun(run: Pick<DaemonRunEntry, "name" | "outcome">, reply: string | null): void {
+    if (run.outcome === "answered" && reply && reply.trim()) {
+      this.setState((s) => ({
+        chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "Scheduled · " + run.name + "\n\n" + reply.trim(), chips: [], streaming: false }]),
+      }));
+      this.toast("Hermes ran “" + run.name + "” from your schedule");
+      return;
+    }
+    this.toast("“" + run.name + "” from your schedule ended: " + run.outcome.replace(/_/g, " "));
+  }
+
   /** HUP-S3.7 — speak a finished answer with the persona's voice when reading aloud is on. */
   private readAloud(text: string): void {
     if (!this.state.hermesReadAloud) return;

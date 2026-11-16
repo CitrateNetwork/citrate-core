@@ -251,6 +251,7 @@ impl Fx {
             Ok(crate::daemons::DaemonsView {
                 all_paused: b.all_paused(),
                 daemons: b.list(NOW_MS, 0),
+                schedule_runs: b.schedule_runs_view(NOW_MS, 0),
             })
         })
         .expect("book")

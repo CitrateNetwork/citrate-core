@@ -9,7 +9,9 @@
 import { describe, it, expect } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { SchedulePanel } from "./SchedulePanel";
+import { SchedulePanel, ScheduleRunsLine } from "./SchedulePanel";
+import { daemonsSlice } from "../../daemons/slice";
+import type { DaemonView } from "../../daemons/api";
 import { clock, itemsForDay, mergeItems, parseLocalDateTime, weekDays, weekStart, type ScheduleIo, type ScheduleView } from "./schedule";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -172,5 +174,59 @@ describe("HUP-S10.2 SchedulePanel", () => {
     const bad = makeIo((cmd) => (cmd === "hermes_schedule_list" ? new Error("disk full") : gStatus(false, false)));
     const m = await mount(<SchedulePanel io={async () => bad.io} nowSecs={() => NOW} />);
     expect(q(m.host, "schedule-error")?.textContent).toContain("disk full");
+  });
+});
+
+describe("Feature: due schedule entries run as Hermes turns", () => {
+  const ledger = (over: Partial<DaemonView> = {}): DaemonView => ({
+    id: "hermes-schedule",
+    name: "Hermes's schedule",
+    prompt: "",
+    schedule: "",
+    budget: { maxRunsPerDay: 4, maxTokensPerDay: 20_000, maxTokensPerRun: 6_000, maxSpendSalt: "0" },
+    paused: false,
+    status: "scheduled",
+    running: false,
+    runsToday: 1,
+    tokensToday: 900,
+    skippedToday: 0,
+    spendTodaySalt: "0",
+    nextRunMs: null,
+    lastRunMs: null,
+    lastOutcome: "answered",
+    lastNote: "Reminder sent",
+    ...over,
+  });
+  const render = () => {
+    const el = document.createElement("div");
+    const root = createRoot(el);
+    act(() => root.render(<ScheduleRunsLine />));
+    return { el, root };
+  };
+
+  it("Given no run yet, then it says how due entries run and the daily cap", () => {
+    daemonsSlice.set({ view: { allPaused: false, daemons: [], scheduleRuns: null }, runner: { running: null, blockedReason: null, error: null } });
+    const { el, root } = render();
+    expect(el.textContent).toMatch(/Hermes runs it as a turn on the local model, up to 4 a day/);
+    expect(el.textContent).toMatch(/waits for your approval/);
+    act(() => root.unmount());
+  });
+
+  it("Given today's ledger, then it shows the runs and the last outcome", () => {
+    daemonsSlice.set({ view: { allPaused: false, daemons: [], scheduleRuns: ledger({ skippedToday: 2 }) } });
+    const { el, root } = render();
+    expect(el.textContent).toMatch(/Today: 1 run, 2 skipped\. Last run: answered, Reminder sent\./);
+    act(() => root.unmount());
+  });
+
+  it("Given pause all, or no local model, then it says due entries do not run now", () => {
+    daemonsSlice.set({ view: { allPaused: true, daemons: [], scheduleRuns: ledger() } });
+    let r = render();
+    expect(r.el.textContent).toMatch(/Daemons are paused, so due entries are skipped and not replayed/);
+    act(() => r.root.unmount());
+    daemonsSlice.set({ view: { allPaused: false, daemons: [], scheduleRuns: ledger() }, runner: { running: null, blockedReason: "the local model is not serving", error: null } });
+    r = render();
+    expect(r.el.textContent).toMatch(/Not running right now: the local model is not serving/);
+    act(() => r.root.unmount());
   });
 });

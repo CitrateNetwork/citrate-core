@@ -1,12 +1,13 @@
 // =====================================================================
 // citrate-core — wires the daemon runner to the real app (HUP-S10.3)
 //
-// Desktop app only. The runner ticks every 30 s in the main window; runs go through
+// Desktop app only. The runner ticks every 30 s in the main window (daemons, and the due entries
+// of Hermes's schedule, which core claims under their own budget); runs go through
 // `store.runDaemonTurn` (local model only, every effectful tool call needs the member's explicit
 // decision). In the web preview nothing starts and the Daemons card says daemons need the app.
 // =====================================================================
 import { store } from "../shell/store";
-import { daemonsApi, localOffsetMinutes, type DaemonInput } from "./api";
+import { SCHEDULE_RUNS_ID, daemonsApi, localOffsetMinutes, type DaemonInput } from "./api";
 import { createDaemonRunner, type DaemonRunner } from "./runner";
 import { daemonsSlice } from "./slice";
 import { registerDaemonCanceller } from "../shell/slices/store";
@@ -60,8 +61,14 @@ export function startDaemonRunner(): void {
     runTurn: (claim, signal, meter) => store.runDaemonTurn(claim, signal, meter),
     onChange: publish,
     runTimeoutMs: DAEMON_RUN_TIMEOUT_MS,
-    // HUP-S10.3: each finished run also goes into its day's journal entry.
-    onFinished: (run) => store.recordDaemonRunInJournal(run),
+    // HUP-S10.3: each finished run also goes into its day's journal entry. A run of Hermes's
+    // schedule also posts its reply in the chat, where the member sees the reminder or the work.
+    onFinished: (run) => {
+      store.recordDaemonRunInJournal(run);
+      if (run.daemonId === SCHEDULE_RUNS_ID) {
+        store.postScheduledRun(run, run.outcome === "answered" ? runner?.lastReply(run.daemonId) ?? null : null);
+      }
+    },
   });
   // K5a: the Store's Remove stops a daemon's run (and waits) before core deletes it.
   const r = runner;

@@ -2,9 +2,10 @@
 //!
 //! A schedule entry is something Hermes is meant to do, or remind the member of, at a time: a
 //! one-off or a daily or weekly repeat. The member adds, pauses and removes entries in the
-//! Schedule view (Journal > Schedule). Hermes has no chat tool for the schedule in this build; the
-//! only reader besides the view is the `due` query. Nothing here runs anything: the daemons lane (HUP-S10.3) asks [`ScheduleStore::due`] which starts fell between
-//! its last check and now, and decides what to do under its own budgets and HIC rules.
+//! Schedule view (Journal > Schedule); Hermes proposes entries with its `schedule_add` tool, on an
+//! approval card. Nothing here runs anything: the daemon runner's tick (`daemons_claim_due`,
+//! `DaemonBook::claim_schedule_due`) claims each start that fell between its last check and now
+//! as one Hermes run under the schedule-runs budget and the daemon HIC rules.
 //!
 //! Storage: `<app data>/agent/hermes-schedule.json` (versioned, owner-only, written through a
 //! temporary file and a rename). Like the grant document next to it, a file that does not parse
@@ -553,8 +554,8 @@ pub async fn hermes_schedule_set_enabled(
 }
 
 /// **hermes_schedule_due** — the starts in `(after, upto]` (unix seconds) of enabled entries: what
-/// became due since the caller's last check. This is the query the scheduler (HUP-S10.3) runs;
-/// it only reads. A corrupted schedule has nothing due.
+/// became due since the caller's last check. Read-only; the runs themselves are claimed by
+/// `daemons_claim_due`. A corrupted schedule has nothing due.
 #[tauri::command]
 pub async fn hermes_schedule_due(
     app: tauri::AppHandle,

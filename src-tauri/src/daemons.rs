@@ -352,6 +352,58 @@ pub(crate) const DEFAULT_MAX_TOKENS_PER_RUN: u32 = 6_000;
 pub(crate) const HARD_MAX_RUNS_PER_DAY: u32 = 48;
 /// Hard ceiling on tokens per day, whatever the member sets.
 pub(crate) const HARD_MAX_TOKENS_PER_DAY: u32 = 200_000;
+/// The id of the schedule-runs ledger: the runs of Hermes's schedule (Journal > Schedule) share
+/// one budget, the daemon default (PENDING OWNER SIGN-OFF like every daemon budget).
+pub(crate) const SCHEDULE_RUNS_ID: &str = "hermes-schedule";
+
+/// A fresh schedule-runs ledger. Its anchor starts now: entries due before the first tick after
+/// this build lands are not replayed.
+fn schedule_runs_record(now_ms: u64, today: &str) -> Record {
+    Record {
+        id: SCHEDULE_RUNS_ID.into(),
+        name: "Hermes's schedule".into(),
+        prompt: String::new(),
+        schedule: String::new(),
+        budget: Budget::default(),
+        paused: false,
+        created_ms: now_ms,
+        anchor_ms: now_ms,
+        day: today.to_string(),
+        runs_today: 0,
+        tokens_today: 0,
+        skipped_today: 0,
+        last_run_ms: None,
+        last_outcome: None,
+        last_note: None,
+        last_token_source: None,
+        running: None,
+        allowed_tools: None,
+        claimed_at_anchor: Vec::new(),
+    }
+}
+
+/// The turn a due schedule entry runs. The entry is the member's own (or Hermes's, which the
+/// member approved on a card before it was added), so it is the run's task, like a daemon prompt.
+fn schedule_run_prompt(o: &crate::hermes_schedule::Occurrence, notes: &str) -> String {
+    let who = match o.origin {
+        crate::hermes_schedule::Origin::Member => "the member added it",
+        crate::hermes_schedule::Origin::Hermes => "you proposed it and the member approved it",
+    };
+    let mut p = format!(
+        "An entry on your schedule is due now ({who}). Entry: {}",
+        o.title.trim()
+    );
+    if !notes.is_empty() {
+        p.push_str("\nNotes: ");
+        p.push_str(notes);
+    }
+    p.push_str(
+        "\nIf the entry asks for something you can do with your tools, do it; every change still \
+         needs the member's approval. If it is a reminder, write the member a short reminder of it.",
+    );
+    p
+}
+
 /// A run the app has not reported back after this long is released and charged its allowance.
 pub(crate) const STALE_RUN_MS: u64 = 30 * 60_000;
 /// Only matching minutes this recent are caught up after the app was closed.
@@ -748,6 +800,10 @@ struct Record {
     /// `None` for a daemon the member wrote here, which keeps the member-daemon tool set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     allowed_tools: Option<Vec<String>>,
+    /// The schedule-runs record only: the occurrences (`<entry id>@<start secs>`) already
+    /// claimed or skipped at `anchor_ms`, so two entries that start in the same second both run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    claimed_at_anchor: Vec<String>,
 }
 
 /// One claimed run, handed to the runner.
@@ -795,6 +851,9 @@ pub(crate) struct DaemonView {
 pub(crate) struct DaemonsView {
     pub all_paused: bool,
     pub daemons: Vec<DaemonView>,
+    /// The runs of Hermes's schedule (Journal > Schedule): today's ledger and the last run, or
+    /// `None` before the first due entry.
+    pub schedule_runs: Option<DaemonView>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -803,6 +862,9 @@ struct FileBody {
     version: u32,
     all_paused: bool,
     daemons: Vec<Record>,
+    /// The ledger of Hermes's schedule runs (absent in older files and before the first run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schedule_runs: Option<Record>,
 }
 
 /// Every daemon and its ledger.
@@ -810,6 +872,9 @@ struct FileBody {
 pub(crate) struct DaemonBook {
     all_paused: bool,
     records: Vec<Record>,
+    /// Hermes's schedule runs under one built-in budget (id [`SCHEDULE_RUNS_ID`]). Not a daemon:
+    /// it is never listed, edited or deleted with the daemons.
+    schedule_runs: Option<Record>,
 }
 
 fn new_id(prefix: &str) -> String {
@@ -1035,6 +1100,7 @@ impl DaemonBook {
                     last_token_source: None,
                     running: None,
                     allowed_tools: None,
+                    claimed_at_anchor: Vec::new(),
                 });
                 id
             }
@@ -1056,33 +1122,36 @@ impl DaemonBook {
         self.delete(id)
     }
 
-    /// The tools a daemon is bound to (`None` = a member-written daemon, or no such daemon).
-    pub(crate) fn allowed_tools_of(&self, id: &str) -> Option<Vec<String>> {
+    /// A daemon, or the schedule-runs record when `id` is [`SCHEDULE_RUNS_ID`] (the run paths:
+    /// session open, in-flight checks and finishing a run).
+    fn find_run_record(&self, id: &str) -> Option<&Record> {
         self.records
             .iter()
+            .chain(self.schedule_runs.iter())
             .find(|r| r.id == id)
+    }
+
+    /// The tools a daemon is bound to (`None` = a member-written daemon, or no such daemon).
+    pub(crate) fn allowed_tools_of(&self, id: &str) -> Option<Vec<String>> {
+        self.find_run_record(id)
             .and_then(|r| r.allowed_tools.clone())
     }
 
-    /// Whether the book holds daemon `id`.
+    /// Whether the book holds daemon `id` (or the schedule-runs record).
     pub(crate) fn contains(&self, id: &str) -> bool {
-        self.records.iter().any(|r| r.id == id)
+        self.find_run_record(id).is_some()
     }
 
     /// Whether daemon `id` has run `run_id` in flight (claimed, not yet finished or released).
     pub(crate) fn run_in_flight(&self, id: &str, run_id: &str) -> bool {
-        self.records
-            .iter()
-            .find(|r| r.id == id)
+        self.find_run_record(id)
             .and_then(|r| r.running.as_ref())
             .is_some_and(|run| run.run_id == run_id)
     }
 
     /// The host tool sets the daemon's run in flight was claimed against.
     pub(crate) fn claimed_host_sets(&self, id: &str) -> Option<Vec<String>> {
-        self.records
-            .iter()
-            .find(|r| r.id == id)
+        self.find_run_record(id)
             .and_then(|r| r.running.as_ref())
             .and_then(|run| run.host_sets.clone())
     }
@@ -1256,6 +1325,112 @@ impl DaemonBook {
         Ok(claims)
     }
 
+    /// Claim the next due entry of Hermes's schedule (Journal > Schedule) as a run under the
+    /// schedule-runs budget: at most one in flight, the default daemon budget, spend 0, the
+    /// member-daemon tool set, and every effectful call HIC-required like any daemon run.
+    ///
+    /// Each occurrence that became due since the last check is claimed exactly once, oldest
+    /// first, one per tick while the run before it is in flight. Only starts in the last 24 h
+    /// catch up after the app was closed. "Pause all" and a used-up budget skip what is due now
+    /// (recorded, never replayed). A paused or removed entry is not due.
+    pub(crate) fn claim_schedule_due(
+        &mut self,
+        now_ms: u64,
+        offset_min: i32,
+        schedule: &crate::hermes_schedule::Schedule,
+    ) -> Result<Option<Claim>, String> {
+        check_offset(offset_min)?;
+        let today = LocalTime::from_utc_ms(now_ms, offset_min).day_key();
+        let all_paused = self.all_paused;
+        let r = self
+            .schedule_runs
+            .get_or_insert_with(|| schedule_runs_record(now_ms, &today));
+        r.roll_day(&today);
+        if let Some(run) = &r.running {
+            if now_ms.saturating_sub(run.started_ms) < STALE_RUN_MS {
+                // One run in flight: what else is due waits for the next tick.
+                return Ok(None);
+            }
+            r.tokens_today = r.tokens_today.saturating_add(u64::from(run.tokens_allowed));
+            r.last_outcome = Some("abandoned".into());
+            r.last_note =
+                Some("the app did not report this run's end; it was charged in full".into());
+            r.running = None;
+        }
+        let now_s = now_ms / 1000;
+        let anchor_s = r.anchor_ms / 1000;
+        let after_s = anchor_s.max(now_ms.saturating_sub(CATCH_UP_WINDOW_MS) / 1000);
+        let key = |o: &crate::hermes_schedule::Occurrence| format!("{}@{}", o.entry_id, o.start);
+        let mut due = crate::hermes_schedule::due_in(schedule, after_s.saturating_sub(1), now_s);
+        due.retain(|o| {
+            o.start > after_s || (o.start == anchor_s && !r.claimed_at_anchor.contains(&key(o)))
+        });
+        let skip_all = |r: &mut Record, due: &[crate::hermes_schedule::Occurrence]| {
+            if r.anchor_ms / 1000 != now_s {
+                r.claimed_at_anchor.clear();
+            }
+            r.claimed_at_anchor
+                .extend(due.iter().filter(|o| o.start == now_s).map(key));
+            r.anchor_ms = now_s * 1000;
+        };
+        let Some(first) = due.first().cloned() else {
+            skip_all(r, &due);
+            return Ok(None);
+        };
+        if all_paused {
+            skip_all(r, &due);
+            return Ok(None);
+        }
+        if let Some(why) = r.exhausted() {
+            r.skipped_today = r
+                .skipped_today
+                .saturating_add(u32::try_from(due.len()).unwrap_or(u32::MAX));
+            r.last_note = Some(why.into());
+            skip_all(r, &due);
+            return Ok(None);
+        }
+        // Claim the oldest; the cursor stops at its start so the rest are claimed next.
+        if first.start != anchor_s {
+            r.claimed_at_anchor.clear();
+        }
+        r.claimed_at_anchor.push(key(&first));
+        r.anchor_ms = first.start * 1000;
+        let entry = schedule.entries.iter().find(|e| e.id == first.entry_id);
+        let notes = entry.map(|e| e.notes.trim()).unwrap_or("");
+        let remaining = u64::from(r.budget.max_tokens_per_day).saturating_sub(r.tokens_today);
+        let tokens_allowed = u64::from(r.budget.max_tokens_per_run).min(remaining) as u32;
+        let run_id = new_id("r");
+        r.runs_today = r.runs_today.saturating_add(1);
+        r.last_run_ms = Some(now_ms);
+        r.running = Some(Running {
+            run_id: run_id.clone(),
+            started_ms: now_ms,
+            tokens_allowed,
+            host_sets: None,
+        });
+        Ok(Some(Claim {
+            daemon_id: SCHEDULE_RUNS_ID.to_string(),
+            run_id,
+            name: one_line(&first.title, NAME_MAX),
+            prompt: schedule_run_prompt(&first, notes),
+            tokens_allowed,
+            started_ms: now_ms,
+            allowed_tools: None,
+        }))
+    }
+
+    /// The schedule-runs ledger for the UI, or `None` before the first due entry.
+    pub(crate) fn schedule_runs_view(&self, now_ms: u64, offset_min: i32) -> Option<DaemonView> {
+        let r = self.schedule_runs.as_ref()?;
+        let mut v = r.view(self.all_paused, now_ms, offset_min);
+        // The entries carry their own times; the ledger has no cron schedule of its own.
+        v.next_run_ms = None;
+        if v.status == "never runs" {
+            v.status = "scheduled".into();
+        }
+        Some(v)
+    }
+
     /// Record the end of a claimed run: its outcome, the tokens it used (charged as reported, even
     /// past its allowance) and a one-line note. Tokens count as estimated. (Tests; the command
     /// uses [`Self::finish_run_with`].)
@@ -1293,7 +1468,10 @@ impl DaemonBook {
         note: &str,
         now_ms: u64,
     ) -> Result<RunLogEntry, String> {
-        let r = self.find_mut(id)?;
+        let r = match self.schedule_runs.as_mut() {
+            Some(sr) if id == SCHEDULE_RUNS_ID => sr,
+            _ => self.find_mut(id)?,
+        };
         let started_ms = match &r.running {
             Some(run) if run.run_id == run_id => run.started_ms,
             _ => return Err("that run is not in flight (it finished, or was released)".into()),
@@ -1330,6 +1508,7 @@ impl DaemonBook {
             version: FORMAT_VERSION,
             all_paused: self.all_paused,
             daemons: self.records.clone(),
+            schedule_runs: self.schedule_runs.clone(),
         })
         .map_err(|e| e.to_string())
     }
@@ -1354,9 +1533,17 @@ impl DaemonBook {
                 return Err(format!("daemon {:?} has a non-zero spend budget", r.name));
             }
         }
+        if body
+            .schedule_runs
+            .as_ref()
+            .is_some_and(|r| r.id != SCHEDULE_RUNS_ID || r.budget.max_spend_salt != "0")
+        {
+            return Err("the daemons file has a damaged schedule-runs ledger".into());
+        }
         Ok(DaemonBook {
             all_paused: body.all_paused,
             records: body.daemons,
+            schedule_runs: body.schedule_runs,
         })
     }
 }
@@ -1635,6 +1822,7 @@ fn views(book: &DaemonBook, now_ms: u64, offset_min: i32) -> DaemonsView {
     DaemonsView {
         all_paused: book.all_paused(),
         daemons: book.list(now_ms, offset_min),
+        schedule_runs: book.schedule_runs_view(now_ms, offset_min),
     }
 }
 
@@ -1726,8 +1914,19 @@ pub async fn daemons_claim_due(
             env,
             session_tool_sets: sets.as_deref(),
         });
+        // Hermes's schedule (Journal > Schedule): what became due since the last tick runs as
+        // one more claim under the schedule-runs budget. A schedule file that does not parse has
+        // nothing due.
+        let schedule = match crate::hermes_schedule::ScheduleStore::for_app(&app)?.load_schedule() {
+            crate::hermes_schedule::LoadedSchedule::Ok(s) => Some(s),
+            crate::hermes_schedule::LoadedSchedule::Corrupted(_) => None,
+        };
         with_book(&app, true, |b| {
-            b.claim_due_facts(now_ms, offset_min, facts.as_ref())
+            let mut claims = b.claim_due_facts(now_ms, offset_min, facts.as_ref())?;
+            if let Some(s) = &schedule {
+                claims.extend(b.claim_schedule_due(now_ms, offset_min, s)?);
+            }
+            Ok(claims)
         })
     })
     .await
