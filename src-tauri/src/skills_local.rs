@@ -284,7 +284,7 @@ fn migrate_legacy(dir: &Path) -> MigrationReport {
             continue;
         }
         let slug = slugify(&display);
-        if is_reserved_slug(&slug) {
+        if is_reserved_slug(&slug) || is_reserved_display_name(&display) {
             report.failed.push(fail(format!(
                 "its name {slug} is reserved for Citrate's bundled skills"
             )));
@@ -417,6 +417,48 @@ pub fn is_reserved_slug(slug: &str) -> bool {
     slug == "citrate" || slug.starts_with(RESERVED_SLUG_PREFIX)
 }
 
+/// The ASCII letter a common lookalike stands for: fullwidth forms, and Cyrillic and Greek
+/// letters that render like Latin ones. Anything else is returned unchanged.
+fn confusable_ascii(c: char) -> char {
+    let u = c as u32;
+    if (0xFF01..=0xFF5E).contains(&u) {
+        return char::from_u32(u - 0xFEE0).unwrap_or(c);
+    }
+    match c {
+        'а' | 'А' | 'α' | 'Α' => 'a',
+        'с' | 'С' | 'ϲ' | 'Ϲ' => 'c',
+        'е' | 'Е' | 'ε' | 'Ε' => 'e',
+        'і' | 'І' | 'ι' | 'Ι' | 'ӏ' | 'Ӏ' => 'i',
+        'ј' | 'Ј' => 'j',
+        'к' | 'К' | 'κ' | 'Κ' => 'k',
+        'м' | 'М' | 'Μ' => 'm',
+        'н' | 'Н' | 'Η' => 'h',
+        'о' | 'О' | 'ο' | 'Ο' => 'o',
+        'р' | 'Р' | 'ρ' | 'Ρ' => 'p',
+        'т' | 'Т' | 'τ' | 'Τ' => 't',
+        'у' | 'У' | 'υ' => 'y',
+        'х' | 'Х' | 'χ' | 'Χ' => 'x',
+        'ѕ' | 'Ѕ' => 's',
+        'ԁ' => 'd',
+        'ν' | 'Ν' => 'v',
+        _ => c,
+    }
+}
+
+/// Review of #716 (P2): whether a display name reads as a bundled skill's. The name is folded
+/// (lookalikes to ASCII, lowercase, only letters and digits kept, so zero-width and combining
+/// characters drop out); a folded name starting `citrate` is reserved, so a saved skill can never
+/// show as `сitrate-paraconsensus` (Cyrillic с) beside the bundled one.
+pub fn is_reserved_display_name(name: &str) -> bool {
+    let folded: String = name
+        .chars()
+        .map(confusable_ascii)
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    folded.starts_with("citrate")
+}
+
 /// Write a skill into `dir`. With `overwrite == false` an existing skill is NEVER replaced
 /// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
 /// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
@@ -436,7 +478,7 @@ fn write_skill_file(
         return Err("skill name/description/instructions exceed the allowed size".into());
     }
     let slug = slugify(name);
-    if is_reserved_slug(&slug) {
+    if is_reserved_slug(&slug) || is_reserved_display_name(name) {
         return Err(format!(
             "{SKILL_RESERVED_PREFIX}: skill names starting {RESERVED_SLUG_PREFIX} belong to Citrate's bundled skills; choose another name"
         ));

@@ -15,7 +15,7 @@ export const TERMINAL_ACCESS_LABEL = "Let Hermes run terminal commands";
 
 /** The plain-words explanation under the switch. No em-dashes (house style). */
 export const TERMINAL_ACCESS_HINT =
-  "Off by default. Inside a project, a short list of read and build commands (ls, cat, npm test, cargo build --offline, git status and the like) runs without asking until Hermes reads something from outside; node, npm run and git commit ask unless you turn them on for that project below. Every other command asks you first, and you see the exact command and folder before it runs. " +
+  "Off by default. Inside a project, a short list of commands runs without asking until Hermes reads something from outside (a web page, a tool's output or a group message); the list this Hermes build uses is shown below, with any build, test and git commands you turned on for a project. Every other command asks you first, and you see the exact command and folder before it runs. " +
   "Commands run in a sandbox with no network, and only in folders you've shared with Hermes (Folder access, below). " +
   "Turning this off or on restarts Hermes so the change applies to new conversations.";
 

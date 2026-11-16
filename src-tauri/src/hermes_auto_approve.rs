@@ -1,10 +1,12 @@
 //! Hermes per-project opt-ins for the shell auto-approve list (V1, owner decision 2026-11-16).
 //!
 //! The sidecar's auto-approve list (citrate-agent-runtime `agent-sidecar/policy/auto_approve.toml`)
-//! runs a few read and build commands inside a project without an approval card. Three of its
-//! rules run code the project itself defines or make a commit: `node-script` (`node <file>`),
-//! `npm-run` (`npm run build|test|lint|typecheck`) and `git-commit`. Those are marked `opt_in` in
-//! the list and do not run without a card unless the member turned them on for that project here.
+//! runs a few read commands inside a project without an approval card. Every rule that can run
+//! code the project defines, or that the project's config can point at (`node <file>`, npm
+//! scripts, the project's tsc, cargo, forge, and git other than `init`), is marked `opt_in` in the
+//! list (citrate-agent-runtime#107) and does not run without a card unless the member turned it on
+//! for that project here. A sidecar that predates opt-in rules lists none, the panel then offers
+//! nothing, and core sends no opt-ins.
 //!
 //! Data sources (Rule 7):
 //! - **The rules:** the sidecar's list in effect, read through `GET /shell/auto-approve`
@@ -30,7 +32,18 @@ use serde::{Deserialize, Serialize};
 pub const OPT_INS_FILE: &str = "auto-approve-opt-ins.json";
 /// The rules of the shipped list that are opt-in (`opt_in = true` in the sidecar's list). Core
 /// refuses any other id before the sidecar does.
-pub const OPT_IN_RULES: &[&str] = &["node-script", "npm-run", "git-commit"];
+pub const OPT_IN_RULES: &[&str] = &[
+    "node-script",
+    "npm-run",
+    "npm-test",
+    "npx-tsc",
+    "forge-build-test",
+    "cargo-offline",
+    "git-status",
+    "git-diff",
+    "git-add",
+    "git-commit",
+];
 /// Most project folders the member may opt in (the sidecar's `MAX_OPT_INS`).
 pub const MAX_PROJECTS: usize = 64;
 const FORMAT: u32 = 1;
@@ -170,11 +183,34 @@ pub(crate) fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result
         .join("hermes"))
 }
 
-/// [`attach`] for the app's Hermes folder.
+/// Whether a running sidecar's `GET /shell/auto-approve` answer lists any opt-in rule. An older
+/// sidecar (none listed, or no such route) refuses an unknown `autoApproveOptIns` key, so core
+/// sends opt-ins only to one that has them; a read error counts as no (its commands then ask).
+pub fn supports_opt_ins(list_json: Option<&str>) -> bool {
+    list_json
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .and_then(|v| v.get("rules").and_then(|r| r.as_array()).cloned())
+        .is_some_and(|rules| {
+            rules
+                .iter()
+                .any(|r| r.get("opt_in") == Some(&serde_json::Value::Bool(true)))
+        })
+}
+
+/// [`attach`] for the app's Hermes folder, only when the running sidecar has opt-in rules.
 pub(crate) fn attach_for_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     body: &str,
+    m: &crate::hermes::HermesManager,
 ) -> Result<String, String> {
+    let list = m
+        .control_get_path("/shell/auto-approve")
+        .ok()
+        .filter(|r| r.status == 200)
+        .map(|r| r.body);
+    if !supports_opt_ins(list.as_deref()) {
+        return Ok(body.to_string());
+    }
     attach(body, &hermes_dir(app)?)
 }
 

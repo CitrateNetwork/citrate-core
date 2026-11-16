@@ -64,8 +64,9 @@ describe("Hermes terminal commands reach core", () => {
     // V1 (owner decision 2026-11-16): the old "every command asks you first" was false while the
     // auto-approve list was on. The copy names the list and the opt-in commands.
     expect(TERMINAL_ACCESS_HINT).not.toMatch(/every command asks you first/i);
-    expect(TERMINAL_ACCESS_HINT).toMatch(/runs without asking/i);
-    expect(TERMINAL_ACCESS_HINT).toMatch(/node, npm run and git commit ask unless you turn them on for that project/);
+    expect(TERMINAL_ACCESS_HINT).toMatch(/runs without asking until Hermes reads something from outside \(a web page, a tool's output or a group message\)/);
+    // Build-independent: the list is the running sidecar's, shown in the panel, never a claim here.
+    expect(TERMINAL_ACCESS_HINT).toMatch(/the list this Hermes build uses is shown below/);
     expect(TERMINAL_ACCESS_HINT).toMatch(/every other command asks you first/i);
     expect(TERMINAL_ACCESS_HINT).toMatch(/sandbox/i);
     expect(TERMINAL_ACCESS_HINT).toMatch(/folders you've shared/i);
@@ -78,8 +79,10 @@ describe("Hermes terminal commands reach core", () => {
     expect(AGENT_SYSTEM_PROMPT).toMatch(/shared a folder/);
     // V1: the prompt tells the truth about the auto-approve list and the per-project opt-in.
     expect(AGENT_SYSTEM_PROMPT).not.toMatch(/approves every command/);
-    expect(AGENT_SYSTEM_PROMPT).toMatch(/node <file>, npm run and git commit ask unless the member turned them on for that project/);
+    expect(AGENT_SYSTEM_PROMPT).toMatch(/never promise that a command will run without asking/);
     expect(AGENT_SYSTEM_PROMPT).toMatch(/after you read untrusted content, waits for the member/);
+    // No fixed list of auto-run commands: which ones depends on the sidecar build and the opt-ins.
+    expect(AGENT_SYSTEM_PROMPT).not.toMatch(/npm test, npx tsc|git init, status, diff and add/);
   });
 
   it("Hermes's prompt promises no staking tool it does not have (V8) and no button in a notification", () => {

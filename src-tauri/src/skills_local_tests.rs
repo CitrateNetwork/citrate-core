@@ -231,7 +231,8 @@ fn v3_a_saved_skill_can_never_take_a_bundled_citrate_name() {
     assert!(list_skills(&dir).is_empty(), "nothing was written");
     // Names that only contain the word are the member's to use.
     write_skill_file(&dir, "My citrate notes", "d", "x", false).expect("not reserved");
-    write_skill_file(&dir, "citrated", "d", "x", false).expect("not reserved");
+    // A display name that folds to a word starting "citrate" (`citrated`) is reserved too: the
+    // display-name rule over-denies rather than let a lookalike through.
     assert!(is_reserved_slug("citrate-anything"));
     assert!(!is_reserved_slug("citrated"));
     let _ = fs::remove_dir_all(&dir);
@@ -253,5 +254,24 @@ fn v3_a_legacy_skill_under_a_reserved_name_is_not_converted() {
     assert!(r.failed[0].reason.contains("reserved"), "{:?}", r.failed);
     assert!(!dir.join("citrate-fl-collect").exists());
     assert!(dir.join("citrate-fl-collect.md").is_file(), "never lost");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Review of #716 (P2): a display name that only looks like a bundled skill's is refused too.
+#[test]
+fn v3_a_lookalike_display_name_is_refused() {
+    let dir = scratch("reserved-lookalike");
+    for name in [
+        "\u{0441}itrate-paraconsensus", // Cyrillic es
+        "\u{0421}ITRATE fl collect",    // Cyrillic capital es
+        "\u{FF43}\u{FF49}\u{FF54}\u{FF52}\u{FF41}\u{FF54}\u{FF45}-fl", // fullwidth
+        "ci\u{200B}trate-belnap-aggregate", // zero-width space
+        "\u{0441}\u{0456}\u{0442}r\u{0430}t\u{0435} notes",
+    ] {
+        let err = write_skill_file(&dir, name, "d", "x", false).expect_err(name);
+        assert!(err.starts_with(SKILL_RESERVED_PREFIX), "{name}: {err}");
+    }
+    assert!(list_skills(&dir).is_empty());
+    assert!(!is_reserved_display_name("My citrate notes"));
     let _ = fs::remove_dir_all(&dir);
 }

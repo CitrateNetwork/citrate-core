@@ -41,19 +41,31 @@ interface ListedRule {
 export const OPT_IN_LABELS: Record<string, string> = {
   "node-script": "node <file>",
   "npm-run": "npm run build, test, lint or typecheck",
+  "npm-test": "npm test",
+  "npx-tsc": "npx tsc --noEmit",
+  "forge-build-test": "forge build or test",
+  "cargo-offline": "cargo build, test or check --offline",
+  "git-status": "git status",
+  "git-diff": "git diff",
+  "git-add": "git add",
   "git-commit": "git commit",
 };
 
 export const OPT_INS_HINT =
-  "These three ask you first by default, because they run code the project itself defines or make a commit. " +
+  "These ask you first by default, because they can run code the project itself defines (scripts, build files, test binaries, git filters) or make a commit. " +
   "Turn one on for a project and Hermes runs it there without asking, in the sandbox with no network, writing only that project. " +
-  "It asks again once the conversation reads something from outside. Changes apply to new conversations.";
+  "It asks again once the conversation reads something from outside (a web page, a tool's output or a group message). Changes apply to new conversations.";
 
 export interface ProjectOptInsPanelProps {
   io: () => Promise<GrantsIo>;
 }
 
-type RulesState = { kind: "loading" } | { kind: "stopped" } | { kind: "none" } | { kind: "ok"; ids: string[] } | { kind: "error"; reason: string };
+type RulesState =
+  | { kind: "loading" }
+  | { kind: "stopped" }
+  | { kind: "none"; defaults: string[] }
+  | { kind: "ok"; ids: string[]; defaults: string[] }
+  | { kind: "error"; reason: string };
 
 export function ProjectOptInsPanel({ io }: ProjectOptInsPanelProps) {
   const [x, setX] = useState<GrantsIo | null>(null);
@@ -82,7 +94,9 @@ export function ProjectOptInsPanel({ io }: ProjectOptInsPanelProps) {
         else if (list === null) setRules({ kind: "stopped" });
         else {
           const ids = (list.rules ?? []).filter((r) => r.opt_in === true).map((r) => r.id);
-          setRules(ids.length ? { kind: "ok", ids } : { kind: "none" });
+          // What this build runs without a card in any project, read from the sidecar itself.
+          const defaults = list.enabled === false ? [] : (list.rules ?? []).filter((r) => r.opt_in !== true).map((r) => r.id);
+          setRules(ids.length ? { kind: "ok", ids, defaults } : { kind: "none", defaults });
         }
       } catch (e) {
         if (live) setError(errorMessage(e));
@@ -124,6 +138,13 @@ export function ProjectOptInsPanel({ io }: ProjectOptInsPanelProps) {
       <span style={{ fontSize: 13, fontWeight: 500 }}>Commands Hermes may run without asking, per project</span>
       <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{OPT_INS_HINT}</span>
       {rules.kind === "stopped" && <p role="status" style={{ fontSize: 12, margin: 0 }}>Start Hermes to see which commands this build lets you turn on.</p>}
+      {(rules.kind === "ok" || rules.kind === "none") && (
+        <p data-testid="auto-defaults" style={{ fontSize: 12, margin: 0 }}>
+          {rules.defaults.length
+            ? `In any project, this Hermes build runs these without asking: ${rules.defaults.join(", ")}.`
+            : "In any project, this Hermes build runs no command without asking."}
+        </p>
+      )}
       {rules.kind === "none" && <p role="status" style={{ fontSize: 12, margin: 0 }}>This Hermes build has no commands to turn on per project.</p>}
       {rules.kind === "error" && <p role="alert" style={{ fontSize: 12, margin: 0 }}>Could not read the command list from Hermes: {rules.reason}</p>}
       {view?.loadError && <p role="alert" style={{ fontSize: 12, margin: 0 }}>{view.loadError}</p>}

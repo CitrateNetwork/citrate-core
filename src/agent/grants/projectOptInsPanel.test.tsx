@@ -20,6 +20,7 @@ const LIST = {
   enabled: true,
   rules: [
     { id: "ls", program: "ls" },
+    { id: "cat", program: "cat" },
     { id: "node-script", program: "node", opt_in: true },
     { id: "npm-run", program: "npm", opt_in: true },
     { id: "git-commit", program: "git", opt_in: true },
@@ -77,6 +78,8 @@ describe("ProjectOptInsPanel (V1)", () => {
     const host = await mount(io);
     expect(host.textContent).toContain(OPT_INS_HINT);
     expect(host.textContent).toContain("No project has any of these turned on.");
+    // The default list is the running sidecar's, never a fixed claim.
+    expect(host.textContent).toContain("In any project, this Hermes build runs these without asking: ls, cat.");
     await click(button(host, "Choose a project folder"));
     expect(host.textContent).toContain(PROJ);
     // Picking alone saves nothing.
@@ -100,6 +103,8 @@ describe("ProjectOptInsPanel (V1)", () => {
     const { io } = makeIo({ list: { enabled: true, rules: [{ id: "ls" }, { id: "node-script" }] } });
     const host = await mount(io);
     expect(host.textContent).toContain("This Hermes build has no commands to turn on per project.");
+    // An older sidecar (no opt-in rules) lists what it really runs without a card.
+    expect(host.textContent).toContain("runs these without asking: ls, node-script.");
     expect(button(host, "Choose a project folder")).toBeUndefined();
   });
 
@@ -120,5 +125,6 @@ describe("ProjectOptInsPanel (V1)", () => {
   it("the copy has no em dashes and says the commands ask by default", () => {
     expect(OPT_INS_HINT).not.toMatch(/—/);
     expect(OPT_INS_HINT).toMatch(/ask you first by default/);
+    expect(OPT_INS_HINT).toMatch(/a web page, a tool's output or a group message/);
   });
 });

@@ -67,7 +67,12 @@ fn only_the_three_opt_in_commands_and_real_folders_are_accepted() {
     let dir = scratch("refuse");
     let proj = scratch("proj-refuse");
     let p = proj.to_string_lossy().to_string();
-    for bad in [rules(&["ls"]), rules(&["rm"]), rules(&["npm-run", "curl"])] {
+    for bad in [
+        rules(&["ls"]),
+        rules(&["git-init"]),
+        rules(&["rm"]),
+        rules(&["npm-run", "curl"]),
+    ] {
         assert!(set(&dir, &p, &bad, 1).is_err(), "{bad:?}");
     }
     assert!(set(&dir, "relative/proj", &rules(&["npm-run"]), 1).is_err());
@@ -109,5 +114,33 @@ fn a_damaged_file_or_a_deleted_folder_never_widens_anything() {
 #[test]
 fn the_opt_in_ids_match_the_sidecar_rule_names() {
     // The ids are the sidecar list's (`agent-sidecar/policy/auto_approve.toml`, `opt_in = true`).
-    assert_eq!(OPT_IN_RULES, &["node-script", "npm-run", "git-commit"]);
+    assert_eq!(
+        OPT_IN_RULES,
+        &[
+            "node-script",
+            "npm-run",
+            "npm-test",
+            "npx-tsc",
+            "forge-build-test",
+            "cargo-offline",
+            "git-status",
+            "git-diff",
+            "git-add",
+            "git-commit"
+        ]
+    );
+}
+
+#[test]
+fn opt_ins_go_only_to_a_sidecar_that_has_opt_in_rules() {
+    // An older sidecar (05243c72) refuses an unknown `autoApproveOptIns` key, so it gets none.
+    assert!(!supports_opt_ins(None));
+    assert!(!supports_opt_ins(Some("not json")));
+    assert!(!supports_opt_ins(Some(
+        r#"{"enabled":true,"rules":[{"id":"ls"},{"id":"node-script"}]}"#
+    )));
+    assert!(!supports_opt_ins(Some(r#"{"enabled":false,"rules":[]}"#)));
+    assert!(supports_opt_ins(Some(
+        r#"{"enabled":true,"rules":[{"id":"ls"},{"id":"node-script","opt_in":true}]}"#
+    )));
 }

@@ -2703,7 +2703,7 @@ pub async fn hermes_session_open_cloud(
                 )?;
                 // The same folder grants a local session gets (HUP-S2.1), and the member's
                 // per-project terminal opt-ins (V1).
-                let body = crate::hermes_auto_approve::attach_for_app(&app, &body)?;
+                let body = crate::hermes_auto_approve::attach_for_app(&app, &body, m)?;
                 crate::agent_grants::open_with_grants(&store, &body, |b| {
                     m.session_open(b).map_err(|e| e.to_string())
                 })
@@ -2750,7 +2750,7 @@ pub async fn hermes_session_open(
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
         // V1: the member's per-project terminal opt-ins (none = the body is unchanged).
-        let body = crate::hermes_auto_approve::attach_for_app(&app, &body)?;
+        let body = crate::hermes_auto_approve::attach_for_app(&app, &body, m)?;
         crate::agent_grants::open_with_grants(&store, &body, |b| {
             m.session_open(b).map_err(|e| e.to_string())
         })
