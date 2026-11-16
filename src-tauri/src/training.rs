@@ -66,20 +66,77 @@ fn left_pad_address(addr: &str) -> [u8; 32] {
     word
 }
 
-/// One `eth_call` returning a 32-byte word, or None on a short/empty return (no code / not set).
-fn call_word<T: crate::rpc::RpcTransport>(
+/// One `eth_call` returning a 32-byte word, telling a failed read from an empty one: Err when the
+/// RPC call itself failed (unknown, never zero), Ok(None) on a short or empty return.
+fn read_word<T: crate::rpc::RpcTransport>(
     rpc: &RpcClient<T>,
     to: &str,
     calldata: &[u8],
-) -> Option<[u8; 32]> {
+) -> Result<Option<[u8; 32]>, String> {
     let call = serde_json::json!({ "to": to, "data": format!("0x{}", hex::encode(calldata)) });
-    let ret = rpc.eth_call(call).ok()?;
+    let ret = rpc.eth_call(call).map_err(|e| e.to_string())?;
     if ret.len() < 32 {
-        return None;
+        return Ok(None);
     }
     let mut word = [0u8; 32];
     word.copy_from_slice(&ret[..32]);
-    Some(word)
+    Ok(Some(word))
+}
+
+/// A uint word the ledger must return. A failed read or a missing value is an error with its
+/// reason, never 0 (0.5.4: Hermes reports patronage from this, and unknown is not zero).
+fn read_uint<T: crate::rpc::RpcTransport>(
+    rpc: &RpcClient<T>,
+    to: &str,
+    calldata: &[u8],
+    what: &str,
+) -> Result<u128, String> {
+    match read_word(rpc, to, calldata) {
+        Err(e) => Err(format!("PatronageLedger {what} could not be read: {e}")),
+        Ok(None) => Err(format!(
+            "PatronageLedger {what} returned no value (no contract code at {to}?)"
+        )),
+        Ok(Some(w)) => {
+            decode_u128(&w).map_err(|e| format!("PatronageLedger {what} is not a number: {e}"))
+        }
+    }
+}
+
+/// The member's cumulative patronage units and pending dividend (wei) on PatronageLedger.
+pub fn read_patronage<T: crate::rpc::RpcTransport>(
+    rpc: &RpcClient<T>,
+    ledger: &str,
+    member: &str,
+) -> Result<(u128, u128), String> {
+    let word = left_pad_address(member);
+    let mut units_call = SEL_UNITS.to_vec();
+    units_call.extend_from_slice(&word);
+    let weight = read_uint(rpc, ledger, &units_call, "units()")?;
+    let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
+    pending_call.extend_from_slice(&word);
+    let pending_wei = read_uint(rpc, ledger, &pending_call, "pendingDividendOf()")?;
+    Ok((weight, pending_wei))
+}
+
+/// The highest committed round of a group on PatronageLedger (0 when none). A failed read is an
+/// error, not "no rounds".
+pub fn scan_rounds<T: crate::rpc::RpcTransport>(
+    rpc: &RpcClient<T>,
+    ledger: &str,
+    gid: &[u8; 32],
+) -> Result<u64, String> {
+    let mut current = 0u64;
+    for n in 1..=MAX_ROUND_SCAN {
+        let mut calldata = SEL_ROUND_MERGED_HASH.to_vec();
+        calldata.extend_from_slice(&round_key(gid, n));
+        match read_word(rpc, ledger, &calldata)
+            .map_err(|e| format!("PatronageLedger roundMergedHash() could not be read: {e}"))?
+        {
+            Some(word) if !is_zero(&word) => current = n,
+            _ => break, // first unset round → no further rounds
+        }
+    }
+    Ok(current)
 }
 
 fn is_zero(word: &[u8; 32]) -> bool {
@@ -107,6 +164,8 @@ pub struct RewardInfo {
     pub weight: String,
     /// Claimable dividend in whole SALT (from `pendingDividendOf`, wei / 1e18).
     pub salt: String,
+    /// The same dividend exactly, in wei (decimal string).
+    pub pending_wei: String,
 }
 
 fn patronage_ledger() -> Result<&'static str, String> {
@@ -134,16 +193,7 @@ pub fn training_status_sync(app: tauri::AppHandle, group: String) -> Result<Roun
     let ledger = patronage_ledger()?;
     let rpc = RpcClient::citrate();
     let gid = group_bytes32(&group);
-
-    let mut current = 0u64;
-    for n in 1..=MAX_ROUND_SCAN {
-        let mut calldata = SEL_ROUND_MERGED_HASH.to_vec();
-        calldata.extend_from_slice(&round_key(&gid, n));
-        match call_word(&rpc, ledger, &calldata) {
-            Some(word) if !is_zero(&word) => current = n,
-            _ => break, // first unset round → no further rounds
-        }
-    }
+    let current = scan_rounds(&rpc, ledger, &gid)?;
     let phase = if current > 0 { "committed" } else { "idle" };
     // Participant count needs PatronageRecorded event indexing (follow-up); report 0 = "uncounted"
     // rather than a fabricated number. The UI shows "—" for 0.
@@ -179,29 +229,16 @@ pub fn training_reward_sync(
     let member = crate::wallet::address(&custody.0)
         .map_err(|e| e.to_string())?
         .address;
-    let word = left_pad_address(&member);
-
-    let mut units_call = SEL_UNITS.to_vec();
-    units_call.extend_from_slice(&word);
-    let weight = call_word(&rpc, ledger, &units_call)
-        .and_then(|w| decode_u128(&w).ok())
-        .unwrap_or(0);
-
-    let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
-    pending_call.extend_from_slice(&word);
-    let pending_wei = call_word(&rpc, ledger, &pending_call)
-        .and_then(|w| decode_u128(&w).ok())
-        .unwrap_or(0);
+    let (weight, pending_wei) = read_patronage(&rpc, ledger, &member)?;
     let salt_whole = pending_wei / 1_000_000_000_000_000_000u128; // wei → whole SALT
 
     // Round is informational here; the surface pairs this with training_status.
-    let round = training_status_sync(app, group)
-        .map(|s| s.round)
-        .unwrap_or(0);
+    let round = training_status_sync(app, group)?.round;
     Ok(RewardInfo {
         round,
         weight: weight.to_string(),
         salt: salt_whole.to_string(),
+        pending_wei: pending_wei.to_string(),
     })
 }
 
@@ -234,6 +271,62 @@ mod tests {
         let h = group_bytes32("grp_dana");
         assert_eq!(h, group_bytes32("grp_dana"));
         assert_ne!(h, [0u8; 32]);
+    }
+
+    /// A scripted eth_call: each answer in turn, Err for a transport failure.
+    struct Answers(std::cell::RefCell<Vec<Result<serde_json::Value, String>>>);
+
+    impl crate::rpc::RpcTransport for Answers {
+        fn call(
+            &self,
+            _body: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::rpc::RpcError> {
+            match self.0.borrow_mut().remove(0) {
+                Ok(v) => Ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": v })),
+                Err(e) => Err(crate::rpc::RpcError::Transport(e)),
+            }
+        }
+    }
+
+    fn rpc(answers: Vec<Result<serde_json::Value, String>>) -> RpcClient<Answers> {
+        RpcClient::with_transport(Answers(std::cell::RefCell::new(answers)))
+    }
+
+    fn uint(n: u128) -> serde_json::Value {
+        serde_json::json!(format!("0x{n:064x}"))
+    }
+
+    const LEDGER: &str = "0x41f68b9e710585b064459a0ec706148fbf503659";
+    const ME: &str = "0x00000000000000000000000000000000000000ff";
+
+    #[test]
+    fn patronage_reads_units_and_pending_wei_exactly() {
+        let r = rpc(vec![Ok(uint(7)), Ok(uint(1_500_000_000_000_000_000))]);
+        assert_eq!(
+            read_patronage(&r, LEDGER, ME).unwrap(),
+            (7, 1_500_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn a_failed_patronage_read_is_an_error_never_zero() {
+        let r = rpc(vec![Err("connection refused".into())]);
+        let e = read_patronage(&r, LEDGER, ME).unwrap_err();
+        assert!(e.contains("units() could not be read"), "{e}");
+        let r = rpc(vec![Ok(uint(7)), Ok(serde_json::json!("0x"))]);
+        let e = read_patronage(&r, LEDGER, ME).unwrap_err();
+        assert!(e.contains("pendingDividendOf() returned no value"), "{e}");
+    }
+
+    #[test]
+    fn round_scan_stops_at_the_first_unset_round_and_fails_on_a_read_error() {
+        let gid = [0x11u8; 32];
+        let r = rpc(vec![Ok(uint(1)), Ok(uint(9)), Ok(uint(0))]);
+        assert_eq!(scan_rounds(&r, LEDGER, &gid).unwrap(), 2);
+        let r = rpc(vec![Ok(uint(1)), Err("timeout".into())]);
+        assert!(scan_rounds(&r, LEDGER, &gid)
+            .unwrap_err()
+            .contains("roundMergedHash() could not be read"));
     }
 
     #[test]

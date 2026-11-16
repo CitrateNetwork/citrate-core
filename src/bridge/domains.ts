@@ -1353,8 +1353,12 @@ export interface RoundStatus {
 }
 export interface RewardInfo {
   round: number;
+  /** Cumulative patronage units (PatronageLedger.units). */
   weight: string;
+  /** Pending dividend in whole SALT, rounded down. */
   salt: string;
+  /** The same pending dividend exactly, in wei (decimal string). */
+  pendingWei: string;
 }
 /** PatronageLedger reads. V5 (0.5.4): no start, contribute or claim here; those were stubs that
  *  always failed. Rounds are joined and claimed through the WorkMarket tools once deployed. */

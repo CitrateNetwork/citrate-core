@@ -55,6 +55,7 @@ import { latestBlockTime } from "../fl/chainTime";
 import { readFlNetworkState, type FlNetworkState, type PayoutsGateStatus } from "../fl/networkState";
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
 import { isFlRoundTool, runFlRoundTool } from "../agent/flRoundTools";
+import { isFlHistoryTool, runFlHistoryTool } from "../agent/flHistoryTools";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
@@ -4789,6 +4790,16 @@ export class Store {
       });
       status = out.status;
       result = out.result;
+    } else if (isFlHistoryTool(call.name)) {
+      // 0.5.4 WP-H10: reads only, from fl_overview, PatronageLedger (training_reward) and, for
+      // payouts, the address book, eth_getCode and the network profile.
+      result = await runFlHistoryTool(call.name, args as Record<string, unknown>, {
+        desktop: BRIDGE_MODE === "tauri",
+        overview: () => bridge.flRounds.overview(),
+        networkState: () =>
+          readFlNetworkState(flAddressBook, { codeSize: (a) => bridge.contracts.codeSize("citrate", a), viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d) }),
+        reward: (g) => bridge.training.reward(g),
+      });
     } else if (isEverydayTool(call.name)) {
       // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
       // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.
