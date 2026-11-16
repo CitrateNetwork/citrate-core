@@ -430,6 +430,25 @@ pub fn write_intent(
     }
 }
 
+/// G-SEC PAY-10: the FL payouts gate for a write the member proposes, checked before the wallet,
+/// the gas estimate and the card. A call to an FL money contract is proposed only while payouts are
+/// open and the live code matches the pinned build ([`crate::payouts_gate::check_call`]); the
+/// signer checks again before it signs. Reads ([`view_call`]) never come here.
+pub fn payouts_gate_for_write<T: crate::rpc::RpcTransport>(
+    policy: &crate::payouts_gate::PayoutsPolicy,
+    client: &crate::rpc::RpcClient<T>,
+    to: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    let mut addr = [0u8; 20];
+    hex::decode_to_slice(normalize_address(to)?.trim_start_matches("0x"), &mut addr)
+        .map_err(|_| "an address is 0x followed by 40 hex digits".to_string())?;
+    crate::payouts_gate::check_call(policy, Some(addr), data, &mut |a: &str| {
+        client.get_code(a).map_err(|e| e.to_string())
+    })
+    .map_err(|r| format!("the write was not proposed: {r}"))
+}
+
 fn client_for(target: &ReadTarget) -> crate::rpc::RpcClient<crate::rpc::HttpTransport> {
     crate::rpc::RpcClient::with_transport(crate::rpc::HttpTransport::new(target.rpc_url()))
 }
@@ -520,8 +539,9 @@ pub fn contract_write_propose_sync(
     let to = normalize_address(&address)?;
     let data = parse_calldata(&calldata)?;
     let value = parse_value_wei(value_wei.as_deref())?;
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let client = crate::rpc::RpcClient::citrate();
+    payouts_gate_for_write(ceremony.0.payouts_policy(), &client, &to, &data)?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let gas = estimate_write_gas(&client, &wallet.address, &to, &data, value)?;
     Ok(ceremony
         .0

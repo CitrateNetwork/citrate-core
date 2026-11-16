@@ -1,5 +1,5 @@
 {
-  "_comment": "The network profiles this build knows (K6 network switch). ONE source for chain id, genesis, node network, RPC, explorer, faucet, bootnodes, address book (path and the sha256 of the canonical book it came from) and the minimum node chain rev, read by the Rust side (src-tauri/src/network_profile.rs) and the webview (src/network/profile.ts). `active` is the network this build targets. A value that is not known yet is null and named in `pending` with what sets it; it is never a placeholder. A profile with any null field is not ready, and the app refuses to start a node or sign against it. `genesisProfile` is the `[chain] genesis_profile` the app writes into the node config; it chooses the block 0 the node builds and must be a key of `nodeGenesisProfiles`. `nodeGenesisProfiles` lists the genesis profiles the bundled node (scripts/build-sidecar.sh MIN_CHAIN_REV) builds: `genesisHash` is the block 0 it builds on chain 40204 (a profile naming it must have that genesis), `nodeDefault` says the node also builds it when the config names no genesis profile, and `compiledActivations` says the genesis compiles its ValidatorRegistry and activation height, so the app passes no CITRATE_VALIDATOR_* override (the node refuses one that differs). Optional per-profile keys: `memberPruneRetain` (blocks a member node keeps; the chain store is pruned to that many, never fewer than the 10,000-block undo window, ADR CV-7a; absent = full history) `retired` (why the network is retired: the profile stays known so a data dir from it can be named and set aside, but it is refused like an unset one) and `nodeCheckpoint` (`interval`, `committeeSize`, `voteDepth`: the `[checkpoint]` values the node config repeats on a genesis that compiles them, which the node refuses to start without; written by the cut from its `chainParams`; absent = the template's section) and `payoutsOpen` (FL design 0.5.4, G-SEC: true opens payout and claim surfaces; absent or false means payouts ship dark; no shipped profile sets it). The r1007 genesis cut fills the r1007 profile from release/network-cut.json (scripts/network-cut.py).",
+  "_comment": "The network profiles this build knows (K6 network switch). ONE source for chain id, genesis, node network, RPC, explorer, faucet, bootnodes, address book (path and the sha256 of the canonical book it came from) and the minimum node chain rev, read by the Rust side (src-tauri/src/network_profile.rs) and the webview (src/network/profile.ts). `active` is the network this build targets. A value that is not known yet is null and named in `pending` with what sets it; it is never a placeholder. A profile with any null field is not ready, and the app refuses to start a node or sign against it. `genesisProfile` is the `[chain] genesis_profile` the app writes into the node config; it chooses the block 0 the node builds and must be a key of `nodeGenesisProfiles`. `nodeGenesisProfiles` lists the genesis profiles the bundled node (scripts/build-sidecar.sh MIN_CHAIN_REV) builds: `genesisHash` is the block 0 it builds on chain 40204 (a profile naming it must have that genesis), `nodeDefault` says the node also builds it when the config names no genesis profile, and `compiledActivations` says the genesis compiles its ValidatorRegistry and activation height, so the app passes no CITRATE_VALIDATOR_* override (the node refuses one that differs). Optional per-profile keys: `memberPruneRetain` (blocks a member node keeps; the chain store is pruned to that many, never fewer than the 10,000-block undo window, ADR CV-7a; absent = full history) `retired` (why the network is retired: the profile stays known so a data dir from it can be named and set aside, but it is refused like an unset one) and `nodeCheckpoint` (`interval`, `committeeSize`, `voteDepth`: the `[checkpoint]` values the node config repeats on a genesis that compiles them, which the node refuses to start without; written by the cut from its `chainParams`; absent = the template's section). The r1007 genesis cut fills the r1007 profile from release/network-cut.json (scripts/network-cut.py). `payoutsOpen` (G-SEC PAY-14; absent = false) says whether FL payouts are open on the network; it takes effect only where `flCodePins` (G-SEC PAY-11) pins each FL contract's address and keccak256 of its runtime code (from the network's root book, CV-12) and the live code matches, checked in Rust before payouts open and before each FL signature (src-tauri payouts gate, kit/src/payouts_gate.rs). A contract not on the network has a null address and codeHash and a `pending` reason.",
   "active": "r1007",
   "nodeGenesisProfiles": {
     "testnet_beta": {
@@ -79,6 +79,36 @@
       "addressBookSha256": "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
       "minChainRev": "b2e91167bda2b81d52658c58f6327063a25cbedc",
       "memberPruneRetain": 10000,
+      "payoutsOpen": false,
+      "flCodePins": {
+        "WorkMarket": {
+          "address": null,
+          "codeHash": null,
+          "pending": "not deployed on r1007; pinned from the r1007 root book (citrate-chain contracts/addresses/r1007/40204.provenance.json) when it is deployed"
+        },
+        "FLRoundVerifier": {
+          "address": null,
+          "codeHash": null,
+          "pending": "not deployed on r1007; pinned from the r1007 root book (citrate-chain contracts/addresses/r1007/40204.provenance.json) when it is deployed"
+        },
+        "FederatedRoundLedger": {
+          "address": "0x25fc02fbfad9589d0dde84f858d0962bfa0253c5",
+          "codeHash": "0x542a2cb3ea0febdf15ecd02774af4d7765d7e6c3e9558cb9b00305fb3bc28455"
+        },
+        "DatasetRegistry": {
+          "address": null,
+          "codeHash": null,
+          "pending": "not deployed on r1007; pinned from the r1007 root book (citrate-chain contracts/addresses/r1007/40204.provenance.json) when it is deployed"
+        },
+        "PatronageLedger": {
+          "address": "0x41f68b9e710585b064459a0ec706148fbf503659",
+          "codeHash": "0xd59fb0af578034a325bf2c3f01c5496ae4af03f77180fd98c96ad2f7dc4834f9"
+        },
+        "LoRAFactory": {
+          "address": "0x62e9aabec26288e60db2503f518eacf9cdcc8890",
+          "codeHash": "0x56e3c1a10501f054f0667ffc606f42d05e1a6548252743d085c3aedf75121697"
+        }
+      },
       "pending": {},
       "nodeCheckpoint": {
         "interval": 50,

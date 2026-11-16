@@ -101,7 +101,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -441,6 +441,10 @@ pub enum CeremonyError {
         /// The chain id the bytes to be signed name (or why it could not be read).
         signed: String,
     },
+    /// The FL payouts gate ([`crate::payouts_gate`]) refused the transaction before the nonce
+    /// read and the signature: payouts are not open on this network, the contract is not pinned
+    /// here, or its live code is not the pinned build. Carries the reason. Nothing was signed.
+    PayoutsRefused(String),
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -484,6 +488,7 @@ impl std::fmt::Display for CeremonyError {
                 f,
                 "ceremony: the approval showed chain {shown} but the request is for chain {signed}, so nothing was signed"
             ),
+            CeremonyError::PayoutsRefused(m) => write!(f, "ceremony: {m}"),
         }
     }
 }
@@ -747,6 +752,9 @@ pub struct SignatureCeremony {
     ttl: std::time::Duration,
     /// The clock the TTL is measured with.
     clock: CeremonyClock,
+    /// The FL payouts policy this ceremony checks, when set on it; otherwise the process-wide one
+    /// ([`crate::payouts_gate::payouts_gate`]).
+    payouts: OnceLock<crate::payouts_gate::PayoutsPolicy>,
 }
 
 impl Default for SignatureCeremony {
@@ -776,6 +784,7 @@ impl SignatureCeremony {
             abis: crate::abi_book::AbiBook::default(),
             ttl,
             clock,
+            payouts: OnceLock::new(),
         }
     }
 
@@ -877,6 +886,19 @@ impl SignatureCeremony {
     /// Gated contracts registered.
     pub fn gated_contracts(&self) -> usize {
         self.abis.len()
+    }
+
+    /// Check this ceremony's transactions against `policy` instead of the process-wide payouts
+    /// policy. The first call wins; returns `false` when one was already set.
+    pub fn set_payouts_policy(&self, policy: crate::payouts_gate::PayoutsPolicy) -> bool {
+        self.payouts.set(policy).is_ok()
+    }
+
+    /// The FL payouts policy this ceremony's transactions are checked against.
+    pub fn payouts_policy(&self) -> &crate::payouts_gate::PayoutsPolicy {
+        self.payouts
+            .get()
+            .unwrap_or_else(|| crate::payouts_gate::payouts_gate())
     }
 
     /// [`decode_intent`], plus: a transaction calling a registered gated contract whose call is
@@ -1205,6 +1227,18 @@ impl SignatureCeremony {
             rpc.verify_network(expected)
                 .map_err(|e| CeremonyError::Broadcast(format!("{e}; nothing was signed")))?;
         }
+
+        // The FL payouts gate: a call to an FL money contract is signed only while payouts are
+        // open on this network and the live code at the contract (and the payout path) hashes to
+        // the pinned build, read now from the verified endpoint. Before the nonce read, so a
+        // refused call costs no other RPC round trip.
+        crate::payouts_gate::check_call(
+            self.payouts_policy(),
+            parsed.to,
+            &parsed.data,
+            &mut |address: &str| rpc.get_code(address).map_err(|e| e.to_string()),
+        )
+        .map_err(|r| CeremonyError::PayoutsRefused(r.to_string()))?;
 
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we
@@ -1901,7 +1935,22 @@ pub fn sign_request_sync(
     ceremony: State<'_, CeremonyState>,
     intent: SignatureIntent,
 ) -> std::result::Result<CeremonyView, String> {
-    Ok(ceremony.0.request(intent))
+    propose_checked(&ceremony.0, intent, &crate::rpc::RpcClient::citrate())
+}
+
+/// Open a pending request after the FL payouts gate: a transaction the signer would refuse
+/// ([`crate::payouts_gate::check_intent`]) is refused here, before any card opens, with the same
+/// reason. The signer checks again at approval, so this is the early answer, not the gate.
+pub fn propose_checked<T: crate::rpc::RpcTransport>(
+    ceremony: &SignatureCeremony,
+    intent: SignatureIntent,
+    rpc: &crate::rpc::RpcClient<T>,
+) -> std::result::Result<CeremonyView, String> {
+    crate::payouts_gate::check_intent(ceremony.payouts_policy(), &intent, &mut |address: &str| {
+        rpc.get_code(address).map_err(|e| e.to_string())
+    })
+    .map_err(|r| err_str(CeremonyError::PayoutsRefused(r.to_string())))?;
+    Ok(ceremony.request(intent))
 }
 
 /// **Command — sign_approve.** The ONLY command that yields a signature, and it
@@ -2151,4 +2200,5 @@ mod tests {
     include!("ceremony_tests.rs");
     include!("ceremony_budget_tests.rs");
     include!("ceremony_expiry_tests.rs");
+    include!("ceremony_payouts_tests.rs");
 }
