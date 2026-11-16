@@ -15,7 +15,7 @@
 // does not answer, nothing is posted and the member is told why.
 // =====================================================================
 import type { GroupMember, GroupMessage } from "../../bridge/domains";
-import { checkDraft, encodeHermes, MAX_TEXT, threadModel, type RoundDraft } from "./groupEnvelope";
+import { checkDraft, draftLines, encodeHermes, MAX_TEXT, threadModel, type RoundDraft } from "./groupEnvelope";
 import { roleWord } from "./memberRoles";
 
 // ---- which Hermes answers this device posted ----------------------------------------------------
@@ -154,6 +154,8 @@ export interface SendPreview {
   recipients: number | null;
   text: string;
   draft: RoundDraft | null;
+  /** The round draft's lines exactly as they will be posted (empty when there is no draft). */
+  draftLines?: string[];
   read: string[];
   scan: DisclosureScan;
 }
@@ -193,8 +195,9 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * send card with the private-information scan, and post it only when the member chooses to (V6,
  * owner decision 2026-11-16). Never throws.
  *
- * - The model's answer is scanned on this device before the card opens. If the scanner cannot
- *   run, nothing is posted.
+ * - The model's answer, and the exact body it would be posted as (round draft included), are
+ *   scanned on this device before the card opens. If the scanner cannot run, or the draft holds a
+ *   finding, nothing is posted.
  * - Whatever the member chooses to post is scanned again, and it is posted only if the scan
  *   passes: a finding blocks the send whatever the card showed (the member can post the
  *   redaction or edit the text).
@@ -212,26 +215,38 @@ export async function answerInGroup(groupId: string, to: string, c: GroupContext
   if (!text && !draft) return { kind: "no-answer", reason: "the local model returned an empty answer" };
   const shown = text || "Here is a round draft for the owners and admins to review.";
   const read = readList(c);
+  // Codex review of #730: the gate scans the exact body that would be posted (the round draft
+  // and the lines Hermes adds included), not only the prose. The prose is also scanned alone so
+  // the card can offer its redaction.
+  const shownBody = encodeHermes({ to, text: shown, read, draft });
   let scan: DisclosureScan;
+  let whole: DisclosureScan;
   try {
     scan = await deps.scan(shown);
+    whole = await deps.scan(shownBody);
   } catch (e) {
     return { kind: "held", reason: `the private-information check could not run (${errText(e)}), so nothing was posted` };
   }
-  const decision = await deps.confirm({ groupId, recipients: recipientsOf(c), text: shown, draft, read, scan }).catch(() => ({ post: false }) as SendDecision);
+  if (scan.passed && !whole.passed) {
+    return { kind: "held", reason: `the round draft or the lines Hermes adds hold ${whole.found.map((f) => f.label).join(", ")}, so nothing was posted` };
+  }
+  const decision = await deps
+    .confirm({ groupId, recipients: recipientsOf(c), text: shown, draft, draftLines: draft ? draftLines(draft) : [], read, scan })
+    .catch(() => ({ post: false }) as SendDecision);
   if (!decision.post) return { kind: "held", reason: "you chose not to post it" };
   const final = decision.text.trim().slice(0, MAX_TEXT);
   if (!final) return { kind: "held", reason: "the answer was empty, so nothing was posted" };
+  // What is posted is exactly the body scanned here.
+  const body = encodeHermes({ to, text: final, read, draft });
   let check: DisclosureScan;
   try {
-    check = final === shown ? scan : await deps.scan(final);
+    check = body === shownBody ? whole : await deps.scan(body);
   } catch (e) {
     return { kind: "held", reason: `the private-information check could not run (${errText(e)}), so nothing was posted` };
   }
   if (!check.passed) {
     return { kind: "held", reason: `the text still holds ${check.found.map((f) => f.label).join(", ")}, so nothing was posted` };
   }
-  const body = encodeHermes({ to, text: final, read, draft });
   try {
     await deps.send(groupId, body);
     return { kind: "posted", body };

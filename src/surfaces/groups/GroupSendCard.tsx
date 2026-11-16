@@ -50,7 +50,12 @@ export function GroupSendCard({ preview, onDecide }: { preview: SendPreview; onD
       ) : (
         <blockquote data-testid="group-send-preview" style={{ margin: 0, whiteSpace: "pre-wrap" }}>{preview.text}</blockquote>
       )}
-      {preview.draft && <p className="grp-faint" style={{ margin: 0 }}>It includes a round draft for the owners and admins. A draft moves no SALT.</p>}
+      {preview.draft && (
+        <div data-testid="group-send-draft" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <p className="grp-faint" style={{ margin: 0 }}>It includes this round draft for the owners and admins, posted as written. A draft moves no SALT.</p>
+          <blockquote style={{ margin: 0, whiteSpace: "pre-wrap" }}>{(preview.draftLines ?? []).join("\n")}</blockquote>
+        </div>
+      )}
       {scan.passed ? (
         <p role="status" data-testid="group-send-scan" style={{ margin: 0, fontSize: 12 }}>
           Private-information check on this device: nothing found.

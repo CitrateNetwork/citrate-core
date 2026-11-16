@@ -18,7 +18,7 @@ import { groupsSlice } from "../../shell/slices/groups";
 import type { Store } from "../../shell/store";
 import type { Group, GroupMember, GroupMessage, MyInviteRequest } from "../../bridge/domains";
 import type { DisclosureScan } from "./groupHermes";
-import { foundLine } from "./GroupSendCard";
+import { foundLine, GroupSendCard } from "./GroupSendCard";
 
 // V6: the on-device private-information check is Rust (`pii_scan_text`); the board's tests drive
 // its result through this seam.
@@ -338,6 +338,22 @@ describe("V6: the @Hermes send card and the private-information check", () => {
     expect(host.querySelector("[role=alert]")?.textContent).toContain("still holds phone number, so nothing was posted");
   });
 
+  it("a second @Hermes while a card is open keeps the first card and says Hermes is busy (Codex review of #730)", async () => {
+    seed();
+    vi.spyOn(bridge.chat, "inferLocal").mockResolvedValueOnce("First answer.").mockResolvedValueOnce("Second answer.");
+    const send = vi.spyOn(bridge.groups, "send").mockResolvedValue();
+    await render();
+    await ask();
+    await ask();
+    // Both member messages went out; only the first question has a card.
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("[data-testid=group-send-preview]")?.textContent).toBe("First answer.");
+    expect(host.textContent).toContain("Hermes is still on your last question");
+    await act(async () => btn("Post to 1 member")!.click());
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(decodeHermes(send.mock.calls[2][1] as string)?.text).toBe("First answer.");
+    expect(host.querySelector("[data-testid=group-send-card]")).toBeNull();
+  });
   it("Don't post posts nothing and closes the card", async () => {
     seed();
     vi.spyOn(bridge.chat, "inferLocal").mockResolvedValue("ok");
@@ -454,5 +470,26 @@ describe("copy rules", () => {
     expect(t).not.toMatch(/!/);
     expect(t).not.toMatch(/\busers?\b/i);
     expect(t).not.toMatch(/\b(earn|earnings|income|yield|APY|USD|HITL)\b|Deployed · dormant/i);
+  });
+});
+
+describe("the group send card shows the round draft it will post (Codex review of #730)", () => {
+  it("lists the draft lines word for word", () => {
+    const html = renderToStaticMarkup(
+      <GroupSendCard
+        preview={{
+          groupId: "g",
+          recipients: 2,
+          text: "Five machines reported.",
+          draft: { title: "Tune the support model", budgetSalt: 600, rateSalt: null, workers: null, deadline: null },
+          draftLines: ["Round draft: Tune the support model (no SALT moved)", "Budget: 600 SALT."],
+          read: [],
+          scan: { scanner: "s", passed: true, found: [], redacted: "Five machines reported.", coverage: "c" },
+        }}
+        onDecide={() => {}}
+      />,
+    );
+    expect(html).toContain("Round draft: Tune the support model (no SALT moved)");
+    expect(html).toContain("Budget: 600 SALT.");
   });
 });

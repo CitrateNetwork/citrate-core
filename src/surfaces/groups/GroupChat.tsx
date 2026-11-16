@@ -75,6 +75,10 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [hermes, setHermes] = useState<HermesRun>({ kind: "idle" });
+  // One Hermes answer at a time (Codex review of #730): a second @Hermes while one is running or
+  // on its card is sent as a message, but does not replace the pending card.
+  const hermesBusy = useRef(false);
+  const [busyNote, setBusyNote] = useState<string | null>(null);
   const [own, setOwn] = useState<Set<string>>(() => ownAnswers());
   const [faces, setFaces] = useState<Record<string, ResolvedIdentity>>({});
   const [devices, setDevices] = useState<ClusterMemberDevices[] | null>(null);
@@ -218,6 +222,20 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
       return;
     }
     if (!mentionsHermes(text)) return;
+    if (hermesBusy.current) {
+      setBusyNote("Hermes is still on your last question, so it did not answer this one. Ask again once that answer is posted or dismissed.");
+      return;
+    }
+    hermesBusy.current = true;
+    setBusyNote(null);
+    try {
+      await runHermes(groupId, text, at);
+    } finally {
+      hermesBusy.current = false;
+    }
+  };
+
+  const runHermes = async (groupId: string, text: string, at: Omit<GroupContext, "messages" | "asker">) => {
     const asker = await mySendAddress();
     const c: GroupContext = { ...at, messages: groupsSlice.get().history[groupId] ?? [], asker };
     setHermes({ kind: "running", groupId });
@@ -484,6 +502,7 @@ function GroupChatBoard({ store, s, view = "groups", rounds }: GroupChatProps & 
                 <RoundEventCard key={r.round} r={r} onOpen={() => store.go("groups/rounds/live")} />
               ))}
               {hermes.kind === "running" && hermes.groupId === selected.id && <div role="status" className="grp-typing">Hermes is answering on your device.</div>}
+              {busyNote && hermes.kind !== "idle" && hermes.kind !== "failed" && <div role="status" className="grp-faint">{busyNote}</div>}
               {hermes.kind === "review" && hermes.groupId === selected.id && <GroupSendCard preview={hermes.preview} onDecide={hermes.decide} />}
               {hermes.kind === "failed" && hermes.groupId === selected.id && (
                 <div role="alert" className="grp-alert">

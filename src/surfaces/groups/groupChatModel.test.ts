@@ -209,9 +209,31 @@ describe("Hermes in a group answers only when mentioned, from the group's contex
     expect((down as { reason: string }).reason).toContain("could not run (no scanner)");
     // The member's chosen text is scanned again, whatever the card showed.
     const found: DisclosureScan = { scanner: "s", passed: false, found: [{ class: "email", label: "email address", count: 1 }], redacted: "<email>", coverage: "c" };
-    const edited = await answerInGroup("g", "m1", ctx(), deps({ send, confirm: async () => ({ post: true, text: "mail me at x" }), scan: async (t) => (t === "ok" ? passScan(t) : found) }));
+    const edited = await answerInGroup("g", "m1", ctx(), deps({ send, confirm: async () => ({ post: true, text: "mail me at x" }), scan: async (t) => (t.includes("mail me") ? found : passScan(t)) }));
     expect(edited).toEqual({ kind: "held", reason: "the text still holds email address, so nothing was posted" });
     expect(send).not.toHaveBeenCalled();
+  });
+  it("V6 (Codex review of #730): the exact body that is posted is scanned, round draft included", async () => {
+    const mail = ["dana", "@", "example.org"].concat();
+    const flag = async (t: string): Promise<DisclosureScan> =>
+      t.includes(mail) ? { scanner: "s", passed: false, found: [{ class: "email", label: "email address", count: 1 }], redacted: t.split(mail).join("<email>"), coverage: "c" } : passScan(t);
+    const scanned: string[] = [];
+    const scan = async (t: string) => (scanned.push(t), flag(t));
+    const send = vi.fn(async () => {});
+    const confirm = vi.fn(post);
+    const raw = 'Five machines reported.\n```round-draft\n{"title":"Pay ' + mail + '","budgetSalt":600}\n```';
+    const out = await answerInGroup("g", "m1", ctx(), deps({ inferLocal: async () => raw, scan, send, confirm }));
+    expect(out).toMatchObject({ kind: "held" });
+    expect((out as { reason: string }).reason).toContain("round draft");
+    expect(send).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    // A clean draft: what is sent is byte for byte a text that was scanned.
+    const clean = 'Five machines reported.\n```round-draft\n{"title":"Tune the support model","budgetSalt":600}\n```';
+    scanned.length = 0;
+    const ok = await answerInGroup("g", "m1", ctx(), deps({ inferLocal: async () => clean, scan, send, confirm }));
+    expect(ok.kind).toBe("posted");
+    expect(scanned).toContain(send.mock.calls[0][1]);
+    expect(confirm.mock.calls[0][0].draftLines?.[0]).toContain("Tune the support model");
   });
   it("V6: the card says how many other members receive the answer", () => {
     expect(recipientsOf(ctx())).toBe(ctx().roster.filter((r) => r.address.toLowerCase() !== ctx().asker.toLowerCase()).length);
