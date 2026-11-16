@@ -903,7 +903,8 @@ export class Store {
       return false;
     }
     this.archiveChat();
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    // A follow-up queued in the old conversation belongs to it: it is dropped, never sent here.
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -926,7 +927,7 @@ export class Store {
     }
     this.archiveChat();
     const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id });
+    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatQueue: [] });
     // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
     // changed means nothing moves in the list.
     recordThread(thread.id, msgs, thread.updatedAt);
@@ -957,7 +958,7 @@ export class Store {
     }
     const ok = await forgetAllThreads();
     if (!ok) return false;
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId() });
+    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatQueue: [] });
     if (this.chatInputEl) this.chatInputEl.value = "";
     void this.rebuildProvider();
     return true;
@@ -3822,6 +3823,8 @@ export class Store {
         if (this.turnAbort === ac) this.turnAbort = null;
         this.scrollChat();
         this.save();
+        // Board 01: a Steer now that stopped the held message goes next (it is never left stuck).
+        this.drainChatQueue("stopped");
         return;
       }
       provider = routed.provider;
@@ -3910,7 +3913,7 @@ export class Store {
               const result = await this.handleTool(call, asstId, ensure, meta);
               toolOutputs.push({ tool: call.name, content: result });
               toolFinished(call.id, true);
-              runPatch((r) => runToolEnd(r, call.id, call.name, this.takeCallRefusal(call.id) ? "denied" : "ok", result, Date.now()));
+              runPatch((r) => runToolEnd(r, call.id, call.name, this.takeCallOutcome(call.id), result, Date.now()));
               return result;
             } catch (e) {
               toolFinished(call.id, false);
@@ -4013,15 +4016,21 @@ export class Store {
     this.drainChatQueue(turnOutcome);
   }
 
-  /** Board 01: whether core's last run of a call id was refused by the member (structured, from
-   *  the approval decision), read once by the run timeline. */
-  private callRefusals = new Map<string, boolean>();
+  /** Board 01: the structured outcome of core's last run of a call id: "denied" when the member's
+   *  decision (or the tool's own status) said no, "error" when the tool reported an error status,
+   *  "ok" otherwise. Read once by the run timeline. */
+  private callOutcomes = new Map<string, "ok" | "denied" | "error">();
 
-  /** Take (and forget) whether the call `id` was refused. */
-  takeCallRefusal(id: string): boolean {
-    const r = this.callRefusals.get(id) === true;
-    this.callRefusals.delete(id);
+  /** Take (and forget) the structured outcome of the call `id` ("ok" when none was recorded). */
+  takeCallOutcome(id: string): "ok" | "denied" | "error" {
+    const r = this.callOutcomes.get(id) ?? "ok";
+    this.callOutcomes.delete(id);
     return r;
+  }
+
+  /** Whether the call `id` was refused (and forget its outcome). */
+  takeCallRefusal(id: string): boolean {
+    return this.takeCallOutcome(id) === "denied";
   }
 
   // ---------- Board 01 — Stop, Steer now, Queue for after ----------
@@ -4036,7 +4045,7 @@ export class Store {
   queueChat(text: string): void {
     const t = (text || "").trim();
     if (!t) return;
-    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false }]) }));
+    this.setState((s) => ({ chatQueue: s.chatQueue.concat([{ id: "q" + ++this.queueSeq, text: t, steer: false, threadId: s.chatThreadId }]) }));
     if (this.chatInputEl) this.chatInputEl.value = "";
   }
 
@@ -4048,7 +4057,7 @@ export class Store {
   steerChat(text: string): void {
     const t = (text || "").trim();
     if (!t) return;
-    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true }, ...s.chatQueue.filter((q) => !q.steer)] }));
+    this.setState((s) => ({ chatQueue: [{ id: "q" + ++this.queueSeq, text: t, steer: true, threadId: s.chatThreadId }, ...s.chatQueue.filter((q) => !q.steer)] }));
     if (this.chatInputEl) this.chatInputEl.value = "";
     if (this.chatRunLive()) this.stopAgentTurn();
     else this.drainChatQueue("answered");
@@ -4062,7 +4071,8 @@ export class Store {
   /** After a run: a steer goes at once; queued follow-ups go one per finished run, and wait (for
    *  the member to send or drop them) when the member stopped the run or it failed. */
   private drainChatQueue(outcome: RunOutcome): void {
-    const q = this.state.chatQueue;
+    // Only this conversation's follow-ups: one typed elsewhere is never sent here.
+    const q = this.state.chatQueue.filter((x) => x.threadId === this.state.chatThreadId);
     if (q.length === 0 || this.state.chatStatus !== "ready") return;
     const next = q.find((x) => x.steer) ?? (outcome === "answered" ? q[0] : undefined);
     if (!next) return;
@@ -4073,7 +4083,7 @@ export class Store {
   /** Send a queued follow-up now (only when no run is live). */
   sendQueuedNow(id: string): void {
     const item = this.state.chatQueue.find((q) => q.id === id);
-    if (!item || this.state.chatStatus !== "ready") return;
+    if (!item || item.threadId !== this.state.chatThreadId || this.state.chatStatus !== "ready") return;
     this.setState((s) => ({ chatQueue: s.chatQueue.filter((x) => x.id !== id) }));
     void this.sendChat(item.text);
   }
@@ -4773,8 +4783,8 @@ export class Store {
     if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
     // Board 01: refused when the member's decision (or the tool's own structured status) said no.
     const refused = status === "declined" || status === "expired" || (lastDecision !== null && lastDecision !== "approved");
-    this.callRefusals.set(call.id, refused);
-    if (this.callRefusals.size > 64) this.callRefusals.delete(this.callRefusals.keys().next().value as string);
+    this.callOutcomes.set(call.id, refused ? "denied" : status === "error" || status === "failed" ? "error" : "ok");
+    if (this.callOutcomes.size > 64) this.callOutcomes.delete(this.callOutcomes.keys().next().value as string);
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +

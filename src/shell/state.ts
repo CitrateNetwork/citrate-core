@@ -166,6 +166,8 @@ export interface QueuedChat {
   id: string;
   text: string;
   steer: boolean;
+  /** The conversation it was typed in. It is only ever sent there. */
+  threadId: string;
 }
 /** HUP-S1.4 — the last brief the member accepted (persisted; nothing is built from it yet). */
 export interface AcceptedBrief {
