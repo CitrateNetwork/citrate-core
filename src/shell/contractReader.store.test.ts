@@ -45,6 +45,16 @@ describe("Feature: a Contract reader write goes through the ceremony", () => {
     await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" })).rejects.toThrow(/already waiting/);
   });
 
+  it("FL G-SEC PAY-15: a second proposal while the first is still being prepared is refused, and only one is proposed", async () => {
+    let release!: (v: unknown) => void;
+    const propose = vi.spyOn(bridge.contracts, "proposeWrite").mockReturnValue(new Promise((r) => (release = r)) as never);
+    const first = store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" });
+    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" })).rejects.toThrow(/already being prepared/);
+    release(view);
+    await first;
+    expect(propose).toHaveBeenCalledTimes(1);
+  });
+
   it("Given a label whose selector does not match the calldata, then nothing is proposed (the review title is checked in the main window)", async () => {
     const propose = vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue(view as never);
     // 0xa9059cbb is transfer(address,uint256); the label claims a harmless read-like name.
