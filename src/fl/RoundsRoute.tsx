@@ -14,7 +14,7 @@ import { tierSlice, refreshTier } from "../shell/slices/tier";
 import { useAuthority } from "./authority";
 import { loadWorkerTerms, type WorkerTerms } from "./workerTerms";
 import { machineFrom, readMarket } from "./market";
-import { JOIN_SIGNATURE, joinCalldata, MatchesView, useMarket } from "./Matches";
+import { joinIntent, MatchesView, useMarket } from "./Matches";
 import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { NoLiveRound } from "./LiveRound";
@@ -63,7 +63,6 @@ function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
     if (!tier.loaded) void refreshTier();
     void loadWorkerTerms().then(setTerms, () => setTerms(null));
   }, []);
-  const work = state.contracts.WorkMarket;
   return (
     <MatchesView
       state={state}
@@ -75,8 +74,7 @@ function MatchesRoute({ store, s }: { store: Store; s: AppState }) {
       go={(r) => store.go(r)}
       save={(name, text) => downloadText(name, text)}
       onJoin={async (o) => {
-        if (work.kind !== "deployed") throw new Error("WorkMarket is not deployed on this network");
-        await store.proposeContractCall({ address: work.address, calldata: joinCalldata(o), valueWei: o.terms?.joinBond ?? "0", label: JOIN_SIGNATURE });
+        await store.proposeContractCall(joinIntent(o, state));
       }}
       coordinator={<FlRoundsPanel bare sections={["coordinator", "plan", "consents"]} fl={bridge.flRounds} requestSig={(spec) => store.requestSig(spec)} toast={(m) => store.toast(m)} />}
     />
