@@ -1,9 +1,9 @@
 // =====================================================================
 // K2 (0.5.2): Hermes › Controls › 3 · Records. What happened, from stores that already exist:
 //
-//   Approval records     Hermes approvals: written by hic_record_decision (hic_records.rs); NO
-//                        command reads them back yet (HicLog::records has no command), so this
-//                        says "not available yet" and names the gap. Web sign-in decisions:
+//   Approval records     Hermes approvals and core's other HIC decisions: hic_records_list (core's
+//                        hash-chained outbox, hic_records.rs, newest first; written by
+//                        hic_record_decision and core's own events). Web sign-in decisions:
 //                        web_budget_status → snapshot.records (budgets.ts), hash-chained in core.
 //   Spend ledger         escalation_budget → capMicros, usedMicros, confirmedMicros, history.
 //   Daemon run history   daemon_runs_between (the run log in the metering folder).
@@ -19,6 +19,8 @@ import type { EscalationBudget, EscalationSpendRecord } from "../../bridge/domai
 import { formatMicros } from "../../agent/escalation";
 import { budgetsApi, normalizeStatus, type DecisionRecord, type WebBudgetStatus } from "../../budgets/budgets";
 import { createSlice } from "../../shell/slices/createSlice";
+import { BRIDGE_MODE } from "../../bridge/mode";
+import { invoke } from "../../bridge/tauri/invoke";
 import { DAEMONS_NO_SALT } from "../../daemons/DaemonsPanel";
 import { DaemonRunRow, RUN_WINDOW_DAYS, RunLogUnreadable, appRunLogIo, fmtWhen, runLogEmptyText, useDaemonRuns, type RunLogIo } from "../../daemons/DaemonRunLog";
 
@@ -35,8 +37,29 @@ export function openRecords(view: RecordsView, daemonId: string | null = null): 
   recordsSlice.set({ view, daemonId });
 }
 
+/** One record of core's HIC outbox (Rust `hic_records::HicRecord`). */
+export interface HicRecordRow {
+  recordId: number;
+  atMs: number;
+  prevHash: string;
+  hash: string;
+  event: {
+    kind: string;
+    decision: string;
+    subject: string;
+    reason: string;
+    outcome: string | null;
+    outcomeDetail: string | null;
+  };
+}
+
+/** How many approval records the view reads. */
+export const HIC_RECORDS_LIMIT = 200;
+
 export interface RecordsIo extends RunLogIo {
   escalationBudget(): Promise<EscalationBudget>;
+  /** null outside the desktop app (the outbox lives in core). */
+  hicRecords: ((limit: number) => Promise<HicRecordRow[]>) | null;
   /** null outside the desktop app (the budget store and its records live in core). */
   webSignIn: (() => Promise<WebBudgetStatus>) | null;
 }
@@ -46,6 +69,7 @@ export function appRecordsIo(): RecordsIo {
   return {
     ...appRunLogIo(),
     escalationBudget: () => bridge.escalation.budget(),
+    hicRecords: BRIDGE_MODE === "tauri" ? (limit) => invoke<HicRecordRow[]>("hic_records_list", { limit }) : null,
     webSignIn: budgets ? () => budgets.status() : null,
   };
 }
@@ -63,6 +87,79 @@ const foot = { fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0
 const errStyle = { ...para, color: "var(--danger)" } as const;
 
 // ---------------------------------------------------------------- approvals
+
+/** What a record's kind means, in the member's words. */
+const HIC_KIND: Record<string, string> = {
+  "agent.tool_approval": "Hermes tool card",
+  "ceremony.approval": "signature card",
+  "grant.folder_added": "folder access added",
+  "grant.revoked": "folder access removed",
+  "grant.reset": "folder access reset",
+  "grant.full_access_confirmed": "full access confirmed",
+  "escalation.spend": "cloud model spend",
+  "faucet.budget_granted": "faucet budget granted",
+  "faucet.budget_revoked": "faucet budget revoked",
+  "faucet.topup": "faucet top-up",
+};
+const hicKind = (k: string) => HIC_KIND[k] ?? k;
+const hicDecision = (d: string) => (d === "auto_within_budget" ? "within budget" : d.replace(/_/g, " "));
+
+function HermesApprovals({ io }: { io: RecordsIo }) {
+  const [rows, setRows] = useState<HicRecordRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!io.hicRecords) return;
+    let live = true;
+    io.hicRecords(HIC_RECORDS_LIMIT).then(
+      (r) => live && setRows([...r].sort((a, b) => b.recordId - a.recordId)),
+      (e) => live && setErr(msg(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [io]);
+  return (
+    <div className="surface" data-testid="hic-records" data-source="hic_records_list" style={{ display: "flex", flexDirection: "column" }}>
+      <div style={head}>
+        <span style={{ fontSize: 13.5, fontWeight: 500 }}>Hermes approvals</span>
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>
+          hash-chained in core · newest first
+        </span>
+      </div>
+      {!io.hicRecords ? (
+        <p data-testid="hic-records-unavailable" style={para}>
+          Approval records live in the desktop app.
+        </p>
+      ) : err ? (
+        <p data-testid="hic-records-error" role="alert" style={errStyle}>
+          Couldn’t read the approval records (hic_records_list): {err}
+        </p>
+      ) : rows === null ? (
+        <p style={para}>Reading the approval records…</p>
+      ) : rows.length === 0 ? (
+        <p style={para}>No approval records yet. Every approve or decline on a Hermes card, and every folder grant or spend decision, writes one here.</p>
+      ) : (
+        <>
+          {rows.map((r) => (
+            <div key={r.recordId} data-testid="hic-record" style={{ display: "grid", gridTemplateColumns: "50px 110px 150px 90px minmax(0,1fr)", gap: 10, padding: "9px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "baseline" }}>
+              <span className="mono tabular" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>#{r.recordId}</span>
+              <span className="mono tabular" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>{fmtWhen(r.atMs)}</span>
+              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)" }}>{hicKind(r.event.kind)}</span>
+              <span className="mono" style={{ fontSize: 10.5, color: r.event.decision === "denied" ? "var(--warn)" : "var(--tx-2)" }}>{hicDecision(r.event.decision)}</span>
+              <span title={r.event.reason} style={{ fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {r.event.subject}
+                {r.event.outcome ? " · " + r.event.outcome.replace(/_/g, " ") : ""}
+              </span>
+            </div>
+          ))}
+          {rows.length >= HIC_RECORDS_LIMIT && (
+            <p style={{ ...foot, padding: "9px 16px" }}>Showing the newest {HIC_RECORDS_LIMIT}. Older records are kept in core's outbox on this computer.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function ApprovalRecords({ io }: { io: RecordsIo }) {
   const [web, setWeb] = useState<DecisionRecord[] | null>(null);
@@ -91,17 +188,7 @@ function ApprovalRecords({ io }: { io: RecordsIo }) {
   }, [io]);
   return (
     <>
-      <div className="surface" data-testid="hic-records-gap" data-gap="hic-records-read" data-source="none yet (hic_record_decision writes; no read command)" style={{ display: "flex", flexDirection: "column" }}>
-        <div style={head}>
-          <span style={{ fontSize: 13.5, fontWeight: 500 }}>Hermes approvals</span>
-          <span className="eyebrow" style={{ marginLeft: "auto" }}>
-            Not available yet
-          </span>
-        </div>
-        <p style={para}>
-          Every approve or decline you make on a Hermes card is written on this machine (hic_record_decision), append-only. Reading those records back here is not available yet: no command serves them. What waits for you now is on Hermes › Work under Awaiting your review.
-        </p>
-      </div>
+      <HermesApprovals io={io} />
 
       <div className="surface" data-testid="web-signin-records" data-source="web_budget_status" style={{ display: "flex", flexDirection: "column" }}>
         <div style={head}>
