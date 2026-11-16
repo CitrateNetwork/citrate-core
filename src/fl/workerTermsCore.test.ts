@@ -9,7 +9,7 @@ vi.mock("../bridge/tauri/invoke", () => ({ invoke: (...a: unknown[]) => invoke(.
 const { loadWorkerTerms, saveWorkerTerms } = await import("./workerTerms");
 const { approveEnvelope, envelopeOff, envelopeView, HIC1, readEnvelope, selectAuthority, setEnvelopeForAuthority, subscribeAuthority } = await import("./authority");
 
-const terms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
+const terms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["hermes-conversations"] };
 const env = { on: true, name: "Weeknight rounds", joinsPerWeek: 3, maxHoursPerRound: 6, approvedAt: 1, offAt: null, weekStart: 1, joinsThisWeek: 2 };
 
 beforeEach(() => {

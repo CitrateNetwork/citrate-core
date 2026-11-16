@@ -129,6 +129,20 @@ describe("FL network state: 0.6.0 states render only when the data shows them", 
     const s = await readFlNetworkState(withWorkMarket, reads(), open);
     expect(s.payouts).toBe("open");
   });
+  it("core's payouts gate (fl_payouts_status) is authoritative over the profile flag", async () => {
+    const flagged = { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile;
+    const shut = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: false, reason: "WorkMarket's code does not match its pin" }) }), flagged);
+    expect(shut.payouts).toBe("dark");
+    expect(shut.payoutsReason).toBe("WorkMarket's code does not match its pin");
+    const opened = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => ({ open: true, reason: null }) }));
+    expect(opened.payouts).toBe("open");
+    const unread = await readFlNetworkState(withWorkMarket, reads({ payoutsStatus: async () => Promise.reject(new Error("no such command")) }), flagged);
+    expect(unread).toMatchObject({ payouts: "dark", payoutsReason: "the payouts gate was not read: no such command" });
+    const g = vi.fn(async () => ({ open: true, reason: null }));
+    const r1007 = await readFlNetworkState(realBook, reads({ payoutsStatus: g }));
+    expect(r1007.payouts).toBe("not-deployed");
+    expect(g).not.toHaveBeenCalled();
+  });
   it("a failed WorkMarket read is phase unknown with the reason", async () => {
     const s = await readFlNetworkState(withWorkMarket, reads({ codeSize: async (a) => (a === WM ? Promise.reject(new Error("timeout")) : 10) }));
     expect(s.phase).toBe("unknown");
@@ -409,7 +423,7 @@ describe("authority (HIC-1 by default)", () => {
 });
 
 describe("worker terms outside the desktop app", () => {
-  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["support-tickets"] };
+  const terms: WorkerTerms = { floorSaltPerUnit: "1.20", hours: { start: "23:00", end: "07:00" }, weekdaysOnly: true, mainsOnly: true, dataClasses: ["hermes-conversations"] };
   it("with no sealed store (web/dev), saving and loading say so; nothing is written anywhere", async () => {
     await expect(saveWorkerTerms(terms)).rejects.toThrow(TERMS_NEED_DESKTOP);
     await expect(loadWorkerTerms()).rejects.toThrow(TERMS_NEED_DESKTOP);
@@ -418,6 +432,9 @@ describe("worker terms outside the desktop app", () => {
     expect(termsProblem(terms)).toBeNull();
     expect(termsProblem({ ...terms, floorSaltPerUnit: "-1" })).toMatch(/floor/);
     expect(termsProblem({ ...terms, hours: { start: "25:00", end: "07:00" } })).toMatch(/Hours/);
+    // The allowlist of data classes this device has (lane 3's proposal card imports it).
+    expect(termsProblem({ ...terms, dataClasses: ["support-tickets"] })).toBe('Data class "support-tickets" is not one this device has (allowed: hermes-conversations)');
+    expect(termsProblem({ ...terms, dataClasses: ["hermes-conversations", "hermes-conversations"] })).toBe("A data class is listed twice");
     await expect(saveWorkerTerms({ ...terms, floorSaltPerUnit: "abc" })).rejects.toThrow(/floor/);
   });
 });

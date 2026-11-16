@@ -13,7 +13,7 @@ import { encodeFunctionData } from "viem";
 import { ModalDialog } from "../shell/ModalDialog";
 import type { Authority } from "./authority";
 import { CeremonySheet } from "./CeremonySheet";
-import { saltFromWei } from "./format";
+import { saltExact, saltFromWei } from "./format";
 import { hiddenWords, matchOffer, offersCsv, rankMatches, splitOffers, type MachineFacts, type MarketView, type Match, type OfferView } from "./market";
 import { PAYOUTS_DARK, NOT_AVAILABLE, ROUNDS_NOT_LIVE, type FlNetworkState } from "./networkState";
 import { Card, Chip, Eyebrow, HicBadge, Hex, KV, Note, Unknown } from "./primitives";
@@ -46,6 +46,20 @@ export function joinCalldata(o: OfferView): string {
   return encodeFunctionData({ abi: WORK_MARKET_JOIN_ABI, functionName: "join", args: [BigInt(o.opened.id), BigInt(o.opened.pricePerUnit), []] });
 }
 
+/** The exact join the wallet review signs, or an Error naming why there is none (fail closed). */
+export function joinIntent(o: OfferView, state: FlNetworkState): { address: string; calldata: string; valueWei: string; label: string } {
+  // G-SEC (PAY-10): no FL money selector signs until the profile opens payouts. The core payouts
+  // gate (Rust-enforced) replaces this check once its PR lands.
+  if (state.payouts !== "open") throw new Error(JOIN_WAITS_FOR_GSEC);
+  const wm = state.contracts.WorkMarket;
+  if (wm.kind !== "deployed") throw new Error("WorkMarket is not deployed on this network");
+  const blocker = joinBlocker(o);
+  if (blocker) throw new Error(blocker);
+  // PAY-18: msg.value is the join bond read from getOffer, never a default.
+  if (!o.terms || !/^\d+$/.test(o.terms.joinBond)) throw new Error("the offer's join bond was not read, so nothing was sent");
+  return { address: wm.address, calldata: joinCalldata(o), valueWei: o.terms.joinBond, label: JOIN_SIGNATURE };
+}
+
 /** Why the app cannot build this join, or null. */
 export function joinBlocker(o: OfferView): string | null {
   if (!o.terms) return "the offer's terms have not been read";
@@ -55,6 +69,9 @@ export function joinBlocker(o: OfferView): string | null {
 
 const dateOf = (secs: number) => new Date(secs * 1000).toISOString().slice(0, 10);
 const posterLabel = (o: OfferView) => (ZERO32.test(o.opened.groupHash) ? "Open round" : "Group round");
+
+/** G-SEC: joining posts a SALT join bond, so it opens only with payouts (the profile flag). */
+export const JOIN_WAITS_FOR_GSEC = "Joining posts a SALT join bond, so it opens with payouts after the security review.";
 
 export interface MatchesViewProps {
   state: FlNetworkState;
@@ -150,7 +167,7 @@ export function MatchesView(p: MatchesViewProps) {
               </Card>
             )}
             {matches.map((m) => (
-              <MatchCard key={m.offer.opened.id} m={m} onJoin={() => setJoin({ m, step: "review" })} onDetails={() => setDrawer({ offer: m })} />
+              <MatchCard key={m.offer.opened.id} m={m} moneyOpen={p.state.payouts === "open"} onJoin={() => setJoin({ m, step: "review" })} onDetails={() => setDrawer({ offer: m })} />
             ))}
           </section>
           <aside className="fl-rail" aria-label="Your work">
@@ -178,6 +195,11 @@ export function MatchesView(p: MatchesViewProps) {
             <Card>
               <Eyebrow>Payouts</Eyebrow>
               <span style={{ fontSize: 12.5 }}>{p.state.payouts === "open" ? "Payouts are open on this network" : p.state.payouts === "not-deployed" ? NOT_AVAILABLE : PAYOUTS_DARK}</span>
+              {p.state.payouts === "dark" && p.state.payoutsReason && (
+                <span className="fl-faint" style={{ fontSize: 11.5 }} data-testid="payouts-reason">
+                  {p.state.payoutsReason}
+                </span>
+              )}
               <button type="button" className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => p.go("groups/rounds/payouts")}>
                 Receipts and history
               </button>
@@ -208,7 +230,7 @@ export function MatchesView(p: MatchesViewProps) {
             {drawer === "adv" ? (
               <AdvancedPanel market={p.market} live={live} coordinator={p.coordinator} save={p.save} />
             ) : (
-              <OfferDetails m={drawer.offer} onJoin={() => {
+              <OfferDetails m={drawer.offer} moneyOpen={p.state.payouts === "open"} onJoin={() => {
                 const m = drawer.offer;
                 setDrawer("");
                 setJoin({ m, step: "review" });
@@ -235,10 +257,10 @@ export function MatchesView(p: MatchesViewProps) {
   );
 }
 
-function MatchCard({ m, onJoin, onDetails }: { m: Match; onJoin: () => void; onDetails: () => void }) {
+function MatchCard({ m, onJoin, onDetails, moneyOpen }: { m: Match; onJoin: () => void; onDetails: () => void; moneyOpen: boolean }) {
   const o = m.offer;
   const req = o.requirements.status === "verified" ? o.requirements.requirements : null;
-  const blocker = joinBlocker(o);
+  const blocker = joinBlocker(o) ?? (moneyOpen ? null : JOIN_WAITS_FOR_GSEC.replace(/\.$/, "").replace(/^J/, "j"));
   return (
     <article className="fl-card" data-testid="match-card" data-offer={o.opened.id} data-joinable={m.joinable && !blocker} aria-label={`Offer ${o.opened.id}, ${m.chip}`} style={{ padding: "12px 14px", display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr) auto", gap: "6px 18px", alignItems: "start" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
@@ -280,10 +302,10 @@ function MatchCard({ m, onJoin, onDetails }: { m: Match; onJoin: () => void; onD
   );
 }
 
-function OfferDetails({ m, onJoin }: { m: Match; onJoin: () => void }) {
+function OfferDetails({ m, onJoin, moneyOpen }: { m: Match; onJoin: () => void; moneyOpen: boolean }) {
   const o = m.offer;
   const req = o.requirements.status === "verified" ? o.requirements.requirements : null;
-  const blocker = joinBlocker(o);
+  const blocker = joinBlocker(o) ?? (moneyOpen ? null : JOIN_WAITS_FOR_GSEC);
   return (
     <>
       <Eyebrow>{posterLabel(o)}</Eyebrow>
@@ -389,10 +411,10 @@ function JoinReview({ m, authority, error }: { m: Match; authority: Authority; e
         style={{ fontSize: 13 }}
         rows={[
           { k: "Offer", v: `WorkMarket offer ${o.opened.id}`, mono: true },
-          { k: "Rate", v: `${saltFromWei(BigInt(o.opened.pricePerUnit))} SALT per unit. The join refuses a lower rate.` },
+          { k: "Rate", v: `${saltExact(BigInt(o.opened.pricePerUnit))} SALT per unit (${o.opened.pricePerUnit} wei). The join refuses a lower rate.` },
           { k: "Data read", v: req ? `${req.dataClasses.join(", ") || "none"} on this device. It is never uploaded.` : <Unknown reason="requirements not read" /> },
           { k: "Uploaded", v: "One signed model update" },
-          { k: "Join bond", v: o.terms ? `${saltFromWei(BigInt(o.terms.joinBond), 4)} SALT` : <Unknown reason="terms not read" />, mono: true },
+          { k: "Join bond", v: o.terms ? `${saltExact(BigInt(o.terms.joinBond))} SALT (${o.terms.joinBond} wei), returned when you settle` : <Unknown reason="terms not read" />, mono: true },
           { k: "Network fee", v: <Unknown reason="the wallet review reads gas before you sign" /> },
         ]}
       />
