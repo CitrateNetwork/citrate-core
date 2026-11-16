@@ -26,67 +26,66 @@ impl Keyring for MemKeyring {
     }
 }
 
-/// A fixed web: URL -> answer. Anything else is a failed request. Records every URL asked for.
+/// A fixed web: URL -> answer. Anything else is a failed request. Records every URL asked for,
+/// the addresses each fetch was pinned to, and every DNS lookup. `dns` answers in order (the last
+/// answer repeats); a host not in it resolves to one public address.
 #[derive(Default)]
 struct Web {
     pages: StdMutex<HashMap<String, Vec<Fetched>>>,
     asked: StdMutex<Vec<String>>,
-    private_hosts: Vec<String>,
+    pins: StdMutex<Vec<Vec<std::net::IpAddr>>>,
+    dns: StdMutex<HashMap<String, Vec<Vec<std::net::IpAddr>>>>,
+    lookups: StdMutex<Vec<String>>,
 }
+
+const PUBLIC_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(93, 184, 215, 14));
+const PRIVATE_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 7));
 
 impl Web {
     fn page(self, url: &str, status: u16, ctype: &str, body: &str) -> Self {
-        self.pages
-            .lock()
-            .unwrap()
-            .entry(url.to_string())
-            .or_default()
-            .push(Fetched {
-                status,
-                content_type: ctype.to_string(),
-                retry_after: None,
-                body: body.as_bytes().to_vec(),
-            });
+        self.pages.lock().unwrap().entry(url.to_string()).or_default().push(Fetched {
+            status,
+            content_type: ctype.to_string(),
+            retry_after: None,
+            body: body.as_bytes().to_vec(),
+        });
         self
     }
     fn answer(self, url: &str, f: Fetched) -> Self {
-        self.pages
-            .lock()
-            .unwrap()
-            .entry(url.to_string())
-            .or_default()
-            .push(f);
+        self.pages.lock().unwrap().entry(url.to_string()).or_default().push(f);
+        self
+    }
+    fn dns(self, host: &str, answers: Vec<Vec<std::net::IpAddr>>) -> Self {
+        self.dns.lock().unwrap().insert(host.to_string(), answers);
         self
     }
     fn asked(&self) -> Vec<String> {
         self.asked.lock().unwrap().clone()
     }
     fn pages_asked(&self) -> Vec<String> {
-        self.asked()
-            .into_iter()
-            .filter(|u| !u.ends_with("/robots.txt"))
-            .collect()
+        self.asked().into_iter().filter(|u| !u.ends_with("/robots.txt")).collect()
     }
 }
 
 impl CollectHttp for Web {
-    fn get(&self, url: &url::Url, _limit: u64) -> Result<Fetched, String> {
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        self.lookups.lock().unwrap().push(host.to_string());
+        let mut dns = self.dns.lock().unwrap();
+        match dns.get_mut(host) {
+            Some(v) if v.len() > 1 => Ok(v.remove(0)),
+            Some(v) if v.len() == 1 => Ok(v[0].clone()),
+            _ => Ok(vec![PUBLIC_IP]),
+        }
+    }
+    fn get(&self, url: &url::Url, pinned: &[std::net::IpAddr], _limit: u64) -> Result<Fetched, String> {
         self.asked.lock().unwrap().push(url.to_string());
+        self.pins.lock().unwrap().push(pinned.to_vec());
         let mut pages = self.pages.lock().unwrap();
         match pages.get_mut(url.as_str()) {
             // Answers are used in order; the last one repeats.
             Some(v) if v.len() > 1 => Ok(v.remove(0)),
             Some(v) if v.len() == 1 => Ok(v[0].clone()),
             _ => Err("the request failed".into()),
-        }
-    }
-    fn public_host(&self, host: &str) -> Result<(), String> {
-        if self.private_hosts.iter().any(|h| h == host) {
-            Err(format!(
-                "{host} resolves to a local or private address; it is never collected"
-            ))
-        } else {
-            Ok(())
         }
     }
 }
@@ -353,10 +352,7 @@ fn an_unreadable_or_forbidden_robots_txt_refuses_the_host() {
 
 #[test]
 fn denied_and_private_hosts_are_refused_before_any_fetch() {
-    let w = Web {
-        private_hosts: vec!["intranet.example.org".into()],
-        ..Web::default()
-    };
+    let w = Web::default().dns("intranet.example.org", vec![vec![PRIVATE_IP]]);
     for (url, why) in [
         ("https://www.linkedin.com/in/someone", "do-not-collect list"),
         ("https://www.spokeo.com/search?q=x", "people-search"),
@@ -805,3 +801,72 @@ fn the_collector_identifies_itself_with_a_contact_url() {
     assert_eq!(MIN_INTERVAL, Duration::from_secs(2));
     assert_eq!(MAX_PAGES_PER_RUN, 500);
 }
+
+// ---- DNS rebinding (review of #738) ---------------------------------------------------------
+
+#[test]
+fn every_fetch_is_pinned_to_the_one_vetted_answer_and_a_rebinding_answer_is_never_used() {
+    // The host answers public first, then private (a rebinding resolver). The check resolves it
+    // once; robots.txt is fetched pinned to the public answer; the private answer is never asked
+    // for during that check.
+    let w = web().dns("en.wikipedia.org", vec![vec![PUBLIC_IP], vec![PRIVATE_IP]]);
+    let c = check_source(&w, &policy(), &mut RobotsCache::default(), "https://en.wikipedia.org/wiki/Apple", None);
+    assert!(c.allowed, "{c:?}");
+    assert_eq!(c.pinned, vec![PUBLIC_IP]);
+    assert_eq!(w.lookups.lock().unwrap().len(), 1, "one DNS lookup per check");
+    assert!(w.pins.lock().unwrap().iter().all(|p| p == &vec![PUBLIC_IP]), "{:?}", w.pins.lock().unwrap());
+    // The pinned addresses never reach the webview.
+    assert!(!serde_json::to_string(&c).unwrap().contains("93.184"));
+}
+
+#[test]
+fn a_run_fetches_each_page_pinned_to_the_address_its_own_check_vetted() {
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(tmp("pin-run-store"), &kr);
+    let (id, v) = dataset(&s, "pinrun");
+    let other = std::net::IpAddr::V4(std::net::Ipv4Addr::new(93, 184, 215, 99));
+    // Planned at one public address, re-checked at another: the page goes to the re-checked one.
+    let w = web().dns("en.wikipedia.org", vec![vec![PUBLIC_IP], vec![other]]);
+    let p = plan(&w, &policy(), &id, v, &urls(&["https://en.wikipedia.org/wiki/Apple"]), None, 9).unwrap();
+    approve(&p.id).unwrap();
+    let r = run_plan(&w, &Waits::default(), &policy(), &s, &p.id, &clock).unwrap();
+    assert!(r.outcomes[0].collected, "{r:?}");
+    let asked = w.asked();
+    let pins = w.pins.lock().unwrap().clone();
+    let page = asked.iter().position(|u| u.ends_with("/wiki/Apple")).unwrap();
+    assert_eq!(pins[page], vec![other]);
+}
+
+#[test]
+fn a_host_that_rebinds_to_a_private_address_before_the_run_is_not_fetched() {
+    let kr = MemKeyring::default();
+    let s = DatasetStore::new(tmp("rebind-store"), &kr);
+    let (id, v) = dataset(&s, "rebind");
+    // Public when planned, private when the run checks it again.
+    let w = web().dns("en.wikipedia.org", vec![vec![PUBLIC_IP], vec![PRIVATE_IP]]);
+    let p = plan(&w, &policy(), &id, v, &urls(&["https://en.wikipedia.org/wiki/Apple"]), None, 8).unwrap();
+    assert_eq!(p.pages, 1);
+    approve(&p.id).unwrap();
+    let r = run_plan(&w, &Waits::default(), &policy(), &s, &p.id, &clock).unwrap();
+    assert!(r.version.is_none());
+    assert!(w.pages_asked().is_empty(), "{:?}", w.asked());
+    assert!(r.outcomes[0].note.as_deref().unwrap().contains("local or private address"));
+}
+
+#[test]
+fn the_pinned_resolver_answers_only_the_vetted_addresses() {
+    use ureq::unversioned::resolver::Resolver;
+    let u = url::Url::parse("https://en.wikipedia.org/wiki/Apple").unwrap();
+    let r = PinnedResolver(pinned_socket_addrs(&u, &[PUBLIC_IP]));
+    let cfg = ureq::Agent::config_builder().build();
+    let uri: ureq::http::Uri = "https://attacker.example/".parse().unwrap();
+    let got = r.resolve(&uri, &cfg, TIMEOUT).unwrap();
+    assert_eq!(&got[..], &[std::net::SocketAddr::new(PUBLIC_IP, 443)][..]);
+    assert!(PinnedResolver(Vec::new()).resolve(&uri, &cfg, TIMEOUT).is_err());
+    // A private address is refused before any socket opens.
+    assert!(LiveHttp.get(&u, &[PRIVATE_IP], 10).is_err());
+    assert!(vet_addrs("x", vec![PUBLIC_IP, PRIVATE_IP]).is_err());
+    assert!(vet_addrs("x", vec![]).is_err());
+}
+
+const TIMEOUT: ureq::unversioned::transport::NextTimeout = ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::Exact(std::time::Duration::from_secs(1)), reason: ureq::Timeout::Resolve };
