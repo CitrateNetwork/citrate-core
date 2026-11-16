@@ -10,6 +10,7 @@ import { bridge } from "../bridge";
 import type { FlOverview, TierReport } from "../bridge/domains";
 import type { WorkerTerms } from "../fl/workerTerms";
 import { NOT_AVAILABLE } from "../fl/networkState";
+import { HELD_DURING_START, hermesRunningSlice } from "../shell/slices/hermesRunning";
 
 const GB = 1024 ** 3;
 const ROUND = "0x" + "ab".repeat(32);
@@ -187,6 +188,18 @@ describe("fl_consent_withdraw", () => {
     expect(d.flRounds.setTrajectoryConsent).toHaveBeenCalledWith(false, false);
     expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalledWith(true, expect.anything());
     expect(d.ask).not.toHaveBeenCalled();
+  });
+  it("while Hermes is starting, the conversation switch write is held and says so", async () => {
+    const d = deps();
+    const before = hermesRunningSlice.get();
+    hermesRunningSlice.set({ ...before, starting: 1 });
+    try {
+      const out = await run("fl_consent_withdraw", { scope: "conversations" }, d);
+      expect(out.result.startsWith(HELD_DURING_START)).toBe(true);
+      expect(d.flRounds.setTrajectoryConsent).not.toHaveBeenCalled();
+    } finally {
+      hermesRunningSlice.set(before);
+    }
   });
   it("a bad round id or scope withdraws nothing; core's refusal is passed on", async () => {
     const d = deps();
