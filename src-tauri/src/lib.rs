@@ -1366,8 +1366,18 @@ mod tests {
             defined.len() >= 7,
             "the scan must see the custody commands: {defined:?}"
         );
+        // 0.5.4: kit custody commands citrate-core deliberately does not register (nothing in the
+        // webview called them; custody_put was an invoke-path vault write). citrate-quorum, which
+        // shares the kit, may still register them.
+        let not_registered: std::collections::BTreeSet<String> =
+            ["custody_put", "custody_keyring_status"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let expected: std::collections::BTreeSet<String> =
+            defined.difference(&not_registered).cloned().collect();
         assert_eq!(
-            registered, defined,
+            registered, expected,
             "the registered custody commands differ from those defined in kit custody.rs"
         );
         // The secret-reading API must NEVER be registered as an invoke command.

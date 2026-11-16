@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 
-use crate::supervisor::{
-    BackoffPolicy, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
-};
+use crate::supervisor::{BackoffPolicy, SidecarSpec, Supervisor, SupervisorConfig};
 
 /// The env var kubo reads for its repo location.
 const IPFS_PATH_ENV: &str = "IPFS_PATH";
@@ -143,15 +141,6 @@ impl IpfsManager {
             sup.stop();
             drop(sup);
         }
-    }
-
-    /// Supervisor-reported running state (for a status surface).
-    pub fn running(&self) -> bool {
-        let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
-        matches!(
-            guard.as_ref().map(|s| s.status().state),
-            Some(SupervisorState::Running)
-        )
     }
 }
 

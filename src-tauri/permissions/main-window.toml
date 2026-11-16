@@ -21,7 +21,6 @@ commands.allow = [
   "custody_unlock",
   "custody_ensure_unlocked",
   "custody_lock",
-  "custody_put",
   "custody_list",
   "auth_status",
   "auth_login",
