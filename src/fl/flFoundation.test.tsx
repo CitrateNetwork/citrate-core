@@ -454,7 +454,7 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
   const { store } = await import("../shell/store");
   const { freshState } = await import("../shell/state");
   const html = (route: string) => renderToStaticMarkup(<PlaceView store={store} s={{ ...freshState("p1"), stage: "done", route }} />);
-  for (const route of ["groups/rounds/live", "groups/rounds/open", "groups/rounds/datasets"]) {
+  for (const route of ["groups/rounds/live", "groups/rounds/datasets"]) {
     it(`${route}: Group rounds not live yet, the contract table, no banned words`, () => {
       const h = html(route);
       expect(h).toContain("Group rounds not live yet");
@@ -469,6 +469,11 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     const h = html("groups/rounds/payouts");
     expect(h).toContain("Not available yet on this network");
     expect(h).toContain("WorkMarket is not deployed on this network, so there are no payouts to show.");
+  });
+  it("open a round says there is no Open button and the draft can be saved", () => {
+    const h = html("groups/rounds/open");
+    expect(h).toContain("Group rounds not live yet. WorkMarket is not available yet on this network, so there is no Open button. You can save this draft.");
+    expect(h).not.toContain("Sign escrow and open");
   });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");
