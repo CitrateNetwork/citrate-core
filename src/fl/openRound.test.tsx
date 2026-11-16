@@ -19,7 +19,7 @@ const dark = () => readFlNetworkState({ addresses: { ...realBook.addresses, Work
 /** Test-only: a profile that opens payouts (no shipped profile does). */
 const live = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, reads, { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile);
 const G: Group = { id: "0x" + "ab".repeat(16), name: "Orchard Lab", owner: "0x" + "11".repeat(20), kind: "channel", members: [] };
-const ready: RoundDraft = { ...BLANK_DRAFT, groupId: G.id, dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1" };
+const ready: RoundDraft = { ...BLANK_DRAFT, groupId: G.id, dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", architecture: "llama-8b-lora-r8" };
 
 function mount(state: FlNetworkState, o: { draft?: RoundDraft; role?: string | null; onOpen?: (d: RoundDraft) => Promise<TxOutcome>; save?: (d: RoundDraft) => number } = {}) {
   const el = document.createElement("div");
@@ -144,7 +144,10 @@ describe("round drafts", () => {
     expect(leasesCovered("1", "0")).toBeNull();
   });
   it("names what a draft still needs", () => {
-    expect(draftProblems(BLANK_DRAFT)).toEqual(["Choose a group", "Name the data class members train on", "Enter the budget and the rate as SALT amounts", "Set a deadline", "Enter the join bond as a SALT amount (0 for none)"]);
+    expect(draftProblems(BLANK_DRAFT)).toEqual(["Choose a group", "Name the data class members train on", "Enter the budget and the rate as SALT amounts", "Set a deadline", "Enter the join bond as a SALT amount (0 for none)", "Name the architecture as a lowercase label, like llama-8b-lora-r8"]);
+    // #724 review P1: the same label rule the offers read model applies.
+    expect(draftProblems({ ...ready, dataClass: "Support-Tickets" })).toContain("The data class must be a lowercase label (letters, digits, . _ -)");
+    expect(draftProblems({ ...ready, architecture: "Llama-8B" })).toContain("Name the architecture as a lowercase label, like llama-8b-lora-r8");
     expect(draftProblems({ ...ready, disputeWindowHours: 23 })).toContain("The dispute window must be at least 24 hours (WorkMarket's floor)");
     expect(draftProblems({ ...ready, maxWorkers: 2 })).toContain("At least three workers (the round ledger's floor)");
     expect(draftProblems(ready)).toEqual([]);
@@ -166,7 +169,7 @@ describe("round drafts", () => {
     expect(loadRoundDraft()).toBeNull();
   });
   it("the requirements file is the read model's version 1 shape; publishing needs the desktop IPFS node", async () => {
-    expect(requirementsOf(ready)).toEqual({ v: 1, dataClasses: ["support-tickets"], architectures: [], minVramGb: 16, estHours: 2 });
+    expect(requirementsOf(ready)).toEqual({ v: 1, dataClasses: ["support-tickets"], architectures: ["llama-8b-lora-r8"], minVramGb: 16, estHours: 2 });
     await expect(publishRequirements(requirementsOf(ready))).rejects.toThrow("publishing needs the desktop app's IPFS node");
   });
 });
@@ -174,7 +177,7 @@ describe("round drafts", () => {
 describe("openIntent (WorkMarket.open, HC's fl_round_open_propose calls it)", async () => {
   const { openIntent, OPEN_NEEDS_BINDING, OPEN_SIGNATURE, WORK_MARKET_OPEN_ABI } = await import("./roundDraft");
   const { decodeFunctionData, toFunctionSelector } = await import("viem");
-  const filled: RoundDraft = { ...BLANK_DRAFT, groupId: "0x" + "ab".repeat(16), dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1" };
+  const filled: RoundDraft = { ...BLANK_DRAFT, groupId: "0x" + "ab".repeat(16), dataClass: "support-tickets", deadline: "2026-11-22", budgetSalt: "600", rateSalt: "1.50", joinBondSalt: "0.1", architecture: "llama-8b-lora-r8" };
   const b = { verifier: "0x" + "22".repeat(20), bindRef: "0x" + "3e".repeat(32), jobSpecHash: "0x" + "44".repeat(32), requirementsHash: "0x" + "55".repeat(32), requirementsCid: "bafkreiflm1", groupHash: "0x" + "66".repeat(32), coordinator: "0x" + "cd".repeat(20) };
   it("refuses while payouts are dark, with core's reason", async () => {
     const st = await readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, { ...reads, payoutsStatus: async () => ({ open: false, reason: "payouts are not open on r1007" }) });

@@ -157,6 +157,10 @@ export function OpenRoundView(p: OpenRoundViewProps) {
             </label>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px 24px", maxWidth: 720 }}>
               <label style={field}>
+                Architecture (lowercase label)
+                <input className="input mono" value={d.architecture} placeholder="llama-8b-lora-r8" onChange={(e) => set("architecture", e.target.value)} />
+              </label>
+              <label style={field}>
                 Minimum GPU memory (GB)
                 <input className="input mono" type="number" min={1} value={d.minVramGb} onChange={(e) => set("minVramGb", Number(e.target.value))} />
               </label>

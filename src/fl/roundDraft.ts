@@ -18,6 +18,8 @@ export interface RoundDraft {
   template: RoundTemplate;
   dataClass: string;
   /** What a machine needs (the requirements file members' apps check). */
+  /** The model architecture the round trains, as a lowercase label (e.g. "llama-8b-lora-r8"). */
+  architecture: string;
   minVramGb: number;
   estHours: number;
   /** Decimal SALT, as typed. Never prefilled (G-SEC PAY-19). */
@@ -46,6 +48,7 @@ export const BLANK_DRAFT: RoundDraft = {
   groupId: null,
   template: "tune",
   dataClass: "",
+  architecture: "",
   minVramGb: 16,
   estHours: 2,
   budgetSalt: "",
@@ -99,6 +102,9 @@ export function weiOf(s: string): bigint | null {
   return m ? BigInt(m[1]) * 10n ** 18n + BigInt((m[2] ?? "").padEnd(18, "0") || "0") : null;
 }
 
+/** fl_market.rs label_ok: 1 to 64 of lowercase letters, digits, ".", "_" or "-". */
+const LABEL = /^[a-z0-9._-]{1,64}$/;
+
 /** How many leases the budget covers at the rate: floor(budget / rate), exact in wei. */
 export function leasesCovered(budgetSalt: string, rateSalt: string): number | null {
   const b = weiOf(budgetSalt);
@@ -119,8 +125,11 @@ export function draftProblems(d: RoundDraft): string[] {
   if (weiOf(d.joinBondSalt) === null) out.push("Enter the join bond as a SALT amount (0 for none)");
   if (d.coordinatorBondSalt.trim() !== "" && weiOf(d.coordinatorBondSalt) === null) out.push("The coordinator bond must be a SALT amount, or empty for WorkMarket's default");
   if (!(d.disputeWindowHours >= 24)) out.push("The dispute window must be at least 24 hours (WorkMarket's floor)");
-  if (!(d.minVramGb >= 1 && d.minVramGb <= 1024)) out.push("Minimum GPU memory must be 1 to 1024 GB");
-  if (!(d.estHours >= 1 && d.estHours <= 720)) out.push("Estimated hours must be 1 to 720");
+  // The offers read model's rule (fl_market.rs requirements_problem): lowercase labels.
+  if (d.dataClass.trim() && !LABEL.test(d.dataClass.trim())) out.push("The data class must be a lowercase label (letters, digits, . _ -)");
+  if (!LABEL.test(d.architecture.trim())) out.push("Name the architecture as a lowercase label, like llama-8b-lora-r8");
+  if (!(Number.isInteger(d.minVramGb) && d.minVramGb >= 0 && d.minVramGb <= 1024)) out.push("Minimum GPU memory must be 0 to 1024 GB");
+  if (!(Number.isInteger(d.estHours) && d.estHours >= 1 && d.estHours <= 24 * 90)) out.push("Estimated hours must be 1 to 2160");
   return out;
 }
 
@@ -201,7 +210,7 @@ export interface RequirementsFile {
 }
 
 export function requirementsOf(d: RoundDraft): RequirementsFile {
-  return { v: 1, dataClasses: [d.dataClass.trim()], architectures: [], minVramGb: d.minVramGb, estHours: d.estHours };
+  return { v: 1, dataClasses: [d.dataClass.trim()], architectures: [d.architecture.trim()], minVramGb: d.minVramGb, estHours: d.estHours };
 }
 
 export interface PublishedRequirements {
