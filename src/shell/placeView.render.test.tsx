@@ -272,6 +272,7 @@ describe("Groups › Chat holds the invite screen (#355 on five-place routes)", 
     const h = html(leaf, { inviteLink: "citrate://invite?g=grp_1&t=tok&k=02ab&e=1" });
     expect(h).toContain('data-testid="invite-join"');
     expect(html(leaf)).not.toContain('data-testid="invite-join"');
-    expect(html(leaf)).toContain('data-testid="invite-paste-open"');
+    // 0.5.4 FL design: the paste field is the "Join with an invite" sheet on Groups › Chat.
+    expect(html(leaf)).toContain("Join with an invite");
   });
 });
