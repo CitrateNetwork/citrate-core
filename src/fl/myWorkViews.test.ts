@@ -1,7 +1,10 @@
 // The board views of the member's own rounds and payouts (myWorkViews.ts), from on-chain reads.
 // TEST-ONLY offers; on r1007 nothing reads (no WorkMarket in the shipped book).
 import { describe, expect, it } from "vitest";
-import { liveRoundFrom, receiptFrom } from "./myWorkViews";
+import { liveRoundFrom, receiptFrom, WITHDRAW_WAITS_FOR_GSEC, withdrawIntent } from "./myWorkViews";
+import { readFlNetworkState } from "./networkState";
+import { WITHDRAW_SIGNATURE, withdrawCalldata } from "./workMarketReads";
+import realBook from "../../src-tauri/addresses/40204.json";
 import { NOT_ON_CHAIN } from "./myWork";
 import type { ChainOffer, ChainRound } from "./workMarketReads";
 
@@ -53,5 +56,27 @@ describe("Payout receipts from the chain", () => {
   });
   it("your units are not on chain", () => {
     expect(receiptFrom(posted, me, 1_200)!.line).toEqual({ round: "14", units: null, rateWei: (3n * SALT) / 2n, amountWei: null });
+  });
+});
+
+describe("withdrawIntent fails closed on its own (#724 review P2)", () => {
+  const WM = "0x" + "ab".repeat(20);
+  const base = { codeSize: async () => 1000, viewCall: async () => Z32 };
+  const book = { addresses: { ...realBook.addresses, WorkMarket: WM } };
+  it("refuses while core's payouts gate is shut, with its reason, even with a balance", async () => {
+    const st = await readFlNetworkState(book, { ...base, payoutsStatus: async () => ({ open: false, reason: "payouts are not open on r1007" }) });
+    expect(() => withdrawIntent(st, 5n * SALT)).toThrow(`${WITHDRAW_WAITS_FOR_GSEC} payouts are not open on r1007`);
+  });
+  it("refuses when the gate was not read, and on r1007 (no WorkMarket)", async () => {
+    const unread = await readFlNetworkState(book, { ...base, payoutsStatus: async () => Promise.reject(new Error("no such command")) });
+    expect(() => withdrawIntent(unread, 5n * SALT)).toThrow(/payouts gate was not read/);
+    const r1007 = await readFlNetworkState(realBook, base);
+    expect(() => withdrawIntent(r1007, 5n * SALT)).toThrow(WITHDRAW_WAITS_FOR_GSEC);
+  });
+  it("with the gate open: refuses an unread or empty balance; else withdraw() to WorkMarket, value 0", async () => {
+    const st = await readFlNetworkState(book, { ...base, payoutsStatus: async () => ({ open: true, reason: null }) });
+    expect(() => withdrawIntent(st, null)).toThrow(/not read/);
+    expect(() => withdrawIntent(st, 0n)).toThrow(/nothing/);
+    expect(withdrawIntent(st, 5n * SALT)).toEqual({ address: WM, calldata: withdrawCalldata(), valueWei: "0", label: WITHDRAW_SIGNATURE });
   });
 });

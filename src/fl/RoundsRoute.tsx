@@ -19,8 +19,7 @@ import { downloadText } from "./download";
 import { AdaptersView } from "./Adapters";
 import { LiveRoundView, NoLiveRound } from "./LiveRound";
 import { currentOffer } from "./myWork";
-import { liveRoundFrom, receiptFrom, useMyWork } from "./myWorkViews";
-import { WITHDRAW_SIGNATURE, withdrawCalldata } from "./workMarketReads";
+import { liveRoundFrom, receiptFrom, useMyWork, withdrawIntent } from "./myWorkViews";
 import { latestBlockTime } from "./chainTime";
 import { Unknown } from "./primitives";
 import type { Receipt } from "./Payouts";
@@ -111,7 +110,6 @@ function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppSt
   // the latest block's time is read, a window that might be over is still "waiting".
   const now = chainNow ?? 0;
   const receipts = read ? read.offers.map((o) => receiptFrom(o, { joined: true, settled: read.settled[o.id] ?? false }, now)).filter((r): r is Receipt => r !== null) : null;
-  const wm = state.contracts.WorkMarket;
   return (
     <PayoutsView
       state={state}
@@ -128,8 +126,7 @@ function PayoutsRoute({ state, s, go, store }: { state: FlNetworkState; s: AppSt
       disputeBlocker="Disputing needs your coordinator-signed receipt, which the training worker keeps; it is not bundled in this release."
       act={async (kind) => {
         if (kind !== "withdraw") throw new Error("claiming needs your leaf from the coordinator's payout list, which the app does not read yet");
-        if (wm.kind !== "deployed") throw new Error("WorkMarket is not on this network");
-        await store.proposeContractCall({ address: wm.address, calldata: withdrawCalldata(), valueWei: "0", label: WITHDRAW_SIGNATURE });
+        await store.proposeContractCall(withdrawIntent(state, read ? read.pullWei : null));
       }}
     />
   );
