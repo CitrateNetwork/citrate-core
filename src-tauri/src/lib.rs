@@ -846,6 +846,8 @@ pub fn run() {
             escalation::escalation_confirm_prepare,
             escalation::escalation_run,
             hic_records::hic_record_decision,
+            // The decision records read back, newest first (Hermes › Controls › Records).
+            hic_records::hic_records_list,
             escalation::escalation_registry_status,
             inference_router::escalation_registry_quote,
             inference_router::escalation_registry_request,
