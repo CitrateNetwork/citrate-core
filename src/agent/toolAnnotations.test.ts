@@ -97,6 +97,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
       vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
       vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
       vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
+      // 0.5.4 WP-H10: fl_withdraw_propose reaches the wallet review once payouts are open and the pull balance is not 0.
+      vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue("0x" + (10n ** 18n).toString(16).padStart(64, "0"));
+      store.setState({ walletAddr: "0x" + "5b".repeat(20) });
       // HUP-S10.2: the everyday tools run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status"

@@ -88,6 +88,7 @@ import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice
 import { bindSimHost, bridge } from "../bridge";
 import { sidecarAlertText } from "./sidecarAlert";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke } from "../bridge/tauri/invoke";
 import { canOfferActivation, createChainReads, isValidatorActive, readStakeSalt, readsValidatorRewards, validatorWord, type ChainReads, type ValidatorActivation } from "./chainTruth";
 import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel, activationGate, principalSalt } from "../onboarding/activateValidator";
@@ -140,7 +141,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
 /** Tools whose handler asks on its own one ceremony (a hic reason rides that card). Exported for the gate tripwires. */
-export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose"]);
+export const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_adapter_load_propose", "fl_dataset_create", "fl_dataset_clean_propose", "fl_envelope_propose", "fl_join_propose", "fl_withdraw_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4137,12 +4138,9 @@ export class Store {
     return readFlNetworkState(flAddressBook, {
       codeSize: (a) => bridge.contracts.codeSize("citrate", a),
       viewCall: (a, d) => bridge.contracts.viewCall("citrate", a, d),
-      // G-SEC: core's Rust payouts gate decides "open", with its reason; the boards' same read.
-      payoutsStatus: async () => {
-        if (BRIDGE_MODE !== "tauri") throw new Error("the payouts gate is read by the desktop app");
-        const { invoke } = await import("../bridge/tauri/invoke");
-        return invoke<PayoutsGateStatus>("fl_payouts_status");
-      },
+      // G-SEC: core's Rust payouts gate (#736) decides "open", with its reason; the boards' same read.
+      payoutsStatus: () =>
+        BRIDGE_MODE === "tauri" ? invoke<PayoutsGateStatus>("fl_payouts_status") : Promise.reject(new Error("the payouts gate is read by the desktop app")),
     });
   }
 
@@ -4726,13 +4724,18 @@ export class Store {
       // 0.5.4 WP-H5: read the board 07 draft. Writing one is lane 3's card hand-off (#725).
       result = runFlRoundDraftRead();
     } else if (isFlPayoutTool(call.name)) {
-      // 0.5.4 WP-H10 (dark): reads only, and only once WorkMarket is here and payouts are open.
-      result = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
+      // 0.5.4 WP-H10 (dark): open only when core's Rust payouts gate says so (fl_payouts_status).
+      // Withdraw opens the wallet review, which runs the gate again; claim and dispute are
+      // named-blocked (the leaf and the signed receipt are not read in this release).
+      const out = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
         networkState: () => this.flNetworkState(),
         wallet: () => this.state.walletAddr,
         call: (address, data) => bridge.contracts.viewCall("citrate", address, data),
         chainNow: () => latestBlockTime(),
+        propose: (intent) => this.proposeContractCall(intent),
       });
+      status = out.status;
+      result = out.result;
     } else if (isFlMarketTool(call.name)) {
       // 0.5.4 WP-H5: offers (read) and join (the member signs the bond in the wallet review; the
       // shared joinIntent refuses until WorkMarket is here and payouts open).
