@@ -2,7 +2,7 @@
   "format": "citrate-heldout-v1",
   "dataset": "toolcall-v2",
   "normalization": "lowercase; every character that is neither alphabetic nor numeric becomes a space; whitespace runs collapse to one space; trimmed",
-  "count": 93,
+  "count": 96,
   "items": [
     {
       "id": "amb-create-unnamed-group",
@@ -213,6 +213,14 @@
       "sha256": "d3b1984c7ff70643caeb159359a9661551947d3101c7b0964fa186066b636b69"
     },
     {
+      "id": "tc-fl-claim-propose",
+      "sha256": "7f1704e7021f46c12b33facf6241279d0e05c0de9338a50f18772496101faf1f"
+    },
+    {
+      "id": "tc-fl-dispute-propose",
+      "sha256": "4af8b8476343855f420a59ee44faca25a10717c39e1f79d3a8cdd3ec4ff44356"
+    },
+    {
       "id": "tc-fl-join-propose",
       "sha256": "bbeec0c5aefc36da6a340888d3a603cb310bf249bd5224732e1477964f7c9b76"
     },
@@ -235,6 +243,10 @@
     {
       "id": "tc-fl-start-explicit",
       "sha256": "d2c9ff0f012d970443a37907303351d91a2b30ce5f5cd993e4380c80a0a8122b"
+    },
+    {
+      "id": "tc-fl-withdraw-propose",
+      "sha256": "3bf06d119530cbae19d22964c9e3cc2b1565bf4475e6080b7fdf3792270b5ae6"
     },
     {
       "id": "tc-get-code-proxy",

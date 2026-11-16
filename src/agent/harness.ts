@@ -801,6 +801,44 @@ export const AGENT_TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "fl_withdraw_propose",
+      description:
+        "PROPOSE withdrawing the member's whole WorkMarket pull balance (the SALT already settled to them). It opens the wallet review for WorkMarket.withdraw(); the member reads it and signs it (HIC-1); you never sign. Refused, with core's reason, until payouts open after the security review, and when the balance is 0.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_claim_propose",
+      description:
+        "Check whether the member's payout on one WorkMarket offer can be claimed: core's payouts gate, then every on-chain settle condition (dispute window, open challenges, live payout list). In this release no claim can be signed from the app, because the member's leaf of the coordinator's payout list is not read; it says so and opens nothing. Never say a claim was made.",
+      parameters: {
+        type: "object",
+        properties: { offerId: { type: "number", description: "the offer id from fl_payouts_list" } },
+        required: ["offerId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_dispute_propose",
+      description:
+        "Check whether the member can dispute the payout on one WorkMarket offer. In this release no dispute can be sent from the app, because it needs the coordinator-signed receipt the unbundled training worker keeps; it says so with the line's status and opens nothing. Never say a dispute was filed.",
+      parameters: {
+        type: "object",
+        properties: {
+          offerId: { type: "number", description: "the offer id from fl_payouts_list" },
+          reason: { type: "string", description: "the member's reason, such as a missing leaf" },
+        },
+        required: ["offerId"],
+      },
+    },
+  },
   // ── paraconsensus (US-9.2 AC2) ──
   {
     type: "function",
@@ -1309,6 +1347,10 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "fl_round_plan",
   "fl_offers_list",
   "fl_payouts_list",
+  // Named-blocked (0.5.4): they check the gate and the line and name what is missing; they open
+  // no card. Wiring a card into either must move it off this list (the annotation test enforces it).
+  "fl_claim_propose",
+  "fl_dispute_propose",
   "belnap_codec",
   "gsheets_read",
   "schedule_list",

@@ -42,6 +42,7 @@ import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/e
 import { isFlMarketTool, runFlMarketTool } from "../agent/flMarketTools";
 import { isFlPayoutTool, runFlPayoutTool } from "../agent/flPayoutTools";
 import { latestBlockTime } from "../fl/chainTime";
+import { readPayoutsStatus, type PayoutsStatus } from "../fl/payoutsStatus";
 import { readFlNetworkState, type FlNetworkState } from "../fl/networkState";
 import { machineFrom, readMarket, type MarketView } from "../fl/market";
 import { loadWorkerTerms } from "../fl/workerTerms";
@@ -133,7 +134,7 @@ import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
  *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
 export const AUTO_SUMMARY_UTC_HOUR = 23;
 
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_join_propose"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, DELEGATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add", "fl_join_propose", "fl_withdraw_propose"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -4064,6 +4065,11 @@ export class Store {
     });
   }
 
+  /** 0.5.4 Hermes x FL: whether payouts are open, as core's Rust payouts gate says (#736). */
+  flPayoutsStatus(): Promise<PayoutsStatus> {
+    return readPayoutsStatus();
+  }
+
   /** 0.5.4 Hermes x FL: core's WorkMarket offers read model (fl_market_offers). */
   flMarketOffers(): Promise<MarketView> {
     return readMarket();
@@ -4635,13 +4641,19 @@ export class Store {
         result = out.message;
       }
     } else if (isFlPayoutTool(call.name)) {
-      // 0.5.4 WP-H10 (dark): reads only, and only once WorkMarket is here and payouts are open.
-      result = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
+      // 0.5.4 WP-H10 (dark): open only when core's Rust payouts gate says so (fl_payouts_status).
+      // Withdraw opens the wallet review, which runs the gate again; claim and dispute are
+      // named-blocked (the leaf and the signed receipt are not read in this release).
+      const out = await runFlPayoutTool(call.name, args as Record<string, unknown>, {
         networkState: () => this.flNetworkState(),
+        payoutsStatus: () => this.flPayoutsStatus(),
         wallet: () => this.state.walletAddr,
         call: (address, data) => bridge.contracts.viewCall("citrate", address, data),
         chainNow: () => latestBlockTime(),
+        propose: (intent) => this.proposeContractCall(intent),
       });
+      status = out.status;
+      result = out.result;
     } else if (isFlMarketTool(call.name)) {
       // 0.5.4 WP-H5: offers (read) and join (the member signs the bond in the wallet review; the
       // shared joinIntent refuses until WorkMarket is here and payouts open).

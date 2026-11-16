@@ -135,6 +135,10 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(store, "flMarketOffers").mockResolvedValue(oneOfferMarket());
       vi.spyOn(bridge.tier, "recommend").mockResolvedValue(VRAM_24GB_REPORT);
       vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue({ id: "cer1" } as never);
+      // 0.5.4 WP-H10: fl_withdraw_propose reaches the wallet review once core's gate is open and the pull balance is not 0.
+      vi.spyOn(store, "flPayoutsStatus").mockResolvedValue({ network: "t", payoutsOpenFlag: true, open: true, reason: null, contracts: [] });
+      vi.spyOn(bridge.contracts, "viewCall").mockResolvedValue("0x" + (10n ** 18n).toString(16).padStart(64, "0"));
+      store.setState({ walletAddr: "0x" + "5b".repeat(20) });
       // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
       vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
         cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
