@@ -126,7 +126,7 @@ export function PayoutsView(p: PayoutsViewProps) {
             Payouts
           </h1>
           <span className="fl-muted" style={{ fontSize: 13 }}>
-            SALT the WorkMarket contract escrowed and paid. Never projected.
+            SALT the WorkMarket contract escrowed and paid, as the contract reports it.
           </span>
           <span style={{ flex: 1 }} />
           <span className="fl-faint" style={{ fontSize: 11.5 }}>

@@ -484,6 +484,12 @@ describe("Groups › Rounds sub-tabs render the honest Today state", async () =>
     expect(h).toContain("Not available yet on this network");
     expect(h).toContain("WorkMarket is not deployed on this network, so there are no payouts to show.");
   });
+  it("#695 review: the Payouts page passes the banned-words check (both panes)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = html("groups/rounds/payouts");
+    el.querySelectorAll('[data-testid="place-tabs"],[data-testid="place-subtabs"]').forEach((n) => n.remove());
+    expect(el.textContent ?? "").not.toMatch(BANNED);
+  });
   it("adapters keeps the eval gate (fl_rounds.rs)", () => {
     expect(html("groups/rounds/adapters")).toContain("Run the eval gate");
   });
