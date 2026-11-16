@@ -66,6 +66,10 @@ export interface UpdateState {
   minimumVersion: string | null;
   /** The policy's reason, shown on the gate. */
   requiredReason: string | null;
+  /** The last check found no entry in the release feed for this platform (the target the
+   *  updater asked for, e.g. "linux-aarch64"): nothing is published for it, which is not "up to
+   *  date". Null after any other outcome. */
+  unpublishedFor: string | null;
 }
 
 export const INITIAL_UPDATE_STATE: UpdateState = {
@@ -80,6 +84,7 @@ export const INITIAL_UPDATE_STATE: UpdateState = {
   required: false,
   minimumVersion: null,
   requiredReason: null,
+  unpublishedFor: null,
 };
 
 /** Mirrors Rust `update_policy::PolicyVerdict`. */
@@ -304,7 +309,7 @@ export function updateCheckText(st: UpdateState): string {
     case "checking":
       return "checking the signed release feed";
     case "uptodate":
-      return "up to date";
+      return st.unpublishedFor ? `no update is published for this platform (${st.unpublishedFor})` : "up to date";
     case "available":
       return `version ${st.version ?? "unknown"} is available: download it from the update banner`;
     case "downloading":
@@ -318,6 +323,15 @@ export function updateCheckText(st: UpdateState): string {
     case "error":
       return "the check failed: " + (st.error ?? "unknown error");
   }
+}
+
+/** The platform target named in the updater's "no entry for this platform" error (the first
+ *  fallback it tried, e.g. "linux-aarch64-appimage"), or "this platform" when it names none. */
+export function feedPlatformOf(msg: string): string {
+  const list = /\[\s*"([^"]+)"/.exec(msg);
+  if (list) return list[1];
+  const one = /platform\s+`([^`]+)`/.exec(msg);
+  return one ? one[1] : "this platform";
 }
 
 export function useAppUpdate() {
@@ -335,7 +349,7 @@ export function useAppUpdate() {
       const { check: pluginCheck } = await import("@tauri-apps/plugin-updater");
       const update = (await pluginCheck()) as PluginUpdate | null;
       if (!update) {
-        setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate" }));
+        setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "uptodate", unpublishedFor: null }));
         // #678 review: gated with no update offered (its release was pulled): the plugin hands back
         // no feed, so Rust reads the feed itself, in case a later signed policy lowers or rescinds
         // the minimum.
@@ -372,6 +386,7 @@ export function useAppUpdate() {
         notes: update.body ?? null,
         critical,
         dismissed: false,
+        unpublishedFor: null,
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -382,10 +397,11 @@ export function useAppUpdate() {
       // the "Update failed" banner never appears. Real errors (network,
       // signature, download) still surface. Mac/Linux are listed, so unaffected.
       if (isNoPlatformInFeed(msg)) {
-        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate", error: null }));
+        const target = feedPlatformOf(msg);
+        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate", error: null, unpublishedFor: target }));
         return;
       }
-      patch({ status: "error", error: msg });
+      patch({ status: "error", error: msg, unpublishedFor: null });
     }
   }, [patch]);
 
