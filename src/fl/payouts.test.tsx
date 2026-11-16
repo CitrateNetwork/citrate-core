@@ -182,3 +182,28 @@ describe("History", () => {
     e.done();
   });
 });
+
+describe("#695 review: banned words", async () => {
+  const BANNED = /\b(earn|earns|earned|earning|earnings|income|projected|estimate|yield|APY|APR|profit|investment|USD|dormant|Final|Settled|HITL|users?)\b|!|\$/;
+  for (const [name, make] of [
+    ["not deployed", nd],
+    ["dark", dark],
+    ["open", open],
+  ] as const) {
+    it(`${name}: receipts, history and every review sheet pass`, async () => {
+      const m = mount(await make(), { receipts: [{ line, status: "claimable" }, { line: { ...line, round: "15" }, status: "waiting", disputeEndsAt: 1 }], pullWei: 3n * SALT });
+      const texts = [m.el.textContent ?? ""];
+      for (const b of ["Claim", "Dispute", "Withdraw to wallet"]) {
+        const btn = [...document.querySelectorAll("button")].find((x) => x.textContent?.trim() === b && !(x as HTMLButtonElement).disabled);
+        if (!btn) continue;
+        act(() => btn.click());
+        texts.push(document.querySelector('[role="dialog"]')?.textContent ?? "");
+        m.click("Decline");
+      }
+      m.click("History");
+      texts.push(m.el.textContent ?? "");
+      for (const t of texts) expect(t).not.toMatch(BANNED);
+      m.done();
+    });
+  }
+});
