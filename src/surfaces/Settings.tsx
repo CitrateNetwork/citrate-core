@@ -1271,7 +1271,9 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
  *  also checks on start and every 6 hours. Off the desktop app there is no updater to run. */
 export function UpdatesCheck({ updText }: { updText: string }) {
   const up = useSharedAppUpdate();
-  const busy = up !== null && ["checking", "downloading", "installing"].includes(up.state.status);
+  // #709 review: off while a check runs and while an update is downloading, downloaded and waiting
+  // for Restart, or installing (a check then would only discard the download).
+  const busy = up !== null && ["checking", "downloading", "ready", "installing", "installed"].includes(up.state.status);
   return (
     <>
       <span style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>

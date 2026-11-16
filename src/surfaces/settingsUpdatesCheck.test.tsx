@@ -59,3 +59,18 @@ describe("Settings › Updates", () => {
     expect(updateCheckText(st({ status: "idle" }))).toBe("not checked yet");
   });
 });
+
+describe("Settings › Updates while an update is downloaded (#709 review)", () => {
+  it("Check now is off while a download is pending, waiting for Restart, or installing", async () => {
+    for (const status of ["downloading", "ready", "installing", "installed"] as const) {
+      const check = vi.fn(async () => {});
+      publishAppUpdate({ state: st({ status, version: "0.5.5" }), check });
+      const host = await mount();
+      const btn = host.querySelector<HTMLButtonElement>('[data-testid="update-check-now"]')!;
+      expect(btn.disabled, status).toBe(true);
+      await act(async () => root?.unmount());
+      root = null;
+    }
+    expect(updateCheckText(st({ status: "ready", version: "0.5.5" }))).toMatch(/Check now is off until then/);
+  });
+});

@@ -315,7 +315,7 @@ export function updateCheckText(st: UpdateState): string {
     case "downloading":
       return `downloading version ${st.version ?? "unknown"}`;
     case "ready":
-      return `version ${st.version ?? "unknown"} is downloaded: restart from the update banner`;
+      return `version ${st.version ?? "unknown"} is downloaded: restart from the update banner (Check now is off until then)`;
     case "installing":
       return "installing the update";
     case "installed":
@@ -337,12 +337,19 @@ export function feedPlatformOf(msg: string): string {
 export function useAppUpdate() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const pending = useRef<PluginUpdate | null>(null);
+  // #709 review: the handle whose download finished, which is the only one Restart installs, and
+  // whether a download or install holds the updater. While held, a check (Check now or the 6 h
+  // timer) does nothing: a fresh check returns a new, undownloaded handle, and replacing the
+  // downloaded one made Restart drain the services and then fail to install.
+  const staged = useRef<PluginUpdate | null>(null);
+  const held = useRef(false);
   // Whether the app is gated now (read inside check without re-creating it).
   const gatedRef = useRef(false);
   const patch = useCallback((p: Partial<UpdateState>) => setState((s) => ({ ...s, ...p })), []);
 
   const check = useCallback(async () => {
     if (BRIDGE_MODE !== "tauri") return; // honest no-op off-desktop
+    if (held.current) return; // a download is in flight or downloaded: keep it
     // Don't clobber an in-flight download/ready with a re-check.
     setState((s) => (s.status === "downloading" || s.status === "ready" || s.status === "installing" ? s : { ...s, status: "checking", error: null }));
     try {
@@ -365,6 +372,8 @@ export function useAppUpdate() {
         }
         return;
       }
+      // A download began while this check was in flight: keep the handle being downloaded.
+      if (held.current) return;
       pending.current = update;
       // 0.5.4: a signed minimum in the feed. Rust verifies it; a refusal gates nothing.
       const policy = feedPolicy(update.rawJson);
@@ -407,7 +416,9 @@ export function useAppUpdate() {
 
   const install = useCallback(async () => {
     const update = pending.current;
-    if (!update || BRIDGE_MODE !== "tauri") return;
+    if (!update || BRIDGE_MODE !== "tauri" || held.current) return;
+    held.current = true;
+    staged.current = null;
     patch({ status: "downloading", downloadedBytes: 0, totalBytes: null, error: null });
     try {
       let downloaded = 0;
@@ -422,15 +433,23 @@ export function useAppUpdate() {
           setState((s) => ({ ...s, status: "ready" }));
         }
       });
+      staged.current = update;
       patch({ status: "ready" });
     } catch (e) {
+      held.current = false;
       patch({ status: "error", error: e instanceof Error ? e.message : String(e) });
     }
   }, [patch]);
 
   const restart = useCallback(async () => {
-    const update = pending.current;
-    if (!update || BRIDGE_MODE !== "tauri") return;
+    if (BRIDGE_MODE !== "tauri") return;
+    // Only the handle that finished downloading is installed, and nothing is stopped without one.
+    const update = staged.current;
+    if (!update) {
+      held.current = false;
+      patch({ status: "error", error: "No downloaded update is waiting, so nothing was stopped or installed. Check for updates again." });
+      return;
+    }
     patch({ status: "installing", error: null });
     const { invoke } = await import("../bridge/tauri/invoke");
     const { relaunch } = await import("@tauri-apps/plugin-process");
@@ -442,7 +461,14 @@ export function useAppUpdate() {
       install: () => update.install(),
       relaunch,
     });
-    if (!r.ok) patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
+    if (!r.ok) {
+      if (!r.keepStopped) {
+        // The services were released; the next check starts over with a fresh download.
+        held.current = false;
+        staged.current = null;
+      }
+      patch({ status: r.keepStopped ? "installed" : "error", error: r.error });
+    }
   }, [patch]);
 
   useEffect(() => {
