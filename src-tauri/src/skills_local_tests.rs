@@ -208,3 +208,70 @@ fn the_authored_folder_is_under_app_local_data() {
         PathBuf::from("/data/agent-skills")
     );
 }
+
+/// V3 (Hermes x FL gap analysis): a saved skill can never take a bundled skill's name. Every
+/// spelling that slugifies to `citrate-…` (or `citrate`) is refused, create or overwrite, and
+/// nothing is written.
+#[test]
+fn v3_a_saved_skill_can_never_take_a_bundled_citrate_name() {
+    let dir = scratch("reserved");
+    for name in [
+        "citrate-fl-collect",
+        "Citrate FL Datasets",
+        "  CITRATE belnap aggregate ",
+        "citrate",
+        "Citrate!!paraconsensus",
+    ] {
+        for overwrite in [false, true] {
+            let err =
+                write_skill_file(&dir, name, "d", "collect anything", overwrite).expect_err(name);
+            assert!(err.starts_with(SKILL_RESERVED_PREFIX), "{name}: {err}");
+        }
+    }
+    assert!(list_skills(&dir).is_empty(), "nothing was written");
+    // Names that only contain the word are the member's to use.
+    write_skill_file(&dir, "My citrate notes", "d", "x", false).expect("not reserved");
+    // A display name that folds to a word starting "citrate" (`citrated`) is reserved too: the
+    // display-name rule over-denies rather than let a lookalike through.
+    assert!(is_reserved_slug("citrate-anything"));
+    assert!(!is_reserved_slug("citrated"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// V3: a legacy flat-file skill under a reserved name is reported and left in place, not
+/// converted into the loader's folder.
+#[test]
+fn v3_a_legacy_skill_under_a_reserved_name_is_not_converted() {
+    let dir = scratch("reserved-legacy");
+    fs::write(
+        dir.join("citrate-fl-collect.md"),
+        "---\nname: citrate-fl-collect\ndescription: x\n---\nsteps\n",
+    )
+    .unwrap();
+    let r = migrate_legacy(&dir);
+    assert!(r.converted.is_empty());
+    assert_eq!(r.failed.len(), 1);
+    assert!(r.failed[0].reason.contains("reserved"), "{:?}", r.failed);
+    assert!(!dir.join("citrate-fl-collect").exists());
+    assert!(dir.join("citrate-fl-collect.md").is_file(), "never lost");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Review of #716 (P2): a display name that only looks like a bundled skill's is refused too.
+#[test]
+fn v3_a_lookalike_display_name_is_refused() {
+    let dir = scratch("reserved-lookalike");
+    for name in [
+        "\u{0441}itrate-paraconsensus", // Cyrillic es
+        "\u{0421}ITRATE fl collect",    // Cyrillic capital es
+        "\u{FF43}\u{FF49}\u{FF54}\u{FF52}\u{FF41}\u{FF54}\u{FF45}-fl", // fullwidth
+        "ci\u{200B}trate-belnap-aggregate", // zero-width space
+        "\u{0441}\u{0456}\u{0442}r\u{0430}t\u{0435} notes",
+    ] {
+        let err = write_skill_file(&dir, name, "d", "x", false).expect_err(name);
+        assert!(err.starts_with(SKILL_RESERVED_PREFIX), "{name}: {err}");
+    }
+    assert!(list_skills(&dir).is_empty());
+    assert!(!is_reserved_display_name("My citrate notes"));
+    let _ = fs::remove_dir_all(&dir);
+}

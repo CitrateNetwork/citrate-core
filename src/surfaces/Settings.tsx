@@ -42,6 +42,7 @@ import { ComponentUpdates } from "../components/ComponentUpdates";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { GrantsPanel } from "../agent/grants/GrantsPanel";
+import { ProjectOptInsPanel } from "../agent/grants/ProjectOptInsPanel";
 import { desktopGrantsIo } from "../agent/grants/grants";
 import type { GoogleServiceStatus } from "../agent/schedule/schedule";
 import { invoke } from "../bridge/tauri/invoke";
@@ -1174,6 +1175,8 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
                 {TERMINAL_ACCESS_LABEL}
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
+              {/* V1 (0.5.4): node, npm run and git commit ask unless turned on for one project. */}
+              {s.hermesTerminal && <ProjectOptInsPanel io={desktopGrantsIo} />}
             </div>
             {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
