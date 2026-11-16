@@ -388,6 +388,11 @@ describe("network-cut.py apply (test-only values on a copy)", SLOW, () => {
     const node = json("release/components.json").components.find((c) => c.id === "citrate-node");
     expect(node.source.rev).toBe(T_REV);
     expect(node.federation.rev).toBe(T_REV);
+    // core#682 review P2: the node rev is not necessarily the genesis commit, so the note never calls
+    // it that; it names the rev and the network's block 0.
+    expect(node.federation.note).toContain(`citrate-chain ${T_REV.slice(0, 12)}, the node rev for the r1007 network`);
+    expect(node.federation.note).not.toMatch(/genesis commit/);
+    expect(rd("src-tauri/runtime-deps.sha256")).not.toMatch(new RegExp(`${T_REV.slice(0, 12)} \\(the r1007 genesis commit`));
     expect(node.artifacts["aarch64-apple-darwin"]).toEqual({
       runtime_deps_asset: `citrate-aarch64-apple-darwin-${T_REV.slice(0, 12)}`,
       evidence: "test-only bytes (network-cut.test.mjs)",

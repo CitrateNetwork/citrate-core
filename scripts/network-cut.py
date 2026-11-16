@@ -404,8 +404,11 @@ def applied_components(cut: dict, components: dict) -> dict:
     c["federation"] = {
         "rev": rev,
         "status": "match",
-        "note": f"Set by scripts/network-cut.py apply from {CUT} ({cut['profile']} genesis commit "
-                f"{rev[:12]}). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the "
+        # The chain rev is the node's build rev, not necessarily the genesis commit (0.5.4: b2e91167
+        # and later are main commits on top of the r1007 genesis commit), so the note names the
+        # network by its block 0 and never calls the rev the genesis commit (core#682 review P2).
+        "note": f"Set by scripts/network-cut.py apply from {CUT} (citrate-chain {rev[:12]}, the node rev "
+                f"for the {cut['profile']} network, genesis {cut['genesisHash'][:12]}). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the "
                 "citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md).",
     }
     arts = {}
@@ -443,7 +446,7 @@ def applied_runtime_deps(cut: dict, text: str) -> str:
         return text
     head = text if text.endswith("\n") else text + "\n"
     return head + (f"# {cut['profile']} network cut (scripts/network-cut.py): citrate is citrate-chain "
-                   f"{cut['chainRev'][:12]} (the {cut['profile']} genesis commit, MIN_CHAIN_REV); each node "
+                   f"{cut['chainRev'][:12]} (MIN_CHAIN_REV, the node rev for the {cut['profile']} network); each node "
                    "build's PROVENANCE record ships next to its bytes.\n" + "\n".join(new) + "\n")
 
 
