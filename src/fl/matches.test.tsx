@@ -10,7 +10,9 @@ import realBook from "../../src-tauri/addresses/40204.json";
 import { readFlNetworkState, type FlReads, type FlNetworkState } from "./networkState";
 import { HIC1, type Authority } from "./authority";
 import { hiddenWords, machineFrom, matchOffer, offersCsv, rankMatches, weiFromSalt, type MarketView, type OfferView } from "./market";
-import { JOIN_SIGNATURE, joinBlocker, joinCalldata, MatchesView, PRIVACY_SENTENCE, WORK_MARKET_JOIN_ABI, type MarketRead } from "./Matches";
+import { JOIN_SIGNATURE, JOIN_WAITS_FOR_GSEC, joinBlocker, joinCalldata, joinIntent, MatchesView, PRIVACY_SENTENCE, WORK_MARKET_JOIN_ABI, type MarketRead } from "./Matches";
+import { ACTIVE_PROFILE, type NetworkProfile } from "../network/profile";
+import { saltExact } from "./format";
 import type { WorkerTerms } from "./workerTerms";
 
 const SALT = 10n ** 18n;
@@ -19,6 +21,8 @@ const ZERO32 = "0x" + "0".repeat(64);
 const reads: FlReads = { codeSize: async () => 1000, viewCall: async () => ZERO32 };
 const today = () => readFlNetworkState(realBook, reads);
 const live = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, reads);
+/** Test-only: a profile that opens payouts (no shipped profile does). */
+const opened = () => readFlNetworkState({ addresses: { ...realBook.addresses, WorkMarket: WM } }, reads, { ...(ACTIVE_PROFILE as NetworkProfile), payoutsOpen: true } as NetworkProfile);
 
 const offer = (id: number, over: { price?: bigint; minVram?: number; classes?: string[]; hidden?: OfferView["hidden"]; allow?: string; full?: boolean; deadline?: number } = {}): OfferView => ({
   opened: { id, kind: "flRound", poster: "0x" + String(id).padStart(2, "0").repeat(20), groupHash: ZERO32, pricePerUnit: String(over.price ?? (3n * SALT) / 2n), budget: String(600n * SALT), deadline: over.deadline ?? 1_763_769_600 + id, requirementsCid: "bafkreiflm" + id },
@@ -170,7 +174,7 @@ describe("Matches states (StateMatrix)", () => {
 describe("join sheet", () => {
   const view: MarketView = { available: true, reason: null, market: WM, offers: [offer(15)] };
   it("review: exactly what you sign, the privacy sentence, fee —, starts on Decline", async () => {
-    const r = render(await live(), { kind: "read", view });
+    const r = render(await opened(), { kind: "read", view });
     r.click("Join");
     const d = document.querySelector('[role="dialog"]')!;
     expect(d.textContent).toContain("This is exactly what you sign.");
@@ -187,7 +191,7 @@ describe("join sheet", () => {
   it("Pending: signing hands the join to the wallet review, then the sheet steps aside", async () => {
     let release!: () => void;
     const onJoin = vi.fn(() => new Promise<void>((res) => (release = res)));
-    const r = render(await live(), { kind: "read", view }, { onJoin });
+    const r = render(await opened(), { kind: "read", view }, { onJoin });
     r.click("Join");
     r.click("Sign and join");
     expect(onJoin).toHaveBeenCalledWith(view.offers[0]);
@@ -197,7 +201,7 @@ describe("join sheet", () => {
     r.done();
   });
   it("Failure: a refused hand-off is Not sent with the reason, back on review", async () => {
-    const r = render(await live(), { kind: "read", view }, { onJoin: async () => Promise.reject(new Error("another approval is already waiting")) });
+    const r = render(await opened(), { kind: "read", view }, { onJoin: async () => Promise.reject(new Error("another approval is already waiting")) });
     r.click("Join");
     r.click("Sign and join");
     await act(async () => {});
@@ -206,9 +210,44 @@ describe("join sheet", () => {
     r.done();
   });
   it("an envelope never skips the first join with a new poster", async () => {
-    const r = render(await live(), { kind: "read", view }, { authority: { level: "HIC-2", name: "Weeknights", caps: [] } });
+    const r = render(await opened(), { kind: "read", view }, { authority: { level: "HIC-2", name: "Weeknights", caps: [] } });
     r.click("Join");
     expect(document.querySelector('[role="dialog"]')!.textContent).toContain("The first join with any new group or poster always asks you.");
+    r.done();
+  });
+});
+
+describe("G-SEC review fixes (PAY-10, PAY-12, PAY-18)", () => {
+  const view: MarketView = { available: true, reason: null, market: WM, offers: [offer(15)] };
+  it("PAY-10: with payouts dark there is no Join anywhere, and the reason is said", async () => {
+    const r = render(await live(), { kind: "read", view });
+    expect([...r.el.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Join");
+    expect(r.el.textContent).toContain("joining posts a SALT join bond, so it opens with payouts after the security review");
+    r.done();
+  });
+  it("PAY-10: the join intent refuses to exist while payouts are dark (r1007 and any dark profile)", async () => {
+    const dark = await live();
+    const r1007 = await today();
+    expect(() => joinIntent(offer(15), dark)).toThrow(JOIN_WAITS_FOR_GSEC);
+    expect(() => joinIntent(offer(15), r1007)).toThrow(JOIN_WAITS_FOR_GSEC);
+  });
+  it("PAY-18: an unread join bond fails closed, never value 0", async () => {
+    const st = await opened();
+    expect(() => joinIntent({ ...offer(15), terms: null }, st)).toThrow(/terms/);
+    const bad = { ...offer(15), terms: { ...offer(15).terms!, joinBond: "" } };
+    expect(() => joinIntent(bad, st)).toThrow("the offer's join bond was not read, so nothing was sent");
+    expect(joinIntent(offer(15), st)).toMatchObject({ address: WM, valueWei: String(SALT / 10n), label: JOIN_SIGNATURE });
+  });
+  it("PAY-12: the review shows every decimal of what is signed, and the wei", async () => {
+    const tiny = { ...offer(15, { price: 90_000_000_000_000n }), terms: { ...offer(15).terms!, joinBond: "123456789012345678" } };
+    const r = render(await opened(), { kind: "read", view: { ...view, offers: [tiny] } }, { terms: null });
+    r.click("Join");
+    const d = document.querySelector('[role="dialog"]')!;
+    expect(d.textContent).toContain("0.00009 SALT per unit (90000000000000 wei)");
+    expect(d.textContent).toContain("0.123456789012345678 SALT (123456789012345678 wei), returned when you settle");
+    expect(d.textContent).not.toContain("0.0000 SALT");
+    expect(saltExact(1n)).toBe("0.000000000000000001");
+    expect(saltExact(10n ** 18n)).toBe("1.00");
     r.done();
   });
 });
