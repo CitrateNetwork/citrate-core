@@ -30,7 +30,7 @@
 // The plugin modules are dynamically imported inside the Tauri-gated path so the
 // web bundle never eagerly loads Tauri internals.
 // =====================================================================
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 /** How often to re-check for an update while the app is open (6 h). */
@@ -269,6 +269,57 @@ export function isNoPlatformInFeed(msg: string): boolean {
   return /found in the response .?platforms.? object|platform[^.]*not (?:found|available)/i.test(msg);
 }
 
+/** The one updater's state and its check, published by {@link useAppUpdate} (mounted once, in
+ *  App) so Settings › Updates can show it and run "Check now" without a second updater. */
+export interface SharedAppUpdate {
+  state: UpdateState;
+  check: () => Promise<void>;
+}
+let shared: SharedAppUpdate | null = null;
+const sharedListeners = new Set<() => void>();
+
+/** Publish (or clear, with null) the app's updater for {@link useSharedAppUpdate}. */
+export function publishAppUpdate(next: SharedAppUpdate | null): void {
+  shared = next;
+  for (const l of sharedListeners) l();
+}
+
+/** The app's updater, or null when none is mounted (web preview, tests). */
+export function useSharedAppUpdate(): SharedAppUpdate | null {
+  return useSyncExternalStore(
+    (l) => {
+      sharedListeners.add(l);
+      return () => sharedListeners.delete(l);
+    },
+    () => shared,
+    () => shared,
+  );
+}
+
+/** What Settings › Updates says about the last check. */
+export function updateCheckText(st: UpdateState): string {
+  switch (st.status) {
+    case "idle":
+      return "not checked yet";
+    case "checking":
+      return "checking the signed release feed";
+    case "uptodate":
+      return "up to date";
+    case "available":
+      return `version ${st.version ?? "unknown"} is available: download it from the update banner`;
+    case "downloading":
+      return `downloading version ${st.version ?? "unknown"}`;
+    case "ready":
+      return `version ${st.version ?? "unknown"} is downloaded: restart from the update banner`;
+    case "installing":
+      return "installing the update";
+    case "installed":
+      return st.error ?? "the update is installed: quit and reopen Citrate Core";
+    case "error":
+      return "the check failed: " + (st.error ?? "unknown error");
+  }
+}
+
 export function useAppUpdate() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const pending = useRef<PluginUpdate | null>(null);
@@ -429,6 +480,12 @@ export function useAppUpdate() {
   useEffect(() => {
     if (state.status === "available" && (state.critical || state.required)) void install();
   }, [state.status, state.critical, state.required, install]);
+
+  // Settings › Updates reads this updater instead of starting a second one.
+  useEffect(() => {
+    publishAppUpdate({ state, check });
+  }, [state, check]);
+  useEffect(() => () => publishAppUpdate(null), []);
 
   return { state, check, install, restart, dismiss };
 }
