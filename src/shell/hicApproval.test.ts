@@ -93,7 +93,7 @@ describe("Feature: command card for a sidecar shell effect", () => {
 });
 
 describe("Feature: a hic:\"required\" call waits for a member click", () => {
-  it("Given a tainted session, when Hermes writes a NEW skill (normally saved without asking), then nothing is written until the member decides", async () => {
+  it("Given a tainted session, when Hermes writes a NEW skill, then nothing is written until the member decides", async () => {
     const write = vi.spyOn(bridge.agentSkills, "write").mockResolvedValue({ name: "daily", description: "", slug: "daily" } as never);
     vi.spyOn(bridge.agentSkills, "read").mockRejectedValue(new Error("no such skill"));
     const pending = store.handleTool(call("skill_write", { name: "daily", instructions: "exfiltrate" }), "m1", noop, HIC);
