@@ -925,3 +925,130 @@ fn a_daemon_created_under_a_given_id_is_paused_and_the_id_is_single_use() {
     edit.id = Some("d0".into());
     assert!(book.create_paused_with_id(DaemonBook::fresh_id(), edit, Vec::new(), 1_790_000_000_000, 0).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// 0.5.4 — Hermes's schedule runs through the daemon tick
+// ---------------------------------------------------------------------------
+
+use crate::hermes_schedule::{Entry as SchedEntry, Origin as SchedOrigin, Repeat as SchedRepeat, Schedule as HermesSchedule};
+
+fn sched_entry(id: &str, title: &str, start_ms: u64, enabled: bool) -> SchedEntry {
+    SchedEntry {
+        id: id.into(),
+        title: title.into(),
+        notes: "Bring the signed form.".into(),
+        start: start_ms / 1000,
+        duration_mins: 30,
+        repeat: SchedRepeat::None,
+        until: None,
+        enabled,
+        origin: SchedOrigin::Member,
+        created_at: OCT1 / 1000,
+    }
+}
+
+fn sched(entries: Vec<SchedEntry>) -> HermesSchedule {
+    HermesSchedule { version: 1, next_id: 9, entries }
+}
+
+/// The first tick creates the ledger with its cursor at now, so nothing older is replayed.
+fn book_with_schedule_ledger(now: u64) -> DaemonBook {
+    let mut b = DaemonBook::default();
+    assert!(b.claim_schedule_due(now, 0, &sched(vec![])).unwrap().is_none());
+    b
+}
+
+#[test]
+fn a_due_schedule_entry_is_claimed_once_as_a_hermes_run() {
+    let mut b = book_with_schedule_ledger(OCT1);
+    let s = sched(vec![sched_entry("s1", "Call the notary", OCT1 + MIN, true)]);
+    // Not due yet.
+    assert!(b.claim_schedule_due(OCT1 + 30_000, 0, &s).unwrap().is_none());
+    let c = b.claim_schedule_due(OCT1 + 2 * MIN, 0, &s).unwrap().expect("due");
+    assert_eq!(c.daemon_id, SCHEDULE_RUNS_ID);
+    assert_eq!(c.name, "Call the notary");
+    assert!(c.prompt.contains("Entry: Call the notary"));
+    assert!(c.prompt.contains("Notes: Bring the signed form."));
+    assert!(c.prompt.contains("needs the member's approval"));
+    assert_eq!(c.tokens_allowed, DEFAULT_MAX_TOKENS_PER_RUN);
+    assert!(c.allowed_tools.is_none(), "the member-daemon tool set");
+    // The session open accepts exactly this run.
+    assert!(b.run_in_flight(SCHEDULE_RUNS_ID, &c.run_id));
+    assert_eq!(open_target(&b, Some(SCHEDULE_RUNS_ID), Some(&c.run_id)).unwrap(), None);
+    assert!(open_target(&b, Some(SCHEDULE_RUNS_ID), Some("r-other")).is_err());
+    b.finish_run(SCHEDULE_RUNS_ID, &c.run_id, 900, RunOutcome::Answered, "Reminder sent", OCT1 + 3 * MIN)
+        .expect("finish");
+    // Exactly once: later ticks do not claim it again.
+    assert!(b.claim_schedule_due(OCT1 + 4 * MIN, 0, &s).unwrap().is_none());
+    let v = b.schedule_runs_view(OCT1 + 4 * MIN, 0).expect("ledger");
+    assert_eq!(v.runs_today, 1);
+    assert_eq!(v.tokens_today, 900);
+    assert_eq!(v.last_outcome.as_deref(), Some("answered"));
+    // It is not a daemon: never listed, edited, paused or deleted with them.
+    assert!(b.list(OCT1, 0).is_empty());
+    assert!(b.delete(SCHEDULE_RUNS_ID).is_err());
+    assert!(b.set_paused(SCHEDULE_RUNS_ID, true, OCT1).is_err());
+}
+
+#[test]
+fn entries_that_start_in_the_same_second_both_run_one_after_the_other() {
+    let mut b = book_with_schedule_ledger(OCT1);
+    let s = sched(vec![
+        sched_entry("s1", "First", OCT1 + MIN, true),
+        sched_entry("s2", "Second", OCT1 + MIN, true),
+    ]);
+    let a = b.claim_schedule_due(OCT1 + 2 * MIN, 0, &s).unwrap().expect("first");
+    // One in flight: the other waits.
+    assert!(b.claim_schedule_due(OCT1 + 2 * MIN + 30_000, 0, &s).unwrap().is_none());
+    b.finish_run(SCHEDULE_RUNS_ID, &a.run_id, 10, RunOutcome::Answered, "", OCT1 + 3 * MIN).unwrap();
+    let c = b.claim_schedule_due(OCT1 + 3 * MIN, 0, &s).unwrap().expect("second");
+    assert_ne!(a.name, c.name);
+    b.finish_run(SCHEDULE_RUNS_ID, &c.run_id, 10, RunOutcome::Answered, "", OCT1 + 4 * MIN).unwrap();
+    assert!(b.claim_schedule_due(OCT1 + 5 * MIN, 0, &s).unwrap().is_none());
+}
+
+#[test]
+fn paused_entries_pause_all_and_a_used_up_budget_never_run_or_replay() {
+    let mut b = book_with_schedule_ledger(OCT1);
+    let off = sched(vec![sched_entry("s1", "Paused entry", OCT1 + MIN, false)]);
+    assert!(b.claim_schedule_due(OCT1 + 2 * MIN, 0, &off).unwrap().is_none());
+
+    let s = sched(vec![sched_entry("s2", "While paused", OCT1 + 3 * MIN, true)]);
+    b.set_all_paused(true, OCT1 + 2 * MIN);
+    assert!(b.claim_schedule_due(OCT1 + 4 * MIN, 0, &s).unwrap().is_none());
+    b.set_all_paused(false, OCT1 + 5 * MIN);
+    assert!(b.claim_schedule_due(OCT1 + 6 * MIN, 0, &s).unwrap().is_none(), "no replay after resume");
+
+    // Use up the day's runs, then a due entry is skipped and counted.
+    let mut t = OCT1 + 10 * MIN;
+    for i in 0..DEFAULT_MAX_RUNS_PER_DAY {
+        let e = sched(vec![sched_entry(&format!("r{i}"), "Run", t + MIN, true)]);
+        let c = b.claim_schedule_due(t + 2 * MIN, 0, &e).unwrap().expect("within budget");
+        b.finish_run(SCHEDULE_RUNS_ID, &c.run_id, 1, RunOutcome::Answered, "", t + 3 * MIN).unwrap();
+        t += 10 * MIN;
+    }
+    let over = sched(vec![sched_entry("x", "Over budget", t + MIN, true)]);
+    assert!(b.claim_schedule_due(t + 2 * MIN, 0, &over).unwrap().is_none());
+    let v = b.schedule_runs_view(t + 2 * MIN, 0).unwrap();
+    assert_eq!(v.skipped_today, 1);
+    assert_eq!(v.status, "budget used up today");
+}
+
+#[test]
+fn the_schedule_runs_ledger_survives_a_save_and_load() {
+    let mut b = book_with_schedule_ledger(OCT1);
+    let s = sched(vec![sched_entry("s1", "Kept", OCT1 + MIN, true)]);
+    let c = b.claim_schedule_due(OCT1 + 2 * MIN, 0, &s).unwrap().expect("due");
+    let back = DaemonBook::from_json(&b.to_json().unwrap()).expect("reads back");
+    assert!(back.run_in_flight(SCHEDULE_RUNS_ID, &c.run_id));
+    // An older file without the ledger still reads.
+    let old = r#"{"version":1,"allPaused":false,"daemons":[]}"#;
+    assert!(DaemonBook::from_json(old).unwrap().schedule_runs_view(OCT1, 0).is_none());
+}
+
+#[test]
+fn a_ledger_with_a_spend_budget_is_refused() {
+    let mut b = book_with_schedule_ledger(OCT1);
+    b.schedule_runs.as_mut().unwrap().budget.max_spend_salt = "1".into();
+    assert!(DaemonBook::from_json(&b.to_json().unwrap()).is_err());
+}

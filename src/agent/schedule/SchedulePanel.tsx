@@ -4,7 +4,8 @@
 // Hermes's own schedule as a week calendar, next to the member's Google Calendar when it is
 // connected (Google stays off until a Google OAuth client id is configured; the panel says so).
 // The member adds, pauses and removes Hermes entries here, and can add an event to Google.
-// Nothing here runs anything: the scheduler (HUP-S10.3) reads what is due.
+// Nothing here runs anything: the daemon runner's tick claims each due entry in core
+// (`daemons_claim_due`) and runs it as a Hermes turn; this panel shows that ledger.
 // =====================================================================
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -22,6 +23,8 @@ import {
   type ScheduleIo,
   type ScheduleView,
 } from "./schedule";
+import { daemonsSlice } from "../../daemons/slice";
+import { DEFAULT_BUDGET } from "../../daemons/api";
 
 export interface SchedulePanelProps {
   io: () => Promise<ScheduleIo>;
@@ -33,6 +36,30 @@ const realNow = () => Math.floor(Date.now() / 1000);
 const note = { fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 };
 const row = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const };
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** How due entries run, and today's schedule runs (from the daemon book in core). */
+export function ScheduleRunsLine() {
+  const st = daemonsSlice.use();
+  const runs = st.view?.scheduleRuns ?? null;
+  const perDay = runs?.budget.maxRunsPerDay ?? DEFAULT_BUDGET.maxRunsPerDay;
+  let today = "";
+  if (runs) {
+    today = ` Today: ${runs.runsToday} run${runs.runsToday === 1 ? "" : "s"}`;
+    if (runs.skippedToday > 0) today += `, ${runs.skippedToday} skipped`;
+    today += ".";
+    if (runs.lastOutcome) today += ` Last run: ${runs.lastOutcome.replace(/_/g, " ")}${runs.lastNote ? ", " + runs.lastNote : ""}.`;
+  }
+  const paused = st.view?.allPaused ? " Daemons are paused, so due entries are skipped and not replayed." : "";
+  const blocked = !st.view?.allPaused && st.runner.blockedReason ? ` Not running right now: ${st.runner.blockedReason}` : "";
+  return (
+    <span data-testid="schedule-runs" style={note}>
+      When an entry is due, Hermes runs it as a turn on the local model, up to {perDay} a day, and any change it proposes waits for your approval.
+      {today}
+      {paused}
+      {blocked}
+    </span>
+  );
+}
 
 export function SchedulePanel({ io, nowSecs = realNow }: SchedulePanelProps) {
   const [x, setX] = useState<ScheduleIo | null>(null);
@@ -144,6 +171,8 @@ export function SchedulePanel({ io, nowSecs = realNow }: SchedulePanelProps) {
           This week
         </button>
       </div>
+
+      <ScheduleRunsLine />
 
       <span data-testid="schedule-google" style={note}>
         Google Calendar:{" "}

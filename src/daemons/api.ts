@@ -41,7 +41,13 @@ export interface DaemonView {
 export interface DaemonsView {
   allPaused: boolean;
   daemons: DaemonView[];
+  /** The runs of Hermes's schedule (Journal > Schedule), under one built-in budget; null before
+   *  the first due entry (and from an older core). */
+  scheduleRuns?: DaemonView | null;
 }
+
+/** The daemon id of a run of Hermes's schedule (Rust `SCHEDULE_RUNS_ID`). */
+export const SCHEDULE_RUNS_ID = "hermes-schedule";
 
 export interface DaemonInput {
   id?: string;
