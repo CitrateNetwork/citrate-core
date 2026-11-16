@@ -100,6 +100,15 @@ describe("fl_round_open_propose", () => {
     expect(propose).not.toHaveBeenCalled();
   });
 
+  it("PAY-19 keys on source, never draftedBy: a Hermes draft the member filled in and saved opens", async () => {
+    const propose = vi.fn(async () => ({ proposed: true }));
+    await runFlRoundOpen(deps({ loadDraft: () => ({ ...FILLED_DRAFT, source: "member", draftedBy: "hermes" }), propose }));
+    expect(propose).toHaveBeenCalledTimes(1);
+    const before = propose.mock.calls.length;
+    expect((await runFlRoundOpen(deps({ loadDraft: () => ({ ...FILLED_DRAFT, source: "hermes", draftedBy: "hermes" }), propose }))).result).toMatch(/Hermes may never set money/);
+    expect(propose.mock.calls.length).toBe(before);
+  });
+
   it("with everything in place proposes WorkMarket.open escrowing the budget; the member signs", async () => {
     const propose = vi.fn(async () => ({ proposed: true }));
     const out = await runFlRoundOpen(deps({ propose }));

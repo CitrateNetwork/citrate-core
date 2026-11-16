@@ -20,8 +20,9 @@
 //    it (FLM-CORE-1: members see only group offers from an owner or admin);
 //  - G-SEC PAY-19, Hermes may never set money: every amount must be one the member typed on the
 //    Open a round screen. A Hermes hand-in arrives with its money fields empty (handedIn), and a
-//    draft whose source is still "hermes" is refused until the member has reviewed and saved it
-//    on the board, so no amount Hermes supplied can reach the escrow.
+//    draft whose source is still "hermes" is refused. The board sets source to "member" once the
+//    member types money and saves or signs (lane 1, #696 5164a1aa); `draftedBy` only keeps the
+//    banner and is never what this checks.
 //
 // Opening escrows the member's SALT, so it is always HIC-1: the wallet review shows the decoded
 // call and the member signs it, or not. It never runs inside an HIC-2 envelope. Core's payouts gate
