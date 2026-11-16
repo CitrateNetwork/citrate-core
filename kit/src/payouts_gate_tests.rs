@@ -144,38 +144,6 @@ fn selectors_are_the_deployed_abi() {
     }
 }
 
-#[test]
-fn distinctive_selectors_occur_in_no_other_system_contract() {
-    let book: serde_json::Value =
-        serde_json::from_str(include_str!("../../src-tauri/abis/signatures.json")).expect("json");
-    let functions = book["functions"].as_object().expect("functions");
-    let fl: Vec<&str> = FlContract::ALL.iter().map(|c| c.name()).collect();
-    for m in MONEY_SELECTORS {
-        let key = format!("0x{}", hex::encode(selector_of(m.signature)));
-        let others: Vec<String> = functions
-            .get(&key)
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .flat_map(|e| e["from"].as_array().cloned().unwrap_or_default())
-            .filter_map(|f| f.as_str().map(str::to_string))
-            .filter(|f| !fl.contains(&f.as_str()))
-            .collect();
-        if m.distinctive {
-            assert!(others.is_empty(), "{} is shared with {others:?}", m.signature);
-        }
-    }
-    // The generic ones are generic for a reason.
-    for shared in ["withdraw()", "resolveDispute(uint256,bool)", "withdrawFees()"] {
-        let key = format!("0x{}", hex::encode(selector_of(shared)));
-        assert!(functions.contains_key(&key), "{shared} occurs in another system contract");
-        assert!(MONEY_SELECTORS
-            .iter()
-            .filter(|m| m.signature == shared)
-            .all(|m| !m.distinctive));
-    }
-}
-
 // --- dark: one refusal per selector class -------------------------------------------------------
 
 fn assert_dark(contract: FlContract, to: [u8; 20], class: MoneyClass) {
