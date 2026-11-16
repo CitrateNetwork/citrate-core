@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge queue: every PR queued for main is re-checked on its merge-group commit (main plus the
+  # PRs ahead of it). merge-gate's `ci` summary waits for these jobs there, so they must run.
+  merge_group:
+    types: [checks_requested]
   # Weekly on main, so the dated audit ignores (RUSTSEC-2026-0387 expires 2027-01-31) fail CI on
   # the day they lapse even when nothing is pushed.
   schedule:

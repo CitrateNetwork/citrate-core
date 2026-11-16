@@ -15,7 +15,11 @@ on:
   pull_request: {}
   push:
     branches: [main]
-  merge_group: {}
+  # Merge queue. Only the workflows that run on EVERY pull request (ci.yml, eval-check.yml, this
+  # file) also run here; the path-filtered platform and acceptance workflows ran on the PR itself
+  # and are not re-run per queued group.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -84,7 +88,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+          # PR: the PR head (github.sha is the synthetic merge ref there). Merge queue: the
+          # merge-group commit (gh-readonly-queue/...), where the queued checks run. Push: github.sha.
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 120 * 60 ))
@@ -114,6 +121,13 @@ jobs:
               stable=$((stable + 1))
               # Two consecutive quiet polls: nothing late-registering.
               if [ "$stable" -ge 2 ]; then
+                # Fail closed in the merge queue: a group commit with no other check means the
+                # repo's CI workflows lack a merge_group trigger, and a pass would be vacuous.
+                total=$(jq "$summary | length" <<<"$json")
+                if [ "$EVENT" = merge_group ] && [ "$total" -eq 0 ]; then
+                  echo "::error::no other check ran on merge-group commit $SHA (missing merge_group triggers?)"
+                  exit 1
+                fi
                 echo "All other checks on $SHA completed without failure."
                 exit 0
               fi

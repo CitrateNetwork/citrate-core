@@ -207,14 +207,17 @@ function stepScript(srcLines, name) {
 }
 
 describe("eval-check.yml (HUP-S11.2 PR job)", () => {
-  it("runs on pull requests into main and release branches, plus manual dispatch", () => {
+  it("runs on pull requests into main and release branches, the merge queue, plus manual dispatch", () => {
     const start = checkLines.findIndex((l) => /^on:\s*$/.test(l));
     const keys = [];
     for (let i = start + 1; i < checkLines.length && !/^\S/.test(checkLines[i]); i++) {
       const m = /^ {2}([A-Za-z_]+):/.exec(checkLines[i]);
       if (m) keys.push(m[1]);
     }
-    expect(keys).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(keys).toEqual(["pull_request", "merge_group", "workflow_dispatch"]);
+    // merge-gate's required `ci` summary waits for this check on the merge-group commit; a dropped
+    // trigger would let a queued group merge without it.
+    expect(checkSrc).toMatch(/^ {2}merge_group:\n {4}types: \[checks_requested\]$/m);
     expect(checkSrc).toContain('branches: [main, "release/**"]');
     expect(checkSrc).not.toMatch(/pull_request_target/);
   });
