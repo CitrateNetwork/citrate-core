@@ -3,10 +3,10 @@
 //
 // A group's federated-training round, built 1:1 from design/CitrateCore.dc.html. SETL-S3 is landed:
 // status + reward are REAL eth_call reads of PatronageLedger on 40204 (round/phase + the member's
-// weight + claimable SALT). The WRITE paths stay honestly gated — recordContribution is SETTLER-only
-// and member SALT crediting is @rule8-gated (gateSec) — so contribute/claim report that plainly and
-// never fabricate a round, balance, or reward (Rule 1). A future claim is ceremony-gated (D-23): the
-// unsigned claimDividend intent stops at the Signature Ceremony.
+// weight + claimable SALT). There is no write here: V5 (0.5.4) removed the contribute and claim
+// stubs, which always failed (recordContribution is SETTLER-only and member SALT crediting is gated
+// on G-SEC). Joining and claiming are the WorkMarket round tools, dark until those contracts are
+// deployed and payouts open; this card never fabricates a round, balance, or reward (Rule 1).
 //
 // C1-V V11 (UI truth contract §1, §4): "Group rounds not live yet" is the required wording while
 // rounds can't run, in BOTH ledger states: a ledger absent from the book, or both deployed with no
@@ -54,7 +54,7 @@ const MISSING_LEDGERS = missingRoundLedgers(BOOK_ADDRESSES);
 // The round lifecycle as a person reads it, mapped from the domain's RoundPhase.
 const PHASE_UI: Record<RoundPhase, { label: string; tone: string; blurb: string }> = {
   idle: { label: "No round open", tone: "var(--tx-3)", blurb: "No training round is open for this group right now. When one opens you can opt in — you're never auto-enrolled." },
-  open: { label: "Round open", tone: "var(--ok)", blurb: "A round is open. Contribute compute and data to earn a share of the reward — contributing is explicit, and counted once per member." },
+  open: { label: "Round open", tone: "var(--ok)", blurb: "A round is open. Contributing compute and data is explicit, and counted once per member." },
   aggregating: { label: "Settling", tone: "var(--warn)", blurb: "The barrier sealed the cutoff and the network is aggregating contributions. No new contributions are counted for this round." },
   committed: { label: "Claimable", tone: "var(--accent-text)", blurb: "The round settled. Your reward is claimable — the claim stops at your ceremony as an unsigned settlement intent." },
   settled: { label: "Claimed", tone: "var(--tx-2)", blurb: "This round is fully settled. Rewards were paid to contributors, each contribution counted exactly once." },
@@ -70,7 +70,6 @@ export function Train({ store }: SurfaceProps) {
   const [status, setStatus] = useState<RoundStatus | null>(null);
   const [reward, setReward] = useState<RewardInfo | null>(null);
   const [pending, setPending] = useState<string | null>(null); // honest "backend not wired" text
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!ROUNDS_LIVE) return; // nothing to read: the round contracts are not deployed
@@ -108,47 +107,6 @@ export function Train({ store }: SurfaceProps) {
   useEffect(() => {
     if (ROUNDS_LIVE && groupId) void load(groupId);
   }, [groupId]);
-
-  const contribute = async () => {
-    setBusy(true);
-    try {
-      await bridge.training.contribute(groupId);
-      store.toast("Contribution submitted — your units accrue for this round.");
-      await load(groupId);
-    } catch (e) {
-      store.toast("Couldn't contribute — " + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const claim = () => {
-    void store.requestSig({
-      origin: "node-agent",
-      requester: "settlement-coord · round claim",
-      title: "Claim your training reward",
-      rows: [
-        { k: "Group", v: groupId.slice(0, 12) + "…" },
-        { k: "Round", v: status ? String(status.round) : "—" },
-        { k: "Weight", v: reward?.weight ?? "—" },
-        { k: "Reward", v: reward ? reward.salt + " SALT" : "—" },
-      ],
-      cost: "network gas",
-      sponsor: "you approve · settled once (idempotent)",
-      sponsorColor: "var(--ok)",
-      apply: () => {
-        void (async () => {
-          try {
-            await bridge.training.claim(groupId);
-            store.toast("Reward claimed — settled once, never twice.");
-            await load(groupId);
-          } catch (e) {
-            store.toast("Claim didn't settle — " + (e instanceof Error ? e.message : String(e)));
-          }
-        })();
-      },
-    });
-  };
 
   const phase = status?.phase;
   const ui = phase ? PHASE_UI[phase] : null;
@@ -255,11 +213,11 @@ export function Train({ store }: SurfaceProps) {
                   </div>
                 )}
 
-                <div style={{ display: "flex", gap: 10 }}>
-                  {phase === "open" && <button className="btn btn-primary" onClick={contribute} disabled={busy}>{busy ? "Contributing…" : "Contribute to this round"}</button>}
-                  {phase === "committed" && <button className="btn btn-primary" onClick={claim}>Claim reward</button>}
-                  {phase === "idle" && <button className="btn btn-secondary" disabled title="opening a round is settlement-gated (SETL-S3)">Open a round</button>}
-                </div>
+                {(phase === "open" || phase === "committed") && (
+                  <p style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
+                    Joining and claiming happen in Rounds, once the round contracts are deployed on {CHAIN_ID_TEXT} and payouts open after the security review.
+                  </p>
+                )}
               </div>
             ) : (
               <div style={{ padding: 18, fontSize: 12.5, color: "var(--tx-3)" }}>Loading round…</div>

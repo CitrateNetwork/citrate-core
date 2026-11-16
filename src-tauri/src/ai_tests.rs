@@ -1314,3 +1314,16 @@ fn an_upgraded_gateway_preset_chats_under_the_default_caps_without_a_member_pric
         .expect("not refused for an unknown price");
     assert_eq!(out, "gateway answer");
 }
+
+/// V9 (Hermes x FL gap analysis): an invite link never admits anyone on its own. Opening it sends
+/// a join request that the inviter approves or declines in Groups (invites.rs, D-12), so neither
+/// prompt may say whoever opens it joins without approval.
+#[test]
+fn neither_prompt_says_an_invite_joins_without_approval() {
+    for p in [AGENT_SYSTEM_PROMPT_REAL, AGENT_SYSTEM_PROMPT_TOOLS] {
+        assert!(!p.contains("self-admit"), "{p}");
+        assert!(!p.contains("joins in a click"), "{p}");
+        assert!(!p.contains("no approval"), "{p}");
+        assert!(p.contains("asks to join"), "{p}");
+    }
+}
