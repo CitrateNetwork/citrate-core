@@ -84,6 +84,9 @@ export interface PairClaim {
   issuedAt: number;
   expiresAt: number;
   hints: string[];
+  /** The six-digit code both machines will show if THIS machine pairs with the link (core
+   *  derives it from the link and this machine's fleet id). Absent from an older core. */
+  code?: string;
 }
 
 export type JoinErrorKind = "link" | "refused" | "unreachable" | "protocol";
@@ -126,6 +129,9 @@ export interface FleetApi {
   createLink(): Promise<PairOffer>;
   inspectLink(link: string): Promise<PairClaim>;
   joinLink(link: string): Promise<JoinResult>;
+  /** Remove a paired machine from THIS machine's record (`fleet_forget`); returns the roster.
+   *  Changes nothing on the other machine and revokes no device key. */
+  forget(id: string): Promise<FleetDevice[]>;
   tailscale(lanPeers: number, unreachable: boolean): Promise<TailscaleView>;
   /** HUP-S8.1: whether this machine is linked (optional: the wizard works without it). */
   linkStatus?(): Promise<LinkStatus>;
@@ -148,5 +154,6 @@ export const tauriFleet: FleetApi = {
   createLink: () => invoke<PairOffer>("fleet_pair_create"),
   inspectLink: (link) => invoke<PairClaim>("fleet_pair_inspect", { link }),
   joinLink: (link) => invoke<JoinResult>("fleet_pair_join", { link }),
+  forget: (id) => invoke<FleetDevice[]>("fleet_forget", { id }),
   tailscale: (lanPeers, unreachable) => invoke<TailscaleView>("fleet_tailscale", { lanPeers, unreachable }),
 };

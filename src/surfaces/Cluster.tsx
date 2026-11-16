@@ -1,5 +1,12 @@
 // =====================================================================
-// citrate-core — Cluster (CX-S4 / CL-S2, lane s4)
+// citrate-core — Cluster (CX-S4 / CL-S2, lane s4; 0.5.4 FL design board 04)
+//
+// Board 04 layout: the main column has the group's cluster header, the Private mesh switch, Add a
+// machine / Join with a link, the cluster map and the device list; the rail has the selected
+// device, combined capacity as receipts, and "Can this machine take part?". Hardware comes only
+// from this machine's probe (`fleet_probe`) and your pairings (`fleet_roster`); members' machines do
+// not report hardware yet, so they show "—" with the reason (clusterBoard.ts). Eligibility is "Not
+// known" until a live round publishes requirements (Group rounds not live yet).
 //
 // A group's private P2P cluster, DAEMON-BACKED (the citrate-cluster sidecar over UDS). The surface
 // shows the group's authorized peers (only members may join — the RBAC→network boundary) with their
@@ -7,9 +14,10 @@
 // only when it is actually connected (Rule 1 — never a fabricated peer); a lone node meshes with
 // no one yet.
 // =====================================================================
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SurfaceProps } from "./shared";
 import type { Store } from "../shell/store";
+import { groupsSlice } from "../shell/slices/groups";
 import {
   clusterSlice,
   loadClusterGroups,
@@ -30,12 +38,16 @@ import {
   setMeshEnabled,
 } from "../shell/slices/cluster";
 import { FleetWizard } from "../fleet/FleetWizard";
-import { linkStatusOf, tauriFleet, type FleetApi } from "../bridge/tauri/fleet";
+import { linkStatusOf, tauriFleet, type FleetApi, type FleetDevice } from "../bridge/tauri/fleet";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { bridge } from "../bridge";
 import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevices";
 import { peerStateLabel } from "./clusterReachability";
-import { ClusterMap } from "./ClusterMap";
+import { ClusterMap, THIS_MACHINE } from "./ClusterMap";
+import { AddMachineSheet } from "./AddMachineSheet";
+import { capacityModel, eligibilityModel, hardwareLine, peersRead, type ProbeReading, type RoundRequirements } from "./clusterBoard";
+import { Card, Chip, Eyebrow, KV, Note, Unknown, type KVRow } from "../fl/primitives";
+import { useFlNetworkState, type UseFlNetworkStateOptions } from "../fl/useFlNetworkState";
 import { meshSwitchModel } from "./meshSwitch";
 
 function shortAddr(a: string): string {
@@ -176,8 +188,41 @@ function YourDevices({ store }: { store: Store }) {
   );
 }
 
-export function Cluster({ store, s }: SurfaceProps) {
+/** Why a member's machine shows no hardware (shown after "—"): there is no source for it today. */
+export const NOT_REPORTED_REASON = "not reported: members' machines do not share hardware reports yet";
+
+const card = { padding: "14px 16px", gap: 10 } as const;
+
+function Tile({ value, label, testId }: { value: string; label: string; testId?: string }) {
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <span className="mono tabular" style={{ fontSize: 18 }}>{value}</span>
+      <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>{label}</span>
+    </div>
+  );
+}
+
+export interface ClusterProps {
+  store: Store;
+  s: SurfaceProps["s"];
+  /** The fleet commands (defaults to core's). Tests inject one. */
+  fleet?: FleetApi;
+  /** A live round's requirements (FL lane 1). None today: Group rounds not live yet. */
+  requirements?: RoundRequirements | null;
+  /** Desktop app (the probe and pairing need it). Defaults to the bridge mode. */
+  desktop?: boolean;
+  /** The FL network-state reads (defaults to the address book and chain). Tests pass their own. */
+  flNetwork?: UseFlNetworkStateOptions;
+}
+
+export function Cluster({ store, s, fleet, requirements = null, desktop = BRIDGE_MODE === "tauri", flNetwork }: ClusterProps) {
   const st = clusterSlice.use();
+  const { state: fl } = useFlNetworkState(flNetwork);
+  const chatGroup = groupsSlice.use().selectedId;
+  const [selected, setSelected] = useState<string>(THIS_MACHINE);
+  const [sheet, setSheet] = useState<"add" | "join" | null>(null);
+  const [probe, setProbe] = useState<ProbeReading>({ kind: "loading" });
+  const [paired, setPaired] = useState<FleetDevice[]>([]);
 
   useEffect(() => {
     void loadClusterGroups();
@@ -187,6 +232,11 @@ export function Cluster({ store, s }: SurfaceProps) {
     // a group already has this exact set).
     void shareMyDeviceLinks();
   }, []);
+
+  // Follow the group open in Groups › Chat, so the four Groups tabs show the same group.
+  useEffect(() => {
+    if (chatGroup && chatGroup !== clusterSlice.get().selectedId) void selectClusterGroup(chatGroup);
+  }, [chatGroup]);
 
   useEffect(() => {
     const id = st.selectedId;
@@ -198,182 +248,251 @@ export function Cluster({ store, s }: SurfaceProps) {
 
   // The wizard links this machine through the same review gate as "Link this device".
   const fleetApi = useMemo<FleetApi>(
-    () => ({
-      ...tauriFleet,
-      linkStatus: async () => linkStatusOf(await bridge.cluster.myDevices()),
-      linkThisDevice: (label: string) =>
-        new Promise<void>((resolve) => {
-          void store.linkThisDevice(deviceNameFrom(label), () => {
-            void loadMyDevices();
-            void shareMyDeviceLinks();
-            resolve();
-          });
-        }),
-    }),
-    [store],
+    () =>
+      fleet ?? {
+        ...tauriFleet,
+        linkStatus: async () => linkStatusOf(await bridge.cluster.myDevices()),
+        linkThisDevice: (label: string) =>
+          new Promise<void>((resolve) => {
+            void store.linkThisDevice(deviceNameFrom(label), () => {
+              void loadMyDevices();
+              void shareMyDeviceLinks();
+              resolve();
+            });
+          }),
+      },
+    [store, fleet],
   );
+
+  const runProbe = useCallback(() => {
+    if (!desktop) {
+      setProbe({ kind: "failed", reason: "the hardware probe runs only in the desktop app" });
+      return;
+    }
+    setProbe({ kind: "loading" });
+    fleetApi
+      .probe()
+      .then((p) => setProbe({ kind: "ok", facts: p.tier.facts }))
+      .catch((e) => setProbe({ kind: "failed", reason: e instanceof Error ? e.message : String(e) }));
+  }, [fleetApi, desktop]);
+
+  const loadPaired = useCallback(() => {
+    if (!desktop) return;
+    fleetApi
+      .roster()
+      .then(setPaired)
+      .catch(() => setPaired([]));
+  }, [fleetApi, desktop]);
+
+  useEffect(() => {
+    runProbe();
+    loadPaired();
+  }, [runProbe, loadPaired]);
 
   const memberOfDevice = new Map<string, string>();
   for (const m of st.memberDevices) for (const d of m.devices) memberOfDevice.set(d.device, d.label);
 
+  const group = st.groups.find((g) => g.id === st.selectedId) ?? null;
+  const label = group ? clusterGroupLabel(group) : null;
+  const meshOn = st.mesh?.on ?? false;
+  const sw = meshSwitchModel(st.mesh);
+  // A loading or failed cluster read is unknown, never an empty cluster (st.peers is [] then).
+  const read = peersRead(st);
+  const known = read.kind === "read";
+  const cap = capacityModel(probe, known ? st.peers.length : null, paired);
+  const elig = eligibilityModel(probe, requirements, { phase: fl.phase, reason: fl.phaseReason });
+  const peer = st.peers.find((p) => p.address === selected) ?? null;
+  const sel = selected === THIS_MACHINE || !peer ? THIS_MACHINE : peer.address;
+
+  const selectedRows: KVRow[] =
+    sel === THIS_MACHINE
+      ? [
+          { k: "Owner", v: "You" },
+          { k: "Hardware", v: probe.kind === "ok" ? hardwareLine(probe.facts) : probe.kind === "failed" ? <Unknown reason={`the probe failed: ${probe.reason}`} /> : "Reading…" },
+          { k: "Link", v: "this device" },
+          { k: "Reported", v: probe.kind === "ok" ? "this session, by this machine's probe" : <Unknown reason="no probe result yet" /> },
+        ]
+      : [
+          { k: "Owner", v: peer!.member ? shortAddr(peer!.member) : shortAddr(peer!.address) },
+          { k: "Hardware", v: <Unknown reason={NOT_REPORTED_REASON} /> },
+          { k: "Link", v: meshOn ? peerStateLabel(peer!) : "mesh off" },
+          { k: "Reported", v: "never" },
+        ];
+
   return (
-    <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 760 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Cluster</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--tx-3)" }}>
-          a private mesh among your Group's members
-        </span>
-      </div>
-
-      <p style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55, margin: 0 }}>
-        A Group's cluster is a private peer-to-peer mesh. Only the Group's members may join it — the
-        roster is the admission list, enforced by the cluster daemon. Peers show online as they
-        actually connect; a lone node has no one to mesh with yet.
-      </p>
-
-      {/* HUP-S8.2/S8.3 — "Connect my machines": probe, opt-in discovery, link/QR pairing, Tailscale help. */}
-      <FleetWizard
-        api={fleetApi}
-        available={BRIDGE_MODE === "tauri"}
-        initialLink={s.pendingPairLink}
-        onInitialLinkTaken={() => store.clearPendingPairLink()}
-      />
-
-      {st.error && (
-        <div className="surface" role="alert" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}>
-          {st.error}
+    <div className="fl-cols">
+      <main className="fl-main">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>{label ? `${label} cluster` : "Cluster"}</h1>
+          <span style={{ flex: 1 }} />
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5 }} title={sw.reason}>
+            <input
+              type="checkbox"
+              role="switch"
+              data-testid="cluster-mesh-switch"
+              checked={sw.on}
+              disabled={!sw.enabled}
+              aria-describedby="cluster-mesh-reason"
+              onChange={() => sw.action && void setMeshEnabled(sw.action === "turn-on")}
+            />
+            Private mesh
+          </label>
+          <button type="button" className="btn btn-sm" disabled={!desktop} onClick={() => setSheet("join")}>Join with a link</button>
+          <button type="button" className="btn btn-primary btn-sm" disabled={!desktop} onClick={() => setSheet("add")}>Add a machine</button>
         </div>
-      )}
+        <p id="cluster-mesh-reason" style={{ margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+          {sw.reason}
+          {!desktop && " Adding a machine needs the desktop app."}
+        </p>
 
-      <YourDevices store={store} />
-
-      {/* group picker */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 12, color: "var(--tx-3)" }}>Group</span>
-        {st.groups.length === 0 ? (
-          <span style={{ fontSize: 12, color: "var(--tx-3)" }}>
-            No groups yet — create one in Groups first.
-          </span>
-        ) : (
-          <select
-            className="input"
-            value={st.selectedId ?? ""}
-            onChange={(e) => e.target.value && void selectClusterGroup(e.target.value)}
-            style={{ fontSize: 12.5, minWidth: 200 }}
-          >
-            <option value="" disabled>
-              Select a group…
-            </option>
-            {st.groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {clusterGroupLabel(g)}
+        {/* group picker */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: "var(--tx-3)" }}>Group</span>
+          {st.groups.length === 0 ? (
+            <span style={{ fontSize: 12, color: "var(--tx-3)" }}>No groups yet. Create one in Groups first.</span>
+          ) : (
+            <select className="input" aria-label="Group" value={st.selectedId ?? ""} onChange={(e) => e.target.value && void selectClusterGroup(e.target.value)} style={{ fontSize: 12.5, minWidth: 200 }}>
+              <option value="" disabled>
+                Select a group…
               </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {st.selectedId && (
-        <>
-          {/* CONNECT-S4 — Join / Leave the selected group's cluster mesh. Joining contributes your
-              storage and keeps you in sync; membership in the group is what authorizes it (RBAC at the
-              daemon). `joined` is this session's truth; an un-provisioned daemon surfaces an honest
-              error above, never a fake "joined". */}
-          {(() => {
-            const joined = st.joined.includes(st.selectedId);
-            return (
-              <div className="surface" style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "var(--tx-2)" }}>
-                  {joined ? "You're in this cluster — contributing storage and staying in sync." : "Join to contribute your storage and sync files across the mesh."}
-                </span>
-                {joined ? (
-                  <button className="btn btn-ghost btn-sm" disabled={st.joining} onClick={() => st.selectedId && void leaveCluster(st.selectedId)}>Leave cluster</button>
-                ) : (
-                  <button className="btn btn-primary btn-sm" disabled={st.joining} onClick={() => st.selectedId && void joinCluster(st.selectedId)}>{st.joining ? "Joining…" : "Join cluster"}</button>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* status */}
-          <div className="surface" style={{ padding: "14px 16px", display: "flex", gap: 24 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <span style={{ fontSize: 20, fontWeight: 540 }}>
-                {st.status ? `${st.status.online}/${st.status.total}` : st.loading ? "…" : "—"}
-              </span>
-              <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>peers online / authorized</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <span style={{ fontSize: 20, fontWeight: 540 }}>{st.status?.sharedFiles.length ?? 0}</span>
-              <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>shared files</span>
-            </div>
-          </div>
-
-          {/* V60 MESH-4: the mesh switch and the cluster map (live daemon state only). */}
-          <div className="surface" data-testid="cluster-mesh-panel" style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "10px 16px", fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
-              Cross-machine mesh · {st.mesh?.on ? "on" : "off"}
-            </div>
-            {(() => {
-              const sw = meshSwitchModel(st.mesh);
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "0 16px 6px" }}>
-                  <span style={{ flex: 1, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{sw.reason}</span>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    data-testid="cluster-mesh-switch"
-                    disabled={!sw.enabled}
-                    onClick={() => sw.action && void setMeshEnabled(sw.action === "turn-on")}
-                  >
-                    {sw.action === "turn-off" ? "Turn off" : "Turn on"}
-                  </button>
-                </div>
-              );
-            })()}
-            <ClusterMap peers={st.peers} />
-          </div>
-
-          {/* peers */}
-          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "10px 16px", fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
-              Authorized peers · the mesh admits only these
-            </div>
-            {st.peers.length === 0 ? (
-              <div style={{ padding: "0 16px 14px", fontSize: 12, color: "var(--tx-3)" }}>
-                {st.loading ? "Loading…" : "No members in this group's roster yet."}
-              </div>
+              {st.groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {clusterGroupLabel(g)}
+                </option>
+              ))}
+            </select>
+          )}
+          {st.selectedId &&
+            (st.joined.includes(st.selectedId) ? (
+              <button className="btn btn-ghost btn-sm" disabled={st.joining} onClick={() => st.selectedId && void leaveCluster(st.selectedId)}>Leave cluster</button>
             ) : (
-              st.peers.map((p) => (
-                <div
-                  key={p.address}
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: "1px solid var(--ln, rgba(0,0,0,0.06))" }}
-                >
-                  <span className="mono" style={{ fontSize: 12, flex: 1 }}>
-                    {shortAddr(p.address)}
-                    {p.member && (
-                      <span style={{ fontFamily: "var(--font-body)", color: "var(--tx-3)", marginLeft: 8 }}>
-                        {memberOfDevice.get(p.address) ?? "device"} of {shortAddr(p.member)}
-                      </span>
-                    )}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 10.5,
-                      color: p.online ? "var(--ok, #2e9e5b)" : "var(--tx-3)",
-                    }}
-                  >
-                    {peerStateLabel(p)}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
+              <button className="btn btn-sm" disabled={st.joining} onClick={() => st.selectedId && void joinCluster(st.selectedId)}>{st.joining ? "Joining…" : "Join cluster"}</button>
+            ))}
+        </div>
 
-          <p style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5, margin: 0 }}>
-            These addresses are authorized to join the mesh because they are in the Group. They come
-            online as their nodes connect over the peer-to-peer transport, and share files across it.
-          </p>
-        </>
+        {st.error && (
+          <div className="surface" role="alert" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}>
+            {st.error}
+          </div>
+        )}
+
+        {st.mesh && !st.mesh.on && (
+          <div role="status" data-testid="cluster-mesh-off" className="surface" style={{ padding: "12px 16px", fontSize: 12.5, lineHeight: 1.55 }}>
+            Mesh off on this device. Other machines can't reach it, and it can't take part in cluster rounds.
+            <span style={{ display: "block", color: "var(--tx-3)", marginTop: 4 }}>{st.mesh.note}</span>
+          </div>
+        )}
+
+        <div className="surface" data-testid="cluster-mesh-panel" style={{ display: "flex", flexDirection: "column" }}>
+          <Eyebrow style={{ padding: "10px 16px 0" }}>
+            {st.status ? `${st.status.online} of ${st.status.total} peers online · ${st.status.sharedFiles.length} shared files` : st.loading ? "Reading the cluster…" : "Cluster map"}
+          </Eyebrow>
+          {read.kind === "unknown" ? (
+            <p data-testid="cluster-unread" role="img" aria-label={`Cluster map: unknown, ${read.reason}.`} style={{ margin: 0, padding: "8px 16px 14px", fontSize: 12.5, color: "var(--tx-2)" }}>
+              Other machines: <Unknown reason={read.reason} />
+            </p>
+          ) : (
+            <>
+              {st.peers.length === 0 && (
+                <p data-testid="cluster-empty" style={{ margin: 0, padding: "8px 16px 0", fontSize: 12.5, color: "var(--tx-2)" }}>
+                  One machine, no peers yet. Other members' machines appear here as the group's roster admits them.
+                </p>
+              )}
+              <ClusterMap peers={st.peers} meshOn={meshOn} selected={sel} labels={memberOfDevice} />
+            </>
+          )}
+        </div>
+
+        <div role="group" aria-label="Devices" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button type="button" className={"btn btn-sm" + (sel === THIS_MACHINE ? " btn-secondary" : "")} aria-pressed={sel === THIS_MACHINE} onClick={() => setSelected(THIS_MACHINE)}>
+            This machine
+          </button>
+          {read.kind === "unknown" && (
+            <span data-testid="devices-unread" style={{ fontSize: 12.5, color: "var(--tx-2)", alignSelf: "center" }}>
+              Other machines: <Unknown reason={read.reason} />
+            </span>
+          )}
+          {known && st.peers.map((p) => (
+            <button key={p.address} type="button" className={"btn btn-sm" + (sel === p.address ? " btn-secondary" : "")} aria-pressed={sel === p.address} onClick={() => setSelected(p.address)}>
+              {memberOfDevice.get(p.address) ?? shortAddr(p.address)} · {meshOn ? peerStateLabel(p) : "mesh off"}
+            </button>
+          ))}
+        </div>
+
+        <details open={!!s.pendingPairLink || undefined}>
+          <summary style={{ fontSize: 12.5, cursor: "pointer", color: "var(--tx-2)" }}>Your devices and pairing</summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingTop: 12 }}>
+            {/* HUP-S8.2/S8.3 — "Connect my machines": probe, opt-in discovery, link/QR pairing, Tailscale help. */}
+            <FleetWizard api={fleetApi} available={desktop} initialLink={s.pendingPairLink} onInitialLinkTaken={() => store.clearPendingPairLink()} />
+            <YourDevices store={store} />
+            <p style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5, margin: 0 }}>
+              A Group's cluster is a private peer-to-peer mesh. Only the Group's members may join it; the roster is the admission list, enforced by the cluster daemon. Peers show online as they actually connect.
+            </p>
+          </div>
+        </details>
+      </main>
+
+      <aside className="fl-rail" aria-label="Device and capacity">
+        <Card as="section" testid="cluster-selected" style={card}>
+          <Eyebrow>Selected device</Eyebrow>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>{sel === THIS_MACHINE ? "This machine" : memberOfDevice.get(sel) ?? shortAddr(sel)}</span>
+          <KV rows={selectedRows} />
+        </Card>
+
+        <Card as="section" testid="cluster-capacity" style={card}>
+          <Eyebrow>Combined capacity · receipts</Eyebrow>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Tile value={String(cap.reported)} label="machines reported" testId="cap-reported" />
+            <Tile value={cap.accelerator} label="GPU memory reported" testId="cap-accel" />
+            <Tile value={cap.ram} label="RAM reported" />
+            <Tile value="—" label={cap.notReported === null ? "other machines unknown" : `${cap.notReported} not reported`} testId="cap-not-reported" />
+          </div>
+          {cap.paired.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6 }}>
+              {cap.paired.map((d) => (
+                <li key={d.id}>
+                  {d.label} · {d.tier} (from its pairing)
+                </li>
+              ))}
+            </ul>
+          )}
+          {read.kind === "unknown" && (
+            <span data-testid="cap-unread" style={{ fontSize: 12 }}>
+              Other machines: <Unknown reason={read.reason} />
+            </span>
+          )}
+          <Note>Only devices that reported are counted. Unknown is not zero.</Note>
+        </Card>
+
+        <section className="fl-card" data-testid="cluster-eligibility" data-kind={elig.kind} style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+          <Eyebrow>Can this machine take part?</Eyebrow>
+          <span>
+            <Chip tone={elig.kind === "eligible" ? "ok" : elig.kind === "not-eligible" ? "warn" : "neutral"}>{elig.word}</Chip>
+          </span>
+          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, lineHeight: 1.6 }}>
+            {elig.lines.map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+          {elig.reprobe && desktop && (
+            <span>
+              <button type="button" className="btn btn-sm" onClick={runProbe}>Run the probe again</button>
+            </span>
+          )}
+        </section>
+      </aside>
+
+      {sheet && (
+        <AddMachineSheet
+          mode={sheet}
+          api={fleetApi}
+          groupLabel={label}
+          groupSeed={st.selectedId ? () => bridge.cluster.groupSeed(st.selectedId!) : undefined}
+          addGroupSeed={st.selectedId ? (seed) => bridge.cluster.addGroupSeed(st.selectedId!, seed) : undefined}
+          onClose={() => setSheet(null)}
+          onPaired={loadPaired}
+          mesh={st.mesh}
+        />
       )}
     </div>
   );

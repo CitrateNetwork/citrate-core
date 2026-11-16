@@ -435,6 +435,74 @@ fn both_sides_show_the_same_confirmation_code() {
     assert_eq!(roster.devices[0].code.as_deref(), Some(got.code.as_str()));
 }
 
+#[test]
+fn inspect_shows_the_code_before_pairing_and_it_matches_both_sides() {
+    let r = rig("inspect-code");
+    let link = link_for(&r);
+    let joiner = me(&"d".repeat(32), "Linux box", Some("T1"));
+    let claim = verify_link(&link, r.now).unwrap();
+    let before = pair_inspect(claim, &joiner.device_id);
+    // Read and flattened: the claim's fields plus `code`.
+    let v = serde_json::to_value(&before).unwrap();
+    assert_eq!(v["issuerLabel"], "Studio");
+    assert_eq!(v["code"], before.code.as_str());
+    let got = join_local(&link, &joiner, r.now).unwrap();
+    assert_eq!(
+        before.code, got.code,
+        "the code shown before pairing is the one both machines show"
+    );
+    let roster = load_roster(&r.roster).unwrap();
+    assert_eq!(
+        roster.devices[0].code.as_deref(),
+        Some(before.code.as_str())
+    );
+}
+
+#[test]
+fn inspect_code_differs_for_another_machine() {
+    let r = rig("inspect-other");
+    let claim = verify_link(&link_for(&r), r.now).unwrap();
+    let a = pair_inspect(claim.clone(), &"d".repeat(32)).code;
+    let b = pair_inspect(claim, &"e".repeat(32)).code;
+    assert_ne!(
+        a, b,
+        "a different machine redeeming the link shows a different code"
+    );
+}
+
+#[test]
+fn forget_removes_only_that_machine() {
+    let mut r = RosterFile::fresh();
+    for id in ["a", "b"] {
+        upsert(
+            &mut r,
+            FleetDevice {
+                id: id.repeat(32),
+                label: id.into(),
+                tier: None,
+                role: "unknown".into(),
+                addr: None,
+                paired_at: 1,
+                via: PairVia::Issued,
+                device_link: None,
+                code: None,
+            },
+        );
+    }
+    assert!(forget(&mut r, &"a".repeat(32)));
+    assert_eq!(
+        r.devices
+            .iter()
+            .map(|d| d.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b"]
+    );
+    assert!(
+        !forget(&mut r, &"a".repeat(32)),
+        "forgetting an unknown machine reports it"
+    );
+}
+
 /// A listener that answers like an issuer but does not hold the pairing key.
 fn impostor(reply: serde_json::Value) -> u16 {
     use std::io::{BufRead, BufReader, Write};

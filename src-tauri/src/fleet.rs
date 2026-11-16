@@ -861,13 +861,64 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
     })
 }
 
-/// **Command — fleet_pair_inspect.** Check a pasted/scanned link offline (signature, expiry).
+/// What `fleet_pair_inspect` returns: the link's verified claim, and the six-digit code both
+/// machines will show if THIS machine pairs with it. The joiner can compute the code before it
+/// connects (it is derived from the link's nonce and issuer key and this machine's fleet id), so
+/// the member can read it out and compare it the moment the other machine shows the new machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairInspect {
+    #[serde(flatten)]
+    pub claim: PairClaim,
+    pub code: String,
+}
+
+/// The inspect answer for `claim` when this machine's fleet id is `joiner_id`.
+pub fn pair_inspect(claim: PairClaim, joiner_id: &str) -> PairInspect {
+    let code = confirmation_code(&claim.nonce, &claim.issuer_pub, joiner_id);
+    PairInspect { claim, code }
+}
+
+/// **Command — fleet_pair_inspect.** Check a pasted/scanned link offline (signature, expiry), and
+/// say which code pairing with it will show. Sends nothing.
 #[tauri::command]
-pub async fn fleet_pair_inspect(link: String) -> Result<PairClaim, String> {
-    crate::blocking::off_main(move || {
-        verify_link(link.trim(), now_secs()).map_err(|e| e.message().to_string())
-    })
-    .await
+pub async fn fleet_pair_inspect(
+    app_h: tauri::AppHandle,
+    link: String,
+) -> Result<PairInspect, String> {
+    crate::blocking::off_main(move || fleet_pair_inspect_sync(app_h.clone(), link)).await
+}
+
+pub fn fleet_pair_inspect_sync(app: tauri::AppHandle, link: String) -> Result<PairInspect, String> {
+    let claim = verify_link(link.trim(), now_secs()).map_err(|e| e.message().to_string())?;
+    // The same fleet id `fleet_pair_join` presents (saved first, so the code cannot change).
+    let roster = ensure_roster_saved(&roster_path(&app)?)?;
+    Ok(pair_inspect(claim, &roster.device_id))
+}
+
+/// Remove machine `id` from a roster. False when it was not there.
+pub fn forget(r: &mut RosterFile, id: &str) -> bool {
+    let before = r.devices.len();
+    r.devices.retain(|d| d.id != id);
+    r.devices.len() != before
+}
+
+/// **Command — fleet_forget.** Remove a paired machine from this machine's record (for example
+/// when the six-digit codes did not match). It changes nothing on the other machine and revokes
+/// no device key; those are their own actions.
+#[tauri::command]
+pub async fn fleet_forget(app_h: tauri::AppHandle, id: String) -> Result<Vec<FleetDevice>, String> {
+    crate::blocking::off_main(move || fleet_forget_sync(app_h.clone(), id)).await
+}
+
+pub fn fleet_forget_sync(app: tauri::AppHandle, id: String) -> Result<Vec<FleetDevice>, String> {
+    let path = roster_path(&app)?;
+    let mut r = load_roster(&path)?;
+    if !forget(&mut r, id.trim()) {
+        return Err("That machine is not in this machine's paired machines.".into());
+    }
+    save_roster(&path, &r)?;
+    fleet_roster_sync(app)
 }
 
 /// What `fleet_pair_join` returns: success with the paired machine, or a typed failure the

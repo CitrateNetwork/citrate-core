@@ -743,6 +743,7 @@ pub fn run() {
             fleet::fleet_pair_create,
             fleet::fleet_pair_inspect,
             fleet::fleet_pair_join,
+            fleet::fleet_forget,
             fleet::fleet_tailscale,
             model_registry::models_registry_list,
             model_register::models_registry_register,

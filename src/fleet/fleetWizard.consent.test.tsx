@@ -29,6 +29,7 @@ function fakeApi() {
     createLink: unused,
     inspectLink: unused,
     joinLink: unused,
+    forget: unused,
     tailscale: unused,
   };
   return { api, discoveryCalls };

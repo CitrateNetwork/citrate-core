@@ -95,6 +95,7 @@ commands.allow = [
   "fleet_pair_create",
   "fleet_pair_inspect",
   "fleet_pair_join",
+  "fleet_forget",
   "fleet_tailscale",
   "models_registry_list",
   "models_registry_register",
