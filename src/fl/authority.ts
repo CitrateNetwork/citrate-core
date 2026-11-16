@@ -39,12 +39,18 @@ export function selectAuthority(): Authority {
 }
 
 let hydrated = false;
+/** Bumped by every write; the first read applies only if nothing was written while it was out,
+ *  so a late answer can never bring back an envelope the member just turned off. */
+let writes = 0;
 
 export function subscribeAuthority(fn: () => void): () => void {
   if (!hydrated) {
     hydrated = true;
+    const at = writes;
     void readEnvelope().then(
-      (e) => setEnvelopeForAuthority(envelopeView(e)),
+      (e) => {
+        if (writes === at) setEnvelopeForAuthority(envelopeView(e));
+      },
       () => {
         /* unread: stays HIC-1, the safe default */
       },
@@ -58,6 +64,7 @@ export function subscribeAuthority(fn: () => void): () => void {
 
 /** Settings › Work only: the envelope as core read it. Turning it off applies at once. */
 export function setEnvelopeForAuthority(e: EnvelopeView | null): void {
+  writes += 1;
   envelope = e ? { ...e, caps: e.caps.map((c) => ({ ...c })) } : null;
   current = derive(envelope);
   for (const l of [...listeners]) l();

@@ -55,6 +55,19 @@ describe("the envelope in core drives authority", () => {
     await p;
     expect(selectAuthority()).toEqual(HIC1);
   });
+  it("#700 review P2: a late first read never restores an envelope turned off meanwhile", async () => {
+    vi.resetModules();
+    const a = await import("./authority");
+    let release!: (v: unknown) => void;
+    invoke.mockReturnValueOnce(new Promise((r) => (release = r)));
+    const off = a.subscribeAuthority(() => {});
+    invoke.mockResolvedValueOnce({ ...env, on: false, offAt: 9 });
+    await a.envelopeOff();
+    release(env);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(a.selectAuthority()).toEqual(a.HIC1);
+    off();
+  });
   it("the first subscriber reads the stored envelope", async () => {
     invoke.mockResolvedValueOnce(env);
     const off = subscribeAuthority(() => {});
