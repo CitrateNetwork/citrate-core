@@ -625,9 +625,7 @@ impl CustodyVault {
     }
 
     /// Update the auto-lock window (config.autolock changed). Minutes → seconds.
-    /// Consumed by the config-change wire (A3/B1) and the auto-lock tests; allow
-    /// dead_code so the non-test lib build does not flag this seam as unused.
-    #[allow(dead_code)]
+    /// Called by `config_write` through [`crate::config::apply_live_settings`].
     pub fn set_autolock_mins(&self, mins: u32) {
         *self.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) = mins as u64 * 60;
     }
