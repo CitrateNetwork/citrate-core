@@ -23,6 +23,7 @@ import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import type { DeployGateRecord } from "../agent/deployGate";
 import type { RunRecord } from "../agent/runTimeline";
 import type { WorkerTerms, WorkerTermsReceipt } from "../fl/workerTerms";
+import type { ChatAttachment } from "../agent/chatAttachments";
 import type { SidecarDownReason } from "../agent/sidecarLiveness";
 import type { SyncProgress } from "./syncProgress";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -165,6 +166,8 @@ export interface ChatMsg {
   steer?: "sent" | "taken";
   /** Board 01: a proposal core renders in the transcript for the member to decide (HIC-1). */
   proposal?: ChatProposal;
+  /** #690: what the member attached to this message with @ (shown as chips; told to Hermes). */
+  attachments?: ChatAttachment[];
 }
 /** Board 01: a worker-terms proposal card. Only core writes it; Hermes can only ask for one. */
 export interface ChatProposal {
@@ -187,6 +190,10 @@ export interface QueuedChat {
   id: string;
   text: string;
   steer: boolean;
+  /** #690: what was attached with @ when it was typed. */
+  attachments?: ChatAttachment[];
+  /** The conversation it was typed in. It is only ever sent there. */
+  threadId: string;
 }
 /** HUP-S1.4 — the last brief the member accepted (persisted; nothing is built from it yet). */
 export interface AcceptedBrief {
@@ -595,6 +602,9 @@ export interface AppState {
   chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting"; options?: RouteAskOptions } | null;
   /** Board 01: follow-ups typed while a run was live, in send order. Not persisted. */
   chatQueue: QueuedChat[];
+  /** #690: the context kinds (hermesContext.ts row ids) the member turned off for this chat.
+   *  Core refuses their tools here. Kept with the chat on screen; a new chat starts with none. */
+  chatContextOff: string[];
   /** Board 01: why chat is on the no-tools fallback (sidecarLiveness.ts), null when Hermes answers.
    *  Set each time the provider is rebuilt. Not persisted. */
   chatHermesDown: SidecarDownReason | null;
@@ -995,6 +1005,7 @@ export function freshState(pid: string): AppState {
     chatRouteHold: null,
     chatQueue: [],
     chatHermesDown: null,
+    chatContextOff: [],
     chatRoute: "ask_first",
     chatBackend: "gateway",
     chatProviderLabel: "starting…",

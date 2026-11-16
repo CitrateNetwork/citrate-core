@@ -127,7 +127,7 @@ describe("board 01 Hermes chat", () => {
     });
     expect(newChat).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("/ne");
+    expect(send).toHaveBeenCalledWith("/ne", {});
   });
 
   it("Running: typing mid-run offers Steer now or Queue for after", () => {
@@ -146,7 +146,7 @@ describe("board 01 Hermes chat", () => {
     input.value = "and Saturdays";
     act(() => q("chat-send")!.click());
     act(() => q("queue-after")!.click());
-    expect(queue).toHaveBeenCalledWith("and Saturdays");
+    expect(queue).toHaveBeenCalledWith("and Saturdays", []);
   });
 
   it("Running: a steer taken mid-run shows as your steer and as a Steered step", () => {
@@ -170,7 +170,7 @@ describe("board 01 Hermes chat", () => {
 
   it("Running: queued follow-ups are listed and can be removed", () => {
     const drop = vi.spyOn(store, "dropQueuedChat").mockImplementation(() => undefined);
-    store.setState({ chatStatus: "thinking", chatQueue: [{ id: "q1", text: "later question", steer: false }], chatMsgs: [agent({ streaming: true, run: liveRun() })] });
+    store.setState({ chatStatus: "thinking", chatQueue: [{ id: "q1", text: "later question", steer: false, threadId: store.state.chatThreadId }], chatMsgs: [agent({ streaming: true, run: liveRun() })] });
     render();
     expect(qa("queued-msg")[0].textContent).toContain("later question");
     act(() => (host.querySelector('[aria-label="Remove queued message: later question"]') as HTMLElement).click());

@@ -31,6 +31,7 @@ import { composerMax, fitComposer, shouldFollow, useFitToViewport } from "./chat
 import { RunReceipts, RunTimeline } from "./RunTimeline";
 import { PolicyProposalCard, SETTINGS_WORK_ROUTE } from "./PolicyProposalCard";
 import { contextRows, contextSummary } from "../agent/hermesContext";
+import { datasetAttachment, groupAttachment, journalAttachment, matchAttachments, mentionAt, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
 import { ChatCommandBar, chatCommands, exactCommand, slashMatches, type ChatCommand } from "./ChatCommandBar";
 import { failureCopy, hermesDownCopy, type FailureAction } from "../agent/chatFailure";
 import { stepAnnouncement } from "../agent/runTimeline";
@@ -59,6 +60,13 @@ function MicGlyph() {
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
       <rect x="9" y="3" width="6" height="11" rx="3"></rect>
       <path d="M5 11 A7 7 0 0 0 19 11 M12 18 V21 M9 21 H15"></path>
+    </svg>
+  );
+}
+function AttachGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <path d="M20 11.5 L12.5 19 A5 5 0 0 1 5.5 12 L13 4.5 A3.3 3.3 0 0 1 17.7 9.2 L10.3 16.6 A1.6 1.6 0 0 1 8 14.3 L15 7.3"></path>
     </svg>
   );
 }
@@ -141,9 +149,43 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const fitInput = useCallback(() => fitComposer(store.chatInputEl, inputMax), [store, inputMax]);
   // Follow new messages unless the member scrolled up; sending always jumps back to the latest.
   const follow = useRef(true);
+  // #690: what the member attached with @ (or the attach button) to the message being typed.
+  const [attached, setAttached] = useState<ChatAttachment[]>([]);
+  const [mention, setMention] = useState<{ query: string } | null>(null);
+  const [mentionItems, setMentionItems] = useState<ChatAttachment[] | null>(null);
+  const [mentionErrors, setMentionErrors] = useState<string[]>([]);
   const send = (text: string) => {
     follow.current = true;
-    return store.sendChat(text);
+    const att = attached;
+    setAttached([]);
+    return store.sendChat(text, att.length ? { attachments: att } : {});
+  };
+  // The items are read when the menu opens, each from its real source; a failed read is said.
+  const openMention = (query: string) => {
+    setMention({ query });
+    if (mentionItems !== null) return;
+    void (async () => {
+      const items: ChatAttachment[] = [];
+      const errs: string[] = [];
+      const [ds, gs] = await Promise.allSettled([bridge.flRounds.datasetsList(), bridge.groups.list()]);
+      if (ds.status === "fulfilled") items.push(...ds.value.map(datasetAttachment));
+      else errs.push("Datasets could not be read: " + (ds.reason instanceof Error ? ds.reason.message : String(ds.reason)));
+      if (gs.status === "fulfilled") items.push(...gs.value.map(groupAttachment));
+      else errs.push("Groups could not be read: " + (gs.reason instanceof Error ? gs.reason.message : String(gs.reason)));
+      items.push(...(store.state.jPages || []).map(journalAttachment));
+      setMentionItems(items);
+      setMentionErrors(errs);
+    })();
+  };
+  const pickAttachment = (a: ChatAttachment) => {
+    setAttached((cur) => (cur.some((x) => x.id === a.id) || cur.length >= MAX_ATTACHMENTS ? cur : [...cur, a]));
+    const el = store.chatInputEl;
+    if (el) {
+      const at = mentionAt(el.value);
+      if (at) el.value = el.value.slice(0, at.start).replace(/\s$/, "") + (at.start > 0 ? " " : "");
+      el.focus();
+    }
+    setMention(null);
   };
 
   // Board 01: editing a past message branches the chat (the original stays in History).
@@ -186,7 +228,14 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     await store.retryAsBranch(answerId);
   };
   const [contextOpen, setContextOpen] = useState(false);
-  const ctxInput = { toolNames: store.chatToolNames(), providerKind: store.activeProviderKind(), hermesDown: !!s.chatHermesDown, modelLabel: activeModel.label };
+  const ctxInput = {
+    toolNames: store.chatToolNames(),
+    providerKind: store.activeProviderKind(),
+    hermesDown: !!s.chatHermesDown,
+    modelLabel: activeModel.label,
+    off: s.chatContextOff,
+    datasetsAttached: new Set(s.chatMsgs.flatMap((m) => (m.attachments ?? []).filter((a) => a.kind === "dataset").map((a) => a.id))).size,
+  };
 
   // Board 01: typing while a run is live offers Steer now or Queue for after (the text waits here).
   const [followUp, setFollowUp] = useState<string | null>(null);
@@ -217,7 +266,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   };
   const queue = () => {
     if (followUp === null) return;
-    store.queueChat(followUp);
+    store.queueChat(followUp, attached);
+    setAttached([]);
     setFollowUp(null);
   };
   useEffect(() => {
@@ -302,6 +352,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const liveRun = [...s.chatMsgs].reverse().find((m) => m.run && m.run.outcome === null)?.run;
   const announce = stepAnnouncement(liveRun ?? [...s.chatMsgs].reverse().find((m) => m.run)?.run);
   const streamingNow = s.chatMsgs.some((m) => m.streaming);
+  // Only this conversation's queued follow-ups (they are only ever sent here).
+  const queued = s.chatQueue.filter((q) => q.threadId === s.chatThreadId);
 
   // WP4.1 — on-device browser dictation; honest fallback elsewhere.
   const dictation = useRef<Dictation | null>(null);
@@ -460,14 +512,25 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <span style={{ fontSize: 12, color: "var(--tx-2)" }}>{contextSummary(ctxInput)}</span>
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
             {contextRows(ctxInput).map((r) => (
-              <li key={r.id} data-testid="context-row" data-can={String(r.can)} style={{ display: "grid", gridTemplateColumns: "40px minmax(0,1fr)", gap: 8, fontSize: 12.5 }}>
-                <span className="mono" style={{ fontSize: 10.5, color: r.can ? "var(--ok)" : "var(--tx-3)" }}>
-                  {r.can ? "Yes" : "No"}
-                </span>
-                <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <li key={r.id} data-testid="context-row" data-can={String(r.can)} style={{ display: "grid", gridTemplateColumns: "40px minmax(0,1fr)", gap: 8, fontSize: 12.5, alignItems: "start" }}>
+                {r.toggle ? (
+                  <input
+                    type="checkbox"
+                    data-testid={"context-toggle-" + r.id}
+                    id={"ctx-" + r.id}
+                    checked={!r.off}
+                    onChange={(e) => store.setChatContext(r.id, e.target.checked)}
+                    style={{ marginTop: 2, accentColor: "var(--ok)" }}
+                  />
+                ) : (
+                  <span className="mono" style={{ fontSize: 10.5, color: r.can ? "var(--ok)" : "var(--tx-3)" }}>
+                    {r.can ? "Yes" : "No"}
+                  </span>
+                )}
+                <label htmlFor={r.toggle ? "ctx-" + r.id : undefined} style={{ display: "flex", flexDirection: "column", gap: 1, cursor: r.toggle ? "pointer" : "default" }}>
                   <span>{r.title}</span>
                   <span style={{ fontSize: 11, color: "var(--tx-3)" }}>{r.detail}</span>
-                </span>
+                </label>
               </li>
             ))}
           </ul>
@@ -562,6 +625,15 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                   end; finished messages are memoized). Never restyle what the user typed. A div, not a
                   span: markdown is block content. */}
               {m.who !== "You" ? <Markdown text={m.text} /> : <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>}
+              {m.attachments && m.attachments.length > 0 && (
+                <span data-testid="msg-attachments" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                  {m.attachments.map((a) => (
+                    <span key={a.id} className="fl-chip" title={a.context}>
+                      {a.label}
+                    </span>
+                  ))}
+                </span>
+              )}
               {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
             </div>}
             {m.error && (() => {
@@ -753,13 +825,13 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </button>
         </div>
       )}
-      {s.chatQueue.length > 0 && (
+      {queued.length > 0 && (
         <div data-testid="chat-queue" style={{ display: "flex", flexDirection: "column", gap: 4, margin: "0 16px 6px", flexShrink: 0 }}>
           <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
             Queued, sends after this run
           </span>
           <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-            {s.chatQueue.map((q) => (
+            {queued.map((q) => (
               <li key={q.id} data-testid="queued-msg" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", border: "1px dashed var(--line-2)", borderRadius: 6 }}>
                 <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{q.text}</span>
                 {q.steer && <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>after the stop</span>}
@@ -788,7 +860,35 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           ))}
         </ul>
       )}
+      {mention && (
+        <div data-testid="mention-menu" role="listbox" aria-label="Attach for context" style={{ margin: "0 16px 6px", padding: 4, border: "1px solid var(--line-2)", borderRadius: 6, background: "var(--srf-1)", flexShrink: 0, maxHeight: 220, overflow: "auto" }}>
+          {mentionItems === null && <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--tx-3)" }}>Reading datasets, groups and journal pages on this device</div>}
+          {mentionErrors.map((e) => (
+            <div key={e} role="alert" style={{ padding: "4px 10px", fontSize: 12, color: "var(--warn)" }}>
+              {e}
+            </div>
+          ))}
+          {mentionItems !== null && matchAttachments(mentionItems, mention.query).length === 0 && (
+            <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--tx-3)" }}>Nothing on this device matches. Datasets come from Groups › Rounds › Datasets.</div>
+          )}
+          {mentionItems !== null &&
+            matchAttachments(mentionItems, mention.query).map((a) => (
+              <button key={a.id} type="button" role="option" aria-selected={false} data-testid="mention-item" className="btn btn-ghost btn-sm" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => pickAttachment(a)}>
+                {a.label}
+              </button>
+            ))}
+        </div>
+      )}
       <div data-testid="chat-composer" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--line-1)", flexShrink: 0 }}>
+        {attached.length > 0 && (
+          <div data-testid="composer-attachments" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {attached.map((a) => (
+              <button key={a.id} type="button" className="fl-chip" title={a.context} aria-label={"Remove attachment " + a.label} onClick={() => setAttached((cur) => cur.filter((x) => x.id !== a.id))}>
+                {a.label} ×
+              </button>
+            ))}
+          </div>
+        )}
         <div data-testid="chat-input-row" style={{ display: "flex", width: "100%" }}>
           <textarea
             ref={(el) => { store.chatInputEl = el; }}
@@ -801,6 +901,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               setBuildAsk(looksLikeBuildAsk(e.target.value));
               // Board 01: a leading "/" lists the chat's commands.
               const v = e.target.value;
+              // #690: "@" at the start of a word lists what can be attached for context.
+              const at = mentionAt(v);
+              if (at) openMention(at.query);
+              else if (mention) setMention(null);
               setSlashOpen(v.startsWith("/") && !v.includes("\n"));
               setSlashText(v);
               fitInput();
@@ -835,6 +939,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 e.stopPropagation();
                 cancelEdit();
               }
+              if (e.key === "Escape" && mention) {
+                e.preventDefault();
+                e.stopPropagation();
+                setMention(null);
+              }
               if (e.key === "Escape" && slashOpen) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -857,6 +966,17 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
           >
             <MicGlyph />
+          </button>
+          <button
+            type="button"
+            className="btn btn-icon btn-ghost"
+            data-testid="chat-attach"
+            aria-label="Attach a dataset, group or journal page"
+            data-tip="Attach a dataset, group or journal page (or type @)"
+            aria-expanded={mention !== null}
+            onClick={() => (mention ? setMention(null) : openMention(""))}
+          >
+            <AttachGlyph />
           </button>
           <button
             type="button"
@@ -887,7 +1007,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           </button>
         </div>
         <div className="mono" aria-hidden style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)", textAlign: "center" }}>
-          Enter send · Shift Enter new line · Esc stop · Up edit last · / commands · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
+          Enter send · Shift Enter new line · Esc stop · Up edit last · / commands · @ context · {isMacPlatform() ? "⌘K" : "Ctrl K"} command bar
         </div>
       </div>
     </div>

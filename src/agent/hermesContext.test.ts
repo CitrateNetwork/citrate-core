@@ -1,6 +1,6 @@
 // FL design board 01: "What Hermes can see" is read from the tools the chat's session was given.
 import { describe, it, expect } from "vitest";
-import { contextRows, contextSummary } from "./hermesContext";
+import { contextKindOf, contextRows, contextSummary, offTitles } from "./hermesContext";
 import { annotatedAgentTools } from "./toolAnnotations";
 
 const ALL = annotatedAgentTools().map((t) => t.function.name);
@@ -27,5 +27,18 @@ describe("contextRows", () => {
     // Folders and commands are the sidecar loop's own tools.
     expect(rows.find((r) => r.id === "folders")?.can).toBe(false);
     expect(contextSummary({ toolNames: ["node_status"], providerKind: "agent", hermesDown: false, modelLabel: "Gateway" })).toBe("Gateway answers, with 1 core tool.");
+  });
+
+  it("#690: a kind turned off reads off; datasets show only when attached; folders and keys do not switch here", () => {
+    const rows = contextRows({ toolNames: ALL, providerKind: "sidecar", hermesDown: false, modelLabel: "Local 8B", off: ["groups"], datasetsAttached: 1 });
+    const g = rows.find((r) => r.id === "groups")!;
+    expect(g).toMatchObject({ can: false, off: true, toggle: true });
+    expect(g.detail).toContain("core refuses these tools here");
+    expect(rows.find((r) => r.id === "datasets")).toMatchObject({ can: true, toggle: false });
+    expect(rows.find((r) => r.id === "folders")?.toggle).toBe(false);
+    expect(rows.find((r) => r.id === "keys")).toMatchObject({ can: false, toggle: false });
+    expect(contextKindOf("group_create")).toEqual({ id: "groups", title: "Your groups" });
+    expect(contextKindOf("shell_run")).toBeNull();
+    expect(offTitles(["groups", "chain"])).toEqual(["Network reads", "Your groups"]);
   });
 });

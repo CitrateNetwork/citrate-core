@@ -770,6 +770,7 @@ pub fn run() {
             fl_trajectories::trajectories_settings_get,
             fl_trajectories::trajectories_settings_set,
             fl_trajectories::trajectories_dataset_build,
+            fl_trajectories::trajectories_datasets_list,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,

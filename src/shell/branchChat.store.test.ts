@@ -6,6 +6,7 @@ import { archivable, chatHistory } from "./slices/chatHistory";
 import * as terms from "../fl/workerTerms";
 import type { ChatProvider } from "../agent/harness";
 import type { ChatMsg } from "./state";
+import { journalAttachment } from "../agent/chatAttachments";
 
 const fakeProvider = (send: ChatProvider["send"]): ChatProvider => ({ kind: "sidecar", label: "test", send }) as unknown as ChatProvider;
 const msg = (id: string, who: string, text: string): ChatMsg => ({ id, who, text, chips: [], streaming: false });
@@ -171,5 +172,20 @@ describe("board 01 review fixes: proposals and branches", () => {
     expect(save).not.toHaveBeenCalled();
     const bad = await store.handleTool({ id: "w2", name: "worker_terms_propose", arguments: JSON.stringify({ floorSaltPerUnit: "lots" }) } as never, "a1", () => undefined);
     expect(bad).toMatch(/^refused:/);
+  });
+
+  it("Retry and edit keep the original message's attachments; a failed reply's Retry does too", async () => {
+    const att = journalAttachment({ id: "j1", title: "Node log", kind: "page", pinned: false, blocks: ["held overnight"] });
+    const send = vi.spyOn(store, "sendChat").mockResolvedValue();
+    store.setState({ chatMsgs: [msg("u1", "You", "summarize this page"), msg("a1", "Agent", "Summary.")] });
+    store.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === "u1" ? { ...m, attachments: [att] } : m)) }));
+    await store.retryAsBranch("a1");
+    expect(send).toHaveBeenLastCalledWith("summarize this page", { attachments: [att] });
+    store.setState({ chatMsgs: [{ ...msg("u1", "You", "summarize this page"), attachments: [att] }, msg("a1", "Agent", "Summary.")] });
+    await store.branchChat("u1", { text: "summarize it briefly" });
+    expect(send).toHaveBeenLastCalledWith("summarize it briefly", { attachments: [att] });
+    store.setState({ chatMsgs: [{ ...msg("u1", "You", "summarize this page"), attachments: [att] }, { ...msg("e1", "Agent", ""), error: "connection refused", retryText: "summarize this page" }] });
+    await store.retryChat("e1");
+    expect(send).toHaveBeenLastCalledWith("summarize this page", { attachments: [att] });
   });
 });

@@ -2,6 +2,7 @@
 // and handles Stop, Steer now and Queue for after.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { store } from "./store";
+import { bridge } from "../bridge";
 import { TurnStopped, type ChatProvider } from "../agent/harness";
 
 const fakeProvider = (send: ChatProvider["send"]): ChatProvider => ({ kind: "sidecar", label: "test", send }) as unknown as ChatProvider;
@@ -167,5 +168,87 @@ describe("board 01: Steer now and Queue for after", () => {
     store.queueChat("   ");
     store.steerChat("");
     expect(store.state.chatQueue).toEqual([]);
+  });
+
+  it("a queued follow-up belongs to its conversation: switching drops it, and it never sends elsewhere", async () => {
+    vi.spyOn(store, "rebuildProvider").mockResolvedValue();
+    const sent: { thread: string; text: string }[] = [];
+    store.provider = fakeProvider(({ messages, callbacks, signal }) => {
+      sent.push({ thread: store.state.chatThreadId, text: messages[messages.length - 1].content });
+      if (sent.length === 1) return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new TurnStopped())));
+      callbacks.onToken("ok");
+      return Promise.resolve({ role: "assistant", content: "" });
+    });
+    const first = store.sendChat("Network status");
+    await Promise.resolve();
+    store.queueChat("the old conversation's follow-up");
+    expect(store.state.chatQueue[0].threadId).toBe(store.state.chatThreadId);
+    store.stopAgentTurn();
+    await first;
+    expect(store.state.chatQueue).toHaveLength(1);
+    // Switch conversations, then finish a normal turn there.
+    expect(store.newChat()).toBe(true);
+    const other = store.state.chatThreadId;
+    expect(store.state.chatQueue).toEqual([]);
+    await store.sendChat("a question here");
+    await vi.waitFor(() => expect(store.state.chatStatus).toBe("ready"));
+    expect(sent.map((x) => x.text)).toEqual(["Network status", "a question here"]);
+    expect(sent.every((x) => x.thread !== other || x.text === "a question here")).toBe(true);
+  });
+
+  it("an item queued under another thread id is never drained into this one", async () => {
+    const sent: string[] = [];
+    store.provider = fakeProvider(async ({ messages, callbacks }) => {
+      sent.push(messages[messages.length - 1].content);
+      callbacks.onToken("ok");
+      return { role: "assistant", content: "" };
+    });
+    store.setState({ chatQueue: [{ id: "qx", text: "from elsewhere", steer: false, threadId: "t-elsewhere" }] });
+    await store.sendChat("here");
+    await vi.waitFor(() => expect(store.state.chatStatus).toBe("ready"));
+    expect(sent).toEqual(["here"]);
+    store.sendQueuedNow("qx");
+    expect(sent).toEqual(["here"]);
+  });
+
+  it("a core tool's structured error status shows as failed, not done", async () => {
+    vi.spyOn(bridge.flRounds, "unloadAdapter").mockRejectedValue(new Error("llama-server did not restart"));
+    store.provider = fakeProvider(async ({ callbacks }) => {
+      await callbacks.onToolCall({ id: "f1", name: "fl_adapter_unload", arguments: "{}" } as never);
+      callbacks.onToken("ok");
+      return { role: "assistant", content: "" };
+    });
+    await store.sendChat("unload the adapter");
+    const st = agentMsgs()[0].run?.steps.find((x) => x.tool === "fl_adapter_unload");
+    expect(st?.state).toBe("failed");
+    expect(st?.detail).toContain("llama-server did not restart");
+  });
+
+  it("Steer now while a message is held for a routing choice is sent next, never stuck", async () => {
+    const sent: string[] = [];
+    const prov = fakeProvider(async ({ messages, callbacks }) => {
+      sent.push(messages[messages.length - 1].content);
+      callbacks.onToken("ok");
+      return { role: "assistant", content: "" };
+    });
+    const priv = store as unknown as { routeKind: string; routeHeldMessage: (id: string, t: string, sig: AbortSignal) => Promise<unknown> };
+    const before = priv.routeKind;
+    priv.routeKind = "ask";
+    let calls = 0;
+    vi.spyOn(priv, "routeHeldMessage").mockImplementation((_id, _t, sig) => {
+      calls += 1;
+      if (calls > 1) return Promise.resolve({ ok: true, provider: prov });
+      return new Promise((resolve) => sig.addEventListener("abort", () => resolve({ ok: false, error: "not sent; you cancelled before choosing where it goes" })));
+    });
+    store.provider = prov;
+    const first = store.sendChat("held message");
+    await Promise.resolve();
+    expect(store.chatRunLive()).toBe(true);
+    store.steerChat("send this instead");
+    await first;
+    await vi.waitFor(() => expect(sent).toEqual(["send this instead"]));
+    await vi.waitFor(() => expect(store.state.chatStatus).toBe("ready"));
+    expect(store.state.chatQueue).toEqual([]);
+    priv.routeKind = before;
   });
 });

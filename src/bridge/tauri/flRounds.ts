@@ -11,6 +11,7 @@ import type {
   FlRoundsDomain,
   FlStartReceipt,
   FlTrainingSet,
+  FlDatasetFile,
   FlTrajectoryStatus,
 } from "../domains";
 
@@ -50,5 +51,8 @@ export const tauriFlRounds: FlRoundsDomain = {
   },
   buildTrainingSet(maxTrajectories: number) {
     return invoke<FlTrainingSet>("trajectories_dataset_build", { maxTrajectories });
+  },
+  datasetsList() {
+    return invoke<FlDatasetFile[]>("trajectories_datasets_list");
   },
 };
