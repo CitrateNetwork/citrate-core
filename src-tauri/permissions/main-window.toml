@@ -66,6 +66,7 @@ commands.allow = [
   "membership_enterprise_lead",
   "membership_grant_status",
   "membership_price",
+  "membership_signer_health",
   "sbt_token_uri",
   "sign_request",
   "sign_approve",

@@ -18,6 +18,7 @@ import { HaveAnInvite } from "../surfaces/HaveAnInvite";
 import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 import { CHAIN_ID_TEXT } from "../network/profile";
+import { SUPPORT_EMAIL } from "../shell/UpdateBanner";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 /** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
@@ -741,7 +742,7 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
           )}
         </div>
       )}
-      {s.s3 === "paying" && !s.s3PollExhausted && (
+      {s.s3 === "paying" && !s.s3PollExhausted && !s.s3GrantDelayed && (
         <div className="surface" style={{ display: "flex", alignItems: "center", gap: 18, padding: "18px 20px" }}>
           <div style={{ width: 46, height: 46, flexShrink: 0 }}>
             <LoaderMark size={46} />
@@ -752,6 +753,39 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
               core-membership · settlement confirmed by webhook, not by this app
             </div>
           </div>
+        </div>
+      )}
+      {/* The grant is delayed on our side (the 2026-11-12..11-17 outage: the treasury signer was
+          stopped for five days and members sat on "Waiting for checkout…"). Shown while the chain
+          poll still runs, once core-membership reports its grant signer not ready or 10 minutes
+          pass with no grant (isGrantDelayed). The chain still settles S3; "Check again" only reads.
+          The app cannot read the order itself (core-membership's order route accepts only its own
+          client's tokens), so this never claims the payment went through. MONEY GUARD: no
+          checkout control here, ever. */}
+      {s.s3 === "paying" && !s.s3PollExhausted && s.s3GrantDelayed && (
+        <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-grant-delayed">
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Your membership grant is delayed on our side</div>
+          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+            {s.s3SignerReady === false
+              ? "Membership grants are paused on our side right now. "
+              : `It has not landed on chain ${CHAIN_ID_TEXT} yet. `}
+            If your payment went through, your membership is recorded and we&apos;ll finish it automatically. No need to pay again.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button className="btn btn-primary" onClick={() => store.recheckMembership()}>
+              Check again
+            </button>
+            <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+              reads chain {CHAIN_ID_TEXT} and core-membership health · never re-opens checkout
+            </span>
+          </div>
+          <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+            Questions, or still waiting tomorrow? Email{" "}
+            <span className="mono" style={{ userSelect: "all" }}>
+              {SUPPORT_EMAIL}
+            </span>{" "}
+            with the email you paid with.
+          </p>
         </div>
       )}
       {/* The poll ran out of budget with no grant on chain. This is NOT an error and
