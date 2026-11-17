@@ -182,14 +182,16 @@ afterEach(() => {
 // each host's own node), the chain rev against public citrate-chain (tag r1007-genesis), the book
 // digest against the address lane's r1007 root book. 0.5.4 (2026-11-14) moved the chain rev to
 // citrate-chain main b2e91167 (#476, the serve-split fix); the fingerprint hashes the git sha, so it
-// moved with it, to the value the live fleet on b2e91167 reports.
+// moved with it, to the value the live fleet on b2e91167 reports. The 0.5.4 cut (2026-11-17) moved it
+// to chain main f4a0e600 (#478 fast sync, #480, #481), fingerprint 0xfbf50df0... from the Linux build
+// of that rev (consensus --json, git_sha f4a0e6006b9c).
 const R1007_CUT = {
   genesisHash: "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
   genesisProfile: "r1007",
   compiledActivations: true,
   rpcUrl: "https://rpc.citrate.ai",
-  chainRev: "b2e91167bda2b81d52658c58f6327063a25cbedc",
-  consensusFingerprint: "0x134ad1fc848af4a52f0f7abc5bac5224",
+  chainRev: "f4a0e6006b9c9e35cb385d2406b8f3aa2cb84531",
+  consensusFingerprint: "0xfbf50df07486c2108200c9435e7412a8",
   addressBookSha256: "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
   bootnodes: [
     "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
@@ -206,7 +208,7 @@ describe("the shipped cut (release/network-cut.json, applied 2026-11-12)", SLOW,
     expect(SHIPPED).toMatchObject(R1007_CUT);
     expect(SHIPPED.pending).toEqual({});
     expect(Object.keys(SHIPPED.notBuilt)).toEqual(["aarch64-unknown-linux-gnu"]);
-    expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-b2e91167bda2");
+    expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-f4a0e6006b9c");
     expect(SHIPPED.node["x86_64-unknown-linux-gnu"].sha256).toMatch(/^[0-9a-f]{64}$/);
     const prof = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri/network/profiles.json"), "utf8"));
     expect(prof.active).toBe("r1007");

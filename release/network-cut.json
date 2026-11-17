@@ -33,24 +33,16 @@
     "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
   ],
   "addressBookSha256": "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
-  "chainRev": "b2e91167bda2b81d52658c58f6327063a25cbedc",
-  "consensusFingerprint": "0x134ad1fc848af4a52f0f7abc5bac5224",
+  "chainRev": "f4a0e6006b9c9e35cb385d2406b8f3aa2cb84531",
+  "consensusFingerprint": "0xfbf50df07486c2108200c9435e7412a8",
   "node": {
-    "aarch64-apple-darwin": {
-      "runtime_deps_asset": "citrate-aarch64-apple-darwin-b2e91167bda2",
-      "sha256": "8511acbb7cd1b52f0b3bc4392fca19aa7fcf981466c85ccf11cecba2f8261a01",
-      "evidence": "the release Mac (macOS 15.6.1, arm64), 2026-11-14: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain b2e91167bda2 (main, #476 the serve-split fix), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-b2e91167bda2; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0x134ad1fc848af4a52f0f7abc5bac5224 = the live fleet (gitSha b2e91167bda2)",
-      "provenance": {
-        "asset": "citrate-aarch64-apple-darwin-b2e91167bda2.PROVENANCE.txt",
-        "sha256": "505ca7ae228e70822c7c79d95f579f6b863ad427df9ad4fc50732739c8df3c47"
-      }
-    },
+    "aarch64-apple-darwin": null,
     "x86_64-unknown-linux-gnu": {
-      "sha256": "59e651b048875356a58ec713be8a7ec8b952d5410a45dd5ad2441af036141ab7",
-      "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-15: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain b2e91167bda2 (public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-b2e91167bda2; consensus --json on the rendered r1007 node.toml: fingerprint 0x134ad1fc848af4a52f0f7abc5bac5224 = the macOS build and the live fleet",
+      "sha256": "081fe69f1d0a11d0954bd39ad1f7a9afa0d4acdd89587fb27c6d900d4ead66a0",
+      "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-17: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain f4a0e6006b9c (main: #478 fast sync, #480, #481; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-f4a0e6006b9c; consensus --json on the rendered r1007 node.toml: fingerprint 0xfbf50df07486c2108200c9435e7412a8 (git_sha f4a0e6006b9c, git_dirty false)",
       "provenance": {
-        "asset": "citrate-x86_64-unknown-linux-gnu-b2e91167bda2.PROVENANCE.txt",
-        "sha256": "1b8a59fe03e6b4a75192b6647df0b3f42aa53523d8a9831d50373aef9a09cca2"
+        "asset": "citrate-x86_64-unknown-linux-gnu-f4a0e6006b9c.PROVENANCE.txt",
+        "sha256": "3e6f6c2734ae5ef6401be76bb0d212d6f150ab7491d951753ea87e735b55d64f"
       }
     },
     "aarch64-unknown-linux-gnu": null
@@ -58,5 +50,7 @@
   "notBuilt": {
     "aarch64-unknown-linux-gnu": "owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
   },
-  "pending": {}
+  "pending": {
+    "node.aarch64-apple-darwin": "recorded on the release Mac at the 0.5.4 cut (owner step): scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain f4a0e6006b9c, PROVENANCE written, both uploaded to runtime-deps as citrate-aarch64-apple-darwin-f4a0e6006b9c(.PROVENANCE.txt), then scripts/network-cut.py fill --values <mac pin> --apply; its consensus --json fingerprint must be 0xfbf50df07486c2108200c9435e7412a8 (the Linux build of this rev)"
+  }
 }

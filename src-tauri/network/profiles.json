@@ -77,7 +77,7 @@
       ],
       "addressBook": "addresses/40204.json",
       "addressBookSha256": "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
-      "minChainRev": "b2e91167bda2b81d52658c58f6327063a25cbedc",
+      "minChainRev": "f4a0e6006b9c9e35cb385d2406b8f3aa2cb84531",
       "memberPruneRetain": 10000,
       "payoutsOpen": false,
       "flCodePins": {

@@ -116,3 +116,5 @@ cde4ea6123b8b93eae9f7c47b2fc7804d38f5db37e86816ddc86659f9b24e29c  citrate-aarch6
 8511acbb7cd1b52f0b3bc4392fca19aa7fcf981466c85ccf11cecba2f8261a01  citrate-aarch64-apple-darwin-b2e91167bda2
 505ca7ae228e70822c7c79d95f579f6b863ad427df9ad4fc50732739c8df3c47  citrate-aarch64-apple-darwin-b2e91167bda2.PROVENANCE.txt
 1b8a59fe03e6b4a75192b6647df0b3f42aa53523d8a9831d50373aef9a09cca2  citrate-x86_64-unknown-linux-gnu-b2e91167bda2.PROVENANCE.txt
+# r1007 network cut (scripts/network-cut.py): citrate is citrate-chain f4a0e6006b9c (MIN_CHAIN_REV, the node rev for the r1007 network); each node build's PROVENANCE record ships next to its bytes. The macOS node pin and its PROVENANCE are added by `network-cut.py fill --apply` on the release Mac.
+3e6f6c2734ae5ef6401be76bb0d212d6f150ab7491d951753ea87e735b55d64f  citrate-x86_64-unknown-linux-gnu-f4a0e6006b9c.PROVENANCE.txt
