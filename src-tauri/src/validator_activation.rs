@@ -227,6 +227,11 @@ pub struct ActivationStatus {
     pub block_time_ms: Option<u64>,
     pub local_block: Option<u64>,
     pub local_syncing: Option<bool>,
+    /// `eth_syncing.highestBlock` while it is an object: the highest height this node has
+    /// evidence for (it includes unverified gossip, so a hint, never the network head).
+    pub local_highest: Option<u64>,
+    /// This node's `net_peerCount`. None = not read (never 0).
+    pub local_peers: Option<u64>,
     pub tx: Option<ActivationTx>,
     /// The latest recorded (not forgotten) activation send for this member and bond.
     pub recorded_tx: Option<RecordedActivationTx>,
@@ -469,11 +474,17 @@ pub fn read_activation_status<P: RpcTransport, L: RpcTransport>(
     // This node: `eth_syncing` is `false` when caught up, an object while syncing.
     if let Some(local) = local {
         st.local_block = block_number(local);
-        st.local_syncing = rpc_result(local, "eth_syncing", json!([])).and_then(|v| match v {
-            Value::Bool(b) => Some(b),
+        let syncing = rpc_result(local, "eth_syncing", json!([]));
+        st.local_syncing = syncing.as_ref().and_then(|v| match v {
+            Value::Bool(b) => Some(*b),
             Value::Object(_) => Some(true),
             _ => None,
         });
+        st.local_highest = syncing
+            .as_ref()
+            .and_then(|v| v.get("highestBlock"))
+            .and_then(hex_u64);
+        st.local_peers = rpc_result(local, "net_peerCount", json!([])).and_then(|v| hex_u64(&v));
     }
 
     // The durable record of this member's activation send to this bond (#347's fsync'd log),

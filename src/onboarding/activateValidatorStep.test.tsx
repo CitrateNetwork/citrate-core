@@ -36,7 +36,7 @@ function st(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     headBlock: 500_000,
     blockTimeMs: 2000,
     localBlock: 499_999,
-    localSyncing: false,
+    localSyncing: false, localHighest: null, localPeers: 4,
     tx: null,
     ...over,
   };

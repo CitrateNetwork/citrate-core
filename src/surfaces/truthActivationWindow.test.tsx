@@ -102,7 +102,7 @@ const s7 = (over: Partial<ActivationStatusView> = {}): ActivationStatusView =>
     headBlock: 546_000,
     blockTimeMs: 2000,
     localBlock: 546_000,
-    localSyncing: false,
+    localSyncing: false, localHighest: null, localPeers: 4,
     tx: null,
     recordedTx: null,
     bondUnlocked: false,

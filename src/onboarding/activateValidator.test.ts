@@ -47,7 +47,7 @@ function ready(over: Partial<ActivationStatusView> = {}): ActivationStatusView {
     headBlock: 500_000,
     blockTimeMs: 2000,
     localBlock: 499_998,
-    localSyncing: false,
+    localSyncing: false, localHighest: null, localPeers: 4,
     tx: null,
     ...over,
   };
@@ -68,6 +68,61 @@ describe("Synced (contract §1): eth_syncing false AND within 5 blocks of the pu
   });
 });
 
+describe("eth_syncing is read with its highestBlock, against the public head (2026-11-17)", () => {
+  // Observed fleet-wide on 0.5.4: eth_syncing returns an object while a healthy node trails the
+  // tip by 1-3 blocks, so "any object = not Synced" held the gate closed on a node at the head.
+  it("a node within 5 of the public head whose highestBlock is within 5 of it is Synced", () => {
+    const st = ready({ headBlock: 500_000, localBlock: 499_998, localSyncing: true, localHighest: 500_001 });
+    expect(isNetworkSynced(st)).toBe(true);
+    expect(activationGate(st, true).ready).toBe(true);
+  });
+  it("the gap is taken to the higher of the public head and a corroborated highestBlock", () => {
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_997, localSyncing: true, localHighest: 500_002 }))).toBe(true);
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_996, localSyncing: true, localHighest: 500_002 }))).toBe(false);
+  });
+  it("a highestBlock more than 5 above the public head keeps the gate closed and says why", () => {
+    // The 2026-11-17 split: the local node and rpc.citrate.ai agree on 223,744/223,746 while the
+    // node has seen a heavier branch ~364 blocks above the public head that the public RPC cannot
+    // fetch. Either side may be the minority: never stake into that.
+    const st = ready({ headBlock: 223_746, localBlock: 223_744, localSyncing: true, localHighest: 224_110 });
+    expect(isNetworkSynced(st)).toBe(false);
+    const g = activationGate(st, true);
+    expect(g.ready).toBe(false);
+    const synced = g.checks.find((c) => c.key === "synced");
+    expect(synced?.ok).toBe(false);
+    expect(synced?.detail).toMatch(/364 blocks above the public head/);
+    expect(synced?.detail).not.toMatch(/blocks behind/);
+  });
+  it("a syncing node whose highestBlock was not read stays not Synced (no hint is not a pass)", () => {
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: null }))).toBe(false);
+  });
+  it("a highestBlock below this node's own height (0 included) is no hint, so not a pass", () => {
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 0 }))).toBe(false);
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 499_997 }))).toBe(false);
+    // At its own height is a real (if odd) hint: corroborated, within the band.
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 499_998 }))).toBe(true);
+  });
+  it("a failed peer-count read is named as that read, not as the node not answering", () => {
+    const synced = activationGate(ready({ localPeers: null }), true).checks.find((c) => c.key === "synced");
+    expect(synced?.ok).toBeNull();
+    expect(synced?.detail).toMatch(/net_peerCount/);
+    expect(synced?.detail).not.toMatch(/not answering/);
+    expect(synced?.detail).not.toMatch(/\u2014/);
+  });
+  it("a node genuinely behind the public head is never Synced, whatever eth_syncing says", () => {
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_000, localSyncing: false, localHighest: null }))).toBe(false);
+    expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_000, localSyncing: true, localHighest: 500_000 }))).toBe(false);
+  });
+  it("no peers is never Synced; an unread peer count is unknown", () => {
+    const st = ready({ localPeers: 0 });
+    expect(isNetworkSynced(st)).toBe(false);
+    const synced = activationGate(st, true).checks.find((c) => c.key === "synced");
+    expect(synced?.ok).toBe(false);
+    expect(synced?.detail).toMatch(/no peers/);
+    expect(isNetworkSynced(ready({ localPeers: null }))).toBeNull();
+  });
+});
+
 describe("gating matrix: membership active, bond deployed, node Synced, not already a validator", () => {
   it("opens only when every condition is met", () => {
     const g = activationGate(ready(), true);
@@ -82,6 +137,7 @@ describe("gating matrix: membership active, bond deployed, node Synced, not alre
     ["bond unknown", { bondDeployed: null }, "bond"],
     ["node 6 blocks behind", { localBlock: 499_994 }, "synced"],
     ["node still syncing", { localSyncing: true }, "synced"],
+    ["node has no peers", { localPeers: 0 }, "synced"],
     ["node not answering", { localSyncing: null, localBlock: null }, "synced"],
     ["bond already activated", { bondActivated: true }, "notValidator"],
     ["node key already registered", { registryStatus: 1 }, "notValidator"],

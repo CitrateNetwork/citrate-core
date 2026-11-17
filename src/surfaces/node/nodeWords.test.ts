@@ -1,7 +1,7 @@
 // K3 (ported from #362, adapted to main): Node › Status words (UI truth contract §1 "Network and node"). Unknown is never zero, nothing
 // not-live is shown as running, and the words are exactly the contract's.
 import { describe, expect, it } from "vitest";
-import { activationOffer, directPeers, heightLine, nodeWord, quorumTip, statusSentence, SYNC_AHEAD, type NodeWordInput } from "./nodeWords";
+import { activationOffer, directPeers, heightLine, nodeWord, quorumTip, statusSentence, SYNC_AHEAD, SYNC_SPLIT, type NodeWordInput } from "./nodeWords";
 import { canOfferActivation } from "../../shell/chainTruth";
 
 const base: NodeWordInput = {
@@ -117,8 +117,9 @@ describe("sync truth (CORE-N4, core#589): a quorum of peers' tips, the node's ow
 
   it("Synced needs every view it has: the public head AND the peers' quorum tip", () => {
     expect(w({ peerTips: [510_032, 510_031, 510_030] })).toBe("Synced");
-    // The public head says Synced, but the peers' quorum is 2,000 ahead: not Synced.
-    expect(w({ peerTips: [512_029, 512_030, 512_031] })).toBe("Syncing · 2,000 blocks behind");
+    // The public head says Synced, but the peers' quorum is 2,000 ahead of it: not Synced, and not
+    // "Syncing" either: the public RPC does not have those blocks (2026-11-17, a split).
+    expect(w({ peerTips: [512_029, 512_030, 512_031] })).toBe(SYNC_SPLIT);
     // Peers alone decide when the public head can't be read.
     expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031, 510_032] })).toBe("Synced");
     expect(w({ publicHead: null, publicHeadAgeMs: null, peerTips: [510_031] })).toBe("Sync unknown · network head unavailable");
@@ -147,9 +148,53 @@ describe("sync truth (CORE-N4, core#589): a quorum of peers' tips, the node's ow
     expect(w({ nodeSyncState: { state: "synced", reason: null, forkDepth: null, appliedHeight: 510_030, highestSeen: 510_032 } })).toBe("Synced");
     expect(w({ nodeSyncState: null })).toBe("Synced");
     // The node's own highest-seen height is a view too: it says the network is ahead.
-    expect(w({ nodeSyncState: { state: "catching_up", reason: "behind", forkDepth: null, appliedHeight: 510_030, highestSeen: 520_030 } })).toBe("Syncing · 10,000 blocks behind");
+    // Above the public head it is not "Syncing · N behind" (the public head minus this node's
+    // height is 2): it is the split word, never Synced.
+    expect(w({ nodeSyncState: { state: "catching_up", reason: "behind", forkDepth: null, appliedHeight: 510_030, highestSeen: 520_030 } })).toBe(SYNC_SPLIT);
+    // With no public head, the node's own highest-seen is still a view of the network ahead.
+    expect(
+      w({ publicHead: null, publicHeadAgeMs: null, peerTips: [520_030, 520_030], nodeSyncState: { state: "catching_up", reason: "behind", forkDepth: null, appliedHeight: 510_030, highestSeen: 520_030 } }),
+    ).toBe("Syncing · 10,000 blocks behind");
     // Still a refused start or an unset network wins (the node is not ours to read then).
     expect(w({ nodeSyncState: wedged, compat: "unset" })).toBe("Update required");
+  });
+});
+
+describe("views above a fresh public head (2026-11-17 fleet split)", () => {
+  // Observed: local 223,744, rpc.citrate.ai 223,746, eth_syncing.highestBlock and 3 of 4 peers at
+  // ~224,108: a heavier branch the public RPC cannot fetch. The word read "Syncing · 365 blocks
+  // behind" with the why "the public head minus this node's height", which was 2.
+  const split = { localHeight: 223_744, publicHead: 223_746, peerTips: [224_108, 224_108, 224_106, 223_746], nodeSyncState: { state: "catching_up", reason: "behind", forkDepth: null, appliedHeight: 223_744, highestSeen: 224_108 } };
+  it("is the split word, not Syncing and not Synced, and names both heights", () => {
+    const r = nodeWord({ ...base, ...split });
+    expect(r.word).toBe(SYNC_SPLIT);
+    expect(r.tone).toBe("warn");
+    expect(r.why).toMatch(/2 blocks behind the public RPC head/);
+    expect(r.why).toMatch(/362 blocks above the public RPC head/);
+    expect(r.why).not.toMatch(/Applying blocks/);
+  });
+  it("a node ABOVE the public head, with the views, says how far above it is, never 'at the public RPC head'", () => {
+    // The heavier side of the same split: local 224,108 with its peers, public RPC 223,746.
+    const r = nodeWord({ ...base, ...split, localHeight: 224_108 });
+    expect(r.word).toBe(SYNC_SPLIT);
+    expect(r.why).toMatch(/This node is 362 blocks above the public RPC head/);
+    expect(r.why).not.toMatch(/at the public RPC head/);
+  });
+  it("names several higher views with 'are', claims only what this build gates, and uses no em-dash", () => {
+    const r = nodeWord({ ...base, ...split });
+    expect(r.why).toMatch(/ and the highest network height this node has seen are 362 blocks above/);
+    expect(r.why).not.toMatch(/block production/i);
+    expect(r.why).not.toMatch(/\u2014/);
+    const one = nodeWord({ ...base, ...split, peerTips: null });
+    expect(one.why).toMatch(/the highest network height this node has seen is 362 blocks above/);
+  });
+  it("a node behind the public head itself is still Syncing, measured to the public head", () => {
+    expect(w({ ...split, localHeight: 223_000 })).toBe("Syncing · 746 blocks behind");
+  });
+  it("a higher view within 5 of the public head is ordinary lag, not a split", () => {
+    expect(w({ localHeight: 510_030, publicHead: 510_032, peerTips: [510_034, 510_035] })).toBe("Synced");
+    // Within the band, every view still counts as before: 6 behind the quorum is Syncing, not split.
+    expect(w({ localHeight: 510_030, publicHead: 510_032, peerTips: [510_036, 510_037] })).toBe("Syncing · 6 blocks behind");
   });
 });
 
