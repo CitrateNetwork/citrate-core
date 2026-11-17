@@ -716,6 +716,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async price() {
         throw new Error("membership price: not available in the web preview");
       },
+      // The web build has no signer-health source: never an invented state.
+      async signerHealth() {
+        throw new Error("membership signer health: not available in the web preview");
+      },
       // SIM: no real backend in web-dev — resolve so the enterprise form flow proceeds (guarded out of
       // packaged builds). The real POST is the Tauri path.
       async enterpriseLead(): Promise<void> {

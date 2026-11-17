@@ -396,6 +396,19 @@ export interface AppState {
    */
   s3PollExhausted: boolean;
   /**
+   * The grant is delayed on our side (2026-11-12..11-17 outage): S3 is paying, the chain has no
+   * grant, and either core-membership reports its grant signer not ready or 10 minutes have passed
+   * since checkout opened (`isGrantDelayed`, onboarding/grantDelay.ts). S3 then shows the
+   * delayed-grant card instead of "Waiting for checkout…". Session only, never persisted.
+   */
+  s3GrantDelayed: boolean;
+  /**
+   * core-membership `/api/health` `chain.signerReadiness` as last read while S3 was paying: true
+   * "ready", false a named not-ready state, null not read (or an older deploy without the field).
+   * Session only, never persisted.
+   */
+  s3SignerReady: boolean | null;
+  /**
    * core#584: the pre-checkout grant check (onS3Pay's money guard) is running. One attempt at a
    * time: Pay and "Continue free" are disabled until it ends, and Back ends it. Not persisted.
    */
@@ -939,6 +952,8 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    s3GrantDelayed: false,
+    s3SignerReady: null,
     s3Checking: false,
     billingChecking: false,
     membershipActivating: false,

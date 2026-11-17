@@ -814,6 +814,12 @@ export interface EnterpriseLeadInput {
   notes?: string;
 }
 
+/** core-membership's report of its grant signer (`membership.signerHealth`). */
+export interface MembershipSignerHealth {
+  signerReady: boolean | null;
+  signerState: string | null;
+}
+
 export interface MembershipDomain {
   /**
    * BC-1.3 (@rule8) — read the member's REAL on-chain grant status from 40204
@@ -834,6 +840,17 @@ export interface MembershipDomain {
    * rejects: the web build has no price source.
    */
   price(): Promise<import("../data/membership").MembershipPrice>;
+  /**
+   * The treasury grant signer's readiness as core-membership reports it on its PUBLIC
+   * `{coreMembershipUrl}/api/health` (`chain.signerReadiness`, core-membership#86), read in Rust
+   * (the route sends no CORS headers). `signerReady` is true for "ready", false for a named
+   * not-ready state (unreachable, wrong_contracts, wrong_signer, underfunded, unconfigured,
+   * unknown), and null when the field is absent (an older deploy) or is the dev-only "local-env".
+   * Rejects on a transport error or a body that is not core-membership's health. A pure read: no
+   * auth, no signing. S3 uses it only to say a grant is delayed; it never settles anything. The sim
+   * impl always rejects: the web build has no source for it.
+   */
+  signerHealth(): Promise<MembershipSignerHealth>;
   /**
    * CORE-D3.C — open the REAL core-membership checkout in an in-app popup
    * (`{coreMembershipUrl}/checkout`). Resolves once the popup is OPENED — it does

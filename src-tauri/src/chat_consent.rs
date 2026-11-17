@@ -19,6 +19,15 @@
 //! cannot extend one, and sleep still expires it. The app drops a consent it no longer needs
 //! ([`chat_consent_drop`]) when the member closes the question without sending.
 //!
+//! **Scope: the app's own loop.** Hermes's cloud session (`hermes::hermes_session_open_cloud`,
+//! the member's preferred cloud model through the model proxy) does not take a consent. Core
+//! checks there only that "Local model only" is off (`hermes_cloud::open_cloud_session` and
+//! `hermes_cloud::check_send`, both through `chat_route::remote_chat_allowed`). Under "ask
+//! first" with no local model running, the webview still holds each message and sends it to that
+//! session only after the member's choice for it (`routeHeldMessage` in `src/shell/store.ts`), so
+//! on that path the per-message ask is enforced in the webview, not by this book. The consent
+//! minted for the question is then unused and dropped.
+//!
 //! Remote image generation (`media::media_generate_image` on a provider route) uses the same
 //! book with [`Purpose::Media`]: one consent per image, bound to the prompt
 //! ([`media_consent_prepare`], [`authorize_once`]).

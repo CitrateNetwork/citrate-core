@@ -18,6 +18,7 @@ import { HaveAnInvite } from "../surfaces/HaveAnInvite";
 import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 import { CHAIN_ID_TEXT } from "../network/profile";
+import { SUPPORT_EMAIL } from "../shell/UpdateBanner";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 /** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
@@ -741,7 +742,7 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
           )}
         </div>
       )}
-      {s.s3 === "paying" && !s.s3PollExhausted && (
+      {s.s3 === "paying" && !s.s3PollExhausted && !s.s3GrantDelayed && (
         <div className="surface" style={{ display: "flex", alignItems: "center", gap: 18, padding: "18px 20px" }}>
           <div style={{ width: 46, height: 46, flexShrink: 0 }}>
             <LoaderMark size={46} />
@@ -754,21 +755,59 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
           </div>
         </div>
       )}
+      {/* The grant is delayed on our side (the 2026-11-12..11-17 outage: the treasury signer was
+          stopped for five days and members sat on "Waiting for checkout…"). Shown while the chain
+          poll still runs, once core-membership reports its grant signer not ready or 10 minutes
+          pass with no grant (isGrantDelayed). The chain still settles S3; "Check again" only reads.
+          The app cannot read the order itself (core-membership's order route accepts only its own
+          client's tokens), so this never claims the payment went through. MONEY GUARD: no
+          checkout control here, ever. */}
+      {s.s3 === "paying" && !s.s3PollExhausted && s.s3GrantDelayed && (
+        <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-grant-delayed">
+          {/* The signer read can say "paused" on the first tick, while the member may still be in
+              checkout or may never pay: neither branch assumes a payment. */}
+          <div style={{ fontSize: 15, fontWeight: 500 }}>
+            {s.s3SignerReady === false ? "Membership grants are paused on our side right now" : "Your membership has not landed yet"}
+          </div>
+          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+            {s.s3SignerReady === false
+              ? `No membership can land on chain ${CHAIN_ID_TEXT} until grants resume. If you are still in checkout, you can finish it. If your payment went through, your membership is recorded and we'll finish it automatically once grants resume. `
+              : `Nothing has landed on chain ${CHAIN_ID_TEXT} in 10 minutes. If your payment went through, the delay is on our side: your membership is recorded and we'll finish it automatically. `}
+            No need to pay again.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button className="btn btn-primary" onClick={() => store.recheckMembership()}>
+              Check again
+            </button>
+            <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+              reads chain {CHAIN_ID_TEXT} and core-membership health · never re-opens checkout
+            </span>
+          </div>
+          <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+            Questions, or still waiting tomorrow? Email{" "}
+            <span className="mono" style={{ userSelect: "all" }}>
+              {SUPPORT_EMAIL}
+            </span>{" "}
+            with the email you paid with.
+          </p>
+        </div>
+      )}
       {/* The poll ran out of budget with no grant on chain. This is NOT an error and
           NOT a failed payment — the membership grant is provisioned server-side and
           can legitimately land later (the reconciler re-drives stranded grants on a
           10-minute cron, with a 6-hour backoff after a denial). Say exactly that, and
-          offer a re-check that only READS the chain. Deliberately no "pay again"
-          affordance here: the payment already settled, and a second checkout would
-          charge again for a membership that is already owed. */}
+          offer a re-check that only READS the chain. The app cannot read the order (see the
+          delayed card above), so the copy is conditional on the payment, never a claim that it
+          went through (Rule 1). Deliberately no "pay again" affordance here: if the payment
+          went through, a second checkout would charge again for a membership that is owed. */}
       {s.s3 === "paying" && s.s3PollExhausted && (
         <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-poll-exhausted">
-          <div style={{ fontSize: 15, fontWeight: 500 }}>Payment received — the grant has not landed yet</div>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Your membership has not landed yet</div>
           <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            Your payment settled. The membership grant (the SBT, and a 32,000 SALT grant locked in your bond) is
-            issued server-side and has not appeared on chain yet. {GRANT_DISCLAIMER} This app stopped polling to
-            avoid hammering the network — it does not mean anything failed, and you do not need
-            to pay again.
+            Nothing has appeared on chain {CHAIN_ID_TEXT} yet. If your payment went through, your membership is
+            recorded, the grant is issued on our side, and it can still land later: we&apos;ll finish it
+            automatically. {GRANT_DISCLAIMER} This app stopped polling to avoid hammering the network. That does
+            not mean anything failed, and you do not need to pay again.
           </p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={() => store.recheckMembership()}>
@@ -779,8 +818,11 @@ export function MembershipCheckout({ store, s, onBack }: { store: Store; s: AppS
             </span>
           </div>
           <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-            Still nothing after a while? Your seat is recorded and owed — contact support with
-            your order rather than paying twice.
+            Still nothing after a while? Email{" "}
+            <span className="mono" style={{ userSelect: "all" }}>
+              {SUPPORT_EMAIL}
+            </span>{" "}
+            with the email you paid with, rather than paying twice.
           </p>
         </div>
       )}
@@ -1169,7 +1211,7 @@ export function PersonaStep({ store, s }: { store: Store; s: AppState }) {
 }
 
 // BC-3.3 — the S6.5 local-model step. An honest download + verify of the Gemma
-// GGUF (4.96 GB) with a REAL progress bar driven by `model.status()`, a verify,
+// GGUF (4.59 GB) with a REAL progress bar driven by `model.status()`, a verify,
 // and a SKIP that honestly routes chat to the gateway/demo. "Enter your dashboard"
 // is gated behind the model being READY (a real verify) OR an explicit SKIP — the
 // captions name the real source + the pinned SHA-256, and no "verified" is ever
@@ -1193,15 +1235,15 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
   // left "Enter your dashboard" greyed out). It is always available; the model keeps
   // downloading in the background.
   const canEnter = true;
-  const sha = "90ce9812…e0313e9f"; // the pinned SHA-256 (abbreviated for display)
+  const sha = "a555b900…6f2097f2"; // the pinned SHA-256 (abbreviated for display)
 
   return (
     <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, marginTop: 4 }} data-testid="model-step">
       <div style={eyebrow}>S6.5 · Local model</div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.96 GB)</div>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.59 GB)</div>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-          gemma · Q4_K_M · GGUF
+          gemma · Q4_0 · GGUF
         </span>
       </div>
       <p style={body}>

@@ -181,6 +181,66 @@ pub fn resolve_model_url(override_url: Option<String>) -> String {
     override_url.unwrap_or_else(|| DEFAULT_MODEL_URL.to_string())
 }
 
+/// The direct origin of the default model: the default descriptor's own Hugging Face resolve path.
+fn default_direct_url() -> String {
+    let mut hf = default_descriptor();
+    hf.source = ModelSource::Hf;
+    hf.download_url()
+        .unwrap_or_else(|| DEFAULT_MODEL_URL.to_string())
+}
+
+/// The sources the default model is downloaded from, in order. With `CITRATE_MODEL_URL` set that
+/// URL is the only source. Otherwise the [`DEFAULT_MODEL_URL`] redirect comes first and the direct
+/// Hugging Face origin second, so the first-run model step still works when the redirect stops
+/// serving the model (it can be repointed, or answer with a web page). Every source passes the same
+/// gate: GGUF magic, pinned length, pinned SHA-256.
+pub fn model_source_urls(override_url: Option<String>) -> Vec<String> {
+    match override_url {
+        Some(u) => vec![u],
+        None => vec![DEFAULT_MODEL_URL.to_string(), default_direct_url()],
+    }
+}
+
+/// Whether `e` says the SOURCE is not serving the model (so the next source should be tried): a
+/// body that is not a GGUF file (a web page), a resume answered without `206`, or a transport
+/// failure (unreachable, non-2xx) that outlasted its retries. Anything else (a gated repo, a
+/// second download, a short or over-long stream, a disk error) is final.
+fn try_next_source(e: &ModelError) -> bool {
+    matches!(
+        e,
+        ModelError::BadMagic | ModelError::RangeIgnored | ModelError::Transport(_)
+    )
+}
+
+/// Download the model at `dir/<MODEL_FILE>` from the first of `sources` that serves it. A source
+/// that is not serving the model hands over to the next ([`try_next_source`]); a partial left by
+/// one source is resumed by the next (the bytes are the same file, and `verify` hashes them all).
+/// Returns the last source's error when none serves it.
+pub fn download_from_sources(
+    dir: &std::path::Path,
+    sources: Vec<Box<dyn ModelTransport>>,
+    expected_hash: &str,
+    expected_size: u64,
+    retry_backoff: fn(u32) -> std::time::Duration,
+) -> Result<()> {
+    let mut last = ModelError::Transport("no model source configured".into());
+    for transport in sources {
+        let mgr = ModelManager::new(
+            dir.to_path_buf(),
+            transport,
+            expected_hash.to_string(),
+            expected_size,
+        )
+        .with_retry_backoff(retry_backoff);
+        match mgr.download() {
+            Ok(_) => return Ok(()),
+            Err(e) if try_next_source(&e) => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
 // ---------------------------------------------------------------------------
 // Errors — coarse, secret-free (this module handles no secrets).
 // ---------------------------------------------------------------------------
@@ -1184,15 +1244,21 @@ fn gemma_dir_and_url(app: &tauri::AppHandle) -> std::result::Result<(PathBuf, St
 /// verify/quarantine honesty guarantees are unchanged.
 #[tauri::command]
 pub async fn model_download(app: tauri::AppHandle) -> std::result::Result<(), String> {
-    let (dir, url) = gemma_dir_and_url(&app)?;
+    let (dir, _) = gemma_dir_and_url(&app)?;
+    let urls = model_source_urls(std::env::var(MODEL_URL_ENV).ok());
     tauri::async_runtime::spawn_blocking(move || {
-        let mgr = ModelManager::new(
-            dir,
-            Box::new(UreqModelTransport::new(url)),
-            MODEL_SHA256.to_string(),
+        let sources: Vec<Box<dyn ModelTransport>> = urls
+            .into_iter()
+            .map(|u| Box::new(UreqModelTransport::new(u)) as Box<dyn ModelTransport>)
+            .collect();
+        download_from_sources(
+            &dir,
+            sources,
+            MODEL_SHA256,
             MODEL_SIZE_BYTES,
-        );
-        mgr.download().map(|_| ()).map_err(|e| e.to_string())
+            default_retry_backoff,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("model download: background task failed: {e}"))?

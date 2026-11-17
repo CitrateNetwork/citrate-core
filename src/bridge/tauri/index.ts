@@ -459,6 +459,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async price() {
         return invoke<import("../../data/membership").MembershipPrice>("membership_price");
       },
+      // The grant signer's readiness from core-membership's public /api/health, read in Rust.
+      async signerHealth() {
+        return invoke<import("../domains").MembershipSignerHealth>("membership_signer_health");
+      },
       // Enterprise · Contact us — POST a qualified lead server-side (reqwest→core-membership). Rejects
       // with the backend's honest message on a 400/503 (Rule 1); never a fabricated "received".
       async enterpriseLead(lead): Promise<void> {

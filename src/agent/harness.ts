@@ -221,6 +221,9 @@ export interface ChatProvider {
   /** HUP-S1.1 — pick the saved agent session back up after the view reloaded (sidecar loop only;
    *  other providers omit it). */
   reattach?: (opts: WorkflowRunOpts) => Promise<ReattachResult>;
+  /** #756 review — the chat no longer uses this provider: close its agent session once its
+   *  current work ends (sidecar loop only; other providers hold no session and omit it). */
+  release?: () => void;
 }
 
 /** HUP-S1.1 — what picking a saved agent session back up found. */

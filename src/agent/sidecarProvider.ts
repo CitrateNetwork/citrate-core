@@ -846,5 +846,18 @@ export function createSidecarProvider(
     reattach(opts: WorkflowRunOpts) {
       return reattachSaved(opts);
     },
+    // #756 review: the chat replaced this provider. Once its current turn or run ends, close its
+    // session in the sidecar, so a cloud session's route in core's proxy does not stay live. The
+    // saved-session store is the chat's (the new provider may already use it), so it is untouched.
+    release() {
+      previous = previous
+        .catch(() => undefined)
+        .then(() => {
+          const id = sessionId;
+          sessionId = null;
+          started.clear();
+          if (id) return api.close?.(id).catch(() => undefined);
+        });
+    },
   };
 }
