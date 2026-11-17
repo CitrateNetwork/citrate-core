@@ -71,11 +71,13 @@ describe("S3 — the delayed-grant card replaces the endless spinner", () => {
     expect(html).not.toContain("s3-grant-delayed");
   });
 
-  it("when delayed, says the grant is delayed on our side and will finish automatically", () => {
+  it("when delayed by time, says the membership has not landed and, IF paid, will finish automatically", () => {
     const html = renderToStaticMarkup(<S3 store={noopStore} s={delayedState(null)} />);
     expect(html).toContain("s3-grant-delayed");
     expect(html).not.toContain("Waiting for checkout");
-    expect(html).toContain("Your membership grant is delayed on our side");
+    expect(html).toContain("Your membership has not landed yet");
+    expect(html).toContain("in 10 minutes");
+    expect(html).toContain("If your payment went through, the delay is on our side");
     expect(html).toContain("finish it automatically");
     expect(html).toContain("No need to pay again");
     expect(html).toContain("Check again");
@@ -85,6 +87,29 @@ describe("S3 — the delayed-grant card replaces the endless spinner", () => {
   it("names the signer outage when core-membership reports the signer not ready", () => {
     const html = renderToStaticMarkup(<S3 store={noopStore} s={delayedState(false)} />);
     expect(html).toContain("Membership grants are paused on our side right now");
+    expect(html).toContain("once grants resume");
+  });
+
+  // The signer read lands on the first poll tick, 5 s after checkout opened, when the member may
+  // still be in checkout or may never pay. So the paused card assumes no payment.
+  it("the signer-paused card assumes no payment (it can show before checkout ends)", () => {
+    const html = renderToStaticMarkup(<S3 store={noopStore} s={delayedState(false)} />);
+    expect(html).toContain("If you are still in checkout, you can finish it");
+    expect(html).toContain("If your payment went through");
+    expect(html).not.toContain("Your membership grant is delayed");
+    expect(html).not.toContain("in 10 minutes");
+  });
+
+  it("neither delayed card claims a payment, names a grant amount, or uses an em-dash", () => {
+    for (const ready of [false, null]) {
+      const html = renderToStaticMarkup(<S3 store={noopStore} s={delayedState(ready)} />);
+      const start = html.indexOf('data-testid="s3-grant-delayed"');
+      const card = html.slice(start, html.indexOf("with the email you paid with", start));
+      expect(start).toBeGreaterThan(-1);
+      for (const claim of ["Payment received", "payment settled", "recorded and owed", "32,000", "SALT", "\u2014"]) {
+        expect(card).not.toContain(claim);
+      }
+    }
   });
 
   it("MONEY GUARD: the delayed card never offers a second checkout", () => {
