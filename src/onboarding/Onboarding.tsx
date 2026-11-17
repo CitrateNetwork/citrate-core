@@ -1169,7 +1169,7 @@ export function PersonaStep({ store, s }: { store: Store; s: AppState }) {
 }
 
 // BC-3.3 — the S6.5 local-model step. An honest download + verify of the Gemma
-// GGUF (4.96 GB) with a REAL progress bar driven by `model.status()`, a verify,
+// GGUF (4.59 GB) with a REAL progress bar driven by `model.status()`, a verify,
 // and a SKIP that honestly routes chat to the gateway/demo. "Enter your dashboard"
 // is gated behind the model being READY (a real verify) OR an explicit SKIP — the
 // captions name the real source + the pinned SHA-256, and no "verified" is ever
@@ -1193,15 +1193,15 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
   // left "Enter your dashboard" greyed out). It is always available; the model keeps
   // downloading in the background.
   const canEnter = true;
-  const sha = "90ce9812…e0313e9f"; // the pinned SHA-256 (abbreviated for display)
+  const sha = "a555b900…6f2097f2"; // the pinned SHA-256 (abbreviated for display)
 
   return (
     <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, marginTop: 4 }} data-testid="model-step">
       <div style={eyebrow}>S6.5 · Local model</div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.96 GB)</div>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.59 GB)</div>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-          gemma · Q4_K_M · GGUF
+          gemma · Q4_0 · GGUF
         </span>
       </div>
       <p style={body}>

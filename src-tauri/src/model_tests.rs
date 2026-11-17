@@ -925,3 +925,35 @@ fn when_every_source_fails_the_last_sources_error_is_returned() {
     assert!(matches!(r, Err(ModelError::ShortStream { .. })), "got {r:?}");
     assert!(!dir.join(MODEL_FILE).exists());
 }
+
+#[test]
+fn a_partial_from_a_different_file_completed_by_the_next_source_is_quarantined_never_ready() {
+    // The pinned model body, and a 3000-byte `.part` left by a DIFFERENT GGUF file.
+    let body = gguf_fixture(8192);
+    let other = gguf(0xAB, 8192);
+    assert_ne!(sha256_hex(&body), sha256_hex(&other));
+    let dir = tmp_model_dir("src-foreign-partial");
+    std::fs::write(dir.join(format!("{MODEL_FILE}.part")), &other[..3000]).unwrap();
+    // Source A refuses the resume (it ignored Range and answered 200); source B completes the
+    // file from byte 3000 to the pinned length.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let direct = std::sync::Arc::new(FixtureTransport::new(body.clone()));
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(FailingSource { err: || ModelError::RangeIgnored, calls: calls.clone() }),
+        Box::new(SharedFixture(direct.clone())),
+    ];
+    download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff)
+        .expect("source B completes the file to the pinned length");
+    assert_eq!(direct.offsets().first(), Some(&3000));
+    let mgr = ModelManager::new(
+        dir.clone(),
+        Box::new(FixtureTransport::new(body.clone())),
+        sha256_hex(&body),
+        body.len() as u64,
+    );
+    let r = mgr.verify();
+    assert!(matches!(r, Err(ModelError::ChecksumMismatch)), "got {r:?}");
+    assert!(!dir.join(MODEL_FILE).exists(), "the mixed file is deleted");
+    assert!(!matches!(mgr.status(), ModelStatus::Ready));
+    assert!(!is_file_ready(&dir, MODEL_FILE));
+}
