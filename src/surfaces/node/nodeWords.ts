@@ -20,6 +20,9 @@
 // (contract v1.1 §1), never Synced or Syncing. A node more than 5 blocks AHEAD of the views is
 // "Sync unknown · this node is ahead of the network head" (core#589: a local chain the network
 // does not have). A node that reports `syncState: wedged` reads "Wedged", whatever its height.
+// 2026-11-17: with a fresh public head, "N blocks behind" is measured to the public head only; a
+// peer-quorum or highest-seen view more than 5 ABOVE it reads "Sync unknown · the network views
+// disagree" (SYNC_SPLIT), never Synced and never "Syncing".
 // Unknown is never zero: a local height of 0 means "RPC not answering yet" (the call returns 0x0
 // on error), never block 0.
 // =====================================================================
@@ -37,6 +40,13 @@ export const FRESH_MS = 60_000;
 export const SYNC_UNKNOWN = "Sync unknown · network head unavailable";
 /** core#589: a node more than SYNCED_WITHIN_BLOCKS ahead of every network view. */
 export const SYNC_AHEAD = "Sync unknown · this node is ahead of the network head";
+/**
+ * 2026-11-17: a fresh public head the node is within 5 of, while another view (the peers' quorum
+ * tip or the node's own highest-seen height) is more than 5 above it: blocks the public RPC does not
+ * have, i.e. a branch it cannot fetch. Not Synced, and not "Syncing" (applying blocks does not close
+ * it). Which side is the minority is not this build's to say.
+ */
+export const SYNC_SPLIT = "Sync unknown · the network views disagree";
 /** The fewest peers whose announced heights form a view of the network (one peer is not a quorum). */
 export const QUORUM_MIN_PEERS = 2;
 
@@ -187,6 +197,34 @@ export function nodeWord(i: NodeWordInput): NodeWord {
       tone: "warn",
       running: true,
     };
+  }
+  // With a fresh public head, "behind" is the public head minus this node's height (the copy's
+  // own definition). A view more than 5 ABOVE the public head is not distance to catch up: the
+  // public RPC does not have those blocks, so it is the split word, never Synced.
+  if (headFresh(i) && i.publicHead != null) {
+    const pub = i.publicHead;
+    const behindPublic = pub - i.localHeight;
+    const above = views.filter((v) => v.tip > pub + SYNCED_WITHIN_BLOCKS);
+    if (behindPublic <= SYNCED_WITHIN_BLOCKS && above.length > 0) {
+      const where = behindPublic > 0 ? `${fmt(behindPublic)} blocks behind the public RPC head` : "at the public RPC head";
+      const lead = Math.max(...above.map((v) => v.tip)) - pub;
+      return {
+        word: SYNC_SPLIT,
+        why:
+          `This node is ${where}, but ${above.map((v) => v.label).join(" and ")} is ${fmt(lead)} blocks above the public RPC head: ` +
+          "blocks the public RPC does not have, so the network may be split. It is not counted as synced, and staking and block production wait until the views agree.",
+        tone: "warn",
+        running: true,
+      };
+    }
+    if (behindPublic > SYNCED_WITHIN_BLOCKS) {
+      return {
+        word: `Syncing · ${fmt(behindPublic)} blocks behind`,
+        why: "Applying blocks to catch up: the public head minus this node's height. No percentage is shown.",
+        tone: "busy",
+        running: true,
+      };
+    }
   }
   const behind = top - i.localHeight;
   if (behind <= SYNCED_WITHIN_BLOCKS) {

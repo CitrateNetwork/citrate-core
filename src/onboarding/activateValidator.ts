@@ -103,15 +103,44 @@ export function syncGap(st: ActivationStatusView): number | null {
 }
 
 /**
- * Contract §1 "Synced": `eth_syncing` = false AND local height within 5 blocks of the public
- * head, in EITHER direction. A local node ahead of the head is not Synced.
+ * Contract §1 "Synced": local height within 5 blocks of the public head, in EITHER direction, with
+ * at least one peer. A local node ahead of the head is not Synced.
+ *
+ * `eth_syncing` is read with its highestBlock (2026-11-17): a node trailing the tip by 1-3 blocks
+ * returns an object, so the object alone is not "behind". Its highestBlock counts when the public
+ * head corroborates it (within 5 above the head); the gap is then taken to it as well. One more
+ * than 5 ABOVE the public head means the node has seen a branch the public RPC does not have (a
+ * network split, either side of which may be the minority), and that is never Synced. A syncing
+ * object with no readable highestBlock is not Synced either.
  */
 export function isNetworkSynced(st: ActivationStatusView | null): boolean | null {
-  if (!st || st.localSyncing == null) return null;
+  if (!st || st.localSyncing == null || st.localPeers == null) return null;
   const gap = syncGap(st);
   if (gap == null) return null;
-  if (st.localSyncing) return false;
-  return Math.abs(syncGap(st) ?? Infinity) <= SYNC_MARGIN_BLOCKS;
+  if (st.localPeers <= 0) return false;
+  if (Math.abs(syncGap(st) ?? Infinity) > SYNC_MARGIN_BLOCKS) return false;
+  if (!st.localSyncing) return true;
+  const highest = st.localHighest;
+  if (highest == null || st.headBlock == null || st.localBlock == null) return false;
+  return highest <= st.headBlock + SYNC_MARGIN_BLOCKS && highest <= st.localBlock + SYNC_MARGIN_BLOCKS;
+}
+
+/** Why a read node is not Synced, in the contract's words (only called when it is not). */
+function notSyncedDetail(st: ActivationStatusView): string {
+  const gap = syncGap(st);
+  const needs = `(needs to be within ${SYNC_MARGIN_BLOCKS} of the network head)`;
+  if (st.localPeers != null && st.localPeers <= 0) return `Node not Synced · no peers (local net_peerCount = 0) ${needs}`;
+  if (gap != null && gap < -SYNC_MARGIN_BLOCKS)
+    return `Node not Synced · ${fmtInt(-gap)} blocks ahead of the network head (a different branch or a stale public RPC) ${needs}`;
+  if (gap != null && gap > SYNC_MARGIN_BLOCKS) return `Node not Synced · ${fmtInt(gap)} blocks behind ${needs}`;
+  if (st.localHighest != null && st.headBlock != null && st.localHighest > st.headBlock + SYNC_MARGIN_BLOCKS)
+    return (
+      `Node not Synced · this node has seen blocks ${fmtInt(st.localHighest - st.headBlock)} blocks above the public head ` +
+      "(eth_syncing highestBlock) that the public RPC does not have: the network may be split, so staking waits until they agree"
+    );
+  if (st.localHighest != null && st.localBlock != null && st.localHighest > st.localBlock)
+    return `Node not Synced · applying blocks, ${fmtInt(st.localHighest - st.localBlock)} below its highest seen ${needs}`;
+  return `Node not Synced · still syncing (eth_syncing has no highest block) ${needs}`;
 }
 
 /** The step's precondition gate. Opens only when every check is `true`. */
@@ -166,7 +195,6 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
   }
 
   const synced = isNetworkSynced(st);
-  const gap = st ? syncGap(st) : null;
   checks.push({
     key: "synced",
     label: "Node",
@@ -174,8 +202,8 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
     detail:
       synced === true
         ? "Synced"
-        : synced === false
-          ? `Node not Synced · ${gap == null ? "—" : gap < 0 ? `${fmtInt(-gap)} blocks ahead of the network head (a different branch or a stale public RPC)` : `${fmtInt(gap)} blocks behind`} (needs to be within ${SYNC_MARGIN_BLOCKS} of the network head)`
+        : synced === false && st
+          ? notSyncedDetail(st)
           : "— not read yet (the local node is not answering)",
   });
 

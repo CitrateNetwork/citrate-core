@@ -297,6 +297,8 @@ fn unknown_is_not_zero_every_failed_read_is_none() {
     assert_eq!(st.block_time_ms, None);
     assert_eq!(st.local_block, None);
     assert_eq!(st.local_syncing, None);
+    assert_eq!(st.local_highest, None);
+    assert_eq!(st.local_peers, None);
 }
 
 #[test]
@@ -323,6 +325,28 @@ fn local_sync_reads_eth_syncing_false_or_an_object() {
         .method("eth_syncing", serde_json::json!({ "currentBlock": "0x10", "highestBlock": "0x1f4" }));
     let st = read(&Chain::default(), Some(&syncing), None, None);
     assert_eq!(st.local_syncing, Some(true));
+    // The node's own highest-seen height is carried as a hint, never as the network head.
+    assert_eq!(st.local_highest, Some(500));
+}
+
+#[test]
+fn local_highest_and_peers_are_read_and_unknown_is_none() {
+    let synced = Chain::default()
+        .method("eth_blockNumber", JsonValue::String("0x1f2".into()))
+        .method("eth_syncing", JsonValue::Bool(false))
+        .method("net_peerCount", JsonValue::String("0x4".into()));
+    let st = read(&Chain::default(), Some(&synced), None, None);
+    assert_eq!(st.local_highest, None, "eth_syncing false carries no highest block");
+    assert_eq!(st.local_peers, Some(4));
+
+    // A syncing object without a readable highestBlock is a hint we do not have, not 0.
+    let odd = Chain::default()
+        .method("eth_blockNumber", JsonValue::String("0x10".into()))
+        .method("eth_syncing", serde_json::json!({ "currentBlock": "0x10" }));
+    let st = read(&Chain::default(), Some(&odd), None, None);
+    assert_eq!(st.local_syncing, Some(true));
+    assert_eq!(st.local_highest, None);
+    assert_eq!(st.local_peers, None, "a failed net_peerCount is unknown, never 0");
 }
 
 #[test]

@@ -395,7 +395,7 @@ describe("#348 review — the activation ceremony states the bond principal, not
           headBlock: 500_000,
           blockTimeMs: 2000,
           localBlock: 499_999,
-          localSyncing: false,
+          localSyncing: false, localHighest: null, localPeers: 4,
           tx: null,
         } as never,
         s7TxHash: null as never,

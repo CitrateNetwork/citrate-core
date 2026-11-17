@@ -334,6 +334,14 @@ export interface ActivationStatusView {
   /** This node's `eth_blockNumber` / `eth_syncing` (true while it returns an object). */
   localBlock: number | null;
   localSyncing: boolean | null;
+  /**
+   * `eth_syncing.highestBlock` while it returns an object: the highest height this node has
+   * EVIDENCE for, which includes unverified gossip. A hint, never the network head (null = false
+   * or not read).
+   */
+  localHighest: number | null;
+  /** This node's `net_peerCount` (null = not read, never 0). */
+  localPeers: number | null;
   /** `eth_getTransactionReceipt` for a sent activation (null when none was sent). */
   tx: { hash: string; included: boolean | null; blockNumber: number | null; success: boolean | null } | null;
   /**
