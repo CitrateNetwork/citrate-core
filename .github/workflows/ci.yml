@@ -82,6 +82,12 @@ jobs:
           # (download() verifies before any install path sees the bytes), so a crafted archive
           # cannot reach extract. The guard below fails if anything else ever pulls a zip older
           # than 9. Remove these ignores with the move to tauri-plugin-updater >= 2.14.1.
+          # RUSTSEC-2026-0545 (zip < 9: AES entries returned unauthenticated when data ends early)
+          # and RUSTSEC-2026-0548 (zip < 9.0.5: ZipStreamReader names can differ from the central
+          # directory), both published 2026-11-17. citrate-components is on the patched zip 9.0.5.
+          # The updater's zip 4.6.1 is built without AES (no aes/aes-crypto dependency in
+          # Cargo.lock), and it extracts through ZipArchive, not ZipStreamReader, and only after
+          # the signature check above. Same guard, same removal condition.
           python3 scripts/check-zip-users.py
           # RUSTSEC-2026-0387 (crypto-bigint < 0.7.6): multiple timing variability issues in
           # operations intended to be constant-time. EXPIRES 2027-01-31 (renewed 2026-11-08 from
@@ -95,7 +101,7 @@ jobs:
           python3 scripts/check-crypto-bigint-users.py
           cargo audit --ignore RUSTSEC-2025-0055 \
             --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 \
-            --ignore RUSTSEC-2026-0429 \
+            --ignore RUSTSEC-2026-0429 --ignore RUSTSEC-2026-0545 --ignore RUSTSEC-2026-0548 \
             --ignore RUSTSEC-2026-0387
 
   node:
