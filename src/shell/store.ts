@@ -873,6 +873,18 @@ export class Store {
   // FIX 1b: when the last focus/visibility re-check ran (throttle).
   private lastFocusRecheckAt = Number.NEGATIVE_INFINITY;
   provider: ChatProvider | null = null;
+  /** #756 review: what the current Hermes provider's session was opened with (null = the provider
+   *  is not a Hermes one). A held message reuses that provider while this is unchanged. */
+  private sidecarKey: string | null = null;
+
+  /** Make `p` the chat's provider. A replaced Hermes provider closes its session once its current
+   *  work ends, so a superseded cloud session's proxy route does not stay live (#756 review). */
+  private replaceProvider(p: ChatProvider, sidecarKey: string | null = null): void {
+    const old = this.provider;
+    this.provider = p;
+    this.sidecarKey = sidecarKey;
+    if (old && old !== p) old.release?.();
+  }
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
   chatInputEl: HTMLTextAreaElement | null = null;
@@ -1338,8 +1350,14 @@ export class Store {
    * Called on launch and after a provider config change (Settings), so the active
    * provider tracks the config. Never throws. A failed status read means no remote route is
    * known; the chat route and the local model still apply (Local model only never uses the demo).
+   *
+   * `keepSession` (#756 review): keep the current Hermes provider, and so its session, when the
+   * new one would be opened with the same cloud model, persona and tools. A held message re-reads
+   * the route with it, so a follow-up continues the conversation Hermes already has. Every other
+   * caller rebuilds after a change that should start a fresh session (a persona, a provider, a
+   * Hermes restart for a spawn setting), so the default stays a new provider.
    */
-  async rebuildProvider(): Promise<void> {
+  async rebuildProvider(opts: { keepSession?: boolean } = {}): Promise<void> {
     // K2: the member's chat route, stored in core, is read first and on its own: an unreadable
     // provider record must never drop Local model only. An unreadable route setting comes back as
     // local_only from core; a core without the command keeps the current value (default ask_first).
@@ -1420,14 +1438,19 @@ export class Store {
         // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
         // first sidecar provider of this app load does that; a later rebuild (persona or provider
         // change) means a fresh session, so the saved one is let go.
+        const sessionTools = withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady);
+        const sidecarKey = JSON.stringify({ cloud: cloudChoice, cloudName, persona: this.sidecarPersonaChoice(), tools: sessionTools });
+        if (opts.keepSession && this.provider && this.sidecarKey === sidecarKey) {
+          this.reflectProvider();
+          return;
+        }
         const sessionStore = localSessionStore();
         const firstSidecarBuild = !this.sidecarReattachTried;
         this.sidecarReattachTried = true;
         if (!firstSidecarBuild) sessionStore.save(null);
-        const sessionTools = withDelegationTools(withEscalationTool(annotatedAgentTools(), escalationReady), delegationReady);
         // Board 01: what Hermes can see in this chat is read from the tools its session is given.
         this.sessionToolNames = toolNamesOf(sessionTools);
-        this.provider = createSidecarProvider(
+        this.replaceProvider(createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
             // skill allowlist and tool emphasis. None = the session body is unchanged.
@@ -1460,18 +1483,18 @@ export class Store {
           () => sessionTools,
           () => this.sidecarPersonaChoice(),
           cloudChoice && cloudName ? { store: sessionStore, cloud: { name: cloudName, model: cloudChoice.model } } : { store: sessionStore },
-        );
+        ), sidecarKey);
         this.reflectProvider();
-        if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
+        if (firstSidecarBuild && this.provider) void this.resumeSidecarSession(this.provider);
         return;
       }
       if (kind === "ask") {
         // SCL-S7.5a (D-16 extended) + K2: the local model is not serving and nothing goes to the
         // gateway by itself. No provider is chosen for the gateway: sendChat holds each message
         // and asks the member (or, under local only with no local model, says why it is not sent).
-        this.provider = createLocalStoppedProvider(
+        this.replaceProvider(createLocalStoppedProvider(
           route === "local_only" ? LOCAL_ONLY_LABEL : this.routeAsk.restart ? undefined : ASK_FIRST_NO_LOCAL_LABEL,
-        );
+        ));
         this.reflectProvider();
         return;
       }
@@ -1481,12 +1504,12 @@ export class Store {
         // and it says so: the webview runs no tool loop for the local model.
         // 0.5.4: the notice names the real case: loop switched off, not running, or status unknown.
         this.sidecarDown = downReason(this.state.hermesSidecarLoop, sidecarReading);
-        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx), this.sidecarDown);
+        this.replaceProvider(createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx), this.sidecarDown));
         this.reflectProvider();
         return;
       }
       // No local server + no configured default (or web-dev): the honest demo agent.
-      this.provider = createDemoProvider(() => this.snapshot());
+      this.replaceProvider(createDemoProvider(() => this.snapshot()));
       this.reflectProvider();
     } catch {
       // Any other failure while choosing a provider. Local model only stays held (the message is
@@ -1494,10 +1517,10 @@ export class Store {
       if (route === "local_only" && BRIDGE_MODE === "tauri") {
         this.routeKind = "ask";
         this.routeAsk = { restart: false, gateway: false };
-        this.provider = createLocalStoppedProvider(LOCAL_ONLY_LABEL);
+        this.replaceProvider(createLocalStoppedProvider(LOCAL_ONLY_LABEL));
       } else {
         this.routeKind = "demo";
-        this.provider = createDemoProvider(() => this.snapshot());
+        this.replaceProvider(createDemoProvider(() => this.snapshot()));
       }
       this.reflectProvider();
     }
@@ -3874,7 +3897,7 @@ export class Store {
     const cancelled = { ok: false as const, error: LOCAL_ASK_NOT_SENT };
     const gone = { ok: false as const, error: "the local model is no longer set up, so this message was not sent" };
     const localNow = async (): Promise<ChatProvider | null> => {
-      await this.rebuildProvider();
+      await this.rebuildProvider({ keepSession: true });
       return this.routeKind === "local" && this.provider ? this.provider : null;
     };
     // K2: the consent core minted for this question, until it is handed to the gateway provider.
@@ -3917,6 +3940,17 @@ export class Store {
         // The member's explicit choice, for this one message only (never offered under local only),
         // carried to core as the consent core minted for it.
         if (!consent) return { ok: false, error: GATEWAY_CONSENT_UNAVAILABLE };
+        // 0.5.4 (owner, 2026-11-17): when the remote choice is the preferred cloud model and Hermes
+        // is up, `rebuildProvider` built Hermes's cloud session for it. The message goes there, so
+        // Hermes runs it with its own tools (shell_run, folder files, web, MCP) behind the same
+        // approval cards. The app's own loop below has only the core-hosted tools. That session
+        // sends through core's proxy without a consent, so the one minted here is dropped below.
+        // Hermes may have stopped while the card was open: read it again, and if it is not up the
+        // message goes to the app's own loop with the consent, as it would have without Hermes.
+        if (this.remoteChatId === PREFERRED_CHAT_ID && this.provider?.kind === "sidecar-cloud") {
+          const sidecar = this.provider;
+          if ((await readSidecar(() => bridge.agentHarness.status())).up) return { ok: true, provider: sidecar };
+        }
         const def = consent.providerId;
         const consentId = consent.consentId;
         consent = null; // carried to core with the send, so not dropped below
