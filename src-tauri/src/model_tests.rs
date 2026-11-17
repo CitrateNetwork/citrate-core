@@ -772,3 +772,188 @@ fn a_download_still_finishes_its_own_unverified_file_and_skips_its_own_verified_
     assert!(mgr.download_and_verify(ExistingFile::Refuse, || Ok(()), |_, _| {}).is_err(), "Refuse never takes an existing file");
     assert!(is_file_ready(&dir, "m.gguf"), "and leaves it as it was");
 }
+
+// ---------------------------------------------------------------------------
+// The default model has two sources: the citrate.ai vanity redirect, then the direct Hugging Face
+// origin. When the vanity URL stops serving the model (2026-11: it redirects to a web page), the
+// download moves on to the direct origin instead of failing the first-run model step. Integrity is
+// unchanged: every source is gated by the GGUF magic, the pinned length and the pinned SHA-256.
+// ---------------------------------------------------------------------------
+
+/// A source that answers every request with a web page (no GGUF magic).
+fn web_page_source() -> FixtureTransport {
+    let mut page = b"<!DOCTYPE html><html><head><title>Join</title></head>".to_vec();
+    page.extend_from_slice(&[b' '; 4000]);
+    FixtureTransport::new(page)
+}
+
+/// A source whose every request fails with `err` (and counts the attempts).
+struct FailingSource {
+    err: fn() -> ModelError,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ModelTransport for FailingSource {
+    fn total_size(&self) -> std::result::Result<u64, ModelError> {
+        Err((self.err)())
+    }
+    fn get_from(&self, _offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err((self.err)())
+    }
+}
+
+/// A shared fixture source so a test can read the offsets it was asked for after the download.
+struct SharedFixture(std::sync::Arc<FixtureTransport>);
+
+impl ModelTransport for SharedFixture {
+    fn total_size(&self) -> std::result::Result<u64, ModelError> {
+        self.0.total_size()
+    }
+    fn get_from(&self, offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+        self.0.get_from(offset)
+    }
+}
+
+fn no_backoff(_: u32) -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+#[test]
+fn default_sources_are_the_vanity_redirect_then_the_direct_origin() {
+    assert_eq!(
+        model_source_urls(None),
+        vec![
+            DEFAULT_MODEL_URL.to_string(),
+            "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf"
+                .to_string(),
+        ]
+    );
+    // The direct origin is the default descriptor's own Hugging Face path (one source of truth).
+    let mut hf = default_descriptor();
+    hf.source = ModelSource::Hf;
+    assert_eq!(model_source_urls(None)[1], hf.download_url().unwrap());
+    // An explicit CITRATE_MODEL_URL is the only source: no silent fallback past an override.
+    assert_eq!(
+        model_source_urls(Some("https://cdn.citrate.ai/gemma.gguf".into())),
+        vec!["https://cdn.citrate.ai/gemma.gguf".to_string()]
+    );
+}
+
+#[test]
+fn a_source_that_serves_a_web_page_falls_through_to_the_direct_origin() {
+    let body = gguf_fixture(4096);
+    let dir = tmp_model_dir("src-webpage");
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(web_page_source()),
+        Box::new(FixtureTransport::new(body.clone())),
+    ];
+    download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff)
+        .expect("the second source serves the model");
+    assert_eq!(std::fs::read(dir.join(MODEL_FILE)).unwrap(), body);
+    let mgr = ModelManager::new(
+        dir.clone(),
+        Box::new(FixtureTransport::new(body.clone())),
+        sha256_hex(&body),
+        body.len() as u64,
+    );
+    mgr.verify().expect("the fallen-through download verifies");
+    assert!(matches!(mgr.status(), ModelStatus::Ready));
+}
+
+#[test]
+fn a_resume_whose_first_source_ignores_range_continues_on_the_next_from_the_partial() {
+    let body = gguf_fixture(8192);
+    let dir = tmp_model_dir("src-rangeignored");
+    std::fs::write(dir.join(format!("{MODEL_FILE}.part")), &body[..3000]).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let direct = std::sync::Arc::new(FixtureTransport::new(body.clone()));
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(FailingSource { err: || ModelError::RangeIgnored, calls: calls.clone() }),
+        Box::new(SharedFixture(direct.clone())),
+    ];
+    download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff)
+        .expect("the next source resumes the partial");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(direct.offsets().first(), Some(&3000), "resumed from the partial, not byte 0");
+    assert_eq!(std::fs::read(dir.join(MODEL_FILE)).unwrap(), body);
+}
+
+#[test]
+fn an_unreachable_source_falls_through_after_its_retries() {
+    let body = gguf_fixture(4096);
+    let dir = tmp_model_dir("src-transport");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(FailingSource {
+            err: || ModelError::Transport("unexpected HTTP status 404".into()),
+            calls: calls.clone(),
+        }),
+        Box::new(FixtureTransport::new(body.clone())),
+    ];
+    download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff)
+        .expect("the second source serves the model");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst) as u32, MAX_SEGMENT_RETRIES + 1);
+    assert_eq!(std::fs::read(dir.join(MODEL_FILE)).unwrap(), body);
+}
+
+#[test]
+fn a_failure_that_is_not_about_the_source_is_final() {
+    let body = gguf_fixture(4096);
+    let dir = tmp_model_dir("src-gated");
+    let direct = std::sync::Arc::new(FixtureTransport::new(body.clone()));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(FailingSource { err: || ModelError::Gated { token_sent: false }, calls }),
+        Box::new(SharedFixture(direct.clone())),
+    ];
+    let r = download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff);
+    assert!(matches!(r, Err(ModelError::Gated { token_sent: false })), "got {r:?}");
+    assert!(direct.offsets().is_empty(), "a gated repo is not retried on another source");
+    assert!(!dir.join(MODEL_FILE).exists());
+}
+
+#[test]
+fn when_every_source_fails_the_last_sources_error_is_returned() {
+    let body = gguf_fixture(4096);
+    let dir = tmp_model_dir("src-allfail");
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(web_page_source()),
+        Box::new(FixtureTransport::short(body.clone(), 100)),
+    ];
+    let r = download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff);
+    assert!(matches!(r, Err(ModelError::ShortStream { .. })), "got {r:?}");
+    assert!(!dir.join(MODEL_FILE).exists());
+}
+
+#[test]
+fn a_partial_from_a_different_file_completed_by_the_next_source_is_quarantined_never_ready() {
+    // The pinned model body, and a 3000-byte `.part` left by a DIFFERENT GGUF file.
+    let body = gguf_fixture(8192);
+    let other = gguf(0xAB, 8192);
+    assert_ne!(sha256_hex(&body), sha256_hex(&other));
+    let dir = tmp_model_dir("src-foreign-partial");
+    std::fs::write(dir.join(format!("{MODEL_FILE}.part")), &other[..3000]).unwrap();
+    // Source A refuses the resume (it ignored Range and answered 200); source B completes the
+    // file from byte 3000 to the pinned length.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let direct = std::sync::Arc::new(FixtureTransport::new(body.clone()));
+    let sources: Vec<Box<dyn ModelTransport>> = vec![
+        Box::new(FailingSource { err: || ModelError::RangeIgnored, calls: calls.clone() }),
+        Box::new(SharedFixture(direct.clone())),
+    ];
+    download_from_sources(&dir, sources, &sha256_hex(&body), body.len() as u64, no_backoff)
+        .expect("source B completes the file to the pinned length");
+    assert_eq!(direct.offsets().first(), Some(&3000));
+    let mgr = ModelManager::new(
+        dir.clone(),
+        Box::new(FixtureTransport::new(body.clone())),
+        sha256_hex(&body),
+        body.len() as u64,
+    );
+    let r = mgr.verify();
+    assert!(matches!(r, Err(ModelError::ChecksumMismatch)), "got {r:?}");
+    assert!(!dir.join(MODEL_FILE).exists(), "the mixed file is deleted");
+    assert!(!matches!(mgr.status(), ModelStatus::Ready));
+    assert!(!is_file_ready(&dir, MODEL_FILE));
+}

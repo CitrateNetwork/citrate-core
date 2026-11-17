@@ -798,6 +798,14 @@ function attestationFrom(args: Record<string, unknown>): FlAttestation | null {
   return license && statement ? { license, statement } : null;
 }
 
+/** Why a model download/verify failed. A Tauri command rejects with the Rust error as a plain
+ *  string, not an Error; that string is the real cause and is shown as is. */
+function modelFailureReason(e: unknown, fallback: string): string {
+  if (e instanceof Error && e.message.trim()) return e.message;
+  if (typeof e === "string" && e.trim()) return e;
+  return fallback;
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -5763,9 +5771,10 @@ export class Store {
         await this.refreshModel();
         await this.verifyModel();
       })
-      .catch((e) => {
-        this.setState({ modelState: "error", modelError: e instanceof Error ? e.message : "download failed" });
-        this.toast("Model download failed — " + (e instanceof Error ? e.message : "unknown") + ". Chat will use the gateway.");
+      .catch((e: unknown) => {
+        const reason = modelFailureReason(e, "download failed");
+        this.setState({ modelState: "error", modelError: reason });
+        this.toast("Model download failed — " + reason + ". Chat will use the gateway.");
         this.stopModelPoll();
         this.save();
       });
@@ -5787,8 +5796,9 @@ export class Store {
       }
       this.stopModelPoll();
     } catch (e) {
-      this.setState({ modelState: "error", modelError: e instanceof Error ? e.message : "verify failed" });
-      this.toast("Model verify failed — " + (e instanceof Error ? e.message : "checksum mismatch") + ". Chat will use the gateway.");
+      const reason = modelFailureReason(e, "verify failed");
+      this.setState({ modelState: "error", modelError: reason });
+      this.toast("Model verify failed — " + reason + ". Chat will use the gateway.");
       this.stopModelPoll();
     }
     this.save();

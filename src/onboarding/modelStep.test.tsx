@@ -42,7 +42,10 @@ describe("S6.5 ModelStep — real status-driven progress (BC-3.3)", () => {
     const html = renderToStaticMarkup(<ModelStep store={noopStore} s={s} />);
     // The caption names the grounded HF source + the pinned checksum.
     expect(html).toContain("huggingface.co/ggml-org/gemma-4-E4B-it-GGUF");
-    expect(html).toContain("90ce9812"); // the pinned sha256 prefix
+    expect(html).toContain("a555b900"); // the pinned sha256 prefix (MODEL_SHA256)
+    expect(html).toContain("4.59 GB"); // MODEL_SIZE_BYTES
+    expect(html).toContain("Q4_0"); // MODEL_FILE quant
+    expect(html).not.toContain("90ce9812");
     // notPresent shows NO verified/ready BADGE (the description prose may mention
     // "verified against a pinned SHA-256", but there is no fabricated ready state).
     expect(html).not.toContain("Local model verified — chat runs on-device");
