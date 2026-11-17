@@ -376,9 +376,9 @@ describe("release paths run the gate", () => {
     return i;
   };
   it("release-local.sh stages skills-bundle from the pinned tarball, then checks inputs, builds, checks the .app, notarizes", () => {
-    const dl = at("gh release download runtime-deps -p skills-bundle.tar.gz");
-    const pin = at('scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" skills-bundle.tar.gz');
-    const stage = at('node scripts/stage-skills-bundle.mjs from-tarball "$WORK/runtime-deps/skills-bundle.tar.gz" --out src-tauri/skills-bundle');
+    const dl = at('gh release download runtime-deps -p "$SKILLS_ASSET"');
+    const pin = at('scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$WORK/runtime-deps" "$SKILLS_ASSET"');
+    const stage = at('node scripts/stage-skills-bundle.mjs from-tarball "$WORK/runtime-deps/$SKILLS_ASSET" --out src-tauri/skills-bundle');
     const staged = at("node scripts/check-bundle.mjs staged --overlay src-tauri/tauri.bundle-lite.conf.json --target aarch64-apple-darwin");
     const build = at("npx --no-install tauri build");
     const app = at('node scripts/check-bundle.mjs app --app "$APP" --overlay src-tauri/tauri.bundle-lite.conf.json --target aarch64-apple-darwin');
