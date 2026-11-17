@@ -96,6 +96,19 @@ describe("eth_syncing is read with its highestBlock, against the public head (20
   it("a syncing node whose highestBlock was not read stays not Synced (no hint is not a pass)", () => {
     expect(isNetworkSynced(ready({ localSyncing: true, localHighest: null }))).toBe(false);
   });
+  it("a highestBlock below this node's own height (0 included) is no hint, so not a pass", () => {
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 0 }))).toBe(false);
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 499_997 }))).toBe(false);
+    // At its own height is a real (if odd) hint: corroborated, within the band.
+    expect(isNetworkSynced(ready({ localSyncing: true, localHighest: 499_998 }))).toBe(true);
+  });
+  it("a failed peer-count read is named as that read, not as the node not answering", () => {
+    const synced = activationGate(ready({ localPeers: null }), true).checks.find((c) => c.key === "synced");
+    expect(synced?.ok).toBeNull();
+    expect(synced?.detail).toMatch(/net_peerCount/);
+    expect(synced?.detail).not.toMatch(/not answering/);
+    expect(synced?.detail).not.toMatch(/\u2014/);
+  });
   it("a node genuinely behind the public head is never Synced, whatever eth_syncing says", () => {
     expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_000, localSyncing: false, localHighest: null }))).toBe(false);
     expect(isNetworkSynced(ready({ headBlock: 500_000, localBlock: 499_000, localSyncing: true, localHighest: 500_000 }))).toBe(false);

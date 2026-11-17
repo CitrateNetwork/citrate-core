@@ -206,13 +206,19 @@ export function nodeWord(i: NodeWordInput): NodeWord {
     const behindPublic = pub - i.localHeight;
     const above = views.filter((v) => v.tip > pub + SYNCED_WITHIN_BLOCKS);
     if (behindPublic <= SYNCED_WITHIN_BLOCKS && above.length > 0) {
-      const where = behindPublic > 0 ? `${fmt(behindPublic)} blocks behind the public RPC head` : "at the public RPC head";
+      const where =
+        behindPublic > 0
+          ? `${fmt(behindPublic)} blocks behind the public RPC head`
+          : behindPublic < 0
+            ? `${fmt(-behindPublic)} blocks above the public RPC head`
+            : "at the public RPC head";
       const lead = Math.max(...above.map((v) => v.tip)) - pub;
+      const verb = above.length > 1 ? "are" : "is";
       return {
         word: SYNC_SPLIT,
         why:
-          `This node is ${where}, but ${above.map((v) => v.label).join(" and ")} is ${fmt(lead)} blocks above the public RPC head: ` +
-          "blocks the public RPC does not have, so the network may be split. It is not counted as synced, and staking and block production wait until the views agree.",
+          `This node is ${where}, but ${above.map((v) => v.label).join(" and ")} ${verb} ${fmt(lead)} blocks above the public RPC head: ` +
+          "blocks the public RPC does not have, so the network may be split. It is not counted as synced, and activating a validator waits until the views agree.",
         tone: "warn",
         running: true,
       };

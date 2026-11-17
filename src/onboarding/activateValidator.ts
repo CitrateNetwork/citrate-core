@@ -111,7 +111,7 @@ export function syncGap(st: ActivationStatusView): number | null {
  * head corroborates it (within 5 above the head); the gap is then taken to it as well. One more
  * than 5 ABOVE the public head means the node has seen a branch the public RPC does not have (a
  * network split, either side of which may be the minority), and that is never Synced. A syncing
- * object with no readable highestBlock is not Synced either.
+ * object with no readable highestBlock, or one below this node's own height, is not Synced either.
  */
 export function isNetworkSynced(st: ActivationStatusView | null): boolean | null {
   if (!st || st.localSyncing == null || st.localPeers == null) return null;
@@ -121,7 +121,8 @@ export function isNetworkSynced(st: ActivationStatusView | null): boolean | null
   if (Math.abs(syncGap(st) ?? Infinity) > SYNC_MARGIN_BLOCKS) return false;
   if (!st.localSyncing) return true;
   const highest = st.localHighest;
-  if (highest == null || st.headBlock == null || st.localBlock == null) return false;
+  // A highestBlock below this node's own height (0 included) is no usable hint: like null, no pass.
+  if (highest == null || st.headBlock == null || st.localBlock == null || highest < st.localBlock) return false;
   return highest <= st.headBlock + SYNC_MARGIN_BLOCKS && highest <= st.localBlock + SYNC_MARGIN_BLOCKS;
 }
 
@@ -204,7 +205,9 @@ export function activationGate(st: ActivationStatusView | null, walletLinked: bo
         ? "Synced"
         : synced === false && st
           ? notSyncedDetail(st)
-          : "— not read yet (the local node is not answering)",
+          : st && st.localSyncing != null && syncGap(st) != null && st.localPeers == null
+            ? "Peer count not read yet (local net_peerCount failed)"
+            : "— not read yet (the local node is not answering)",
   });
 
   let nv: boolean | null = null;

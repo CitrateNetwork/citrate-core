@@ -173,6 +173,21 @@ describe("views above a fresh public head (2026-11-17 fleet split)", () => {
     expect(r.why).toMatch(/362 blocks above the public RPC head/);
     expect(r.why).not.toMatch(/Applying blocks/);
   });
+  it("a node ABOVE the public head, with the views, says how far above it is, never 'at the public RPC head'", () => {
+    // The heavier side of the same split: local 224,108 with its peers, public RPC 223,746.
+    const r = nodeWord({ ...base, ...split, localHeight: 224_108 });
+    expect(r.word).toBe(SYNC_SPLIT);
+    expect(r.why).toMatch(/This node is 362 blocks above the public RPC head/);
+    expect(r.why).not.toMatch(/at the public RPC head/);
+  });
+  it("names several higher views with 'are', claims only what this build gates, and uses no em-dash", () => {
+    const r = nodeWord({ ...base, ...split });
+    expect(r.why).toMatch(/ and the highest network height this node has seen are 362 blocks above/);
+    expect(r.why).not.toMatch(/block production/i);
+    expect(r.why).not.toMatch(/\u2014/);
+    const one = nodeWord({ ...base, ...split, peerTips: null });
+    expect(one.why).toMatch(/the highest network height this node has seen is 362 blocks above/);
+  });
   it("a node behind the public head itself is still Syncing, measured to the public head", () => {
     expect(w({ ...split, localHeight: 223_000 })).toBe("Syncing · 746 blocks behind");
   });
