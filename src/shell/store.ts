@@ -3917,6 +3917,14 @@ export class Store {
         // The member's explicit choice, for this one message only (never offered under local only),
         // carried to core as the consent core minted for it.
         if (!consent) return { ok: false, error: GATEWAY_CONSENT_UNAVAILABLE };
+        // 0.5.4 (owner, 2026-11-17): when the remote choice is the preferred cloud model and Hermes
+        // is up, `rebuildProvider` built Hermes's cloud session for it. The message goes there, so
+        // Hermes runs it with its own tools (shell_run, folder files, web, MCP) behind the same
+        // approval cards. The app's own loop below has only the core-hosted tools. That session
+        // sends through core's proxy without a consent, so the one minted here is dropped below.
+        if (this.remoteChatId === PREFERRED_CHAT_ID && this.provider?.kind === "sidecar-cloud") {
+          return { ok: true, provider: this.provider };
+        }
         const def = consent.providerId;
         const consentId = consent.consentId;
         consent = null; // carried to core with the send, so not dropped below
