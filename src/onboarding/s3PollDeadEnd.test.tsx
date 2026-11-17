@@ -44,8 +44,10 @@ describe("S3 — the bounded grant poll must not dead-end on a spinner", () => {
   it("once the poll is exhausted, explains the state instead of spinning forever", () => {
     const html = renderToStaticMarkup(<S3 store={noopStore} s={payingState(true)} />);
     expect(html).toContain("s3-poll-exhausted");
-    // Says the payment landed and the grant has not — the honest split.
-    expect(html).toContain("Payment received");
+    // Says the grant has not landed. The app cannot read the order, so it never says the
+    // payment went through; what follows a payment is conditional (Rule 1).
+    expect(html).toContain("Your membership has not landed yet");
+    expect(html).toContain("If your payment went through");
     // Offers the read-only retry.
     expect(html).toContain("Check again");
     // And the spinner is gone (the two branches are mutually exclusive).
@@ -61,6 +63,37 @@ describe("S3 — the bounded grant poll must not dead-end on a spinner", () => {
     // It tells them so explicitly rather than leaving it implied.
     expect(html).toContain("you do not need");
     expect(html).toContain("rather than paying twice");
+  });
+});
+
+/** The exhausted card's own markup, from its testid to the end of its last paragraph. */
+function exhaustedCard(html: string): string {
+  const start = html.indexOf('data-testid="s3-poll-exhausted"');
+  expect(start).toBeGreaterThan(-1);
+  const end = html.indexOf("rather than paying twice", start);
+  expect(end).toBeGreaterThan(start);
+  return html.slice(start, end);
+}
+
+describe("S3 exhausted card — no claim the app cannot read (Rule 1)", () => {
+  it("never says the payment was received, settled, or that a seat is owed", () => {
+    const card = exhaustedCard(renderToStaticMarkup(<S3 store={noopStore} s={payingState(true)} />));
+    for (const claim of ["Payment received", "Your payment settled", "recorded and owed", "seat is recorded"]) {
+      expect(card).not.toContain(claim);
+    }
+  });
+
+  it("names no grant amount and uses no em-dash", () => {
+    const card = exhaustedCard(renderToStaticMarkup(<S3 store={noopStore} s={payingState(true)} />));
+    expect(card).not.toContain("32,000");
+    expect(card).not.toContain("SALT");
+    expect(card).not.toContain("\u2014");
+  });
+
+  it("points at support by email, with the email the member paid with", () => {
+    const html = renderToStaticMarkup(<S3 store={noopStore} s={payingState(true)} />);
+    expect(exhaustedCard(html)).toContain("support@citrate.ai");
+    expect(html).toContain("with the email you paid with, rather than paying twice");
   });
 });
 

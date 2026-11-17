@@ -148,6 +148,7 @@ import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
 import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
+import { isGrantDelayed } from "../onboarding/grantDelay";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -865,6 +866,10 @@ export class Store {
   private _s1t: ReturnType<typeof setTimeout> | null = null;
   /** core#584 — the current S3 checkout attempt; a check whose token is stale opens nothing. */
   private s3Attempt = 0;
+  /** When this session opened the S3 checkout (ms), for the delayed-grant card. In memory only. */
+  private s3PayingSince: number | null = null;
+  /** The running S3 grant poll's generation. Starting a poll ends the previous one: one loop at a time. */
+  private s3PollGen = 0;
   /** core#584 — the current Settings › Billing "Become a member" attempt (see becomeMember). */
   private billingAttempt = 0;
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
@@ -7081,12 +7086,14 @@ export class Store {
         if (attempt !== this.s3Attempt) return; // ended by Back / Continue free; ignore the result
         this.setState({ s3Checking: false });
         if (settled || this.state.stage !== stage) return;
-        this.setState({ s3: "paying" });
+        this.s3PayingSince = Date.now();
+        this.setState({ s3: "paying", s3GrantDelayed: false, s3SignerReady: null });
         // login_hint = the signed-in email → the browser checkout binds to THIS account.
         void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
           // Popup open failed (headless / user cancel at OS level) — stay "paying";
           // the poll below simply never settles. The user can retry (S3 re-enterable).
         });
+        this.s3PollGen++;
         this.pollMembership();
         // FIX 1a: S3 settles on the chain grant; the claim can land later. Keep watching
         // the entitlement so the member never sits on a stale "lapsed" banner.
@@ -7132,7 +7139,7 @@ export class Store {
    * poll forever: after the cap it leaves S3 re-enterable (still "paying") rather
    * than fabricating a settlement.
    */
-  private pollMembership(attempt = 0): void {
+  private pollMembership(attempt = 0, gen = this.s3PollGen): void {
     if (BRIDGE_MODE !== "tauri") return;
     // CADENCE. The old budget was 60 × 5s = 5 minutes flat, which was SHORTER than
     // the server's own retry cadence: core-membership re-drives stranded grants on a
@@ -7153,27 +7160,35 @@ export class Store {
     const delay = attempt < FAST_ATTEMPTS ? FAST_MS : SLOW_MS;
     const tick = () => {
       if (this.state.s3 !== "paying") return; // resolved or navigated away
+      if (gen !== this.s3PollGen) return; // a newer poll (Check again) took over
+      // The signer read is a second, read-only source that only decides what S3 SAYS while it
+      // waits (the delayed-grant card); it never settles. Every 30 s: each 6th fast tick, every
+      // slow tick. core-membership caches the verdict 15 s.
+      if (attempt % 6 === 0 || attempt >= FAST_ATTEMPTS) void this.readSignerHealth();
       const member = this.identity().wallet;
       // Read the REAL on-chain grant; fold /userinfo for display (never the decision).
       void Promise.all([bridge.membership.grantStatus(member), this.authUserinfo()])
         .then(([grant]) => {
-          if (this.state.s3 !== "paying") return;
+          if (this.state.s3 !== "paying" || gen !== this.s3PollGen) return;
           // ONLY the genuine on-chain grant settles S3 — never the pre-payment
           // KYC entitlement (Rule 1).
           if (isGrantOnChain(grant) && grant.hasSbt) {
-            this.setState({ s3: "settled", s3PollExhausted: false });
+            this.setState({ s3: "settled", s3PollExhausted: false, s3GrantDelayed: false });
             this.save();
             return;
           }
+          this.updateGrantDelayed();
           // Not yet granted — keep polling until the bounded cap.
-          if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+          if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1, gen);
           // At the cap we stop polling; S3 stays "paying" (re-enterable) and we SAY SO
           // rather than leaving a spinner that will never resolve. Never faked.
           else this.setState({ s3PollExhausted: true });
         })
         .catch(() => {
           // Transient RPC/read error — retry until the cap; never fabricate a settle.
-          if (this.state.s3 === "paying" && attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+          if (gen !== this.s3PollGen) return;
+          this.updateGrantDelayed();
+          if (this.state.s3 === "paying" && attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1, gen);
           else if (this.state.s3 === "paying") this.setState({ s3PollExhausted: true });
         });
     };
@@ -7192,8 +7207,36 @@ export class Store {
    */
   recheckMembership(): void {
     if (this.state.s3 !== "paying") return;
+    // From the delayed-grant card the first poll is still running: end it, so one loop runs.
+    this.s3PollGen++;
     this.setState({ s3PollExhausted: false });
+    void this.readSignerHealth();
     this.pollMembership();
+  }
+
+  /**
+   * Read core-membership's grant-signer readiness (public `/api/health`, core-membership#86) into
+   * `s3SignerReady`, then re-decide the delayed-grant card. A failed read changes nothing: no read
+   * is not evidence either way (Rule 1). Never settles S3.
+   */
+  private async readSignerHealth(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") return;
+    try {
+      const h = await bridge.membership.signerHealth();
+      if (this.state.s3 !== "paying") return;
+      if (h.signerReady !== this.state.s3SignerReady) this.setState({ s3SignerReady: h.signerReady });
+      this.updateGrantDelayed();
+    } catch {
+      /* unreachable or not core-membership: keep the last read */
+    }
+  }
+
+  /** Re-decide the delayed-grant card from the checkout time and the last signer read. */
+  private updateGrantDelayed(): void {
+    const delayed =
+      this.state.s3 === "paying" &&
+      isGrantDelayed({ payingSinceMs: this.s3PayingSince, nowMs: Date.now(), signerReady: this.state.s3SignerReady });
+    if (delayed !== this.state.s3GrantDelayed) this.setState({ s3GrantDelayed: delayed });
   }
 
   /**
@@ -7218,6 +7261,7 @@ export class Store {
     this.setState({
       s3: "settled",
       s3PollExhausted: false,
+      s3GrantDelayed: false,
       hasGrant: true,
       hasSbt: grant.hasSbt,
     });
