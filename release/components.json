@@ -36,13 +36,16 @@
         "script": "scripts/build-sidecar.sh"
       },
       "artifacts": {
+        "aarch64-apple-darwin": {
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-f4a0e6006b9c",
+          "evidence": "the release Mac, 2026-11-17: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain f4a0e6006b9c (main: #478 fast sync, #480, #481), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-f4a0e6006b9c; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0xfbf50df07486c2108200c9435e7412a8 = the Linux x86_64 build"
+        },
         "x86_64-unknown-linux-gnu": {
           "sha256": "081fe69f1d0a11d0954bd39ad1f7a9afa0d4acdd89587fb27c6d900d4ead66a0",
           "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-17: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain f4a0e6006b9c (main: #478 fast sync, #480, #481; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-f4a0e6006b9c; consensus --json on the rendered r1007 node.toml: fingerprint 0xfbf50df07486c2108200c9435e7412a8 (git_sha f4a0e6006b9c, git_dirty false)"
         }
       },
       "pending": {
-        "aarch64-apple-darwin": "recorded on the release Mac at the 0.5.4 cut (owner step): scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain f4a0e6006b9c, PROVENANCE written, both uploaded to runtime-deps as citrate-aarch64-apple-darwin-f4a0e6006b9c(.PROVENANCE.txt), then scripts/network-cut.py fill --values <mac pin> --apply; its consensus --json fingerprint must be 0xfbf50df07486c2108200c9435e7412a8 (the Linux build of this rev)",
         "aarch64-unknown-linux-gnu": "not built for this release (release/network-cut.json notBuilt): owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
       }
     },
