@@ -63,7 +63,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # does not know the r1006 genesis. `component-pins.mjs
 # check` (CI) fails unless the citrate-node pin, this floor and the app's citrate-chain crates in
 # src-tauri/Cargo.toml are the same rev.
-MIN_CHAIN_REV="f4a0e6006b9c9e35cb385d2406b8f3aa2cb84531"
+MIN_CHAIN_REV="7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3"
 
 [ -d "$CHAIN_DIR" ] || die "citrate-chain not found at $CHAIN_DIR (use --chain <path>)"
 REV="$(node "$REPO_ROOT/scripts/component-pins.mjs" field citrate-node source.rev)"
