@@ -20,7 +20,7 @@
     "note": "The app is source-available under BUSL-1.1. Copyleft tools are separate programs it runs as subprocesses or downloads on request; none is linked into the app.",
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-      "source": "citrate-core@28576ff4291856095efbe814f7cb51844c7b27e5",
+      "source": "citrate-core@f8e60b8432a4aa7df057adc4471c2b451b079403",
       "packages": 511,
       "lock": "sha256:200609320b0ffb91ea091c2cacf0d3e837dbdc2bc07d480c17d5ee2fffa25696"
     }
@@ -40,7 +40,7 @@
       "gap": "The citrate-chain LICENSE file is Apache-2.0 while the federation NOTICE lists citrate-chain under BUSL-1.1; one of them should change.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-chain@f4a0e6006b9c9e35cb385d2406b8f3aa2cb84531",
+        "source": "citrate-chain@7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3",
         "packages": 495
       }
     },
