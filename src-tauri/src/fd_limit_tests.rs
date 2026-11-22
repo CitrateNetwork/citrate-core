@@ -84,9 +84,83 @@ fn fd_limit_inherit_probe() {
     if std::env::var_os(PROBE_ENV).is_none() {
         return;
     }
-    let report = raise_nofile(TARGET_NOFILE);
+    // Review P2: on macOS the probe also prints the kernel cap it read (sysctlbyname
+    // kern.maxfilesperproc), so the parent checks the clamp against the real value.
+    #[cfg(target_os = "macos")]
+    println!("{CAP_MARK}{}", os_cap().unwrap_or(0));
+    let report = if std::env::var(PROBE_ENV).as_deref() == Ok("over-cap") {
+        // Ask for more than the kernel allows, as an unclamped caller would: setrlimit refuses
+        // (or the kernel clamps), and the OPEN_MAX fallback is what is left.
+        raise_nofile_capped(u64::MAX - 1, Some(u64::MAX - 1))
+    } else {
+        raise_nofile(TARGET_NOFILE)
+    };
     println!("{report}");
+    println!("{AFTER_MARK}{}", report.after_soft);
     println!("{PROBE_MARK}{}", spawned_child_soft());
+}
+
+#[cfg(target_os = "macos")]
+const CAP_MARK: &str = "FD_LIMIT_KERNEL_CAP=";
+#[cfg(unix)]
+const AFTER_MARK: &str = "FD_LIMIT_AFTER_SOFT=";
+
+/// Run the probe under a soft limit of 256 with `mode`; its stdout.
+#[cfg(unix)]
+fn run_probe(mode: &str) -> String {
+    let me = std::env::current_exe().expect("test binary path");
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("ulimit -Sn 256 && [ \"$(ulimit -Sn)\" = 256 ] && exec \"$0\" fd_limit::tests::fd_limit_inherit_probe --exact --ignored --nocapture --test-threads=1")
+        .arg(&me)
+        .env(PROBE_ENV, mode)
+        .output()
+        .expect("run the probe");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "probe failed: {stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("[fd-limit] open-file limit: soft 256 -> "), "the probe started from 256: {stdout}");
+    stdout
+}
+
+#[cfg(unix)]
+fn probe_value(stdout: &str, mark: &str) -> u64 {
+    stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(mark))
+        .unwrap_or_else(|| panic!("the probe printed {mark}: {stdout}"))
+        .parse()
+        .expect("numeric")
+}
+
+/// Review P2, on a real Mac: the start-up raise reads kern.maxfilesperproc with sysctlbyname and
+/// clamps to it: the soft limit after is min(65536, that cap), and a spawned child has it.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_raise_clamps_to_the_kernel_cap() {
+    let out = run_probe("1");
+    let cap = probe_value(&out, CAP_MARK);
+    assert!(cap >= MACOS_OPEN_MAX.min(4096), "sysctlbyname read a real cap: {out}");
+    let after = probe_value(&out, AFTER_MARK);
+    let (_, hard) = get_nofile().expect("getrlimit");
+    assert_eq!(after, target_soft(256, hard, TARGET_NOFILE, Some(cap)), "clamped to min(target, hard, kern.maxfilesperproc): {out}");
+    assert_eq!(probe_value(&out, PROBE_MARK), after, "the child inherited it: {out}");
+}
+
+/// Review P2, on a real Mac: asking past the kernel cap takes the refused path. Either setrlimit
+/// refuses and the OPEN_MAX retry sets 10240, or the kernel clamps; both end at or under the cap
+/// and well above 256. The report says which.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_over_cap_request_falls_back_to_open_max() {
+    let out = run_probe("over-cap");
+    let cap = probe_value(&out, CAP_MARK);
+    let after = probe_value(&out, AFTER_MARK);
+    assert!((4096..=cap.max(MACOS_OPEN_MAX)).contains(&after), "after {after}, cap {cap}: {out}");
+    if out.contains("refused") {
+        assert!(out.contains(&format!("used {MACOS_OPEN_MAX}")), "the OPEN_MAX retry ran: {out}");
+        assert_eq!(after, MACOS_OPEN_MAX);
+    }
+    println!("{out}");
 }
 
 /// Acceptance (0.5.7): with the app's own soft limit starting at 256, a process spawned after the
@@ -97,22 +171,7 @@ fn fd_limit_inherit_probe() {
 fn a_child_spawned_after_the_raise_inherits_it() {
     let (_, hard) = get_nofile().expect("getrlimit");
     assert!(hard >= 4096, "this host's hard RLIMIT_NOFILE is {hard}; the acceptance needs at least 4096");
-    let me = std::env::current_exe().expect("test binary path");
-    let out = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg("ulimit -Sn 256 && [ \"$(ulimit -Sn)\" = 256 ] && exec \"$0\" fd_limit::tests::fd_limit_inherit_probe --exact --ignored --nocapture --test-threads=1")
-        .arg(&me)
-        .env(PROBE_ENV, "1")
-        .output()
-        .expect("run the probe");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "probe failed: {stdout}\n{}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("[fd-limit] open-file limit: soft 256 -> "), "the probe started from 256: {stdout}");
-    let soft: u64 = stdout
-        .lines()
-        .find_map(|l| l.trim().strip_prefix(PROBE_MARK))
-        .expect("the probe printed the child's soft limit")
-        .parse()
-        .expect("numeric");
+    let stdout = run_probe("1");
+    let soft = probe_value(&stdout, PROBE_MARK);
     assert!(soft >= 4096, "the spawned child's soft open-file limit is {soft}, want at least 4096: {stdout}");
 }

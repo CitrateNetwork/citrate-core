@@ -149,6 +149,13 @@ fn os_cap() -> Option<u64> {
 /// what happened is in the report.
 #[cfg(unix)]
 pub fn raise_nofile(want: u64) -> FdLimitReport {
+    raise_nofile_capped(want, os_cap())
+}
+
+/// [`raise_nofile`] with the OS per-process cap given (tests pass a cap above the kernel's to
+/// drive the refused path and its `OPEN_MAX` fallback on a real Mac).
+#[cfg(unix)]
+fn raise_nofile_capped(want: u64, cap: Option<u64>) -> FdLimitReport {
     let (soft, hard) = match get_nofile() {
         Ok(v) => v,
         Err(e) => {
@@ -160,7 +167,7 @@ pub fn raise_nofile(want: u64) -> FdLimitReport {
             }
         }
     };
-    let target = target_soft(soft, hard, want, os_cap());
+    let target = target_soft(soft, hard, want, cap);
     let mut error = None;
     if target > soft {
         if let Err(e) = set_soft_nofile(target, hard) {
