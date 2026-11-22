@@ -190,13 +190,15 @@ afterEach(() => {
 // The 0.5.7 cut (2026-11-22) moved it to chain main 884555be (#489 genesis before bind after a cold resync,
 // #490 pending cold resync before the database opens), fingerprint 0xb8819df4... from both builds of that
 // rev (git_sha 884555befc99).
+// The 0.5.8 cut (2026-11-22) moved it to chain main 68434069 (#492 the node raises its open-file limit and bounds
+// RocksDB's table cache), fingerprint 0xa2f16115... from both builds of that rev (git_sha 68434069de70).
 const R1007_CUT = {
   genesisHash: "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
   genesisProfile: "r1007",
   compiledActivations: true,
   rpcUrl: "https://rpc.citrate.ai",
-  chainRev: "884555befc99c54c59237a2c05f72638693a193f",
-  consensusFingerprint: "0xb8819df460978a272c0053e48fff37d6",
+  chainRev: "68434069de707e8454a1313a1f2e20ba449300f5",
+  consensusFingerprint: "0xa2f16115438794f0410b187c99a14e34",
   addressBookSha256: "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
   bootnodes: [
     "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
@@ -213,7 +215,7 @@ describe("the shipped cut (release/network-cut.json, applied 2026-11-12)", SLOW,
     expect(SHIPPED).toMatchObject(R1007_CUT);
     expect(SHIPPED.pending).toEqual({});
     expect(Object.keys(SHIPPED.notBuilt)).toEqual(["aarch64-unknown-linux-gnu"]);
-    expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-884555befc99");
+    expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-68434069de70");
     expect(SHIPPED.node["x86_64-unknown-linux-gnu"].sha256).toMatch(/^[0-9a-f]{64}$/);
     const prof = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri/network/profiles.json"), "utf8"));
     expect(prof.active).toBe("r1007");
