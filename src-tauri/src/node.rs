@@ -361,6 +361,11 @@ pub struct NodeStatus {
     /// RPC); omitted when the node does not expose them.
     #[serde(rename = "peerTips", skip_serializing_if = "Option::is_none", default)]
     pub peer_tips: Option<Vec<u64>>,
+    /// 0.5.7: the node keeps exiting on start with the same error (the supervisor's crash records,
+    /// read from the node's own stderr): the error line, its kind and how many times in a row.
+    /// The supervisor keeps retrying with backoff meanwhile. Omitted when there is no such loop.
+    #[serde(rename = "crashLoop", skip_serializing_if = "Option::is_none", default)]
+    pub crash_loop: Option<citrate_core_kit::crash_loop::CrashLoop>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -1107,9 +1112,12 @@ impl NodeManager {
     /// height/peers from the local RPC. NEVER fabricates numbers — if the RPC is
     /// not reachable yet the counts are 0 and the state reflects that honestly.
     pub fn status(&self) -> NodeStatus {
-        let sup_state = {
+        let (sup_state, crash_loop) = {
             let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_ref().map(|s| s.status().state)
+            (
+                guard.as_ref().map(|s| s.status().state),
+                guard.as_ref().and_then(|s| s.crash_loop()),
+            )
         };
         let state = match &sup_state {
             Some(s) => map_state(s),
@@ -1178,6 +1186,7 @@ impl NodeManager {
             },
             sync_state,
             peer_tips,
+            crash_loop,
         }
     }
 

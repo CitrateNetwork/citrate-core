@@ -36,6 +36,7 @@ pub mod abi_book;
 pub mod blocking;
 pub mod ceremony;
 pub mod config;
+pub mod crash_loop;
 pub mod custody;
 pub mod eip712;
 pub mod fsutil;

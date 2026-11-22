@@ -7,6 +7,8 @@
 //     into AppState by Store.refreshNode every 2 s (`s.node`, `s.height`, `s.peers`), committed with
 //     the time of that answer (`s.nodeStatusAt`);
 //   - why a start was refused: `node_status.blocked` (`s.nodeBlocked`);
+//   - 0.5.7: a node that keeps exiting on start with the same error: `node_status.crashLoop`
+//     (`s.nodeCrashLoop`), the supervisor's crash records, i.e. the node's own stderr line;
 //   - public head: eth_blockNumber on the profile's RPC (wagmi useBlockNumber);
 //   - genesis check: block 0 of the public chain against the active network profile
 //     (networkCompat.ts, K6).
@@ -29,6 +31,8 @@
 import type { AppState } from "../../shell/state";
 import { UNACTIVATED_WITHDRAW_NOTE, canOfferActivation, validatorDash, validatorWord } from "../../shell/chainTruth";
 import type { NetworkCompat } from "../../shell/networkCompat";
+import type { NodeCrashLoopView } from "../../bridge/domains";
+import type { HostOs } from "../../agent/toolchainGuidance";
 
 /** Contract §1: Synced means within this many blocks of the public RPC head. */
 export const SYNCED_WITHIN_BLOCKS = 5;
@@ -47,6 +51,31 @@ export const SYNC_AHEAD = "Sync unknown · this node is ahead of the network hea
  * it). Which side is the minority is not this build's to say.
  */
 export const SYNC_SPLIT = "Sync unknown · the network views disagree";
+/** 0.5.7: the node word while the node keeps exiting on start with the same error. */
+export const CRASH_LOOP_WORD = "Error · the node keeps stopping on start";
+/** 0.5.7: what to do when that error is the open-file limit (EMFILE), on a Mac. */
+export const OPEN_FILES_GUIDANCE_MAC =
+  "Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run this in Terminal, then quit and reopen Citrate Core (the setting lasts until your Mac restarts): sudo launchctl limit maxfiles 65536 200000";
+/** The same on Linux (or any other host): the limit comes from the session that starts the app. */
+export const OPEN_FILES_GUIDANCE_OTHER =
+  "This computer's open-file limit is too low for the node. Restart Citrate Core; if it persists, raise the open-file limit for your user to 65536 (ulimit -n, or LimitNOFILE for a service) and start it again.";
+
+/**
+ * 0.5.7: the word and reason for a startup crash loop (`node_status.crashLoop`). The open-file
+ * limit gets plain-language guidance for the member's OS; any other error is named as the node
+ * printed it. Either way the supervisor keeps retrying with backoff, and the reason says so.
+ */
+export function crashLoopWord(loop: NodeCrashLoopView, os: HostOs): { word: string; why: string } {
+  const times = `The node stopped ${fmt(loop.count)} times in a row on start with: ${loop.line}`;
+  const retry = "Citrate Core keeps retrying with backoff. The full log is on the Advanced tab.";
+  if (loop.kind === "tooManyOpenFiles") {
+    const guidance = os === "macos" ? OPEN_FILES_GUIDANCE_MAC : OPEN_FILES_GUIDANCE_OTHER;
+    // The guidance goes last so its command ends the text (no trailing period to copy).
+    return { word: CRASH_LOOP_WORD, why: `${times}. ${retry} ${guidance}` };
+  }
+  return { word: CRASH_LOOP_WORD, why: `${times}. ${retry}` };
+}
+
 /** The fewest peers whose announced heights form a view of the network (one peer is not a quorum). */
 export const QUORUM_MIN_PEERS = 2;
 
@@ -98,6 +127,10 @@ export interface NodeWordInput {
   nodeSyncState?: NodeSyncStateView | null;
   /** CORE-N4: `node_status.peerTips` (net_peerInfo head heights); null/absent = not exposed. */
   peerTips?: number[] | null;
+  /** 0.5.7: `node_status.crashLoop`; null/absent = the node is not stopping on start in a loop. */
+  crashLoop?: NodeCrashLoopView | null;
+  /** The member's OS, for the open-file guidance (toolchainGuidance.hostOs). */
+  os: HostOs;
 }
 
 export interface NodeWord {
@@ -131,6 +164,12 @@ export function nodeWord(i: NodeWordInput): NodeWord {
       tone: "bad",
       running: up,
     };
+  }
+  // Review P1-1: only while the node is not serving. A node whose RPC answers (a supervisor
+  // state past start-up and a real height) is up, whatever an older crash loop read said.
+  const serving = up && i.node !== "prov" && i.localHeight > 0;
+  if (i.crashLoop && !serving) {
+    return { ...crashLoopWord(i.crashLoop, i.os), tone: "bad", running: false };
   }
   if (i.blocked || i.node === "error") {
     return {

@@ -232,6 +232,42 @@ jobs:
             exit 1
           fi
 
+      # 0.5.7 fd-limit lane (review P2): the macOS start-up open-file raise on a real Mac. The
+      # sysctlbyname("kern.maxfilesperproc") read, the clamp to it and the OPEN_MAX fallback run
+      # only here (cfg macos). Each test re-executes this test binary under `ulimit -Sn 256`.
+      - name: Test the start-up open-file limit raise (macOS)
+        if: matrix.platform == 'macOS-15'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/fd_limit_tests.log"
+          rm -f "$log"
+
+          set +e
+          cargo test --locked -p citrate-core --lib fd_limit::tests -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          cargo_status=${PIPESTATUS[0]}
+          set -e
+
+          if (( cargo_status != 0 )); then
+            echo "fd_limit::tests: cargo exited with status $cargo_status" >&2
+            exit "$cargo_status"
+          fi
+          # 3 pure + the inheritance acceptance + 2 macOS-only; the probe itself is the 1 ignored.
+          grep -Fq "test result: ok. 6 passed; 0 failed; 1 ignored" "$log" || {
+            echo "fd_limit::tests: expected 6 passed, 0 failed, 1 ignored" >&2
+            exit 1
+          }
+          # The summary above already says none failed; each named test must also have run (with
+          # --nocapture a test's own output can sit between its name and "ok", so match the name).
+          for t in macos_raise_clamps_to_the_kernel_cap macos_over_cap_request_falls_back_to_open_max a_child_spawned_after_the_raise_inherits_it; do
+            grep -Fq "test fd_limit::tests::$t ... " "$log" || { echo "fd_limit::tests: $t did not run" >&2; exit 1; }
+          done
+          {
+            echo "## fd_limit (macOS-15)"
+            echo
+            grep -E "^\[fd-limit\]|FD_LIMIT_" "$log" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize lifecycle counts
         shell: bash
         run: |

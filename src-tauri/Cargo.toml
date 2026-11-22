@@ -171,7 +171,9 @@ socket2 = { version = "0.6", features = ["all"] }
 # transitively (tauri/tokio), so naming it as a direct dep adds NO new compiled
 # crate and NO new audit surface (RUSTSEC clean at 0.2.x). Unix-only: on Windows
 # (out of beta scope, O-4) the supervisor falls back to std `Child::kill`, so no
-# libc there.
+# libc there. 0.5.7: also `getrlimit`/`setrlimit(RLIMIT_NOFILE)` and, on macOS,
+# `sysctlbyname("kern.maxfilesperproc")` for the start-up open-file raise (fd_limit.rs).
+# Same crate, no new dependency.
 # Read a member project's foundry.toml before Verify runs forge (postdeploy.rs). Already in the
 # lock (it was a dev-dependency for the ACL tests, which still use it).
 toml = "0.9"

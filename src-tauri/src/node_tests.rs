@@ -435,6 +435,35 @@ fn status_omits_mining_fields_until_requested() {
     assert!(v.get("miningHold").is_none(), "{v}");
 }
 
+/// 0.5.7: `crashLoop` is omitted with no loop, and crosses to the UI in the shape nodeWords.ts
+/// reads (kind camelCase, the node's own error line, the count).
+#[test]
+fn status_crash_loop_wire_shape() {
+    use citrate_core_kit::crash_loop::{CrashKind, CrashLoop};
+    let (mgr, _fake, _data) = stub_manager("crash-loop-shape");
+    let mut st = mgr.status();
+    let v = serde_json::to_value(&st).expect("status serializes");
+    assert!(v.get("crashLoop").is_none(), "no loop, no field: {v}");
+    st.crash_loop = Some(CrashLoop {
+        kind: CrashKind::TooManyOpenFiles,
+        line: "Error: IO error: While open a file for random read: 7.sst: Too many open files".into(),
+        count: 3,
+        first_at_unix_ms: 1_000,
+        last_at_unix_ms: 61_000,
+    });
+    let v = serde_json::to_value(&st).expect("status serializes");
+    assert_eq!(
+        v["crashLoop"],
+        serde_json::json!({
+            "kind": "tooManyOpenFiles",
+            "line": "Error: IO error: While open a file for random read: 7.sst: Too many open files",
+            "count": 3,
+            "firstAtUnixMs": 1000,
+            "lastAtUnixMs": 61000
+        })
+    );
+}
+
 /// The pure sync gate: the producer arms only once the local head is within
 /// `SYNC_ARM_MARGIN` of the authoritative network tip. Far behind → false (stay a
 /// follower); at/near the tip → true; a spurious local-ahead never underflows.
@@ -748,6 +777,7 @@ fn live_bounded_sync_proof() {
         mining_hold: None,
         sync_state: None,
         peer_tips: None,
+        crash_loop: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();
