@@ -257,8 +257,10 @@ jobs:
             echo "fd_limit::tests: expected 6 passed, 0 failed, 1 ignored" >&2
             exit 1
           }
+          # The summary above already says none failed; each named test must also have run (with
+          # --nocapture a test's own output can sit between its name and "ok", so match the name).
           for t in macos_raise_clamps_to_the_kernel_cap macos_over_cap_request_falls_back_to_open_max a_child_spawned_after_the_raise_inherits_it; do
-            grep -Fq "test fd_limit::tests::$t ... ok" "$log" || { echo "fd_limit::tests: $t did not run and pass" >&2; exit 1; }
+            grep -Fq "test fd_limit::tests::$t ... " "$log" || { echo "fd_limit::tests: $t did not run" >&2; exit 1; }
           done
           {
             echo "## fd_limit (macOS-15)"
