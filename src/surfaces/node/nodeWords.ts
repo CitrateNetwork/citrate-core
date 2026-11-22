@@ -55,7 +55,7 @@ export const SYNC_SPLIT = "Sync unknown · the network views disagree";
 export const CRASH_LOOP_WORD = "Error · the node keeps stopping on start";
 /** 0.5.7: what to do when that error is the open-file limit (EMFILE), on a Mac. */
 export const OPEN_FILES_GUIDANCE_MAC =
-  "Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run: sudo launchctl limit maxfiles 65536 200000";
+  "Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run this in Terminal, then quit and reopen Citrate Core (the setting lasts until your Mac restarts): sudo launchctl limit maxfiles 65536 200000";
 /** The same on Linux (or any other host): the limit comes from the session that starts the app. */
 export const OPEN_FILES_GUIDANCE_OTHER =
   "This computer's open-file limit is too low for the node. Restart Citrate Core; if it persists, raise the open-file limit for your user to 65536 (ulimit -n, or LimitNOFILE for a service) and start it again.";
@@ -129,8 +129,8 @@ export interface NodeWordInput {
   peerTips?: number[] | null;
   /** 0.5.7: `node_status.crashLoop`; null/absent = the node is not stopping on start in a loop. */
   crashLoop?: NodeCrashLoopView | null;
-  /** The member's OS, for the open-file guidance (toolchainGuidance.hostOs). Default: macos. */
-  os?: HostOs;
+  /** The member's OS, for the open-file guidance (toolchainGuidance.hostOs). */
+  os: HostOs;
 }
 
 export interface NodeWord {
@@ -165,8 +165,11 @@ export function nodeWord(i: NodeWordInput): NodeWord {
       running: up,
     };
   }
-  if (i.crashLoop) {
-    return { ...crashLoopWord(i.crashLoop, i.os ?? "macos"), tone: "bad", running: false };
+  // Review P1-1: only while the node is not serving. A node whose RPC answers (a supervisor
+  // state past start-up and a real height) is up, whatever an older crash loop read said.
+  const serving = up && i.node !== "prov" && i.localHeight > 0;
+  if (i.crashLoop && !serving) {
+    return { ...crashLoopWord(i.crashLoop, i.os), tone: "bad", running: false };
   }
   if (i.blocked || i.node === "error") {
     return {

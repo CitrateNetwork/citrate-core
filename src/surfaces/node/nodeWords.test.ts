@@ -16,6 +16,7 @@ const base: NodeWordInput = {
   peers: 4,
   peersZeroForMs: 0,
   localStillForMs: 0,
+  os: "macos",
 };
 const w = (p: Partial<NodeWordInput>) => nodeWord({ ...base, ...p }).word;
 
@@ -299,9 +300,10 @@ describe("node crash loop (0.5.7)", () => {
     expect(r.word).toBe(CRASH_LOOP_WORD);
     expect(r.tone).toBe("bad");
     expect(r.running).toBe(false);
-    expect(r.why).toContain(
-      "Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run: sudo launchctl limit maxfiles 65536 200000",
-    );
+    expect(r.why).toContain("Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run this in Terminal");
+    // Review P3: the member is told to quit and reopen after the command, and that it lasts until reboot.
+    expect(r.why).toContain("then quit and reopen Citrate Core");
+    expect(r.why).toContain("lasts until your Mac restarts");
     expect(r.why.endsWith("sudo launchctl limit maxfiles 65536 200000")).toBe(true);
     expect(r.why).toContain("stopped 9 times in a row");
     expect(r.why).toContain(EMFILE.line);
@@ -319,6 +321,17 @@ describe("node crash loop (0.5.7)", () => {
     expect(r.word).toBe(CRASH_LOOP_WORD);
     expect(r.why).toContain("Error: genesis mismatch");
     expect(r.why).not.toContain("open-file limit");
+  });
+
+  // Review P1-1: a node that is up and serving reads its normal word, even with a stale loop.
+  it("a synced node with stale crash-loop data reads Synced and running", () => {
+    const r = nodeWord({ ...base, crashLoop: EMFILE });
+    expect(r.word).toBe("Synced");
+    expect(r.running).toBe(true);
+    expect(nodeWord({ ...base, node: "syncing", localHeight: 100_000, publicHead: 510_000, crashLoop: EMFILE }).word).toBe("Syncing · 410,000 blocks behind");
+    // Between restarts (supervisor restarting, RPC not answering) the loop is named.
+    expect(nodeWord({ ...base, node: "prov", localHeight: 0, crashLoop: EMFILE }).word).toBe(CRASH_LOOP_WORD);
+    expect(nodeWord({ ...base, node: "syncing", localHeight: 0, crashLoop: EMFILE }).word).toBe(CRASH_LOOP_WORD);
   });
 
   it("without a loop the words are unchanged", () => {
