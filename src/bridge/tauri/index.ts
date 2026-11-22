@@ -34,6 +34,7 @@ import type {
   GrantStatus,
   ActivationStatusView,
   ModelStatus,
+  LocalModelOptions,
   NodeLogLine,
   OldNetworkDataView,
   NodeStatusView,
@@ -284,8 +285,17 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async status(): Promise<ModelStatus> {
         return invoke<ModelStatus>("model_status");
       },
-      async download(): Promise<void> {
-        await invoke("model_download");
+      async download(model?: "default" | "small"): Promise<void> {
+        if (model) await invoke("model_download", { model });
+        else await invoke("model_download");
+      },
+      // Data source: the model_download_pause command (model.rs, the download's pause flag).
+      async pause(): Promise<void> {
+        await invoke<boolean>("model_download_pause");
+      },
+      // Data source: the model_local_options command (model.rs pins + statvfs on the models folder).
+      async options(): Promise<LocalModelOptions> {
+        return invoke<LocalModelOptions>("model_local_options");
       },
       async verify(): Promise<void> {
         await invoke("model_verify");

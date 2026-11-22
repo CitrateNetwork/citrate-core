@@ -117,6 +117,7 @@ mod memory;
 mod knowledge_import;
 mod mining_gate;
 mod model;
+mod model_log;
 mod model_register;
 mod model_registry;
 mod money_gas;
@@ -1262,6 +1263,8 @@ pub fn run() {
             // No secrets, no key material cross this surface.
             model::model_status,
             model::model_download,
+            model::model_download_pause,
+            model::model_local_options,
             model::model_verify,
             // model-serve — BC-3.2 the bundled llama-server sidecar under the
             // SidecarSupervisor. model_serve_start fails CLOSED unless the model is

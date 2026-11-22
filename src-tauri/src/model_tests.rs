@@ -428,12 +428,17 @@ fn status_serializes_camelcase() {
         downloaded_bytes: 10,
         total_bytes: 100,
         pct: 10.0,
+        bytes_per_sec: None,
+        eta_secs: None,
+        retry_in_secs: None,
+        last_error: None,
     };
     let j = serde_json::to_value(&dl).unwrap();
     assert_eq!(j["state"], "downloading");
     assert_eq!(j["downloadedBytes"], 10);
     assert_eq!(j["totalBytes"], 100);
     assert_eq!(j["pct"], 10.0);
+    assert!(j.get("bytesPerSec").is_none() && j.get("retryInSecs").is_none(), "idle: no live fields");
 
     let err = ModelStatus::Error {
         msg: "boom".into(),
@@ -821,18 +826,19 @@ fn no_backoff(_: u32) -> std::time::Duration {
 
 #[test]
 fn default_sources_are_the_vanity_redirect_then_the_direct_origin() {
+    // 2026-11-22: the direct origin is pinned at the repo COMMIT the pinned file came from (a
+    // re-upload under `main` would otherwise turn every download into a checksum mismatch).
     assert_eq!(
         model_source_urls(None),
         vec![
             DEFAULT_MODEL_URL.to_string(),
-            "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf"
+            "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/8903cb408c7df39cde2ed15fac397e6d7be92951/gemma-4-E4B-it-Q4_0.gguf"
                 .to_string(),
         ]
     );
-    // The direct origin is the default descriptor's own Hugging Face path (one source of truth).
-    let mut hf = default_descriptor();
-    hf.source = ModelSource::Hf;
-    assert_eq!(model_source_urls(None)[1], hf.download_url().unwrap());
+    // The direct origin is the default pin's own Hugging Face path (one source of truth).
+    assert_eq!(model_source_urls(None)[1], DEFAULT_PIN.hf_url());
+    assert_eq!(DEFAULT_PIN.file, default_descriptor().file);
     // An explicit CITRATE_MODEL_URL is the only source: no silent fallback past an override.
     assert_eq!(
         model_source_urls(Some("https://cdn.citrate.ai/gemma.gguf".into())),

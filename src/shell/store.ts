@@ -68,7 +68,8 @@ import { flSnapshot } from "../fl/flSnapshot";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
-import type { ChatConsent, ChatRoute, FlRoundPlan, RouteAskOptions } from "../bridge/domains";
+import type { ChatConsent, ChatRoute, FlRoundPlan, ModelStatus, RouteAskOptions } from "../bridge/domains";
+import { LOCAL_MODELS } from "./localModels";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { activeRouterId, canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
@@ -847,6 +848,10 @@ export class Store {
   private peopleRefreshing = false;
   private nodeRefreshing = false;
   private modelRefreshing = false;
+  /** A model_download call is in flight (the backend may not have created its `.part` yet). */
+  private modelDownloadInFlight = false;
+  /** Bumped by every startModelDownload, so a superseded call's outcome is ignored. */
+  private modelGen = 0;
   /** Sync-stall detection: the highest height we've seen advance, and when it last froze (0 = not
    *  frozen). A frozen height while still behind the tip, with peers connected, means the node's
    *  import pipeline has stalled — surfaced as the honest "stalled" state instead of a stuck "syncing". */
@@ -1115,6 +1120,7 @@ export class Store {
       // the next launch — so the bar froze at its last % forever with no network
       // activity (observed 2026-08-05). If we resolve to "downloading" and the
       // member hasn't skipped, kick the streamed (Range-resumable) fetch again.
+      void this.loadModelOptions();
       void this.refreshModel().then(() => {
         // SCL-S7.5a: no verified model means no startup start is coming.
         if (this.state.modelState !== "ready") this.launchLocalStartPending = false;
@@ -5727,12 +5733,34 @@ export class Store {
     this.modelRefreshing = true;
     try {
       const st = await bridge.model.status();
-      const patch: Partial<AppState> = { modelState: st.state, modelError: null };
-      if (st.state === "downloading") {
+      // While a download call is in flight the backend may not have written its `.part` yet
+      // (disk check, first request): that reads as notPresent, never as a reason to show the
+      // Download button again.
+      const state = st.state === "notPresent" && this.modelDownloadInFlight ? "downloading" : st.state;
+      const patch: Partial<AppState> = {
+        modelState: state,
+        modelError: state === "error" ? this.state.modelError : null,
+        modelBytesPerSec: null,
+        modelEtaSecs: null,
+        modelRetryInSecs: null,
+        modelRetryReason: null,
+      };
+      if (st.state === "downloading" || st.state === "paused") {
         patch.modelDownloadedBytes = st.downloadedBytes;
         patch.modelTotalBytes = st.totalBytes;
+      }
+      if (st.state === "downloading") {
+        patch.modelBytesPerSec = st.bytesPerSec ?? null;
+        patch.modelEtaSecs = st.etaSecs ?? null;
+        patch.modelRetryInSecs = st.retryInSecs ?? null;
+        patch.modelRetryReason = st.lastError ?? null;
       } else if (st.state === "error") {
         patch.modelError = st.msg;
+      }
+      // An error the download call reported stays on screen until the next start.
+      if (this.state.modelState === "error" && !this.modelDownloadInFlight && (st.state === "notPresent" || st.state === "downloading")) {
+        patch.modelState = "error";
+        patch.modelError = this.state.modelError;
       }
       this.setState(patch);
       // If the local model is verified-Ready, SPAWN the llama-server sidecar so
@@ -5754,30 +5782,109 @@ export class Store {
     }
   }
 
-  /** Start (or resume) the STREAMED model download, then poll `model.status()`
-   * like `startNode` polls the node. On completion it auto-verifies; `ready` is
-   * only ever reached from a real verify. An honest error surfaces on failure —
-   * chat then falls back to the gateway/demo (never a fake "verified"). */
-  startModelDownload(): void {
-    this.setState({ modelState: "downloading", modelError: null });
+  /** Read the onboarding model options (the member's choice and the free disk space). */
+  async loadModelOptions(): Promise<void> {
+    try {
+      const o = await bridge.model.options();
+      this.setState({ modelChoice: o.chosen, modelFreeBytes: o.freeBytes ?? null });
+    } catch {
+      /* honest no-op: the step shows no disk figure */
+    }
+  }
+
+  /** Start (or resume) the STREAMED model download + verify, polling `model.status()` for real
+   * progress. `model` picks the default or the smaller pinned model (and becomes the choice).
+   * The backend retries a lost connection on its own while the app is open, verifies, and on a
+   * checksum mismatch downloads once more from the start, so this resolves at `ready` or rejects
+   * with plain words. A second start while one runs attaches to it (the backend waits on it).
+   * A pause rejects; the status then reads `paused`, which is shown as paused, not as an error. */
+  startModelDownload(model?: "default" | "small"): void {
+    const gen = ++this.modelGen;
+    const patch: Partial<AppState> = { modelState: "downloading", modelError: null, modelRetryInSecs: null, modelRetryReason: null };
+    if (model && model !== this.state.modelChoice) {
+      patch.modelChoice = model;
+      patch.modelDownloadedBytes = 0;
+      patch.modelTotalBytes = LOCAL_MODELS[model].sizeBytes;
+      patch.modelBytesPerSec = null;
+      patch.modelEtaSecs = null;
+    }
+    this.setState(patch);
     this.save();
+    this.modelDownloadInFlight = true;
     // Poll the real status every 2s so the progress bar reflects real bytes.
     if (!this.modelTimer) this.modelTimer = setInterval(() => void this.refreshModel(), 2000);
     void bridge.model
-      .download()
+      .download(model)
       .then(async () => {
-        // Download resolved: verify (streams the file through SHA-256). Only a
-        // matching hash reaches "ready".
+        if (gen !== this.modelGen) return;
+        this.modelDownloadInFlight = false;
         await this.refreshModel();
-        await this.verifyModel();
+        // The download call verifies; verify here only if the status does not read ready yet.
+        if (this.state.modelState !== "ready") await this.verifyModel();
+        else {
+          this.toast("Local model verified, SHA-256 matched. Chat can run on this computer.");
+          void this.serveLocalAndRoute();
+          this.stopModelPoll();
+        }
+        void this.loadModelOptions();
       })
-      .catch((e: unknown) => {
+      .catch(async (e: unknown) => {
+        if (gen !== this.modelGen) return;
+        this.modelDownloadInFlight = false;
         const reason = modelFailureReason(e, "download failed");
-        this.setState({ modelState: "error", modelError: reason });
-        this.toast("Model download failed — " + reason + ". Chat will use the gateway.");
+        let st: ModelStatus | null = null;
+        try {
+          st = await bridge.model.status();
+        } catch {
+          st = null;
+        }
+        if (gen !== this.modelGen) return;
+        if (st?.state === "paused") {
+          this.setState({ modelState: "paused", modelDownloadedBytes: st.downloadedBytes, modelTotalBytes: st.totalBytes, modelError: null, modelBytesPerSec: null, modelEtaSecs: null, modelRetryInSecs: null, modelRetryReason: null });
+          this.stopModelPoll();
+          return;
+        }
+        if (st?.state === "ready") {
+          this.setState({ modelState: "ready", modelError: null });
+          this.stopModelPoll();
+          void this.serveLocalAndRoute();
+          return;
+        }
+        this.setState({ modelState: "error", modelError: reason, modelRetryInSecs: null, modelRetryReason: null });
+        this.toast("Model download stopped: " + reason + " Chat uses the gateway meanwhile.");
         this.stopModelPoll();
+        void this.loadModelOptions();
         this.save();
       });
+  }
+
+  /** Pause the running download; its progress is kept and Resume continues from the same byte. */
+  pauseModelDownload(): void {
+    void bridge.model
+      .pause()
+      .then(() => this.refreshModel())
+      .catch(() => {
+        /* the next poll shows the real state */
+      });
+  }
+
+  /** Switch to the smaller pinned model (a slow connection or a full disk). The default model's
+   * partial download, if any, is paused and kept. */
+  chooseSmallerModel(): void {
+    const wasRunning = this.modelDownloadInFlight;
+    const go = () => this.startModelDownload("small");
+    if (wasRunning) {
+      void bridge.model.pause().catch(() => undefined).finally(go);
+    } else go();
+  }
+
+  /** Go back to the default model (its own partial download resumes). */
+  chooseDefaultModel(): void {
+    const wasRunning = this.modelDownloadInFlight;
+    const go = () => this.startModelDownload("default");
+    if (wasRunning) {
+      void bridge.model.pause().catch(() => undefined).finally(go);
+    } else go();
   }
 
   /** Stream-verify the downloaded model (SHA-256 == the pinned hash). On a match
@@ -5789,7 +5896,7 @@ export class Store {
       await bridge.model.verify();
       await this.refreshModel(); // reads the EARNED `ready` from the bridge
       if (this.state.modelState === "ready") {
-        this.toast("Local model verified — SHA-256 matched. Chat can run on-device.");
+        this.toast("Local model verified, SHA-256 matched. Chat can run on this computer.");
         // Spawn llama-server AND route chat to it once it's healthy (the cold-load takes tens of
         // seconds; serveLocalAndRoute polls readiness before switching the provider off demo).
         void this.serveLocalAndRoute();
@@ -5798,7 +5905,7 @@ export class Store {
     } catch (e) {
       const reason = modelFailureReason(e, "verify failed");
       this.setState({ modelState: "error", modelError: reason });
-      this.toast("Model verify failed — " + reason + ". Chat will use the gateway.");
+      this.toast("Model verify failed: " + reason + " Chat uses the gateway meanwhile.");
       this.stopModelPoll();
     }
     this.save();
@@ -5852,9 +5959,10 @@ export class Store {
   /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
    * opt-out, not a failure — no fabricated "ready". */
   skipModel(): void {
-    this.stopModelPoll();
+    // A running download keeps going in the background (and its progress keeps showing).
+    if (!this.modelDownloadInFlight) this.stopModelPoll();
     this.setState({ modelSkipped: true });
-    this.toast("Skipped local model — chat runs on the gateway (or demo). You can download it later in Settings.");
+    this.toast("Skipped the local model. Chat runs on the gateway; you can download it any time in Settings, Models.");
     this.save();
   }
 

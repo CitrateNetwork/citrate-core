@@ -19,6 +19,8 @@ import { SYNC_SOURCE, syncLine } from "../shell/syncProgress";
 import { ACTIVATE_EXPLANATION, activationGate, activationGrantCopy, activationPhase, fmtDuration, keyMismatch, validatorState } from "./activateValidator";
 import { CHAIN_ID_TEXT } from "../network/profile";
 import { SUPPORT_EMAIL } from "../shell/UpdateBanner";
+import { LocalModelControls } from "./LocalModelControls";
+import { LOCAL_MODELS, diskTooSmall, gb } from "../shell/localModels";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 /** The registry stake as "N SALT", or "— (not read yet)" before a stakeOf read (rule 2). */
@@ -1217,90 +1219,47 @@ export function PersonaStep({ store, s }: { store: Store; s: AppState }) {
 // captions name the real source + the pinned SHA-256, and no "verified" is ever
 // fabricated (Rule 1). The `ready` state only appears from a real verify.
 export function ModelStep({ store, s }: { store: Store; s: AppState }) {
-  const pct =
-    s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 1000) / 10) : 0;
-  const gb = (bytes: number) => (bytes / 1e9).toFixed(2);
+  const chosen = LOCAL_MODELS[s.modelChoice];
   // #30 (Luke 2026-09-11) — don't make the member watch the 5 GB meter. Auto-START the
   // Gemma download in the background as soon as the model step is reached (no "Download"
   // click), and let them ENTER the dashboard immediately — chat runs on the gateway until
   // the local model verifies, and the dashboard shows the download + node-sync progress.
   // The download runs off the main thread (v0.2.3 fix), so it never blocks the UI.
+  // 2026-11-22: not when the disk cannot hold it (the step says so and offers the smaller model).
   const autoDlRef = useRef(false);
   useEffect(() => {
     if (autoDlRef.current) return;
     autoDlRef.current = true;
-    if (s.modelState === "notPresent" && !s.modelSkipped) store.startModelDownload();
-  }, [store, s.modelState, s.modelSkipped]);
+    if (s.modelState === "notPresent" && !s.modelSkipped && !diskTooSmall(s.modelFreeBytes, s.modelChoice)) store.startModelDownload();
+  }, [store, s.modelState, s.modelSkipped, s.modelFreeBytes, s.modelChoice]);
   // Never gate entry on the download finishing (the old trap: a stalled multi-GB pull
   // left "Enter your dashboard" greyed out). It is always available; the model keeps
   // downloading in the background.
   const canEnter = true;
-  const sha = "a555b900…6f2097f2"; // the pinned SHA-256 (abbreviated for display)
+  const sha = `${chosen.sha256.slice(0, 8)}…${chosen.sha256.slice(-8)}`; // the pinned SHA-256 (abbreviated for display)
 
   return (
     <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, marginTop: 4 }} data-testid="model-step">
       <div style={eyebrow}>S6.5 · Local model</div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.59 GB)</div>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model ({gb(chosen.sizeBytes)} GB)</div>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-          gemma · Q4_0 · GGUF
+          {chosen.label.toLowerCase()} · {chosen.quant} · GGUF
         </span>
       </div>
       <p style={body}>
-        Run chat on-device with a bundled llama-server, no data leaves this machine. The download is streamed and resumable, and
-        verified against a pinned SHA-256 before it is ever used. While it downloads — or if you skip — chat runs on the gateway.
+        Run chat on this computer with a bundled llama-server; no data leaves this machine. The download is streamed, keeps going
+        through a lost connection, can be paused and resumed (also after a restart), and is checked against a pinned SHA-256 before
+        it is ever used. While it downloads, or if you skip it, chat runs on the gateway. You can come back to it any time in
+        Settings, Models.
       </p>
 
       {/* HUP-S1.6 (US-1.6) — the local hardware probe's tier + rationale, with a persisted override. */}
       <TierPanel />
 
-      {(s.modelState === "notPresent" || s.modelState === "error") && !s.modelSkipped && (
-        <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn btn-primary btn-lg" onClick={() => store.startModelDownload()}>
-            {s.modelState === "error" ? "Retry download" : "Download local model"}
-          </button>
-          <button className="btn btn-ghost btn-lg" onClick={() => store.skipModel()}>
-            Skip — use the gateway
-          </button>
-        </div>
-      )}
-
-      {s.modelState === "error" && s.modelError && (
-        <div className="mono" style={{ fontSize: 11.5, color: "var(--danger)" }} data-testid="model-error">
-          {s.modelError}
-        </div>
-      )}
-
-      {s.modelState === "downloading" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="model-downloading">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>Downloading</div>
-            <div className="mono tabular" style={{ fontSize: 13, color: "var(--accent-text)" }} data-testid="model-pct">
-              {pct}%
-            </div>
-          </div>
-          <div style={{ height: 6, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-            <div style={{ height: "100%", background: "var(--accent)", width: pct + "%", transition: "width .5s var(--ease-standard)" }}></div>
-          </div>
-          <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }} data-testid="model-bytes">
-            {gb(s.modelDownloadedBytes)} / {gb(s.modelTotalBytes)} GB
-          </span>
-          {/* A download can stall (dropped connection) WITHOUT the supervisor
-              marking it "error" — leaving this state with no Skip, no Retry, and a
-              greyed "Enter your dashboard" (a trap observed 2026-08-05). Always offer
-              an escape while downloading: Skip proceeds to the gateway now; Restart
-              re-triggers the streamed (resumable) fetch. The model is optional —
-              chat runs on the gateway either way. */}
-          <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-            <button className="btn btn-ghost" onClick={() => store.skipModel()}>
-              Skip — use the gateway
-            </button>
-            <button className="btn btn-ghost" onClick={() => store.startModelDownload()}>
-              Restart download
-            </button>
-          </div>
-        </div>
-      )}
+      {!s.modelSkipped || s.modelState === "downloading" || s.modelState === "paused" ? (
+        <LocalModelControls store={store} s={s} offerSkip={true} />
+      ) : null}
 
       {s.modelState === "verifying" && (
         <div style={{ display: "flex", alignItems: "center", gap: 16 }} data-testid="model-verifying">
@@ -1327,13 +1286,13 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
 
       {s.modelSkipped && s.modelState !== "ready" && (
         <div className="mono" style={{ fontSize: 11.5, color: "var(--tx-3)" }} data-testid="model-skipped">
-          Skipped — chat runs on the gateway. You can download the local model later in Settings.
+          Skipped. Chat runs on the gateway; you can download the local model any time in Settings, Models.
         </div>
       )}
 
       <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
-          huggingface.co/ggml-org/gemma-4-E4B-it-GGUF · sha256 {sha}
+          huggingface.co/{chosen.repo} · sha256 {sha}
         </div>
         <button className="btn btn-primary" disabled={!canEnter} onClick={() => store.onS6Continue()} data-testid="model-enter">
           {s.hasGrant && s.stage === "s6" ? "Continue to Activate validator" : "Enter your dashboard"}

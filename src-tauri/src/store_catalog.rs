@@ -968,8 +968,9 @@ pub(crate) fn installed_sync(
 fn remove_unverified_model(models_dir: &Path, file: &str) -> Result<(), Refusal> {
     let file = crate::model_delete::file_from_id(file)
         .map_err(|e| refuse("install_failed", e.to_string()))?;
-    let _lock = crate::model::DownloadGuard::acquire(&models_dir.join(format!("{file}.part")))
-        .map_err(|_| refuse("in_use", "A download of this model is running"))?;
+    let _lock =
+        crate::model::DownloadGuard::acquire_exclusive(&models_dir.join(format!("{file}.part")))
+            .map_err(|_| refuse("in_use", "A download of this model is running"))?;
     remove_unverified_model_locked(models_dir, &file)
 }
 
@@ -1027,9 +1028,9 @@ fn reconcile_models(root: &Path, t: &Targets<'_>, installing: Option<&str>) -> R
             keep.push(r);
             continue;
         };
-        let Ok(lock) =
-            crate::model::DownloadGuard::acquire(&t.models_dir.join(format!("{file}.part")))
-        else {
+        let Ok(lock) = crate::model::DownloadGuard::acquire_exclusive(
+            &t.models_dir.join(format!("{file}.part")),
+        ) else {
             keep.push(r);
             continue;
         };

@@ -157,6 +157,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "model_status":
       return modelMock.status;
     case "model_download":
+    case "model_download_pause":
     case "model_verify":
     case "model_serve_start":
     case "model_serve_stop":
@@ -948,6 +949,11 @@ describe("tauri adapter — model domain is wired to the real download+verify+se
     await expect(bridge.model.verify()).resolves.toBeUndefined();
     await expect(bridge.model.serveStart()).resolves.toBeUndefined();
     expect(invokeMock).toHaveBeenCalledWith("model_download", undefined);
+    // The smaller model is passed by key; pause has its own command.
+    await expect(bridge.model.download("small")).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("model_download", { model: "small" });
+    await expect(bridge.model.pause()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("model_download_pause", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_verify", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_serve_start", undefined);
   });
