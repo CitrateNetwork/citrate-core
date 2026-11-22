@@ -1049,7 +1049,7 @@ export function freshState(pid: string): AppState {
     modelState: "notPresent",
     activeModelId: null,
     modelDownloadedBytes: 0,
-    modelTotalBytes: 5_335_289_824,
+    modelTotalBytes: 4_590_807_392,
     modelError: null,
     modelSkipped: false,
     modelChoice: "default",

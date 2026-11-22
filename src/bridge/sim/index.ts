@@ -488,10 +488,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
     model: {
       async status(): Promise<ModelStatus> {
         assertSimAllowed("model.status");
-        // The sim total mirrors the real pinned size (5,335,289,824 bytes) so the
+        // The sim total mirrors the real pinned size (4,590,807,392 bytes) so the
         // preview shows the honest number; simModelPct/simModelVerified are local
         // web-dev animation state (never real bytes/hash).
-        const total = 5_335_289_824;
+        const total = 4_590_807_392;
         if (simModelVerified) return { state: "ready" };
         if (simModelDownloaded) return { state: "verifying" };
         if (simModelPct <= 0) return { state: "notPresent" };

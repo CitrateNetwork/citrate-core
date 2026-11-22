@@ -405,7 +405,7 @@ describe("sim adapter — model domain is an honest web-dev preview (BC-3)", () 
     await bridge.model.download();
     const st = await bridge.model.status();
     if (st.state !== "downloading") throw new Error("expected downloading");
-    expect(st.totalBytes).toBe(5_335_289_824);
+    expect(st.totalBytes).toBe(4_590_807_392);
   });
 });
 

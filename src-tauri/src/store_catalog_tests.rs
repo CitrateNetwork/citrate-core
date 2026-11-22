@@ -1677,7 +1677,8 @@ fn tripwire_every_store_model_verify_runs_under_the_download_lock() {
     assert!(!prod.contains(".verify()"), "a bare verify in store_catalog.rs");
     let rec = &prod[prod.find("fn reconcile_models(").expect("reconcile")..];
     let rec = &rec[..rec.find("\n}\n").expect("ends")];
-    let lock = rec.find("DownloadGuard::acquire(").expect("reconcile takes the lock");
+    // The exclusive form: it also waits out a download between its passes or in its verify.
+    let lock = rec.find("DownloadGuard::acquire_exclusive(").expect("reconcile takes the lock");
     let check = rec.find("is_file_ready(").expect("re-check");
     let verify = rec.find(".verify_held(&lock)").expect("verify under it");
     let clean = rec.find("remove_unverified_model_locked(").expect("clean-up under it");

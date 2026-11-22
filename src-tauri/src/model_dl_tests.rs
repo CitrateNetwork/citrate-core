@@ -688,12 +688,67 @@ fn the_disk_check_counts_the_bytes_already_downloaded() {
     mgr.download().expect("what is left fits");
 }
 
+#[cfg(unix)]
 #[test]
-fn a_full_disk_while_writing_is_reported_as_disk_full_and_the_part_is_kept() {
+fn enospc_maps_to_disk_full_and_other_io_errors_stay_io() {
     let e = io_to_model_error(std::io::Error::from_raw_os_error(libc::ENOSPC), 10, Some(3));
     assert!(matches!(e, ModelError::DiskFull { need: 10, free: 3 }), "got {e:?}");
     let other = io_to_model_error(std::io::Error::other("boom"), 10, Some(3));
     assert!(matches!(other, ModelError::Io(_)));
+}
+
+/// A real ENOSPC through the real write path: the `.part` is `/dev/full`, which accepts the open
+/// and refuses every write with ENOSPC. The download reports DiskFull and keeps the `.part` (and
+/// its sidecar) for a resume once space is freed.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_disk_while_writing_is_reported_as_disk_full_and_the_part_is_kept() {
+    let body = body_of(64 * 1024);
+    let srv = ModelServer::start(body.clone());
+    let dir = tmp_dir("enospc");
+    let part = part_of(&dir);
+    // 4 bytes already "downloaded" would need a seek; /dev/full reports length 0, so this is a
+    // fresh download whose first write (the magic) fails.
+    std::os::unix::fs::symlink("/dev/full", &part).expect("link the part to /dev/full");
+    let mgr = net_manager(&dir, &srv, &body);
+    let r = mgr.download();
+    assert!(matches!(r, Err(ModelError::DiskFull { .. })), "got {r:?}");
+    assert!(std::fs::symlink_metadata(&part).is_ok(), "the .part is kept");
+    assert!(read_part_meta(&dir, MODEL_FILE).is_some(), "and its sidecar");
+    assert!(!dir.join(MODEL_FILE).exists());
+}
+
+#[test]
+fn delete_and_store_locks_respect_a_download_waiting_for_the_connection() {
+    let dir = tmp_dir("busy-lock");
+    let part = part_of(&dir);
+    let session = BusyMark::claim_session(&part).expect("first claim");
+    assert!(BusyMark::claim_session(&part).is_none(), "a second start does not begin a second session");
+    assert!(matches!(DownloadGuard::acquire_exclusive(&part), Err(ModelError::AlreadyDownloading)));
+    assert!(download_busy(&part));
+    // The session's own managers still take the plain lock.
+    let g = DownloadGuard::acquire(&part).expect("the session's own download");
+    drop(g);
+    drop(session);
+    assert!(!download_busy(&part));
+    assert!(DownloadGuard::acquire_exclusive(&part).is_ok());
+}
+
+#[test]
+fn a_second_start_attaches_to_the_running_download_instead_of_failing() {
+    let dir = tmp_dir("attach");
+    let part = dir.join(format!("{}.part", SMALL_PIN.file));
+    let session = BusyMark::claim_session(&part).expect("claim");
+    let d2 = dir.clone();
+    let h = std::thread::spawn(move || download_pinned_blocking(&d2, LocalModel::Small));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!h.is_finished(), "the second start waits on the first");
+    if let Ok(mut e) = last_errors().lock() {
+        e.insert(part.clone(), ModelError::Paused.user_message());
+    }
+    drop(session);
+    let r = h.join().expect("join");
+    assert_eq!(r, Err(ModelError::Paused.user_message()), "it reports the first one's outcome");
 }
 
 // ===========================================================================

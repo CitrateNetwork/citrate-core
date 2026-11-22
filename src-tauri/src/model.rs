@@ -960,6 +960,20 @@ fn in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> 
 }
 
 impl DownloadGuard {
+    /// Claim `part` for work that must not overlap a download session at all (deleting or
+    /// replacing the file): refused while a download holds the lock, AND while one waits for the
+    /// connection between passes or verifies (it holds only its busy mark then).
+    pub fn acquire_exclusive(part: &std::path::Path) -> Result<Self> {
+        if is_marked_busy(part) {
+            return Err(ModelError::AlreadyDownloading);
+        }
+        let guard = Self::acquire(part)?;
+        if is_marked_busy(part) {
+            return Err(ModelError::AlreadyDownloading);
+        }
+        Ok(guard)
+    }
+
     /// Claim `part`; `Err(AlreadyDownloading)` if another download holds it.
     pub fn acquire(part: &std::path::Path) -> Result<Self> {
         let mut set = in_flight()
@@ -1035,6 +1049,20 @@ impl Drop for BusyMark {
                 }
             }
         }
+    }
+}
+
+impl BusyMark {
+    /// Claim `part` for a new download session: `None` when a download, its reconnect wait or its
+    /// verify already runs on it. The check and the claim are one step, so two starts at the same
+    /// moment never both begin.
+    fn claim_session(part: &std::path::Path) -> Option<BusyMark> {
+        let mut m = busy_marks().lock().ok()?;
+        if m.contains_key(part) || download_in_flight(part) {
+            return None;
+        }
+        m.insert(part.to_path_buf(), 1);
+        Some(BusyMark(part.to_path_buf()))
     }
 }
 
@@ -2317,7 +2345,7 @@ pub fn download_pinned_blocking(
 ) -> std::result::Result<(), String> {
     let pin = m.pin();
     let part = dir.join(format!("{}.part", pin.file));
-    if download_busy(&part) {
+    let wait_on_running = || {
         crate::model_log::event(&format!(
             "{}: a download is already running; waiting on it",
             pin.file
@@ -2325,16 +2353,19 @@ pub fn download_pinned_blocking(
         while download_busy(&part) {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        let mgr = manager_for(dir, m);
-        if mgr.is_ready() {
+        if manager_for(dir, m).is_ready() {
             return Ok(());
         }
         let last = last_errors()
             .lock()
             .ok()
             .and_then(|e| e.get(&part).cloned());
-        return Err(last.unwrap_or_else(|| ModelError::Paused.user_message()));
-    }
+        Err(last.unwrap_or_else(|| ModelError::Paused.user_message()))
+    };
+    // A second start (Retry, a relaunch, the Settings card) attaches to the running download.
+    let Some(_session) = BusyMark::claim_session(&part) else {
+        return wait_on_running();
+    };
     let urls = sources_for(m);
     crate::model_log::event(&format!(
         "{}: download requested ({} bytes) from {}",
@@ -2374,7 +2405,15 @@ pub fn download_pinned_blocking(
             if let Ok(mut e) = last_errors().lock() {
                 e.remove(&part);
             }
+            if m == LocalModel::Small {
+                free_default_part_if_it_cannot_finish(dir);
+            }
             Ok(())
+        }
+        // Another writer (a catalog download of the same file) got the lock first: wait on it.
+        Err(ModelError::AlreadyDownloading) => {
+            drop(_session);
+            wait_on_running()
         }
         Err(e) => {
             crate::model_log::event(&format!("{}: download stopped: {e}", pin.file));
@@ -2384,6 +2423,33 @@ pub fn download_pinned_blocking(
             }
             Err(msg)
         }
+    }
+}
+
+/// Once the smaller model is Ready, the default model's unfinished `.part` (up to 4.59 GB) is
+/// removed when this disk could not hold the rest of it anyway (the low-disk path). A `.part`
+/// that could still finish, or one a download is using, is left alone.
+fn free_default_part_if_it_cannot_finish(dir: &std::path::Path) {
+    let part = dir.join(format!("{}.part", DEFAULT_PIN.file));
+    let Ok(have) = std::fs::metadata(&part).map(|m| m.len()) else {
+        return;
+    };
+    let need = DEFAULT_PIN
+        .size_bytes
+        .saturating_sub(have)
+        .saturating_add(DISK_MARGIN_BYTES);
+    if disk_free(dir).is_some_and(|free| free >= need) {
+        return;
+    }
+    let Ok(_lock) = DownloadGuard::acquire_exclusive(&part) else {
+        return;
+    };
+    if std::fs::remove_file(&part).is_ok() {
+        remove_part_meta(dir, DEFAULT_PIN.file);
+        crate::model_log::event(&format!(
+            "{}: removed its {have}-byte partial download to free the disk (the smaller model is ready)",
+            DEFAULT_PIN.file
+        ));
     }
 }
 

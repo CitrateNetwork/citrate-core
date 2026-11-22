@@ -175,7 +175,7 @@ pub fn delete(
     let file = file_from_id(file)?;
     // The same single-flight lock a download takes: none can start while this runs, and a
     // running one makes this refuse.
-    let _lock = crate::model::DownloadGuard::acquire(&dir.join(format!("{file}.part")))
+    let _lock = crate::model::DownloadGuard::acquire_exclusive(&dir.join(format!("{file}.part")))
         .map_err(|_| DeleteRefusal::Downloading)?;
     // Checked again under the lock (a download may have finished or a server started meanwhile).
     let canonical = check(&dir, bundled_dir, &file, usage)?;
@@ -252,7 +252,7 @@ pub fn states(
                 .err()
                 .map(|r| r.to_string());
             if reason.is_none()
-                && crate::model::download_in_flight(&models_dir.join(format!("{}.part", m.file)))
+                && crate::model::download_busy(&models_dir.join(format!("{}.part", m.file)))
             {
                 reason = Some(DeleteRefusal::Downloading.to_string());
             }
