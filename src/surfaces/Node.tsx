@@ -38,6 +38,7 @@ import { grantExplanation } from "../data/grantCopy";
 import { activateValidatorLabel } from "../onboarding/activateValidator";
 import { ActivationTxPanel, hasActivationTxStatus } from "../onboarding/ActivationTxPanel";
 import { SurfaceProps } from "./shared";
+import { hostOs } from "../agent/toolchainGuidance";
 import { FRESH_MS, TONE_COLOR, activationOffer, bondFlags, directPeers, headFresh, heightLine, nodeWord, statusSentence } from "./node/nodeWords";
 import { PAGE, Panel, Row, StateCard, errText } from "./node/parts";
 
@@ -208,6 +209,8 @@ export function NodeStatusView({ store, s, publicHead, publicHeadAgeMs, publicHe
     localStillForMs,
     nodeSyncState: s.nodeSyncState,
     peerTips: s.peerTips,
+    crashLoop: s.nodeCrashLoop,
+    os: hostOs(),
   });
   const headOk = headFresh({ publicHead, publicHeadAgeMs, publicHeadError });
   const bond = bondFlags(s);
@@ -263,7 +266,7 @@ export function NodeStatusView({ store, s, publicHead, publicHeadAgeMs, publicHe
             </span>
           </span>
           {/* SCL-S0.6: a refused start names the holder (pid, path) and what to do, from node.rs. */}
-          <span role={s.nodeBlocked ? "alert" : undefined} style={{ fontSize: 13, lineHeight: 1.6, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
+          <span role={s.nodeBlocked || s.nodeCrashLoop ? "alert" : undefined} style={{ fontSize: 13, lineHeight: 1.6, color: "var(--tx-2)", overflowWrap: "anywhere" }}>
             {w.why}
           </span>
           {notice && (

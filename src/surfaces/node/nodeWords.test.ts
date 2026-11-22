@@ -1,7 +1,8 @@
 // K3 (ported from #362, adapted to main): Node › Status words (UI truth contract §1 "Network and node"). Unknown is never zero, nothing
 // not-live is shown as running, and the words are exactly the contract's.
 import { describe, expect, it } from "vitest";
-import { activationOffer, directPeers, heightLine, nodeWord, quorumTip, statusSentence, SYNC_AHEAD, SYNC_SPLIT, type NodeWordInput } from "./nodeWords";
+import { activationOffer, CRASH_LOOP_WORD, crashLoopWord, directPeers, heightLine, nodeWord, OPEN_FILES_GUIDANCE_OTHER, quorumTip, statusSentence, SYNC_AHEAD, SYNC_SPLIT, type NodeWordInput } from "./nodeWords";
+import type { NodeCrashLoopView } from "../../bridge/domains";
 import { canOfferActivation } from "../../shell/chainTruth";
 
 const base: NodeWordInput = {
@@ -279,5 +280,60 @@ describe("Activate validator offer (canOfferActivation, contract §1 Validators)
             const s = member({ validatorActivation, bondedStake, bondActivated, bondUnlocked });
             expect(activationOffer("Synced", s).offer, JSON.stringify(s)).toBe(canOfferActivation(bondedStake, validatorActivation, bondActivated, bondUnlocked));
           }
+  });
+});
+
+// 0.5.7: a node that keeps stopping on start with the same error is named, with its own line,
+// instead of reading "Starting" between restarts. EMFILE gets the open-file guidance.
+describe("node crash loop (0.5.7)", () => {
+  const EMFILE: NodeCrashLoopView = {
+    kind: "tooManyOpenFiles",
+    line: "Error: IO error: While open a file for random read: /x/node/003500.sst: Too many open files",
+    count: 9,
+    firstAtUnixMs: 1_000,
+    lastAtUnixMs: 241_000,
+  };
+
+  it("names the EMFILE loop with the Mac guidance and the node's own line", () => {
+    const r = nodeWord({ ...base, node: "prov", localHeight: 0, crashLoop: EMFILE, os: "macos" });
+    expect(r.word).toBe(CRASH_LOOP_WORD);
+    expect(r.tone).toBe("bad");
+    expect(r.running).toBe(false);
+    expect(r.why).toContain(
+      "Your Mac's open-file limit is too low for the node. Restart Citrate Core; if it persists, run: sudo launchctl limit maxfiles 65536 200000",
+    );
+    expect(r.why.endsWith("sudo launchctl limit maxfiles 65536 200000")).toBe(true);
+    expect(r.why).toContain("stopped 9 times in a row");
+    expect(r.why).toContain(EMFILE.line);
+    expect(r.why).toContain("keeps retrying with backoff");
+  });
+
+  it("uses host-neutral guidance off the Mac", () => {
+    const r = crashLoopWord(EMFILE, "linux");
+    expect(r.why).toContain(OPEN_FILES_GUIDANCE_OTHER);
+    expect(r.why).not.toContain("launchctl");
+  });
+
+  it("names any other repeated error as the node printed it", () => {
+    const r = nodeWord({ ...base, node: "error", crashLoop: { ...EMFILE, kind: "other", line: "Error: genesis mismatch", count: 3 } });
+    expect(r.word).toBe(CRASH_LOOP_WORD);
+    expect(r.why).toContain("Error: genesis mismatch");
+    expect(r.why).not.toContain("open-file limit");
+  });
+
+  it("without a loop the words are unchanged", () => {
+    expect(w({ node: "prov", localHeight: 0, crashLoop: null })).toBe("Starting");
+    expect(w({ node: "error" })).toBe("Error");
+  });
+
+  it("copy rules: no em-dash, no token or rewards wording", () => {
+    for (const os of ["macos", "linux"] as const) {
+      for (const kind of ["tooManyOpenFiles", "other"] as const) {
+        const r = crashLoopWord({ ...EMFILE, kind }, os);
+        const text = r.word + " " + r.why;
+        expect(text).not.toMatch(/—/);
+        expect(text).not.toMatch(/\b(SALT|token|tokens|reward|rewards|dogfood)\b/i);
+      }
+    }
   });
 });

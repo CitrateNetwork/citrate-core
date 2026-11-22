@@ -2065,6 +2065,9 @@ export class Store {
       // SCL-S0.6: a start refused by a holder of the chain database or a node port is an error
       // the member can act on (the message names the holder), not a silent "off".
       patch.nodeBlocked = st.blocked?.message ?? null;
+      // 0.5.7: a node that keeps exiting on start with the same error is named, with its line,
+      // instead of reading "Starting" between restarts.
+      patch.nodeCrashLoop = st.crashLoop ?? null;
       // The mining gate holds or disarms production (node.rs). A producer the backend disarmed
       // is no longer armed here either, so the re-arm path above retries it (still gated).
       patch.miningHold = st.miningHold ?? null;

@@ -228,6 +228,20 @@ export interface NodeBlocker {
   message: string;
 }
 
+/**
+ * 0.5.7: the node keeps exiting on start with the same error (`node_status.crashLoop`, from the
+ * supervisor's crash records: the node's own stderr). `kind` is "tooManyOpenFiles" for EMFILE.
+ */
+export interface NodeCrashLoopView {
+  kind: "tooManyOpenFiles" | "other";
+  /** The node's own error line from the latest crash. */
+  line: string;
+  /** Crashes in a row with this error. */
+  count: number;
+  firstAtUnixMs: number;
+  lastAtUnixMs: number;
+}
+
 /** The `node_status` shape. */
 export interface NodeStatusView {
   state: string;
@@ -246,6 +260,8 @@ export interface NodeStatusView {
   syncState?: { state: string; reason: string | null; forkDepth: number | null; appliedHeight: number | null; highestSeen: number | null };
   /** CORE-N4: head heights the node's peers announced (net_peerInfo); unset when not exposed. */
   peerTips?: number[];
+  /** 0.5.7: set while the node keeps exiting on start with the same error; unset otherwise. */
+  crashLoop?: NodeCrashLoopView;
 }
 
 /** A settled exit's outcome as read from the ValidatorRegistry's logs (wei as decimal strings). */

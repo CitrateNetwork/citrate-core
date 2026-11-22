@@ -53,6 +53,8 @@ mod daemons;
 mod deep_link_delivery;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
+// 0.5.7: the start-up soft RLIMIT_NOFILE raise, inherited by every sidecar.
+mod fd_limit;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_intel;
 mod contract_reader;
@@ -358,6 +360,10 @@ pub fn run() {
     // builder creates GTK/WebKit and while the process is single-threaded; logs one line.
     #[cfg(target_os = "linux")]
     linux_webkit_env::apply();
+    // 0.5.7: raise the soft open-file limit before any sidecar is spawned, so every child (the
+    // node and its RocksDB first) inherits it. A Finder/Dock launch on macOS starts at 256, too
+    // few for the node's SST files. Logs one line; never fails start-up.
+    fd_limit::apply_at_startup();
 
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window

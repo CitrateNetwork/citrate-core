@@ -1037,6 +1037,8 @@ struct Cell {
     slow_retry_every: Option<Duration>,
     slow_retry_at: Option<u64>,
     slow_retries: u64,
+    /// Recent crashes, for naming a startup crash loop ([`Supervisor::crash_loop`]).
+    crash_history: crate::crash_loop::CrashHistory,
 }
 
 impl Cell {
@@ -1574,6 +1576,7 @@ impl Supervisor {
                 slow_retry_every: config.slow_retry,
                 slow_retry_at: None,
                 slow_retries: 0,
+                crash_history: crate::crash_loop::CrashHistory::new(),
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1749,6 +1752,20 @@ impl Supervisor {
             last_crash: c.status.last_crash.clone(),
             slow_retry: c.slow_retry_view(),
         })
+    }
+
+    /// The startup crash loop the latest crash records form, if any (0.5.7 fd-limit lane): the
+    /// same error class [`crate::crash_loop::CRASH_LOOP_THRESHOLD`] or more times in a row, read
+    /// from each crash record's stderr tail. `None` while no loop is current, while the service
+    /// is stopped or stopping by request, and once a child has stayed up past the loop gap. The
+    /// supervisor keeps retrying under its backoff either way; this only names why.
+    pub fn crash_loop(&self) -> Option<crate::crash_loop::CrashLoop> {
+        let c = self.shared.lock();
+        if c.desired == Desired::Stopped {
+            return None;
+        }
+        let alive = c.phase == Phase::Alive;
+        c.crash_history.crash_loop(c.clock.now_unix_ms(), alive)
     }
 
     /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
@@ -3644,6 +3661,8 @@ fn record_crash_status(shared: &Shared, record: &CrashRecord) {
     let mut c = shared.lock();
     c.status.restarts = c.status.restarts.saturating_add(1);
     c.status.last_crash = Some(record.clone());
+    c.crash_history
+        .record(record.at_unix_ms, &record.stderr_tail, &record.exit);
     c.touch();
 }
 
@@ -3662,6 +3681,11 @@ mod tests {
     // CORE-D5: captured output kept on disk in rotating files (uses the unix helpers above).
     #[cfg(unix)]
     include!("supervisor_log_file_tests.rs");
+
+    // 0.5.7 fd-limit lane: a repeated startup error is named as a crash loop (uses the unix
+    // helpers above).
+    #[cfg(unix)]
+    include!("supervisor_crash_loop_tests.rs");
 
     #[cfg(windows)]
     include!("supervisor_windows_tests.rs");

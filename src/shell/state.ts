@@ -13,7 +13,7 @@
 import { newThreadId } from "./slices/chatHistory";
 import type { ValidatorActivation, ValidatorCounts } from "./chainTruth";
 import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
-import type { ActivationStatusView, Brief, HermesPersona, LocalSkill } from "../bridge/domains";
+import type { ActivationStatusView, Brief, HermesPersona, LocalSkill, NodeCrashLoopView } from "../bridge/domains";
 import type { MembershipPrice } from "../data/membership";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
@@ -493,6 +493,12 @@ export interface AppState {
    * Observed state, never persisted.
    */
   nodeBlocked: string | null;
+  /**
+   * 0.5.7: set while the node keeps exiting on start with the same error (`node_status.crashLoop`,
+   * the node's own stderr line). The supervisor keeps retrying meanwhile. Observed state, never
+   * persisted.
+   */
+  nodeCrashLoop: NodeCrashLoopView | null;
   /** Why block production is held, from `node_status.miningHold`. Observed state, never persisted. */
   miningHold: string | null;
   /** CORE-N4: the node's own syncState, from `node_status.syncState` (citrate_nodeIdentity);
@@ -981,6 +987,7 @@ export function freshState(pid: string): AppState {
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
     nodeBlocked: null,
+    nodeCrashLoop: null,
     miningHold: null,
     nodeSyncState: null,
     peerTips: null,
