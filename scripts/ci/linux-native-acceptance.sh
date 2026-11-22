@@ -951,10 +951,30 @@ start_session_services() { # kind: private session bus + keyring for this HOME
   local -a senv=(HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" XDG_DATA_HOME="$HOME_DIR/.local/share"
     XDG_CACHE_HOME="$HOME_DIR/.cache" XDG_STATE_HOME="$HOME_DIR/.local/state" XDG_RUNTIME_DIR="$XRT"
     DBUS_SESSION_BUS_ADDRESS="unix:path=$XRT/bus" DISPLAY="${K1L_PRIVATE_DISPLAY:-}" NO_AT_BRIDGE=1)
+  # The keyring must be the one started below, never a second gnome-keyring the bus activates on
+  # demand: an activated daemon races the first one for org.freedesktop.secrets, reads its
+  # half-written login.keyring ("invalid or unrecognized format") and serves a locked default
+  # collection (PR #763, updater e2e on aarch64, 3 of 3 runs). So the bus reads the standard
+  # session config with one private service dir listed first, which takes precedence over the
+  # standard dirs: it masks gnome-keyring's bus names with a service that fails to start. Every
+  # other service (portal, gvfs, at-spi, dconf) is still activated from the standard dirs.
+  local masked="$XRT/dbus-masked-services" n
+  mkdir -p "$masked" || return 1
+  for n in org.freedesktop.secrets org.gnome.keyring org.freedesktop.impl.portal.Secret; do
+    printf '[D-BUS Service]\nName=%s\nExec=/bin/false\n' "$n" >"$masked/$n.service" || return 1
+  done
+  cat >"$XRT/session-bus.conf" <<EOF || return 1
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <servicedir>$masked</servicedir>
+  <include>/usr/share/dbus-1/session.conf</include>
+</busconfig>
+EOF
   "${CONFINE[@]}" env "${senv[@]}" python3 -I -c 'import ctypes, os, sys
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0: sys.exit("prctl(PR_SET_CHILD_SUBREAPER) failed")
-os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile --address="unix:path=$XRT/bus" \
-    </dev/null >>"$W/logs/session.log" 2>&1 &
+os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --config-file="$XRT/session-bus.conf" --nofork --nopidfile \
+    --address="unix:path=$XRT/bus" </dev/null >>"$W/logs/session.log" 2>&1 &
   local out=$!
   local i; for i in $(seq 1 50); do [ -S "$XRT/bus" ] && break; sleep 0.1; done
   [ -S "$XRT/bus" ] || return 1
@@ -966,6 +986,25 @@ os.execvp(sys.argv[1], sys.argv[1:])' dbus-daemon --session --nofork --nopidfile
       >>"$W/logs/session.log" 2>&1 &
     local kr=$!
     SESSION_PIDS+=("$kr"); INFRA_PIDS+=("$kr")
+    # Wait (bounded) until that daemon owns org.freedesktop.secrets, and check that the owner is
+    # that daemon, before asking the collection anything.
+    local owned="" owner=""
+    for i in $(seq 1 100); do
+      kill -0 "$kr" 2>/dev/null || break
+      owned="$("${CONFINE[@]}" env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null |
+        awk '/boolean/ {print $2}')"
+      [ "$owned" = true ] && break
+      sleep 0.1
+    done
+    [ "$owned" = true ] || { say "     $1 session: gnome-keyring-daemon (pid $kr) did not own org.freedesktop.secrets within 10 s"; return 1; }
+    owner="$("${CONFINE[@]}" env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+      /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID string:org.freedesktop.secrets 2>/dev/null |
+      awk '/uint32/ {print $2}')"
+    case " $kr $(descendants "$kr" | awk '{print $1}' | tr '\n' ' ') " in
+      *" $owner "*) ;;
+      *) say "     $1 session: org.freedesktop.secrets is owned by pid ${owner:-?}, not the keyring started here (pid $kr)"; return 1 ;;
+    esac
     local locked=""
     for i in $(seq 1 50); do
       locked="$("${CONFINE[@]}" env "${senv[@]}" dbus-send --session --print-reply --dest=org.freedesktop.secrets \
