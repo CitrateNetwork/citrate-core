@@ -1371,12 +1371,20 @@ struct Shared {
     failed_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
     /// See [`SupervisorConfig::settle_barrier`].
     settle_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Every stderr line ever captured, counted. The monitor reads it at each spawn, so at a
+    /// crash it knows how many of the ring's `err` lines that run printed (the crash-loop
+    /// classification reads only those).
+    err_lines: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
     /// One captured line: into the ring, and (CORE-D5) onto disk when a log file is configured.
     fn capture(&self, stream: &'static str, line: String) {
         let ts = self.clock.now_unix_ms();
+        if stream == "err" {
+            self.err_lines
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let for_disk = self.log_file.as_ref().map(|_| line.clone());
         // The ring first: what the app shows never waits on the disk.
         self.logs.push(LogLine {
@@ -1576,7 +1584,9 @@ impl Supervisor {
                 slow_retry_every: config.slow_retry,
                 slow_retry_at: None,
                 slow_retries: 0,
-                crash_history: crate::crash_loop::CrashHistory::new(),
+                crash_history: crate::crash_loop::CrashHistory::new(
+                    crate::crash_loop::crash_loop_gap_ms(config.slow_retry),
+                ),
             }),
             wake: Condvar::new(),
             clock: config.clock.clone(),
@@ -1588,6 +1598,7 @@ impl Supervisor {
             epoch,
             failed_barrier: config.failed_barrier.clone(),
             settle_barrier: config.settle_barrier.clone(),
+            err_lines: std::sync::atomic::AtomicU64::new(0),
         });
         let spawn_gate = config.spawn_gate.clone();
         spawn_gate.track(instance, &name, &shared);
@@ -1756,16 +1767,16 @@ impl Supervisor {
 
     /// The startup crash loop the latest crash records form, if any (0.5.7 fd-limit lane): the
     /// same error class [`crate::crash_loop::CRASH_LOOP_THRESHOLD`] or more times in a row, read
-    /// from each crash record's stderr tail. `None` while no loop is current, while the service
-    /// is stopped or stopping by request, and once a child has stayed up past the loop gap. The
-    /// supervisor keeps retrying under its backoff either way; this only names why.
+    /// from the stderr each crashed run printed. `None` while no loop is current, while the
+    /// service is stopped or stopping by request, and once a child earned health credit or read
+    /// Ready (never on raw uptime: a child is `Alive` the moment it is spawned). The supervisor
+    /// keeps retrying under its backoff either way; this only names why.
     pub fn crash_loop(&self) -> Option<crate::crash_loop::CrashLoop> {
         let c = self.shared.lock();
         if c.desired == Desired::Stopped {
             return None;
         }
-        let alive = c.phase == Phase::Alive;
-        c.crash_history.crash_loop(c.clock.now_unix_ms(), alive)
+        c.crash_history.crash_loop()
     }
 
     /// A snapshot of the recent captured stdout/stderr lines (oldest→newest, bounded at
@@ -2379,6 +2390,44 @@ fn stderr_tail_from_ring(shared: &Arc<Shared>) -> String {
     joined[start..].to_string()
 }
 
+/// How long a crash waits for its run's log readers to reach end of file before the run's stderr
+/// is read for the crash-loop history. Bounded: a descendant that kept the pipe open costs at most
+/// this per crash.
+const RUN_STDERR_EOF_WAIT: Duration = Duration::from_millis(250);
+
+/// Wait until every reader has finished (its pipe reached end of file), up to `within`. Joins
+/// nothing: the readers stay owned by the monitor's bookkeeping.
+fn wait_readers_eof(readers: &[Reader], within: Duration) {
+    let deadline = std::time::Instant::now() + within;
+    while readers.iter().any(|r| !r.handle.is_finished()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The stderr lines this run printed: the ring's last `err` lines, as many as were captured since
+/// `err_mark` (read at spawn; earlier runs' readers are joined before a spawn, so nothing of
+/// theirs lands after it), bounded at [`STDERR_TAIL_BYTES`]. Empty when the run printed none.
+fn run_stderr_from_ring(shared: &Arc<Shared>, err_mark: u64) -> String {
+    let since = shared
+        .err_lines
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .saturating_sub(err_mark);
+    let take = usize::try_from(since).unwrap_or(usize::MAX);
+    let errs: Vec<String> = shared
+        .logs
+        .snapshot()
+        .into_iter()
+        .filter(|l| l.stream == "err")
+        .map(|l| l.line)
+        .collect();
+    let joined = errs[errs.len().saturating_sub(take)..].join("\n");
+    let start = joined.len().saturating_sub(STDERR_TAIL_BYTES);
+    let start = (start..joined.len())
+        .find(|&i| joined.is_char_boundary(i))
+        .unwrap_or(joined.len());
+    joined[start..].to_string()
+}
+
 /// Render a child exit status compactly for the crash record.
 fn render_exit(status: &std::process::ExitStatus) -> String {
     if let Some(code) = status.code() {
@@ -2803,7 +2852,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
-                record_crash_status(&shared, &record);
+                record_crash_status(&shared, &record, "");
                 // A member who joined while the OS call ran: this attempt was theirs.
                 adopt_member_budget(&shared, &mut budget_member);
                 let failures = count_failure(&shared);
@@ -2829,6 +2878,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
         // Stream stdout + stderr into the shared log ring (Q-A.2). Done BEFORE publishing so no
         // early line is missed. The crash tail is later derived from the ring's `err` lines.
         // Earlier incarnations' readers were all joined by the reconcile above.
+        // The stderr lines captured before this run, so a crash reads only its own (review P3).
+        let err_mark = shared.err_lines.load(std::sync::atomic::Ordering::SeqCst);
         readers.extend(spawn_log_readers(&mut child, &spec.name, &shared));
 
         // --- publication admission: a newer intent that arrived during the OS call wins ---
@@ -2876,6 +2927,10 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                 ended(&watch);
                 drain_grace(&shared);
                 let stderr_tail = stderr_tail_from_ring(&shared);
+                // The run's own lines: let its readers reach end of file first (bounded), so the
+                // last line it printed is in the ring before it is read.
+                wait_readers_eof(&readers, RUN_STDERR_EOF_WAIT);
+                let run_stderr = run_stderr_from_ring(&shared, err_mark);
                 let record = CrashRecord {
                     name: spec.name.clone(),
                     at_unix_ms: clock.now_unix_ms(),
@@ -2884,7 +2939,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
-                record_crash_status(&shared, &record);
+                record_crash_status(&shared, &record, &run_stderr);
                 clear_pid(&shared);
 
                 let failures = count_failure(&shared);
@@ -2915,7 +2970,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>) {
                     restart_attempt: consecutive_failures(&shared),
                 };
                 append_crash_record(&crash_record_path, &record);
-                record_crash_status(&shared, &record);
+                record_crash_status(&shared, &record, "");
                 clear_pid(&shared);
 
                 let failures = count_failure(&shared);
@@ -2964,6 +3019,8 @@ fn grant_credit(shared: &Shared) {
     let mut c = shared.lock();
     c.counters.consecutive_failures = 0;
     c.counters.health_credits = c.counters.health_credits.saturating_add(1);
+    // A healthy child ends any crash loop (review P1-1).
+    c.crash_history.recovered();
     c.touch();
 }
 
@@ -3068,6 +3125,10 @@ fn set_readiness(
     let mut c = shared.lock();
     if c.intent_sequence != seq || c.incarnation != incarnation || c.phase != Phase::Alive {
         return;
+    }
+    if readiness == Readiness::Ready {
+        // A fresh probe success of the current incarnation ends any crash loop (review P1-1).
+        c.crash_history.recovered();
     }
     if c.readiness != readiness || c.last_ok != last_ok {
         c.readiness = readiness;
@@ -3656,13 +3717,14 @@ fn arm_slow_retry(shared: &Shared, seq: u64, max_retries: u32) -> bool {
     true
 }
 
-/// Record a crash into the shared status (bumps `restarts`, sets `last_crash`).
-fn record_crash_status(shared: &Shared, record: &CrashRecord) {
+/// Record a crash into the shared status (bumps `restarts`, sets `last_crash`) and into the
+/// crash-loop history, classified from `run_stderr`: the stderr the crashed run itself printed.
+fn record_crash_status(shared: &Shared, record: &CrashRecord, run_stderr: &str) {
     let mut c = shared.lock();
     c.status.restarts = c.status.restarts.saturating_add(1);
     c.status.last_crash = Some(record.clone());
     c.crash_history
-        .record(record.at_unix_ms, &record.stderr_tail, &record.exit);
+        .record(record.at_unix_ms, run_stderr, &record.exit);
     c.touch();
 }
 

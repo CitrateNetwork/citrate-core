@@ -10,17 +10,34 @@
 //! `stderr_tail` is the child's own stderr from the sidecar log ring. Nothing here is inferred
 //! from anything else.
 //!
-//! A loop is [`CRASH_LOOP_THRESHOLD`] or more crashes of one class in a row, each within
-//! [`CRASH_LOOP_GAP_MS`] of the one before. It ends when a crash of another class breaks the run,
-//! or when the child has stayed up for more than the gap since the last crash.
+//! A loop is [`CRASH_LOOP_THRESHOLD`] or more crashes of one class in a row, each within the gap
+//! of the one before ([`crash_loop_gap_ms`]: at least [`CRASH_LOOP_MIN_GAP_MS`], and twice the
+//! supervisor's slow retry, so the retries a `Failed` service still makes stay one loop). It ends
+//! when a crash of another class breaks the run, or when the supervisor credits a child as healthy
+//! or ready ([`CrashHistory::recovered`]), never on raw uptime: a child counts as alive the moment
+//! it is spawned.
 
 use std::collections::VecDeque;
 
 /// Crashes of one class in a row that make a loop.
 pub const CRASH_LOOP_THRESHOLD: u32 = 3;
-/// The longest gap between two crashes of one loop (10 minutes). Longer than the supervisor's
-/// backoff cap (30 s) and its slow retry, so a loop that reached `Failed` stays one loop.
-pub const CRASH_LOOP_GAP_MS: u64 = 10 * 60_000;
+/// The shortest gap allowed between two crashes of one loop (10 minutes): far above the
+/// supervisor's backoff cap (30 s).
+pub const CRASH_LOOP_MIN_GAP_MS: u64 = 10 * 60_000;
+
+/// The gap for a supervisor whose `Failed` service is retried every `slow_retry`: twice that
+/// period (a slow retry is timed from entering `Failed`, so the next crash lands one period plus
+/// the start time after the last), and never under [`CRASH_LOOP_MIN_GAP_MS`].
+pub fn crash_loop_gap_ms(slow_retry: Option<std::time::Duration>) -> u64 {
+    let twice = slow_retry
+        .map(|d| {
+            u64::try_from(d.as_millis())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(2)
+        })
+        .unwrap_or(0);
+    twice.max(CRASH_LOOP_MIN_GAP_MS)
+}
 /// Crashes kept (drop-oldest), so a long loop cannot grow the history.
 pub const CRASH_HISTORY_CAPACITY: usize = 16;
 /// The longest error line kept, in bytes (cut on a char boundary).
@@ -151,40 +168,53 @@ struct Entry {
 }
 
 /// A bounded history of a supervisor's crashes, most recent last.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CrashHistory {
     entries: VecDeque<Entry>,
+    gap_ms: u64,
+}
+
+impl Default for CrashHistory {
+    fn default() -> Self {
+        Self::new(CRASH_LOOP_MIN_GAP_MS)
+    }
 }
 
 impl CrashHistory {
-    pub fn new() -> Self {
-        Self::default()
+    /// A history whose loops allow `gap_ms` between crashes ([`crash_loop_gap_ms`]).
+    pub fn new(gap_ms: u64) -> Self {
+        CrashHistory {
+            entries: VecDeque::new(),
+            gap_ms,
+        }
     }
 
-    /// Record one crash: its time and the child's stderr tail and exit status.
-    pub fn record(&mut self, at_unix_ms: u64, stderr_tail: &str, exit: &str) {
+    /// Record one crash: its time, the stderr the crashed run itself printed (only that run's
+    /// lines, so an earlier run's error never names this crash) and its exit status.
+    pub fn record(&mut self, at_unix_ms: u64, run_stderr: &str, exit: &str) {
         if self.entries.len() >= CRASH_HISTORY_CAPACITY {
             self.entries.pop_front();
         }
         self.entries.push_back(Entry {
             at_unix_ms,
-            error: classify(stderr_tail, exit),
+            error: classify(run_stderr, exit),
         });
     }
 
-    /// The loop the latest crashes form, as seen at `now_unix_ms`. `alive` is whether a child is
-    /// running now: a child up for longer than the gap since the last crash has ended the loop.
-    pub fn crash_loop(&self, now_unix_ms: u64, alive: bool) -> Option<CrashLoop> {
+    /// The supervisor credited a child as healthy, or its probe read Ready: whatever loop there
+    /// was has ended. The next crash starts a new run.
+    pub fn recovered(&mut self) {
+        self.entries.clear();
+    }
+
+    /// The loop the recorded crashes form, if any.
+    pub fn crash_loop(&self) -> Option<CrashLoop> {
         let last = self.entries.back()?;
-        if alive && now_unix_ms.saturating_sub(last.at_unix_ms) > CRASH_LOOP_GAP_MS {
-            return None;
-        }
         let mut count: u32 = 1;
         let mut first = last.at_unix_ms;
         let mut later = last.at_unix_ms;
         for e in self.entries.iter().rev().skip(1) {
-            if e.error.class != last.error.class
-                || later.saturating_sub(e.at_unix_ms) > CRASH_LOOP_GAP_MS
+            if e.error.class != last.error.class || later.saturating_sub(e.at_unix_ms) > self.gap_ms
             {
                 break;
             }

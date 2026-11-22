@@ -39,8 +39,8 @@ jobs:
           - os: windows-latest
             expected: 56
           - os: macos-15
-            # 0.5.7 fd-limit lane: +3 unix-only crash-loop tests (supervisor_crash_loop_tests.rs).
-            expected: 90
+            # 0.5.7 fd-limit lane: +6 unix-only crash-loop tests (supervisor_crash_loop_tests.rs).
+            expected: 93
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
