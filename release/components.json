@@ -17,12 +17,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "884555befc99c54c59237a2c05f72638693a193f"
+        "rev": "68434069de707e8454a1313a1f2e20ba449300f5"
       },
       "federation": {
-        "rev": "884555befc99c54c59237a2c05f72638693a193f",
+        "rev": "68434069de707e8454a1313a1f2e20ba449300f5",
         "status": "match",
-        "note": "Set by scripts/network-cut.py apply from release/network-cut.json (citrate-chain 884555befc99, the node rev for the r1007 network, genesis 0xcf68634502). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md)."
+        "note": "Set by scripts/network-cut.py apply from release/network-cut.json (citrate-chain 68434069de70, the node rev for the r1007 network, genesis 0xcf68634502). The same cut moves citrate-federation manifest.toml [repos.citrate-chain] and the citrate-core [[drift]] rows to this rev (Rule 12; docs/release/053-NETWORK.md)."
       },
       "build": {
         "kind": "cargo",
@@ -37,12 +37,12 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "citrate-aarch64-apple-darwin-884555befc99",
-          "evidence": "the release Mac, 2026-11-22: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain 884555befc99 (main: #489 genesis before bind after a cold resync and the initial-sync gate, #490 pending cold resync before the database opens, url 2.5.9), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-884555befc99; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0xb8819df460978a272c0053e48fff37d6 = the Linux x86_64 build"
+          "runtime_deps_asset": "citrate-aarch64-apple-darwin-68434069de70",
+          "evidence": "the release Mac, 2026-11-22: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-68434069de70; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 = the Linux x86_64 build"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "59dba89cc0cdff4a97972657cfa4f89f4249f837e7a4d4d23b305760427e67f3",
-          "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-22: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 884555befc99 (main: #489 genesis before bind after a cold resync and the initial-sync gate, #490 pending cold resync before the database opens, url 2.5.9; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-884555befc99; consensus --json on the rendered r1007 node.toml: fingerprint 0xb8819df460978a272c0053e48fff37d6 (git_sha 884555befc99, git_dirty false) = the macOS build"
+          "sha256": "65617d817c6cf3eea505c3cef47f9f893116ac57d017fff5a80b2564fde8feaa",
+          "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-22: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-68434069de70; consensus --json on the rendered r1007 node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 (git_sha 68434069de70, git_dirty false) = the macOS build"
         }
       },
       "pending": {
