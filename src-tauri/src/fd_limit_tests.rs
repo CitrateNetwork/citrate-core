@@ -122,11 +122,13 @@ fn run_probe(mode: &str) -> String {
     stdout
 }
 
+/// A value the probe printed after `mark`. Found anywhere in a line: with `--nocapture` the
+/// probe's first line shares libtest's "test ... " prefix (seen on macos-15).
 #[cfg(unix)]
 fn probe_value(stdout: &str, mark: &str) -> u64 {
     stdout
         .lines()
-        .find_map(|l| l.trim().strip_prefix(mark))
+        .find_map(|l| l.split_once(mark).map(|(_, v)| v.trim()))
         .unwrap_or_else(|| panic!("the probe printed {mark}: {stdout}"))
         .parse()
         .expect("numeric")
