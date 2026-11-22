@@ -101,7 +101,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
   const showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === "ready";
-  const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying";
+  const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying" || s.modelState === "paused";
   const modelPct = s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 100)) : 0;
 
   // WP0.4 — the ModelRouter picker over the LIVE sources (local verified models + every model of
@@ -413,7 +413,13 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         {modelDownloading && (
           <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--accent-text)", display: "inline-flex", alignItems: "center", gap: 5 }} data-testid="dash-model-dl">
             <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }}></span>
-            {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
+            {s.modelState === "verifying"
+              ? "local model · verifying"
+              : s.modelState === "paused"
+                ? `local model · paused ${modelPct}%`
+                : s.modelRetryInSecs !== null
+                  ? `local model · ${modelPct}% · waiting for connection`
+                  : `local model · ${modelPct}%`}
           </span>
         )}
         <button

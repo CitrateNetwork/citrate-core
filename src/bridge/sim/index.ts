@@ -504,6 +504,22 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         simModelPct = Math.min(100, simModelPct + 25 + Math.random() * 20);
         if (simModelPct >= 100) simModelDownloaded = true;
       },
+      async pause(): Promise<void> {
+        assertSimAllowed("model.pause");
+      },
+      async options() {
+        assertSimAllowed("model.options");
+        // The pinned facts (no disk probe in the web preview: free space is unknown).
+        return {
+          chosen: "default" as const,
+          options: [
+            { key: "default" as const, label: "Gemma 4 E4B", file: "gemma-4-E4B-it-Q4_0.gguf", sizeBytes: 4_590_807_392, sha256: "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2", hfRepo: "ggml-org/gemma-4-E4B-it-GGUF" },
+            { key: "small" as const, label: "Gemma 4 E2B", file: "gemma-4-E2B-it-Q4_0.gguf", sizeBytes: 2_841_481_184, sha256: "8e30dff3ac4c8434c49a7036fa15564bdbb6044e42bf04550bf1a096ad7e6a52", hfRepo: "ggml-org/gemma-4-E2B-it-GGUF" },
+          ],
+          freeBytes: null,
+          marginBytes: 256 * 1024 * 1024,
+        };
+      },
       async verify(): Promise<void> {
         assertSimAllowed("model.verify");
         // Only a completed (sim) download can be verified; ready is reached ONLY

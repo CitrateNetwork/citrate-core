@@ -23,6 +23,8 @@ import {
 import { ModalDialog } from "../shell/ModalDialog";
 import { tierSlice, isRecommendedModel } from "../shell/slices/tier";
 import type { ModelDescriptor, TierId } from "../bridge/domains";
+import { LocalModelControls } from "../onboarding/LocalModelControls";
+import { LOCAL_MODELS, gb } from "../shell/localModels";
 
 function humanBytes(n: number): string {
   if (!n || n < 0) return "—";
@@ -45,7 +47,45 @@ const SEARCH_SUGGESTIONS: Record<ModelSourceId, string[]> = {
   github: [],
 };
 
-export function Models({ store }: SurfaceProps) {
+/** Settings › Models: the recommended local model (the onboarding download), always available here
+ *  with its real state: not downloaded, downloading with progress, paused, verifying, or ready. */
+export function LocalModelCard({ store, s }: SurfaceProps) {
+  const chosen = LOCAL_MODELS[s.modelChoice];
+  const total = s.modelTotalBytes > 0 ? s.modelTotalBytes : chosen.sizeBytes;
+  const pct = total > 0 ? Math.min(100, Math.floor((s.modelDownloadedBytes / total) * 100)) : 0;
+  const stateText =
+    s.modelState === "ready"
+      ? "Ready"
+      : s.modelState === "downloading"
+        ? `Downloading ${pct}%`
+        : s.modelState === "paused"
+          ? `Paused at ${pct}%`
+          : s.modelState === "verifying"
+            ? "Verifying"
+            : s.modelState === "error"
+              ? "Download stopped"
+              : "Not downloaded";
+  return (
+    <section className="surface" data-testid="models-local-model" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 520 }}>Local model</span>
+        <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
+          {chosen.label} · {chosen.quant} · {gb(chosen.sizeBytes)} GB
+        </span>
+        <span className="eyebrow" style={{ marginLeft: "auto" }} data-testid="models-local-model-state">
+          {stateText}
+        </span>
+      </div>
+      {s.modelState === "ready" ? (
+        <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Verified against its pinned SHA-256. Chat can run on this computer.</span>
+      ) : (
+        <LocalModelControls store={store} s={s} offerSkip={false} />
+      )}
+    </section>
+  );
+}
+
+export function Models({ store, s }: SurfaceProps) {
   const st = modelsSlice.use();
   // HUP-S1.6 — the tier in effect (probed at onboarding); labels matching models, never downloads.
   const tier = tierSlice.use().report;
@@ -113,6 +153,8 @@ export function Models({ store }: SurfaceProps) {
           </div>
         );
       })()}
+
+      <LocalModelCard store={store} s={s} />
 
       {/* ---- your models ---- */}
       <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>

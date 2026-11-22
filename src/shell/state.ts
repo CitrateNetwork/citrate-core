@@ -650,11 +650,21 @@ export interface AppState {
    * gateway/demo instead — an honest opt-out, not a failure. NOT persisted config
    * (runtime status, refreshed from the real bridge).
    */
-  modelState: "notPresent" | "downloading" | "verifying" | "ready" | "error";
+  modelState: "notPresent" | "downloading" | "paused" | "verifying" | "ready" | "error";
   modelDownloadedBytes: number;
   modelTotalBytes: number;
   modelError: string | null;
   modelSkipped: boolean;
+  /** Which pinned onboarding model the member's download is for (model_local_options). */
+  modelChoice: "default" | "small";
+  /** Live download facts from model_status (null when unknown / not downloading). */
+  modelBytesPerSec: number | null;
+  modelEtaSecs: number | null;
+  /** While a download waits to retry: seconds left and the plain-words reason. */
+  modelRetryInSecs: number | null;
+  modelRetryReason: string | null;
+  /** Free bytes on the disk holding the models folder (model_local_options), null when unknown. */
+  modelFreeBytes: number | null;
   /** Hermes ModelRouter (P0/WP0.4): the member's chosen model id (a local model, a registry
    *  id, or the gateway). null ⇒ the always-ready gateway default. Persisted. */
   activeModelId: string | null;
@@ -1042,6 +1052,12 @@ export function freshState(pid: string): AppState {
     modelTotalBytes: 5_335_289_824,
     modelError: null,
     modelSkipped: false,
+    modelChoice: "default",
+    modelBytesPerSec: null,
+    modelEtaSecs: null,
+    modelRetryInSecs: null,
+    modelRetryReason: null,
+    modelFreeBytes: null,
     sel: null,
     panX: 0,
     panY: 0,
