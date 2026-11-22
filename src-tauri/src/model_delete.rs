@@ -16,7 +16,7 @@
 //! starting on it, while the embedding server runs on it, or while a download of it is in progress.
 //! The download lock is held for the whole delete, so a download cannot start meanwhile.
 //!
-//! **What is removed.** The GGUF and its side files (`.part`, `.status.json`, `.download.json`).
+//! **What is removed.** The GGUF and its side files (`.part`, `.part.json`, `.status.json`, `.download.json`).
 //! The freed bytes are returned. When the deleted model was the chat server's selected model,
 //! the selection falls back to the default model path (the server is not started).
 //!
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 /// The side files a model leaves next to its GGUF.
-pub const SIDE_SUFFIXES: &[&str] = &[".part", ".status.json", ".download.json"];
+pub const SIDE_SUFFIXES: &[&str] = &[".part", ".part.json", ".status.json", ".download.json"];
 /// Longest file name accepted.
 const MAX_NAME: usize = 255;
 

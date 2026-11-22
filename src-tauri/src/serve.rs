@@ -499,6 +499,13 @@ impl LlamaServerManager {
         self.start_inner(true, plan)
     }
 
+    /// The onboarding model choice moved from `from` to `to`: when `from` is the selected model,
+    /// select `to` instead, without starting anything (the next start serves it once verified).
+    /// A model picked in the Models screen is left alone. Returns whether the path moved.
+    pub fn retarget_default(&self, from: &std::path::Path, to: PathBuf) -> bool {
+        self.forget_model_if(from, to)
+    }
+
     /// The model at `deleted` was removed from disk: when it is the selected model, select
     /// `fallback` instead (without starting anything) and drop any adapter, so nothing points at
     /// the missing file. Returns whether `deleted` was the selected model. When `deleted` is the
@@ -655,7 +662,9 @@ pub fn build_serve_state<R: tauri::Runtime>(
 ) -> std::result::Result<ServeState, String> {
     use tauri::Manager;
     let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let model_path = data_root.join("models").join(crate::model::MODEL_FILE);
+    // The onboarding model the member chose (the default Gemma unless they picked the smaller one).
+    let models = data_root.join("models");
+    let model_path = models.join(crate::model::read_local_choice(&models).pin().file);
     let crash_record_path = data_root.join("models").join("llama-crash-records.jsonl");
     let bin = resolve_llama_bin(app)?;
     Ok(ServeState(LlamaServerManager::new(
@@ -704,7 +713,7 @@ pub fn model_serve_start_sync(
     model: State<'_, crate::model::ModelState>,
     plan: crate::serve_plan::ServePlan,
 ) -> std::result::Result<(), String> {
-    let ready = model.0.is_ready();
+    let ready = model.is_ready();
     serve
         .0
         .start_with_plan(ready, plan)
@@ -763,7 +772,7 @@ pub fn model_inference_state_sync(
     route: crate::chat_route::ChatRoute,
 ) -> std::result::Result<String, String> {
     use crate::model::ModelStatus;
-    let model_status = model.0.status();
+    let model_status = model.status();
     let downloading = matches!(model_status, ModelStatus::Downloading { .. });
     let inputs = crate::ai::ProviderInputs {
         model_ready: matches!(model_status, ModelStatus::Ready),

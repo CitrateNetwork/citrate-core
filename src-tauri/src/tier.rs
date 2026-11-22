@@ -405,7 +405,7 @@ fn nvidia_vram() -> Option<u64> {
 /// ancestor — the app data dir may not exist yet on a first run).
 #[cfg(unix)]
 #[allow(clippy::unnecessary_cast)] // statvfs field widths differ between macOS and Linux
-fn disk_free(dir: &std::path::Path) -> Option<u64> {
+pub(crate) fn disk_free(dir: &std::path::Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let existing = dir.ancestors().find(|p| p.exists())?;
     let c = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
@@ -422,7 +422,7 @@ fn disk_free(dir: &std::path::Path) -> Option<u64> {
 }
 
 #[cfg(not(unix))]
-fn disk_free(_dir: &std::path::Path) -> Option<u64> {
+pub(crate) fn disk_free(_dir: &std::path::Path) -> Option<u64> {
     None
 }
 

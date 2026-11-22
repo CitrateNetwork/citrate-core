@@ -452,6 +452,8 @@ commands.allow = [
   "agent_sbt_mint",
   "model_status",
   "model_download",
+  "model_download_pause",
+  "model_local_options",
   "model_verify",
   "model_serve_start",
   "model_serve_stop",
