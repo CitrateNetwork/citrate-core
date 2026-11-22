@@ -1290,3 +1290,13 @@ pub async fn model_verify(app: tauri::AppHandle) -> std::result::Result<(), Stri
 mod tests {
     include!("model_tests.rs");
 }
+
+#[cfg(test)]
+mod dl_tests {
+    include!("model_dl_tests.rs");
+}
+
+#[cfg(test)]
+mod live_tests {
+    include!("model_live_tests.rs");
+}
