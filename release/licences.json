@@ -40,7 +40,7 @@
       "gap": "The citrate-chain LICENSE file is Apache-2.0 while the federation NOTICE lists citrate-chain under BUSL-1.1; one of them should change.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-chain@7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3",
+        "source": "citrate-chain@884555befc99c54c59237a2c05f72638693a193f",
         "packages": 495
       }
     },
