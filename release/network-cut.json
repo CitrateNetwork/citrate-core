@@ -33,24 +33,24 @@
     "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303"
   ],
   "addressBookSha256": "1b908e56f99ef14e0fe260d27e0ce837200ee4bb0884771b5a007ec66a93ca96",
-  "chainRev": "7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3",
-  "consensusFingerprint": "0xe1fc9874cf8e49b07f694edaea30b21d",
+  "chainRev": "884555befc99c54c59237a2c05f72638693a193f",
+  "consensusFingerprint": "0xb8819df460978a272c0053e48fff37d6",
   "node": {
     "aarch64-apple-darwin": {
-      "runtime_deps_asset": "citrate-aarch64-apple-darwin-7fb483e20e2b",
-      "sha256": "57789baa88ea267670b483cb877a03807d1322a7c8b6e6ce731fa29e559515df",
-      "evidence": "the release Mac, 2026-11-20: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain 7fb483e20e2b (main: #483 ancestor sync, #488, #486 dead-branch auto-resync), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-7fb483e20e2b; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0xe1fc9874cf8e49b07f694edaea30b21d = the Linux x86_64 build",
+      "runtime_deps_asset": "citrate-aarch64-apple-darwin-884555befc99",
+      "sha256": "0026b28077a7f6cf3ca0c55dd4557b60938c29bc4f09b0664db0e2d0c2e0fa6e",
+      "evidence": "the release Mac, 2026-11-22: scripts/build-sidecar.sh --target aarch64-apple-darwin --print-digest at citrate-chain 884555befc99 (main: #489 genesis before bind after a cold resync and the initial-sync gate, #490 pending cold resync before the database opens, url 2.5.9), rustc 1.96.0, build root ~/.cache/citrate-components/citrate-node-884555befc99; links only /System and /usr/lib; consensus --json on the rendered r1007 node.toml: fingerprint 0xb8819df460978a272c0053e48fff37d6 = the Linux x86_64 build",
       "provenance": {
-        "asset": "citrate-aarch64-apple-darwin-7fb483e20e2b.PROVENANCE.txt",
-        "sha256": "9e1e667f121be754b33ef7a8e7ce8c26053164548392594bf5edf0007a5fd217"
+        "asset": "citrate-aarch64-apple-darwin-884555befc99.PROVENANCE.txt",
+        "sha256": "c61503a5ba65077080ddbe0f13e44e660b278c62794ced012418fd168e0876dc"
       }
     },
     "x86_64-unknown-linux-gnu": {
-      "sha256": "2e8349ddd2981452d0d33aa418d6926ec7eae78906bf02c1132739351fc6c14b",
-      "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-20: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 7fb483e20e2b (main: #483 ancestor sync, #488, #486 dead-branch auto-resync; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-7fb483e20e2b; consensus --json on the rendered r1007 node.toml: fingerprint 0xe1fc9874cf8e49b07f694edaea30b21d (git_sha 7fb483e20e2b, git_dirty false) = the macOS build",
+      "sha256": "59dba89cc0cdff4a97972657cfa4f89f4249f837e7a4d4d23b305760427e67f3",
+      "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-22: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 884555befc99 (main: #489 genesis before bind after a cold resync and the initial-sync gate, #490 pending cold resync before the database opens, url 2.5.9; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-884555befc99; consensus --json on the rendered r1007 node.toml: fingerprint 0xb8819df460978a272c0053e48fff37d6 (git_sha 884555befc99, git_dirty false) = the macOS build",
       "provenance": {
-        "asset": "citrate-x86_64-unknown-linux-gnu-7fb483e20e2b.PROVENANCE.txt",
-        "sha256": "7e13ed16a8ef6ef5a406a6ed56be2181b5144c70c80c4fe22d410920c61adf20"
+        "asset": "citrate-x86_64-unknown-linux-gnu-884555befc99.PROVENANCE.txt",
+        "sha256": "3d96c151784e6fd02b6fb0819c2f59180edac25211edef3c277a766ef266d1c4"
       }
     },
     "aarch64-unknown-linux-gnu": null

@@ -127,14 +127,16 @@ bip39 = { version = "1.2", features = ["std", "zeroize"] }
 #   with the node from b2e91167. Neither crate's source changed since b2e91167.
 # 2026-11-20 (0.5.6, chain main 7fb483e2: #483 ancestor sync, #488, #486 dead-branch auto-resync): moved
 #   with the node from f4a0e600. Neither crate's source changed since f4a0e600.
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3", default-features = false, features = ["crypto"] }
+# 2026-11-22 (0.5.7, chain main 884555be: #489, #490 cold-resync restart fixes, url 2.5.9): moved
+#   with the node from 7fb483e2. Neither crate's source changed since 7fb483e2.
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "884555befc99c54c59237a2c05f72638693a193f", default-features = false, features = ["crypto"] }
 # CX-S2.2 — the canonical CommD/dataCommit the IPFSIncentivesV3 model bond registers. Pinned at
 # citrate-chain 763d764 (the #170 sound-CommD fix + the 40204 redeploy, PR #179). Lean by design:
 # ark-bn254 + Poseidon only (NO groth16/nova/tracing-subscriber — verified via `cargo tree`), and
 # it is NOT on the key path (it hashes; it never signs), so wallet-core stays at its reviewed
 # 47a6f92 (Cargo carries both revs as separate git sources). Byte-exactness is pinned by a
 # storage_tests vector check against citrate-commd's frozen `commd_frozen_v1.rs`. Rule 12 [[drift]].
-citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "7fb483e20e2bae0c4214dfd9bbd7424d7e6208d3" }
+citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "884555befc99c54c59237a2c05f72638693a193f" }
 # W1.1 — proposer identity. The node's block-signing (proposer) key is a deterministic
 # ed25519 key seeded from Sha3_256(domain ‖ coinbase32); the app must derive the SAME
 # public value to read validatorInfo(pubkey) and drive registration. We reimplement the
