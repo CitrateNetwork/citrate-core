@@ -139,12 +139,12 @@
       "source": {
         "repo": "CitrateNetwork/citrate-comms",
         "checkout": "citrate-comms",
-        "rev": "9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12"
+        "rev": "f6652a56b92f897b71cd5e9da17521433fb884d6"
       },
       "federation": {
         "rev": "fc35136a97f73e5404ce12450244520d628c57e4",
         "status": "drift",
-        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-comms commit. Shipped in 0.5.0 and 0.5.1: 9cd12c41 (Windows used bc0f92a5, a Windows-only owner override, 2026-10-12; no Windows pin here yet)."
+        "note": "manifest.toml pins fc35136a, a citrate-homestead commit, not a citrate-comms commit. Shipped in 0.5.0 to 0.5.8: 9cd12c41 (Windows used bc0f92a5, a Windows-only owner override, 2026-10-12; no Windows pin here yet). 0.5.9 (owner 2026-11-23): f6652a56, citrate-comms main, the merge of comms #58."
       },
       "build": {
         "kind": "cargo",
@@ -157,17 +157,16 @@
       },
       "artifacts": {
         "aarch64-apple-darwin": {
-          "runtime_deps_asset": "comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c",
-          "evidence": "release Mac build with scripts/build-component.sh --print-digest, 2026-10-23 (rustc 1.96.0, build root ~/.cache/citrate-components); not yet uploaded to runtime-deps"
+          "runtime_deps_asset": "comms-member-daemon-aarch64-apple-darwin-f6652a56b92f",
+          "evidence": "release Mac build with scripts/build-comms-daemon.sh --target aarch64-apple-darwin --print-digest, 2026-11-23 (rustc 1.96.0, --locked, build root ~/.cache/citrate-components, a new tree for this rev); reproduced byte for byte from a clean target dir (8212c193... both builds); links only /System and /usr/lib; uploaded to runtime-deps 2026-11-23 under a new asset name with its PROVENANCE record (nothing overwritten), download-back sha256 matches the pin"
         },
         "x86_64-unknown-linux-gnu": {
-          "sha256": "96a63e587d4946cac017bfa207a4f4da9f3b281deafbef144b065d7cec96e435",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, GCC 11.4, glibc 2.35), rustc 1.96.0, default build root /root/.cache/citrate-components, 2026-10-27"
-        },
-        "aarch64-unknown-linux-gnu": {
-          "runtime_deps_asset": "comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
+          "sha256": "0dddd440f800eaeac6907167772c148d869cb450ebb7110aa982afe713de8835",
+          "evidence": "scripts/build-comms-daemon.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-23; same bytes from a second build after removing the target dir; highest symbol GLIBC_2.34; bytes and PROVENANCE also uploaded to runtime-deps as comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f. Replaces the 9cd12c41 pin 96a63e58"
         }
+      },
+      "pending": {
+        "aarch64-unknown-linux-gnu": "not built for this release: owner 2026-11-23 (as 0.5.3 to 0.5.8): 0.5.9 ships macOS and Linux x86_64 only; with the DGX sold, an aarch64 comms-member-daemon pin at f6652a56 is first built by release.yml's release-linux-aarch64 dry run (docs/RELEASE_LINUX.md)"
       }
     },
     {
