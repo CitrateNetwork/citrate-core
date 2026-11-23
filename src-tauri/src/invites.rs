@@ -314,18 +314,12 @@ struct ReplyBody {
     decision: Decision,
 }
 
-/// A member address in the one form invites use: `0x` and 40 lowercase hex digits. Accepts it
-/// with or without the `0x` (any case), since the comms identity (`comms::device_identity`) and
-/// the daemon's roster give it bare while invite requests on the wire carry the `0x`. `None` for
-/// anything that isn't 20 bytes of hex.
-fn canonical_address(a: &str) -> Option<String> {
-    let a = a.trim();
-    let hex = a
-        .strip_prefix("0x")
-        .or_else(|| a.strip_prefix("0X"))
-        .unwrap_or(a);
-    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then(|| format!("0x{}", hex.to_ascii_lowercase()))
+/// A member address as invites store, show and send it: the wire form (`0x` + 40 lowercase hex) of
+/// [`crate::comms::canonical_address`], so every stored value has exactly one spelling and a 0.5.8
+/// inviter accepts the request body. Comparisons with an address from anywhere else (the daemon's
+/// roster gives it bare) go through `canonical_address` on both sides.
+fn invite_address(a: &str) -> Option<String> {
+    crate::comms::canonical_address(a).map(|c| crate::comms::wire_address(&c))
 }
 
 /// A request opened with the invite's key.
@@ -352,7 +346,7 @@ fn open_requests(inv: &Invite, ciphertexts: &[String]) -> Vec<OpenedRequest> {
         let Ok(b) = serde_json::from_slice::<RequestBody>(&plain) else {
             continue;
         };
-        let Some(address) = canonical_address(&b.address) else {
+        let Some(address) = invite_address(&b.address) else {
             continue;
         };
         if b.v == 1
@@ -869,7 +863,7 @@ pub(crate) fn approve_at(
     add: impl FnOnce(&str, &str) -> Result<(), String>,
     mut is_member: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<(), String> {
-    let Some(member) = canonical_address(address) else {
+    let Some(member) = invite_address(address) else {
         return Err("that isn't a member address".to_string());
     };
     let _flight = InFlight::take(group, id)?;
@@ -968,7 +962,7 @@ pub(crate) fn decline_at(
     poll: impl FnOnce(String) -> Result<Vec<String>, String>,
     mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
-    let member = canonical_address(address).unwrap_or_else(|| address.to_ascii_lowercase());
+    let member = invite_address(address).unwrap_or_else(|| address.to_ascii_lowercase());
     let _flight = InFlight::take(group, id)?;
     let inv = update_store_at(path, |s| {
         let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
@@ -1135,7 +1129,7 @@ pub(crate) fn request_at(
     }
     // `address` comes from `comms::device_identity`, which gives it bare (no `0x`): put it in the
     // form the inviter's app checks. Only a malformed identity is refused, and that says so.
-    let Some(address) = canonical_address(address) else {
+    let Some(address) = invite_address(address) else {
         return Err(MALFORMED_DEVICE_ADDRESS.to_string());
     };
     if let Some(r) = view_store_at(path)?

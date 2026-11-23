@@ -597,3 +597,23 @@ fn this_build_ships_the_mesh_off() {
     assert!(d.listen.is_none(), "the mesh stays off until its sign-off is recorded");
     assert!(mesh_gate(d.listen.is_some()).is_err());
 }
+
+/// Review P3 (#770), a tripwire like CORE-D5's: both mesh-only commands refuse while the mesh is
+/// off BEFORE they reach the daemon (the gate is their first statement). The commands take a real
+/// `tauri::AppHandle`, so this reads the source rather than calling them.
+#[test]
+fn both_group_link_commands_check_the_mesh_before_the_daemon() {
+    let src = include_str!("cluster.rs");
+    for cmd in ["pub async fn cluster_group_seed(", "pub async fn cluster_add_seed("] {
+        let at = src.find(cmd).unwrap_or_else(|| panic!("{cmd} exists"));
+        let body = &src[at..];
+        let open = body.find("{\n").expect("body") + 2;
+        let first = body[open..].lines().find(|l| !l.trim().is_empty()).expect("a statement");
+        assert_eq!(first.trim(), "mesh_gate(mesh_on(&app))?;", "{cmd} gates first");
+        let gate = body.find("mesh_gate(mesh_on(&app))?;").expect("gate");
+        for daemon_call in ["feed_roster(", "route("] {
+            let call = body.find(daemon_call).unwrap_or_else(|| panic!("{cmd} calls {daemon_call}"));
+            assert!(gate < call, "{cmd}: the mesh gate comes before {daemon_call}");
+        }
+    }
+}

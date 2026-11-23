@@ -193,8 +193,8 @@ fn a_bare_device_address_from_the_comms_identity_can_ask_and_be_approved() {
     assert_eq!(mine.state, RequestState::Waiting);
     assert_eq!(*relay.submits.borrow(), 1, "the request was sent");
 
-    // The inviter's app sees it in the 0x form (what a 0.5.8 inviter also accepts) and can add it;
-    // the roster gives the same member bare, and still matches.
+    // The inviter's app sees it in the 0x form (what a 0.5.8 inviter also accepts) and can add it
+    // when approved by the bare form (the roster's) too.
     let canonical = format!("0x{bare}");
     let req = incoming(&owner, &relay);
     assert_eq!(req.len(), 1);
@@ -206,6 +206,47 @@ fn a_bare_device_address_from_the_comms_identity_can_ask_and_be_approved() {
     }, |_, _| Ok(false))
     .expect("approving by the bare roster form works too");
     assert_eq!(added.into_inner(), vec![(GROUP.to_string(), canonical)]);
+}
+
+// Review P1 (#770): the daemon's roster gives addresses bare (no 0x) and approve works in the 0x
+// form, so the roster check must compare canonically. An add that errored but landed (an IPC
+// timeout) must count as added: the single-use invite is used up, never opened again for a second
+// requester.
+#[test]
+fn an_add_that_errored_but_landed_on_a_bare_roster_counts_as_added() {
+    let (owner, invitee) = (store("landed-owner"), store("landed-invitee"));
+    let relay = Relay::default();
+    let v = make(&owner, NOW);
+    let bare = crate::comms::address_from_secret_hex(&"22".repeat(32)).expect("address");
+    request_at(&invitee, &v.link, &bare, NOW, |k, c| relay.submit(k, c)).expect("request");
+    let req = incoming(&owner, &relay);
+    // What the daemon's Roster answer looks like once the add landed: bare lowercase hex.
+    let roster = vec![(bare.clone(), "member".to_string())];
+    let r = approve_at(
+        &owner,
+        GROUP,
+        &v.id,
+        &req[0].address,
+        NOW,
+        |k| relay.poll(k),
+        |_, _| Err("the daemon did not answer in time".to_string()),
+        |_, m| Ok(crate::comms::roster_has(&roster, m)),
+    );
+    assert!(r.is_ok(), "the add landed (member on roster) but approve says: {r:?}");
+    assert!(ids(&owner).is_empty(), "the single-use invite is used up, not reopened");
+}
+
+#[test]
+fn roster_checks_compare_addresses_canonically() {
+    let bare = "00000000000000000000000000000000000000aa".to_string();
+    let roster = vec![(bare.clone(), "member".to_string())];
+    assert!(crate::comms::roster_has(&roster, ANA), "0x form against a bare roster");
+    assert!(crate::comms::roster_has(&roster, &bare));
+    assert!(crate::comms::roster_has(&roster, &ANA.to_ascii_uppercase().replace("0X", "0x")));
+    assert!(!crate::comms::roster_has(&roster, BO));
+    assert!(!crate::comms::roster_has(&roster, "0xnope"), "malformed never matches");
+    let odd = vec![("not an address".to_string(), "member".to_string())];
+    assert!(!crate::comms::roster_has(&odd, "not an address"), "nor a malformed roster entry");
 }
 
 #[test]
@@ -223,15 +264,21 @@ fn a_malformed_device_address_is_refused_with_the_real_reason_and_nothing_sent()
 }
 
 #[test]
-fn canonical_address_accepts_either_form_and_nothing_else() {
+fn invite_address_accepts_either_form_and_nothing_else() {
     let hex = "00000000000000000000000000000000000000AA";
-    assert_eq!(canonical_address(hex).as_deref(), Some(ANA));
-    assert_eq!(canonical_address(&format!("0x{hex}")).as_deref(), Some(ANA));
-    assert_eq!(canonical_address(&format!("0X{hex}")).as_deref(), Some(ANA));
-    assert_eq!(canonical_address(&format!(" 0x{hex} ")).as_deref(), Some(ANA));
-    assert_eq!(canonical_address(&hex[2..]), None, "19 bytes");
-    assert_eq!(canonical_address(&format!("0x{hex}00")), None, "21 bytes");
-    assert_eq!(canonical_address("0x0x00000000000000000000000000000000000000"), None);
+    assert_eq!(invite_address(hex).as_deref(), Some(ANA));
+    assert_eq!(invite_address(&format!("0x{hex}")).as_deref(), Some(ANA));
+    assert_eq!(invite_address(&format!("0X{hex}")).as_deref(), Some(ANA));
+    assert_eq!(invite_address(&format!(" 0x{hex} ")).as_deref(), Some(ANA));
+    assert_eq!(invite_address(&hex[2..]), None, "19 bytes");
+    assert_eq!(invite_address(&format!("0x{hex}00")), None, "21 bytes");
+    assert_eq!(invite_address("0x0x00000000000000000000000000000000000000"), None);
+    // One canonical form for comparisons (bare), one wire form (0x), from the same helper.
+    assert_eq!(
+        crate::comms::canonical_address(&format!("0X{hex}")).as_deref(),
+        Some("00000000000000000000000000000000000000aa")
+    );
+    assert_eq!(crate::device_link::canonical_address(hex), crate::comms::canonical_address(hex));
 }
 
 #[test]

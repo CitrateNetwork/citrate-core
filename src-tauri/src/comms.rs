@@ -1012,6 +1012,27 @@ pub(crate) fn address_from_secret_hex(seed_hex: &str) -> std::result::Result<Str
     Ok(hex::encode(&digest[12..]))
 }
 
+/// THE canonical form of a member, device or wallet address, for every comparison (Rule 9): 40
+/// lowercase hex digits, no `0x`. It is the form the comms identity
+/// ([`address_from_secret_hex`]) and the member daemon's roster give. Accepts the input with or
+/// without a `0x`/`0X` prefix and surrounding space; `None` for anything that isn't 20 bytes of hex.
+pub(crate) fn canonical_address(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let hex = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
+    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// The wire and display form of a canonical address: `0x` + the 40 hex digits. Invite requests
+/// carry it (a 0.5.8 inviter accepts only this form). Never compare in this form; compare
+/// [`canonical_address`] values.
+pub(crate) fn wire_address(canonical: &str) -> String {
+    format!("0x{canonical}")
+}
+
 /// The device-sealed comms identity: the seed (ready to write to a daemon's 0600 seed file) **and**
 /// its derived address. This is the identity a member is known by in the group roster, so both the
 /// comms member-daemon and the cluster-daemon must use THIS key — the cluster's Noise/peer id and the
@@ -1335,9 +1356,19 @@ pub(crate) fn is_member<R: tauri::Runtime>(
     group: &str,
     member: &str,
 ) -> std::result::Result<bool, String> {
-    Ok(roster(app, group.to_string())?
+    Ok(roster_has(&roster(app, group.to_string())?, member))
+}
+
+/// Whether `member` is on `roster` (the daemon's `(address, role)` answer). Both sides are compared
+/// in [`canonical_address`] form: the roster gives addresses bare, invites work in the `0x` form,
+/// and a malformed address on either side never matches.
+pub(crate) fn roster_has(roster: &[(String, String)], member: &str) -> bool {
+    let Some(want) = canonical_address(member) else {
+        return false;
+    };
+    roster
         .iter()
-        .any(|(a, _)| a.eq_ignore_ascii_case(member)))
+        .any(|(a, _)| canonical_address(a).as_deref() == Some(want.as_str()))
 }
 
 /// GC-2 (#495): what an older comms-member-daemon's refusal of `grantRole` means, in plain words.
