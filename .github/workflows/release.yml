@@ -271,7 +271,7 @@ jobs:
               citrate-aarch64-apple-darwin-68434069de70
               node-agent-aarch64-apple-darwin-1d8cb8e4e24a
               mem-mcp-aarch64-apple-darwin-5aeda3172369
-              comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
+              comms-member-daemon-aarch64-apple-darwin-f6652a56b92f
               cluster-daemon-aarch64-apple-darwin-755cf2172260
               hermes-aarch64-apple-darwin-aa12b10ee996
             )
@@ -626,7 +626,6 @@ jobs:
             ASSETS+=(
               node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
               mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
-              comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c
               cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260
               llama-server-aarch64-unknown-linux-gnu-b9438
             )

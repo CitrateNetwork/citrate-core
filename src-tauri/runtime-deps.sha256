@@ -43,7 +43,6 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 5863ece71752f069dc4af1eee631679d7fc56d476ad5ada03e302b5a12135786  citrate-aarch64-apple-darwin-56cc2bc80439
 250180089826a628e1765b0dd99b25ca68c23cd0d4b1872f88e76cd3bb639728  node-agent-aarch64-apple-darwin-1d8cb8e4e24a
 8eb2fe37e16f1157477f1ac2c9a7e22d16b63c8a9041c4b240b24a8fc65b3214  mem-mcp-aarch64-apple-darwin-5aeda3172369
-192c959cbed6c238339def65bac3a3d1521bf89ca4f9e66f92afa21e49381349  comms-member-daemon-aarch64-apple-darwin-9cd12c41ae1c
 9a1353624efda5218d695fb64e3ac21088a74e168605057bac67bccaace942bc  cluster-daemon-aarch64-apple-darwin-755cf2172260
 # 2026-11-16 (0.5.4 hermes repin, citrate-federation#611): hermes is citrate-agent-runtime 367ad79e
 # (#106, #110, #107), built on the release Mac with build-hermes.sh --print-digest (strip -x, rustc
@@ -69,7 +68,6 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 ed0af8063e9806ff0478d09f0f3c03061aac791337a92fc5e0441251fcc97cdf  citrate-aarch64-unknown-linux-gnu-56cc2bc80439
 d62e5233773d2353f1e80da44d5702381fa2717de1639507f05c0f5faa637161  node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
 a3fcf5480cd1636a5039d708b6672df0d7d0f541e3505ea31f6d434d67598a77  mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
-db8415872b35685a9e5946bed91fbee3c226c72ff23db0779c2c7354392fb36b  comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c
 b6d0683bfd1e911e9352e5355973a195a1b4b8b24bd7ef07339a217730f4f956  cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260
 # llama.cpp b9438 (d749821d), CPU-only, built by the DGX lane; the llama-server 0.5.1 and 0.5.2 shipped
 # for Linux aarch64 (usr/bin/llama-server and usr/lib/Citrate Core/llama/llama-server in the v0.5.2 deb).
@@ -133,3 +131,13 @@ c61503a5ba65077080ddbe0f13e44e660b278c62794ced012418fd168e0876dc  citrate-aarch6
 68517f12074124b96d25e3f0ca27530ab3d9663969cf41048367b8806c068199  citrate-aarch64-apple-darwin-68434069de70
 0cd8c066dd2a387c5ca2b4ac6b36217840873790e0d854287bbe3be028baf395  citrate-aarch64-apple-darwin-68434069de70.PROVENANCE.txt
 796dc755ac2676eb4db3a90c7e0c0f865d24473945c41351a4d543925dbcc72f  citrate-x86_64-unknown-linux-gnu-68434069de70.PROVENANCE.txt
+# 2026-11-23 (0.5.9, owner decision): comms-member-daemon is citrate-comms f6652a56 (main, the merge of comms #58:
+# the relay probe no longer spends challenges, keepalive, background redial with jittered backoff, op timeouts),
+# built with build-comms-daemon.sh --print-digest (rustc 1.96.0, --locked) in a new tree of the default build root,
+# reproduced byte for byte from a clean target dir: macOS on the release Mac, Linux x86_64 on citrate-core-linux-build
+# (its bytes are pinned inline in release/components.json; the asset and its PROVENANCE are a record). Uploaded under
+# these new names, each with its PROVENANCE record (nothing overwritten), and verified by download. The 9cd12c41
+# assets stay on runtime-deps, no longer staged; Linux aarch64 is pending (not built for this release).
+8212c19376113126000bedb19ddff239ba37099ffe88ae33df2942aa98e16ccb  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f
+d6cd5e13cfaa2496e27414c46d9945334a7685b879565148ab449798d2aa0fac  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f.PROVENANCE.txt
+dcaba98434730346a10533c0249fe9dfb86ea0c1b811f541204a87fddb2a6c07  comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f.PROVENANCE.txt
