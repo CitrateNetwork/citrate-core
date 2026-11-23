@@ -8,11 +8,11 @@ scripts/third-party-notices.mjs from release/notices.json; do not edit by hand.
 Targets: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc
 
 Components:
-  app: citrate-core@d9371e2d76c4ff12c1682ce518244bcc01982fac, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 511 third-party packages
-  app-webview: citrate-core@8515f06fffa761d6cdb9c2cb126fa5434df43c8b, vite 7.3.6 build (vite.config.ts), 825 bundled modules and assets, 23 third-party packages
+  app: citrate-core@586845d42b2177bb7838346b8edb66aa672a126c, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 511 third-party packages
+  app-webview: citrate-core@586845d42b2177bb7838346b8edb66aa672a126c, vite 7.3.6 build (vite.config.ts), 828 bundled modules and assets, 23 third-party packages
   citrate-node: citrate-chain@68434069de707e8454a1313a1f2e20ba449300f5, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 495 third-party packages
   cluster-daemon: citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 217 third-party packages
-  comms-member-daemon: citrate-comms@9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 193 third-party packages
+  comms-member-daemon: citrate-comms@f6652a56b92f897b71cd5e9da17521433fb884d6, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 193 third-party packages
   hermes-sidecar: citrate-agent-runtime@aa12b10ee9965619818268dcd6d8651b37dbf19a, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 485 third-party packages
   kubo: github.com/ipfs/kubo@v0.42.0 ./cmd/ipfs, go-licenses, go1.26.4, darwin/arm64, linux/amd64, linux/arm64, windows/amd64, 250 third-party packages
   mem-mcp: citrate-memories@5aeda31723693edf577f0bad238f691586ccde39, cargo-about 0.9.2, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, 283 third-party packages
@@ -1327,7 +1327,7 @@ either 1.16.0  MIT OR Apache-2.0  [T1]  https://github.com/rayon-rs/either
 elliptic-curve 0.13.8  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/traits/tree/master/elliptic-curve
 errno 0.3.14  MIT OR Apache-2.0  [T1]  https://github.com/lambda-fairy/rust-errno  (on aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 ff 0.13.1  MIT OR Apache-2.0  [T2]  https://github.com/zkcrypto/ff
-form_urlencoded 1.2.2  MIT OR Apache-2.0  [T1]  https://github.com/servo/rust-url
+form_urlencoded 1.2.3  MIT OR Apache-2.0  [T1]  https://github.com/servo/rust-url
 futures-channel 0.3.32  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/futures-rs
 futures-core 0.3.32  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/futures-rs
 futures-macro 0.3.32  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/futures-rs
@@ -1368,7 +1368,7 @@ libcrux-sha3 0.0.8  Apache-2.0  [T7]  https://github.com/cryspen/libcrux
 libcrux-traits 0.0.6  Apache-2.0  [T7]  https://github.com/cryspen/libcrux
 libdbus-sys 0.2.7  Apache-2.0 OR MIT  [T16, T1]  https://github.com/diwic/dbus-rs  (on x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu only)
 librocksdb-sys 0.16.0+8.10.0  MIT OR Apache-2.0 OR BSD-3-Clause  [T4]  https://github.com/rust-rocksdb/rust-rocksdb
-libz-sys 1.1.29  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/libz-sys
+libz-sys 1.1.33  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/libz-sys
 lock_api 0.4.14  MIT OR Apache-2.0  [T1]  https://github.com/Amanieu/parking_lot
 log 0.4.32  MIT OR Apache-2.0  [T1]  https://github.com/rust-lang/log
 lz4-sys 1.11.1+lz4-1.10.0  MIT  [T2]  https://github.com/10xGenomics/lz4-rs
@@ -1378,7 +1378,7 @@ mime 0.3.17  MIT OR Apache-2.0  [T1]  https://github.com/hyperium/mime
 mio 1.2.1  MIT  [T1]  https://github.com/tokio-rs/mio
 once_cell 1.21.4  MIT OR Apache-2.0  [T1]  https://github.com/matklad/once_cell
 opaque-debug 0.3.1  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/utils
-openmls 0.8.1  MIT  [T4]  https://github.com/openmls/openmls/
+openmls 0.8.2  MIT  [T4]  https://github.com/openmls/openmls/
 openmls_basic_credential 0.5.0  MIT  [T4]  https://github.com/openmls/openmls/tree/main/basic_credential
 openmls_memory_storage 0.5.0  MIT  [T4]  https://github.com/openmls/openmls/tree/main/memory_storage
 openmls_rust_crypto 0.5.1  MIT  [T4]  https://github.com/openmls/openmls/tree/main/openmls_rust_crypto
@@ -1409,9 +1409,9 @@ recvmsg 1.0.0  0BSD  [T11]  https://crates.io/crates/recvmsg/1.0.0  (on x86_64-p
 rfc6979 0.4.0  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/signatures/tree/master/rfc6979
 ring 0.17.14  Apache-2.0 AND ISC  [T19, T7, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34, T35]  https://github.com/briansmith/ring
 rocksdb 0.22.0  Apache-2.0  [T7]  https://github.com/rust-rocksdb/rust-rocksdb
-rustls 0.23.45  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/rustls
+rustls 0.23.46  Apache-2.0 OR ISC OR MIT  [T1]  https://github.com/rustls/rustls
 rustls-pki-types 1.14.1  MIT OR Apache-2.0  [T1]  https://github.com/rustls/pki-types
-rustls-webpki 0.103.15  ISC  [T36]  https://github.com/rustls/webpki
+rustls-webpki 0.103.16  ISC  [T36]  https://github.com/rustls/webpki
 rustversion 1.0.22  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/rustversion
 ryu 1.0.23  Apache-2.0 OR BSL-1.0  [T7]  https://github.com/dtolnay/ryu
 scopeguard 1.2.0  MIT OR Apache-2.0  [T1]  https://github.com/bluss/scopeguard
@@ -1441,7 +1441,7 @@ thiserror-impl 1.0.69  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/thise
 thiserror-impl 2.0.18  MIT OR Apache-2.0  [T1]  https://github.com/dtolnay/thiserror
 tls_codec 0.4.2  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/formats
 tls_codec_derive 0.4.2  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/formats
-tokio 1.52.3  MIT  [T4]  https://github.com/tokio-rs/tokio
+tokio 1.53.3  MIT  [T4]  https://github.com/tokio-rs/tokio
 tokio-macros 2.7.0  MIT  [T4]  https://github.com/tokio-rs/tokio
 tokio-rustls 0.26.4  MIT OR Apache-2.0  [T1]  https://github.com/rustls/tokio-rustls
 tokio-tungstenite 0.24.0  MIT  [T1]  https://github.com/snapview/tokio-tungstenite
@@ -1457,7 +1457,7 @@ universal-hash 0.5.1  MIT OR Apache-2.0  [T1]  https://github.com/RustCrypto/tra
 untrusted 0.9.0  ISC  [T39]  https://github.com/briansmith/untrusted
 utf-8 0.7.6  MIT OR Apache-2.0  [T1]  https://github.com/SimonSapin/rust-utf8
 webpki-roots 0.26.11  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
-webpki-roots 1.0.7  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
+webpki-roots 1.0.10  CDLA-Permissive-2.0  [T40]  https://github.com/rustls/webpki-roots
 widestring 1.2.1  MIT OR Apache-2.0  [T4]  https://github.com/VoidStarKat/widestring-rs  (on x86_64-pc-windows-msvc only)
 windows-link 0.2.1  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
 windows-sys 0.60.2  MIT OR Apache-2.0  [T4]  https://github.com/microsoft/windows-rs  (on x86_64-pc-windows-msvc only)
@@ -1470,7 +1470,7 @@ zerocopy-derive 0.8.52  BSD-2-Clause OR Apache-2.0 OR MIT  [T1]  https://github.
 zeroize 1.9.0  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/utils
 zeroize_derive 1.5.0  Apache-2.0 OR MIT  [T1]  https://github.com/RustCrypto/utils
 zmij 1.0.21  MIT  [T1]  https://github.com/dtolnay/zmij
-zstd-sys 2.0.16+zstd.1.5.7  MIT OR Apache-2.0  [T2]  https://github.com/gyscos/zstd-rs
+zstd-sys 2.1.2+zstd.1.5.7  BSD-3-Clause  [T60, T61, T51]  https://github.com/gyscos/zstd-rs
 
 ## hermes-sidecar
 
@@ -2646,7 +2646,7 @@ Copyright (c) 2014 Alex Crichton
   applies to: cfg-if 0.1.10, cfg-if 1.0.4, filetime 0.2.27, filetime 0.2.29, futures-timer 3.0.4, id-arena 2.3.0, miow 0.2.2, openssl-probe 0.2.1, openssl-sys 0.9.116, openssl-sys 0.9.118, rustc-demangle 0.1.27, socket2 0.5.10, socket2 0.6.3, socket2 0.6.4, socket2 0.6.5, toml 0.5.11, toml_datetime 0.6.3
 Copyright (c) 2014 Alex Crichton
 Copyright (c) 2020 Josh Triplett
-  applies to: libz-sys 1.1.29, libz-sys 1.1.33
+  applies to: libz-sys 1.1.33
 Copyright (c) 2014 Carl Lerche and other MIO contributors
   applies to: mio 0.6.23, mio 1.2.0, mio 1.2.1, mio 1.2.2, mio 1.2.3
 Copyright (c) 2014 Chris Wong
@@ -3153,8 +3153,6 @@ Copyright (c) 2015 go-logfmt
 Copyright (c) 2015-2020 Julien Cretin
 Copyright (c) 2017-2020 Google Inc.
   applies to: data-encoding 2.10.0, data-encoding 2.11.0, data-encoding 2.11.1, data-encoding-macro 0.1.21, data-encoding-macro-internal 0.1.19
-Copyright (c) 2016 Alexandre Bury
-  applies to: zstd-sys 2.0.16+zstd.1.5.7
 Copyright (c) 2016 Eric Myhre
   applies to: github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a
 Copyright (c) 2016 IPFS
@@ -3455,7 +3453,7 @@ Copyright (c) 2025 sarah quiñones el kazdadi
 Copyright (c) 2026 The Pion community <https://pion.ly>
   applies to: github.com/pion/dtls/v3 v3.1.2, github.com/pion/sdp/v3 v3.0.18
 Copyright (c) <year> <copyright holders>
-  applies to: alloy-primitives 0.7.7, alloy-rlp 0.3.15, ark-snark 0.4.0, base256emoji 1.0.2, base45 3.2.0, block2 0.6.2, brotli-decompressor 5.0.3, candle-core 0.10.2, candle-nn 0.10.2, candle-transformers 0.10.2, chrono 0.4.44, const-str 0.4.3, convert_case 0.4.0, dispatch2 0.3.1, dlopen2 0.8.2, dlopen2_derive 0.4.3, dpi 0.1.2, ethbloom 0.13.0, ethereum-types 0.14.1, ff_derive 0.13.1, fixed-hash 0.8.0, futures-bounded 0.2.4, fxprof-processed-profile 0.8.1, github.com/pion/rtp v1.8.19, halo2derive 0.2.0, if-watch 3.2.2, impl-rlp 0.3.0, impl-serde 0.4.0, jsonrpc-core 18.0.0, jsonrpc-derive 18.0.0, jsonrpc-http-server 18.0.0, jsonrpc-server-utils 18.0.0, jsonrpc-ws-server 18.0.0, kernel32-sys 0.2.2, libm 0.2.16, libp2p-allow-block-list 0.6.0, libp2p-connection-limits 0.6.0, libp2p-core 0.43.2, libp2p-gossipsub 0.49.5, libp2p-identify 0.47.0, libp2p-noise 0.46.1, libp2p-swarm 0.47.1, libp2p-swarm-derive 0.35.1, libp2p-tcp 0.44.1, libp2p-yamux 0.47.0, librocksdb-sys 0.16.0+8.10.0, match-lookup 0.1.3, minisign-verify 0.2.5, multistream-select 0.13.0, netlink-packet-core 0.8.2, netlink-proto 0.12.2, netlink-sys 0.8.8, number_prefix 0.4.0, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-core-foundation 0.3.2, objc2-encode 4.1.0, objc2-exception-helper 0.1.1, objc2-foundation 0.3.2, objc2-io-kit 0.3.2, objc2-osa-kit 0.3.2, objc2-web-kit 0.3.2, openmls 0.8.1, openmls_basic_credential 0.5.0, openmls_memory_storage 0.5.0, openmls_rust_crypto 0.5.1, openmls_traits 0.5.0, plonky2_maybe_rayon 1.0.0, pqcrypto-internals 0.2.11, pqcrypto-kyber 0.8.1, pqcrypto-traits 0.3.5, primitive-types 0.12.2, pulp-wasm-simd-flag 0.1.0, quick-protobuf 0.8.1, quick-protobuf-codec 0.3.1, rlp 0.5.2, rtnetlink 0.20.0, ruint 1.12.4, ruint 1.18.0, ruint-macro 1.2.1, rust_xlsxwriter 0.101.0, rw-stream-sink 0.4.0, siphasher 1.0.3, tauri 2.11.5, tauri-codegen 2.6.3, tauri-macros 2.6.3, tauri-plugin-deep-link 2.4.10, tauri-plugin-dialog 2.7.3, tauri-plugin-fs 2.5.2, tauri-plugin-opener 2.5.4, tauri-plugin-process 2.3.1, tauri-plugin-single-instance 2.4.3, tauri-plugin-store 2.4.3, tauri-plugin-updater 2.10.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3, uint 0.9.5, unic-char-property 0.9.0, unic-char-range 0.9.0, unic-common 0.9.0, unic-ucd-ident 0.9.0, unic-ucd-version 0.9.0, webview2-com 0.38.2, webview2-com-macros 0.8.1, webview2-com-sys 0.38.2, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.5.3, windows-registry 0.6.1, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, ws2_32-sys 0.2.1, yamux 0.12.1, yamux 0.13.10
+  applies to: alloy-primitives 0.7.7, alloy-rlp 0.3.15, ark-snark 0.4.0, base256emoji 1.0.2, base45 3.2.0, block2 0.6.2, brotli-decompressor 5.0.3, candle-core 0.10.2, candle-nn 0.10.2, candle-transformers 0.10.2, chrono 0.4.44, const-str 0.4.3, convert_case 0.4.0, dispatch2 0.3.1, dlopen2 0.8.2, dlopen2_derive 0.4.3, dpi 0.1.2, ethbloom 0.13.0, ethereum-types 0.14.1, ff_derive 0.13.1, fixed-hash 0.8.0, futures-bounded 0.2.4, fxprof-processed-profile 0.8.1, github.com/pion/rtp v1.8.19, halo2derive 0.2.0, if-watch 3.2.2, impl-rlp 0.3.0, impl-serde 0.4.0, jsonrpc-core 18.0.0, jsonrpc-derive 18.0.0, jsonrpc-http-server 18.0.0, jsonrpc-server-utils 18.0.0, jsonrpc-ws-server 18.0.0, kernel32-sys 0.2.2, libm 0.2.16, libp2p-allow-block-list 0.6.0, libp2p-connection-limits 0.6.0, libp2p-core 0.43.2, libp2p-gossipsub 0.49.5, libp2p-identify 0.47.0, libp2p-noise 0.46.1, libp2p-swarm 0.47.1, libp2p-swarm-derive 0.35.1, libp2p-tcp 0.44.1, libp2p-yamux 0.47.0, librocksdb-sys 0.16.0+8.10.0, match-lookup 0.1.3, minisign-verify 0.2.5, multistream-select 0.13.0, netlink-packet-core 0.8.2, netlink-proto 0.12.2, netlink-sys 0.8.8, number_prefix 0.4.0, objc2 0.6.4, objc2-app-kit 0.3.2, objc2-core-foundation 0.3.2, objc2-encode 4.1.0, objc2-exception-helper 0.1.1, objc2-foundation 0.3.2, objc2-io-kit 0.3.2, objc2-osa-kit 0.3.2, objc2-web-kit 0.3.2, openmls 0.8.2, openmls_basic_credential 0.5.0, openmls_memory_storage 0.5.0, openmls_rust_crypto 0.5.1, openmls_traits 0.5.0, plonky2_maybe_rayon 1.0.0, pqcrypto-internals 0.2.11, pqcrypto-kyber 0.8.1, pqcrypto-traits 0.3.5, primitive-types 0.12.2, pulp-wasm-simd-flag 0.1.0, quick-protobuf 0.8.1, quick-protobuf-codec 0.3.1, rlp 0.5.2, rtnetlink 0.20.0, ruint 1.12.4, ruint 1.18.0, ruint-macro 1.2.1, rust_xlsxwriter 0.101.0, rw-stream-sink 0.4.0, siphasher 1.0.3, tauri 2.11.5, tauri-codegen 2.6.3, tauri-macros 2.6.3, tauri-plugin-deep-link 2.4.10, tauri-plugin-dialog 2.7.3, tauri-plugin-fs 2.5.2, tauri-plugin-opener 2.5.4, tauri-plugin-process 2.3.1, tauri-plugin-single-instance 2.4.3, tauri-plugin-store 2.4.3, tauri-plugin-updater 2.10.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3, uint 0.9.5, unic-char-property 0.9.0, unic-char-range 0.9.0, unic-common 0.9.0, unic-ucd-ident 0.9.0, unic-ucd-version 0.9.0, webview2-com 0.38.2, webview2-com-macros 0.8.1, webview2-com-sys 0.38.2, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.5.3, windows-registry 0.6.1, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, ws2_32-sys 0.2.1, yamux 0.12.1, yamux 0.13.10
 Copyright (c) Meta Platforms, Inc. and affiliates.
   applies to: react 19.2.7, react-dom 19.2.7, scheduler 0.27.0
 Copyright (c) Tokio Contributors
