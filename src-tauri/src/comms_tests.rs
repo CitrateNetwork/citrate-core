@@ -422,8 +422,21 @@ fn classify_relay_maps_each_response() {
     // The core of the fix: connected → Connected, DISCONNECTED → Degraded (the state the old
     // socket-only probe called "healthy"), and anything ambiguous fails OPEN to Unknown so it can
     // never false-alarm the UI.
-    assert_eq!(classify_relay(Ok(Response::RelayStatus { connected: true })), RelayHealth::Connected);
-    assert_eq!(classify_relay(Ok(Response::RelayStatus { connected: false })), RelayHealth::Degraded);
+    let status = |connected, retry_in_secs, last_error: Option<&str>| Response::RelayStatus {
+        connected,
+        retry_in_secs,
+        last_error: last_error.map(str::to_string),
+    };
+    assert_eq!(classify_relay(Ok(status(true, None, None))), RelayHealth::Connected);
+    // An older daemon (no redial fields) that reports the link down: it will not come back alone.
+    assert_eq!(classify_relay(Ok(status(false, None, None))), RelayHealth::Degraded);
+    // A daemon that redials says when, or why the last try failed: that is reconnecting, not stuck.
+    assert_eq!(classify_relay(Ok(status(false, Some(4), None))), RelayHealth::Reconnecting);
+    assert_eq!(
+        classify_relay(Ok(status(false, Some(0), Some("could not reach the relay within 4s")))),
+        RelayHealth::Reconnecting
+    );
+    assert_eq!(RelayHealth::Reconnecting.as_str(), "reconnecting");
     // Older daemon that doesn't know the op → Error → Unknown (not a hard failure).
     assert_eq!(
         classify_relay(Ok(Response::Error { message: "unknown op".into() })),
@@ -440,7 +453,17 @@ fn relay_status_request_serializes_and_response_parses() {
     assert!(req.contains("\"op\":\"relayStatus\""), "op tag: {req}");
     let resp: Response =
         serde_json::from_str("{\"type\":\"relayStatus\",\"connected\":false}").expect("parse");
-    assert!(matches!(resp, Response::RelayStatus { connected: false }));
+    assert!(matches!(resp, Response::RelayStatus { connected: false, retry_in_secs: None, last_error: None }));
+    // A redialing daemon's extra fields parse (snake_case on the wire, like every daemon field).
+    let resp: Response = serde_json::from_str(
+        "{\"type\":\"relayStatus\",\"connected\":false,\"retry_in_secs\":8,\"last_error\":\"relay down\"}",
+    )
+    .expect("parse");
+    assert_eq!(
+        classify_relay(Ok(resp)),
+        RelayHealth::Reconnecting,
+        "the redial fields reach the status"
+    );
 }
 
 #[test]
@@ -748,4 +771,29 @@ fn groups_assign_role_routes_a_grant_role_request() {
         !request_enum.contains("AssignRole"),
         "the unsigned {{group, member, role}} assignRole shape the daemon refuses must not exist"
     );
+}
+
+// The owner's report: comms-member-daemon had no log to read. Its lines are the daemon's startup,
+// relay and socket errors; each must reach the log file (redacted), as the cluster daemon's do.
+#[test]
+fn the_member_daemon_log_keeps_its_startup_and_relay_lines() {
+    use crate::sidecar_logs::{disk_filter, LogPolicy};
+    // The policy `start` attaches (pinned in source by the CORE-D5 tripwire in sidecar_logs_tests).
+    const COMMS_LOG_POLICY: LogPolicy = LogPolicy::Full;
+    let lines = [
+        "comms-member-daemon: owner 903034a95c3328ee1b81a2847fed80ad57dde7c0 serving on /Users/x/Library/Application Support/ai.citrate.core/comms/member.sock",
+        "comms-member-daemon: relay reconnect failed: could not reach the relay within 4s",
+        "comms-member-daemon: relay reconnected",
+        "comms-member-daemon: connection ended: Broken pipe (os error 32)",
+    ];
+    for line in lines {
+        let kept = disk_filter(line, COMMS_LOG_POLICY).expect("kept");
+        assert!(!kept.contains("withheld"), "{kept}");
+        assert_eq!(kept, line, "nothing secret-shaped in these lines, so they are kept whole");
+    }
+    // Still redacted: a bearer-shaped value never reaches the disk.
+    let token = "ab".repeat(32);
+    let kept = disk_filter(&format!("comms-member-daemon: token={token}"), COMMS_LOG_POLICY)
+        .expect("kept");
+    assert!(!kept.contains(&token), "{kept}");
 }

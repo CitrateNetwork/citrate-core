@@ -314,8 +314,18 @@ struct ReplyBody {
     decision: Decision,
 }
 
-fn address_ok(a: &str) -> bool {
-    a.len() == 42 && a.starts_with("0x") && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
+/// A member address in the one form invites use: `0x` and 40 lowercase hex digits. Accepts it
+/// with or without the `0x` (any case), since the comms identity (`comms::device_identity`) and
+/// the daemon's roster give it bare while invite requests on the wire carry the `0x`. `None` for
+/// anything that isn't 20 bytes of hex.
+fn canonical_address(a: &str) -> Option<String> {
+    let a = a.trim();
+    let hex = a
+        .strip_prefix("0x")
+        .or_else(|| a.strip_prefix("0X"))
+        .unwrap_or(a);
+    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("0x{}", hex.to_ascii_lowercase()))
 }
 
 /// A request opened with the invite's key.
@@ -342,11 +352,12 @@ fn open_requests(inv: &Invite, ciphertexts: &[String]) -> Vec<OpenedRequest> {
         let Ok(b) = serde_json::from_slice::<RequestBody>(&plain) else {
             continue;
         };
-        let address = b.address.to_ascii_lowercase();
+        let Some(address) = canonical_address(&b.address) else {
+            continue;
+        };
         if b.v == 1
             && b.group == inv.group
             && b.token == inv.token
-            && address_ok(&address)
             && key_ok(&b.reply)
             && !out.iter().any(|r| r.address == address)
         {
@@ -858,10 +869,9 @@ pub(crate) fn approve_at(
     add: impl FnOnce(&str, &str) -> Result<(), String>,
     mut is_member: impl FnMut(&str, &str) -> Result<bool, String>,
 ) -> Result<(), String> {
-    let member = address.to_ascii_lowercase();
-    if !address_ok(&member) {
+    let Some(member) = canonical_address(address) else {
         return Err("that isn't a member address".to_string());
-    }
+    };
     let _flight = InFlight::take(group, id)?;
     let inv = {
         let mut s = view_store_at(path)?;
@@ -958,7 +968,7 @@ pub(crate) fn decline_at(
     poll: impl FnOnce(String) -> Result<Vec<String>, String>,
     mut submit: impl FnMut(String, String) -> Result<(), String>,
 ) -> Result<Notice, String> {
-    let member = address.to_ascii_lowercase();
+    let member = canonical_address(address).unwrap_or_else(|| address.to_ascii_lowercase());
     let _flight = InFlight::take(group, id)?;
     let inv = update_store_at(path, |s| {
         let inv = find(s, group, id).ok_or_else(|| INVITE_GONE.to_string())?;
@@ -1103,6 +1113,12 @@ fn my_view(r: &MyRequest, state: RequestState, note: String) -> MyRequestView {
     }
 }
 
+/// What the Join screen says when this device's group identity is not a 20-byte address. It cannot
+/// fix itself by waiting, so it says what to do instead of "try again".
+pub(crate) const MALFORMED_DEVICE_ADDRESS: &str = "This device's group identity is not a valid \
+    address, so the request was not sent. Quit and reopen Citrate Core to rebuild it; if this \
+    keeps happening, report it from Settings.";
+
 /// Ask to join with `link` as `address` (this device's comms address): seal the request to the
 /// link's key and leave it in the relay inbox (`submit`), then record it. Refused for an expired
 /// link. Asking again with the same link sends nothing new.
@@ -1117,10 +1133,11 @@ pub(crate) fn request_at(
     if now >= l.expires_at {
         return Err("This invite has expired. Ask for a new link.".to_string());
     }
-    let address = address.to_ascii_lowercase();
-    if !address_ok(&address) {
-        return Err("this device's group address isn't ready yet; try again in a moment".into());
-    }
+    // `address` comes from `comms::device_identity`, which gives it bare (no `0x`): put it in the
+    // form the inviter's app checks. Only a malformed identity is refused, and that says so.
+    let Some(address) = canonical_address(address) else {
+        return Err(MALFORMED_DEVICE_ADDRESS.to_string());
+    };
     if let Some(r) = view_store_at(path)?
         .requests
         .iter()

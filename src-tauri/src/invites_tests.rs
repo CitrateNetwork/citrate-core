@@ -176,6 +176,64 @@ fn request_then_approve_adds_the_requester_and_their_app_finishes_the_join() {
         .is_empty());
 }
 
+// The owner's report (0.5.8): "this device's group address isn't ready yet" on every Join. The
+// device's comms address comes from `comms::address_from_secret_hex`, which gives it bare (40 hex,
+// no `0x`); the request check wanted the `0x` form, so no real request ever left the device.
+#[test]
+fn a_bare_device_address_from_the_comms_identity_can_ask_and_be_approved() {
+    let (owner, invitee) = (store("bare-owner"), store("bare-invitee"));
+    let relay = Relay::default();
+    let v = make(&owner, NOW);
+    let seed = "11".repeat(32);
+    let bare = crate::comms::address_from_secret_hex(&seed).expect("address");
+    assert!(!bare.starts_with("0x"), "the comms identity gives the address bare");
+
+    let mine = request_at(&invitee, &v.link, &bare, NOW, |k, c| relay.submit(k, c))
+        .expect("a bare device address is a real address, not 'not ready'");
+    assert_eq!(mine.state, RequestState::Waiting);
+    assert_eq!(*relay.submits.borrow(), 1, "the request was sent");
+
+    // The inviter's app sees it in the 0x form (what a 0.5.8 inviter also accepts) and can add it;
+    // the roster gives the same member bare, and still matches.
+    let canonical = format!("0x{bare}");
+    let req = incoming(&owner, &relay);
+    assert_eq!(req.len(), 1);
+    assert_eq!(req[0].address, canonical);
+    let added = RefCell::new(Vec::new());
+    approve_at(&owner, GROUP, &v.id, &bare, NOW, |k| relay.poll(k), |g, m| {
+        added.borrow_mut().push((g.to_string(), m.to_string()));
+        Ok(())
+    }, |_, _| Ok(false))
+    .expect("approving by the bare roster form works too");
+    assert_eq!(added.into_inner(), vec![(GROUP.to_string(), canonical)]);
+}
+
+#[test]
+fn a_malformed_device_address_is_refused_with_the_real_reason_and_nothing_sent() {
+    let (owner, invitee) = (store("bad-owner"), store("bad-invitee"));
+    let relay = Relay::default();
+    let v = make(&owner, NOW);
+    for bad in ["", "0x", "0xnope", "12345", "z".repeat(40).as_str()] {
+        let e = request_at(&invitee, &v.link, bad, NOW, |k, c| relay.submit(k, c))
+            .expect_err("malformed");
+        assert_eq!(e, MALFORMED_DEVICE_ADDRESS, "{bad:?}");
+        assert!(!e.contains("try again in a moment"), "never a vague retry");
+    }
+    assert_eq!(*relay.submits.borrow(), 0, "nothing sent");
+}
+
+#[test]
+fn canonical_address_accepts_either_form_and_nothing_else() {
+    let hex = "00000000000000000000000000000000000000AA";
+    assert_eq!(canonical_address(hex).as_deref(), Some(ANA));
+    assert_eq!(canonical_address(&format!("0x{hex}")).as_deref(), Some(ANA));
+    assert_eq!(canonical_address(&format!("0X{hex}")).as_deref(), Some(ANA));
+    assert_eq!(canonical_address(&format!(" 0x{hex} ")).as_deref(), Some(ANA));
+    assert_eq!(canonical_address(&hex[2..]), None, "19 bytes");
+    assert_eq!(canonical_address(&format!("0x{hex}00")), None, "21 bytes");
+    assert_eq!(canonical_address("0x0x00000000000000000000000000000000000000"), None);
+}
+
 #[test]
 fn asking_twice_with_the_same_link_sends_once() {
     let (owner, invitee) = (store("twice-owner"), store("twice-invitee"));

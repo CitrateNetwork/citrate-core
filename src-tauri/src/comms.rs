@@ -178,7 +178,11 @@ pub enum RelayHealth {
     Connected,
     /// Relay configured but the daemon reports the link DOWN — relayed ops will fail until it
     /// reconnects. This is exactly the state the old socket-only probe mislabelled "healthy".
+    /// Reported for a daemon that does not say it is redialing (an older one never does).
     Degraded,
+    /// The link is down and the daemon is redialing it on its own (it reports when it next tries
+    /// or why the last try failed). Relayed ops fail until it is back.
+    Reconnecting,
     /// Can't tell right now: daemon not running, didn't answer within the probe timeout, or is an
     /// older build with no `relayStatus` op. Never reported as a hard failure (fail-open on ambiguity).
     Unknown,
@@ -189,8 +193,17 @@ pub enum RelayHealth {
 /// daemon that doesn't know the op), any unexpected shape, or an IPC error — never a false "degraded".
 fn classify_relay(resp: Result<Response>) -> RelayHealth {
     match resp {
-        Ok(Response::RelayStatus { connected: true }) => RelayHealth::Connected,
-        Ok(Response::RelayStatus { connected: false }) => RelayHealth::Degraded,
+        Ok(Response::RelayStatus {
+            connected: true, ..
+        }) => RelayHealth::Connected,
+        Ok(Response::RelayStatus {
+            connected: false,
+            retry_in_secs,
+            last_error,
+        }) if retry_in_secs.is_some() || last_error.is_some() => RelayHealth::Reconnecting,
+        Ok(Response::RelayStatus {
+            connected: false, ..
+        }) => RelayHealth::Degraded,
         _ => RelayHealth::Unknown,
     }
 }
@@ -201,6 +214,7 @@ impl RelayHealth {
             RelayHealth::NotApplicable => "n/a",
             RelayHealth::Connected => "connected",
             RelayHealth::Degraded => "degraded",
+            RelayHealth::Reconnecting => "reconnecting",
             RelayHealth::Unknown => "unknown",
         }
     }
@@ -389,7 +403,8 @@ impl CommsMemberManager {
         // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
         config.slow_retry = crate::services::slow_retry_every();
         // CORE-D5: keep its output on disk too (rotating files under the app log dir).
-        crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::LogPolicy::LifecycleOnly);
+        // Every line, redacted: see the note on the CORE-D5 tripwire (`sidecar_logs_tests`).
+        crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::LogPolicy::Full);
         config.backoff = BackoffPolicy::new();
         config.healthy_after = COMMS_HEALTHY_AFTER;
         let sup = Supervisor::start(config).map_err(|e| CommsError::Spawn(e.to_string()))?;
@@ -635,6 +650,13 @@ enum Response {
     /// `connected: false` = configured but the link is down (ops will fail until it reconnects).
     RelayStatus {
         connected: bool,
+        /// While the link is down: seconds until the daemon redials it. Absent from a daemon that
+        /// does not redial on its own (before citrate-comms' relay-reconnect fix).
+        #[serde(default)]
+        retry_in_secs: Option<u64>,
+        /// While the link is down: why the daemon's last redial or sign-in failed.
+        #[serde(default)]
+        last_error: Option<String>,
     },
     Error {
         message: String,
@@ -1173,6 +1195,7 @@ pub async fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<S
 ///   local      — in-process relay (networked relay disabled via the off-switch)
 ///   connected  — the daemon reports its relay link up
 ///   degraded   — configured but the link is DOWN (ops failing until it reconnects)
+///   reconnecting — the link is DOWN and the daemon is redialing it with backoff
 ///   connecting — daemon up but the relay state isn't confirmed yet (or an older daemon)
 /// Bounded (the underlying probe is ≤750ms, non-retrying) so polling it can't stall the UI.
 #[tauri::command]
@@ -1183,6 +1206,7 @@ pub async fn comms_relay_status() -> String {
             RelayHealth::NotApplicable => "local".to_string(),
             RelayHealth::Connected => "connected".to_string(),
             RelayHealth::Degraded => "degraded".to_string(),
+            RelayHealth::Reconnecting => "reconnecting".to_string(),
             RelayHealth::Unknown => "connecting".to_string(),
         },
     }

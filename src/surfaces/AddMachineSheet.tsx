@@ -92,7 +92,7 @@ function RemoveMachine({ api, id, label, onRemoved }: { api: FleetApi; id: strin
   );
 }
 
-function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }: AddMachineSheetProps) {
+function AddSide({ api, groupSeed, onPaired, mesh, nowSecs = () => Date.now() / 1000 }: AddMachineSheetProps) {
   const [offer, setOffer] = useState<{ o: PairOffer; issuedAt: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [joined, setJoined] = useState<FleetDevice[]>([]);
@@ -220,7 +220,12 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
           <summary style={{ fontSize: 12.5, cursor: "pointer" }}>A member's machine, not yours: share this group's link</summary>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
             <p style={note}>The group link says where to reach this machine. Each machine is still admitted only by the group's roster.</p>
-            {!seed && (
+            {mesh && !mesh.on && (
+              <p role="status" data-testid="group-seed-mesh-off" style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5 }}>
+                {MESH_NOT_AVAILABLE}
+              </p>
+            )}
+            {!seed && !(mesh && !mesh.on) && (
               <span>
                 <button
                   type="button"
@@ -246,6 +251,13 @@ function AddSide({ api, groupSeed, onPaired, nowSecs = () => Date.now() / 1000 }
     </>
   );
 }
+
+/**
+ * What a group link says while the cross-machine mesh is off (how this release ships). The same
+ * words as core's `cluster::MESH_NOT_AVAILABLE`, which refuses the link commands while it is off.
+ */
+export const MESH_NOT_AVAILABLE =
+  "Mesh is not available yet. The cross-machine mesh is off in this release until its security review is signed off, so machines can't reach each other directly. Your groups and linked machines keep working through the relay.";
 
 /** Group links can't reach other machines while the cross-machine mesh is off on this machine. */
 export const GROUP_LINK_MESH_OFF = "The cross-machine mesh is off on this machine, so a group link can't reach other machines.";
@@ -365,7 +377,9 @@ function JoinSide({ api, addGroupSeed, onPaired, mesh, nowSecs = () => Date.now(
           </span>
           {meshOff ? (
             <span data-testid="join-seed-mesh-off" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-              {GROUP_LINK_MESH_OFF} {mesh?.note} Turn on Private mesh on the cluster screen first.
+              {mesh?.signedOff
+                ? `${GROUP_LINK_MESH_OFF} ${mesh.note} Turn on Private mesh on the cluster screen first.`
+                : MESH_NOT_AVAILABLE}
             </span>
           ) : (
             <span style={{ display: "flex", gap: 8 }}>

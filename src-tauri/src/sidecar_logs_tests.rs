@@ -88,9 +88,11 @@ fn every_registry_owner_keeps_its_sidecar_output_on_disk() {
         let src = std::fs::read_to_string(&file).unwrap_or_default();
         let new_at = src.find("SupervisorConfig::new(").unwrap_or_else(|| panic!("{} builds a supervisor config", d.owner));
         let rest = &src[new_at..];
-        // #613 review (P2): sidecars whose output can carry prompts, memory results or message
-        // previews keep only lifecycle and error lines.
-        let content = ["src-tauri/src/hermes.rs", "src-tauri/src/memory.rs", "src-tauri/src/comms.rs", "src-tauri/src/serve.rs", "src-tauri/src/embed_serve.rs"];
+        // #613 review (P2): sidecars whose output can carry prompts, memory results or previews
+        // keep only lifecycle and error lines. Not comms.rs: the member daemon prints only its
+        // address, socket path and relay/socket errors (message content stays inside MLS), and the
+        // lifecycle filter withheld every one of those lines, so its log stayed empty (0.5.8).
+        let content = ["src-tauri/src/hermes.rs", "src-tauri/src/memory.rs", "src-tauri/src/serve.rs", "src-tauri/src/embed_serve.rs"];
         let want = if content.contains(&d.owner) { "LogPolicy::LifecycleOnly" } else { "LogPolicy::Full" };
         let call = format!("crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::{want});");
         let attach_at = rest.find(&call).unwrap_or_else(|| panic!("{} must attach its log file with {want}", d.owner));
