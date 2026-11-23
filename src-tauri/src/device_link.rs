@@ -68,11 +68,8 @@ const ORIGIN: &str = "local-user";
 
 const SEED_LEN: usize = 32;
 
-/// Canonical address: lowercase hex, no `0x`, exactly 40 hex chars.
-pub(crate) fn canonical_address(raw: &str) -> Option<String> {
-    let h = raw.trim().trim_start_matches("0x").to_ascii_lowercase();
-    (h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())).then_some(h)
-}
+// The canonical address (lowercase hex, no `0x`) is the one in `comms` (Rule 9).
+pub(crate) use crate::comms::canonical_address;
 
 /// The label alphabet `cluster-core` accepts: 1..=48 chars of ASCII letters, digits, space, `.`,
 /// `_`, `-`, `'`, no leading/trailing space. Keeps the signed text unambiguous.

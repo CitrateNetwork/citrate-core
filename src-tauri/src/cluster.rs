@@ -959,6 +959,26 @@ pub struct ClusterGroupSeedDto {
     addrs: Vec<String>,
 }
 
+/// What a mesh-only action (a group link to share or to dial) answers while the cross-machine mesh is
+/// off, which is how this release ships. Said plainly, as the state it is, not as a failure to retry.
+pub(crate) const MESH_NOT_AVAILABLE: &str = "Mesh is not available yet. The cross-machine mesh \
+    is off in this release until its security review is signed off, so machines can't reach each \
+    other directly. Your groups and linked machines keep working through the relay.";
+
+/// Refuse a mesh-only action while the mesh is off (`on` = this run's mesh decision has a listen
+/// address), before the daemon is asked: its in-process transport can only say it has no address.
+pub(crate) fn mesh_gate(on: bool) -> std::result::Result<(), String> {
+    if on {
+        Ok(())
+    } else {
+        Err(MESH_NOT_AVAILABLE.to_string())
+    }
+}
+
+fn mesh_on(app: &tauri::AppHandle) -> bool {
+    crate::cluster_mesh::current(app).listen.is_some()
+}
+
 /// **cluster_group_seed** (HUP-S8.4): this machine's link/QR text for a group. Needs the
 /// cross-machine mesh; without it the daemon says so (no address is invented).
 #[tauri::command]
@@ -966,6 +986,7 @@ pub async fn cluster_group_seed(
     app: tauri::AppHandle,
     group: String,
 ) -> std::result::Result<ClusterGroupSeedDto, String> {
+    mesh_gate(mesh_on(&app))?;
     feed_roster(&app, &group).await?;
     match route(
         &app,
@@ -992,6 +1013,7 @@ pub async fn cluster_add_seed(
     group: String,
     seed: String,
 ) -> std::result::Result<usize, String> {
+    mesh_gate(mesh_on(&app))?;
     let seed = seed_text(&seed)?;
     feed_roster(&app, &group).await?;
     match route(&app, Request::AddSeed { group, seed })? {

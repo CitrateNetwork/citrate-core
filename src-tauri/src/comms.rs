@@ -178,7 +178,11 @@ pub enum RelayHealth {
     Connected,
     /// Relay configured but the daemon reports the link DOWN — relayed ops will fail until it
     /// reconnects. This is exactly the state the old socket-only probe mislabelled "healthy".
+    /// Reported for a daemon that does not say it is redialing (an older one never does).
     Degraded,
+    /// The link is down and the daemon is redialing it on its own (it reports when it next tries
+    /// or why the last try failed). Relayed ops fail until it is back.
+    Reconnecting,
     /// Can't tell right now: daemon not running, didn't answer within the probe timeout, or is an
     /// older build with no `relayStatus` op. Never reported as a hard failure (fail-open on ambiguity).
     Unknown,
@@ -189,8 +193,17 @@ pub enum RelayHealth {
 /// daemon that doesn't know the op), any unexpected shape, or an IPC error — never a false "degraded".
 fn classify_relay(resp: Result<Response>) -> RelayHealth {
     match resp {
-        Ok(Response::RelayStatus { connected: true }) => RelayHealth::Connected,
-        Ok(Response::RelayStatus { connected: false }) => RelayHealth::Degraded,
+        Ok(Response::RelayStatus {
+            connected: true, ..
+        }) => RelayHealth::Connected,
+        Ok(Response::RelayStatus {
+            connected: false,
+            retry_in_secs,
+            last_error,
+        }) if retry_in_secs.is_some() || last_error.is_some() => RelayHealth::Reconnecting,
+        Ok(Response::RelayStatus {
+            connected: false, ..
+        }) => RelayHealth::Degraded,
         _ => RelayHealth::Unknown,
     }
 }
@@ -201,6 +214,7 @@ impl RelayHealth {
             RelayHealth::NotApplicable => "n/a",
             RelayHealth::Connected => "connected",
             RelayHealth::Degraded => "degraded",
+            RelayHealth::Reconnecting => "reconnecting",
             RelayHealth::Unknown => "unknown",
         }
     }
@@ -389,7 +403,8 @@ impl CommsMemberManager {
         // CORE-D3: after the retry budget is spent, one more try per slow-retry period.
         config.slow_retry = crate::services::slow_retry_every();
         // CORE-D5: keep its output on disk too (rotating files under the app log dir).
-        crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::LogPolicy::LifecycleOnly);
+        // Every line, redacted: see the note on the CORE-D5 tripwire (`sidecar_logs_tests`).
+        crate::sidecar_logs::attach(&mut config, crate::sidecar_logs::LogPolicy::Full);
         config.backoff = BackoffPolicy::new();
         config.healthy_after = COMMS_HEALTHY_AFTER;
         let sup = Supervisor::start(config).map_err(|e| CommsError::Spawn(e.to_string()))?;
@@ -635,6 +650,13 @@ enum Response {
     /// `connected: false` = configured but the link is down (ops will fail until it reconnects).
     RelayStatus {
         connected: bool,
+        /// While the link is down: seconds until the daemon redials it. Absent from a daemon that
+        /// does not redial on its own (before citrate-comms' relay-reconnect fix).
+        #[serde(default)]
+        retry_in_secs: Option<u64>,
+        /// While the link is down: why the daemon's last redial or sign-in failed.
+        #[serde(default)]
+        last_error: Option<String>,
     },
     Error {
         message: String,
@@ -990,6 +1012,27 @@ pub(crate) fn address_from_secret_hex(seed_hex: &str) -> std::result::Result<Str
     Ok(hex::encode(&digest[12..]))
 }
 
+/// THE canonical form of a member, device or wallet address, for every comparison (Rule 9): 40
+/// lowercase hex digits, no `0x`. It is the form the comms identity
+/// ([`address_from_secret_hex`]) and the member daemon's roster give. Accepts the input with or
+/// without a `0x`/`0X` prefix and surrounding space; `None` for anything that isn't 20 bytes of hex.
+pub(crate) fn canonical_address(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let hex = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
+    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// The wire and display form of a canonical address: `0x` + the 40 hex digits. Invite requests
+/// carry it (a 0.5.8 inviter accepts only this form). Never compare in this form; compare
+/// [`canonical_address`] values.
+pub(crate) fn wire_address(canonical: &str) -> String {
+    format!("0x{canonical}")
+}
+
 /// The device-sealed comms identity: the seed (ready to write to a daemon's 0600 seed file) **and**
 /// its derived address. This is the identity a member is known by in the group roster, so both the
 /// comms member-daemon and the cluster-daemon must use THIS key — the cluster's Noise/peer id and the
@@ -1173,6 +1216,7 @@ pub async fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<S
 ///   local      — in-process relay (networked relay disabled via the off-switch)
 ///   connected  — the daemon reports its relay link up
 ///   degraded   — configured but the link is DOWN (ops failing until it reconnects)
+///   reconnecting — the link is DOWN and the daemon is redialing it with backoff
 ///   connecting — daemon up but the relay state isn't confirmed yet (or an older daemon)
 /// Bounded (the underlying probe is ≤750ms, non-retrying) so polling it can't stall the UI.
 #[tauri::command]
@@ -1183,6 +1227,7 @@ pub async fn comms_relay_status() -> String {
             RelayHealth::NotApplicable => "local".to_string(),
             RelayHealth::Connected => "connected".to_string(),
             RelayHealth::Degraded => "degraded".to_string(),
+            RelayHealth::Reconnecting => "reconnecting".to_string(),
             RelayHealth::Unknown => "connecting".to_string(),
         },
     }
@@ -1311,9 +1356,19 @@ pub(crate) fn is_member<R: tauri::Runtime>(
     group: &str,
     member: &str,
 ) -> std::result::Result<bool, String> {
-    Ok(roster(app, group.to_string())?
+    Ok(roster_has(&roster(app, group.to_string())?, member))
+}
+
+/// Whether `member` is on `roster` (the daemon's `(address, role)` answer). Both sides are compared
+/// in [`canonical_address`] form: the roster gives addresses bare, invites work in the `0x` form,
+/// and a malformed address on either side never matches.
+pub(crate) fn roster_has(roster: &[(String, String)], member: &str) -> bool {
+    let Some(want) = canonical_address(member) else {
+        return false;
+    };
+    roster
         .iter()
-        .any(|(a, _)| a.eq_ignore_ascii_case(member)))
+        .any(|(a, _)| canonical_address(a).as_deref() == Some(want.as_str()))
 }
 
 /// GC-2 (#495): what an older comms-member-daemon's refusal of `grantRole` means, in plain words.

@@ -20,9 +20,9 @@
     "note": "The app is source-available under BUSL-1.1. Copyleft tools are separate programs it runs as subprocesses or downloads on request; none is linked into the app.",
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-      "source": "citrate-core@5dfa2910b4921945d012a255a2c287cfcef4fcc2",
+      "source": "citrate-core@d9371e2d76c4ff12c1682ce518244bcc01982fac",
       "packages": 511,
-      "lock": "sha256:ec33fcdcf28c6c3bfcbdfd95fe07339c8e5e43eb9cb83abd48c9f45fc7f8f6f9"
+      "lock": "sha256:69406583541507584e1012e4749462356b50c2b3a89679de67a4274de875b2dc"
     }
   },
   "components": [

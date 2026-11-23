@@ -10,7 +10,7 @@
 //!   64-hex values (bare or `0x`, a short stable tag replaces them, so a block hash still lines
 //!   up), emails; then the D-11 vendor key prefixes. 40-hex addresses are kept.
 //! - [`LogPolicy::LifecycleOnly`] for the sidecars whose output can carry user content (Hermes,
-//!   memory, messaging, the chat and embedding models) is an allowlist: only a line of lifecycle
+//!   memory, the chat and embedding models) is an allowlist: only a line of lifecycle
 //!   words and technical tokens (numbers, addresses, paths, versions) is written, up to
 //!   [`LIFECYCLE_LINE_CHARS`]. An error, warning or traceback leaves a marker with its level and
 //!   length and no text from it; every other line is withheld.
@@ -84,11 +84,12 @@ pub fn file_stem(name: &str) -> String {
 /// What a sidecar's log file may keep (#613 review).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogPolicy {
-    /// Every line, redacted (node, node agent, IPFS, cluster).
+    /// Every line, redacted (node, node agent, IPFS, cluster, comms member daemon).
     Full,
-    /// Only cut lifecycle and error lines, redacted, never a payload field (Hermes, memory,
-    /// messaging, the chat and embedding models: their output can carry prompts, memory results
-    /// or message previews).
+    /// Only cut lifecycle and error lines, redacted, never a payload field (Hermes, memory, the
+    /// chat and embedding models: their output can carry prompts, memory results or previews).
+    /// Not the comms member daemon: it prints addresses, paths and relay or socket errors, and
+    /// message content never leaves MLS, so it keeps every line.
     LifecycleOnly,
 }
 

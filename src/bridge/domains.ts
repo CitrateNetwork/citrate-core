@@ -1249,7 +1249,7 @@ export interface GroupsDomain {
   /**
    * Flag-A — the networked relay-link health for the status chip. One of:
    * `"idle"` (daemon not started) · `"local"` (in-process relay) · `"connecting"` (up, unconfirmed) ·
-   * `"connected"` · `"degraded"` (link down, ops failing). Reported, never a fake — a bounded read.
+   * `"connected"` · `"reconnecting"` (link down, the daemon is redialing) · `"degraded"` (link down, ops failing). Reported, never a fake — a bounded read.
    */
   relayStatus(): Promise<string>;
 }

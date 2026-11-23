@@ -1,23 +1,37 @@
 // Flag-A — the relay-status chip. A small, honest indicator of the comms relay link so a connection
 // problem is VISIBLE (a dot + label) instead of a silent freeze. Polls bridge.groups.relayStatus()
 // (a bounded, read-only backend probe) every few seconds. States come straight from the daemon —
-// never fabricated (Rule 1): idle / local / connecting / connected / degraded / error.
+// never fabricated (Rule 1): idle / local / connecting / connected / reconnecting / degraded / error.
 import { useEffect, useState } from "react";
 import { bridge } from "../bridge";
 
-type RelayState = "idle" | "local" | "connecting" | "connected" | "degraded" | "error";
+type RelayState = "idle" | "local" | "connecting" | "connected" | "reconnecting" | "degraded" | "error";
 
 const META: Record<RelayState, { label: string; color: string; pulse?: boolean; title: string }> = {
   idle: { label: "Relay idle", color: "var(--fg-3, #8a8f88)", title: "Comms not started yet this session." },
   local: { label: "Local relay", color: "var(--info, #4cc3d5)", title: "In-process relay (networked relay disabled)." },
   connecting: { label: "Connecting…", color: "var(--warn, #ffbd10)", pulse: true, title: "Reaching the comms relay…" },
   connected: { label: "Relay connected", color: "var(--citrate-green, #8ecc09)", title: "Connected to the comms relay." },
-  degraded: { label: "Relay degraded", color: "var(--danger, #dd7259)", pulse: true, title: "Relay link is down — messages may not deliver until it reconnects." },
+  reconnecting: {
+    label: "Reconnecting…",
+    color: "var(--warn, #ffbd10)",
+    pulse: true,
+    title: "The relay link dropped. Citrate Core is redialing it on its own; messages send once it is back.",
+  },
+  degraded: {
+    label: "Relay down",
+    color: "var(--danger, #dd7259)",
+    pulse: true,
+    title: "The relay link is down and this comms daemon does not redial on its own. Quit and reopen Citrate Core to reconnect.",
+  },
   error: { label: "Relay error", color: "var(--danger, #dd7259)", title: "Could not read the relay status." },
 };
 
 /** Poll interval for the relay probe (ms). Bounded server-side (≤750ms), so this is cheap. */
 const POLL_MS = 5000;
+
+/** Exported for tests: what each state reads as. */
+export const RELAY_CHIP = META;
 
 export function RelayStatusChip({ compact = false }: { compact?: boolean }) {
   const [state, setState] = useState<RelayState>("idle");

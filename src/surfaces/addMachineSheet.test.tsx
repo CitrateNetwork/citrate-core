@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AddMachineSheet, GROUP_LINK_MESH_OFF, ROSTER_POLL_MS } from "./AddMachineSheet";
+import { AddMachineSheet, GROUP_LINK_MESH_OFF, MESH_NOT_AVAILABLE, ROSTER_POLL_MS } from "./AddMachineSheet";
 import { CODE_MISMATCH } from "./clusterBoard";
 import type { FleetApi, FleetDevice, JoinResult, PairClaim } from "../bridge/tauri/fleet";
 import type { MeshStatus } from "../bridge/domains";
@@ -18,6 +18,8 @@ const NOW = 1000;
 const dev = (id: string, label: string, code?: string, over: Partial<FleetDevice> = {}): FleetDevice => ({ id, label, tier: "T1", role: "worker", addr: null, pairedAt: NOW + 1, via: "issued", ...(code ? { code } : {}), ...over });
 const claim: PairClaim = { v: 1, nonce: "n", issuerPub: "p", issuerLabel: "Studio Mac", issuerTier: "T2", issuedAt: 0, expiresAt: 1600, hints: [], code: "654321" };
 const MESH_OFF: MeshStatus = { on: false, source: "off", signedOff: true, note: "Off on this machine." };
+// How this release ships: off, and the member cannot turn it on (no sign-off yet).
+const MESH_SHIPPED_OFF: MeshStatus = { on: false, source: "off", signedOff: false, note: "The cross-machine mesh is off." };
 const MESH_ON: MeshStatus = { on: true, source: "default", signedOff: true, note: "On." };
 
 function api(over: Partial<FleetApi> = {}): FleetApi {
@@ -246,5 +248,39 @@ describe("Group links on the join side", () => {
     expect(button("Reach this group's machines")).toBeUndefined();
     expect(addGroupSeed).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toMatch(/Reaching \d/);
+  });
+});
+
+// The owner's report (0.5.8): with the mesh off by decision, the group-link actions showed red
+// errors. They say "Mesh is not available yet" instead, never ask the daemon, and never point at a
+// switch that cannot be used yet.
+describe("Group links while the mesh is not available", () => {
+  it("the add side says so instead of offering a link that cannot work", async () => {
+    const groupSeed = vi.fn(async () => ({ groupId: "g", link: "x", addrs: [] }));
+    await act(async () => root.render(<AddMachineSheet mode="add" api={api()} groupLabel="Orchard Lab" groupSeed={groupSeed} mesh={MESH_SHIPPED_OFF} onClose={() => {}} />));
+    await flush();
+    expect(byTest("group-seed-mesh-off")?.textContent).toBe(MESH_NOT_AVAILABLE);
+    expect(button("Show this group's link")).toBeUndefined();
+    expect(groupSeed).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toMatch(/try again in a moment/);
+  });
+
+  it("the join side says so, without pointing at the switch", async () => {
+    const addGroupSeed = vi.fn(async () => 3);
+    await act(async () => root.render(<AddMachineSheet mode="join" api={api()} groupLabel="Orchard Lab" addGroupSeed={addGroupSeed} mesh={MESH_SHIPPED_OFF} onClose={() => {}} />));
+    await setValue(document.querySelector("input") as HTMLInputElement, "citrate-cluster://seed?v=1&g=x&a=y");
+    await act(async () => button("Read the link").click());
+    await flush();
+    const off = byTest("join-seed-mesh-off")!;
+    expect(off.textContent).toBe(MESH_NOT_AVAILABLE);
+    expect(off.textContent).not.toContain("Turn on Private mesh");
+    expect(addGroupSeed).not.toHaveBeenCalled();
+  });
+
+  it("with the mesh on, the add side still offers the group link", async () => {
+    await act(async () => root.render(<AddMachineSheet mode="add" api={api()} groupLabel="Orchard Lab" groupSeed={vi.fn()} mesh={MESH_ON} onClose={() => {}} />));
+    await flush();
+    expect(button("Show this group's link")).toBeDefined();
+    expect(byTest("group-seed-mesh-off")).toBeNull();
   });
 });
