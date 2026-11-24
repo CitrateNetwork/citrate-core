@@ -75,7 +75,12 @@ if [ "$PRINT" -eq 0 ]; then
   PIN="$("${PINS[@]}" digest "$ID" "$TARGET")" || die "no pin for $ID on $TARGET in release/components.json; build with --print-digest and pin the result in a reviewed PR"
 fi
 
-sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+# shasum where it exists (macOS, most Linux); sha256sum otherwise (some minimal images). Same digest.
+if command -v shasum >/dev/null 2>&1; then
+  sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
+fi
 
 case "$KIND" in
   cargo)
@@ -122,11 +127,17 @@ case "$KIND" in
     STAGE="$W/out/${BIN_NAME}-${TARGET}${EXT}"
     rm -f "$STAGE"; cp "$BUILT" "$STAGE"; chmod 755 "$STAGE"
     if [ "$STRIP" = "true" ]; then
-      case "$TARGET" in *-apple-darwin) TOS=Darwin ;; *-linux-*) TOS=Linux ;; *) TOS=other ;; esac
-      [ "$TOS" = "$(uname -s)" ] || die "$ID is pinned stripped, and $TARGET binaries can only be stripped on a $TOS host"
-      command -v strip >/dev/null || die "strip not found"
-      strip -x "$STAGE"
-      echo "✓ strip -x"
+      case "$TARGET" in *-apple-darwin) TOS=Darwin ;; *-linux-*) TOS=Linux ;; *-pc-windows-msvc) TOS=msvc ;; *) TOS=other ;; esac
+      if [ "$TOS" = msvc ]; then
+        # An MSVC PE file has no symbol table to strip: link.exe writes the symbols to a separate
+        # .pdb next to it, which is never staged. The staged .exe is already what strip -x leaves.
+        echo "✓ strip: nothing to do for $TARGET (symbols are in the .pdb, which is not staged)"
+      else
+        [ "$TOS" = "$(uname -s)" ] || die "$ID is pinned stripped, and $TARGET binaries can only be stripped on a $TOS host"
+        command -v strip >/dev/null || die "strip not found"
+        strip -x "$STAGE"
+        echo "✓ strip -x"
+      fi
     fi
     PROV_SRC="$REPO@$REV toolchain=$TOOLCHAIN${FEATURES:+ features=${FEATURES// /,}}"
     ;;

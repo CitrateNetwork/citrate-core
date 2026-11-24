@@ -3,7 +3,8 @@
     "Release component pins: where every bundled sidecar and model comes from, and which bytes a release may ship. Read by scripts/build-component.sh (builds or fetches a component at its pin and installs it only if its sha256 matches) and checked by `node scripts/component-pins.mjs check` (CI, node job), which fails when this file, the build scripts, the bundle overlays, src-tauri/runtime-deps.sha256, release.yml and src-tauri/src/model.rs disagree.",
     "Each artifact's digest lives in one place: its own sha256, or, for bytes uploaded to the runtime-deps prerelease, the pin of its runtime_deps_asset in src-tauri/runtime-deps.sha256 (release.yml verifies that pin before staging). Digests are of the bytes staged into src-tauri/binaries before bundling; Tauri then signs each externalBin with the Developer ID, so the copies inside a signed macOS app differ.",
     "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are DGX-lane builds (v0.5.1 PROVENANCE-linux.txt for the components that did not move). A component whose rev moved lists its Linux targets under `pending`, with who builds them and how, until the DGX records them with build-component.sh --print-digest; nothing builds or stages a pending target (`component-pins.mjs pending` lists them). Since 2026-11-08 the aarch64-unknown-linux-gnu bytes are runtime_deps_asset pins that release.yml's release-linux-aarch64 job (ubuntu-24.04-arm) stages; with the DGX sold, a moved aarch64 pin is first built by that job's dry run (docs/RELEASE_LINUX.md).",
-    "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR."
+    "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR.",
+    "Windows (x86_64-pc-windows-msvc, from 0.5.9): every cargo sidecar links the C runtime statically (build.env CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS, which only a Windows target build reads), so a member's PC needs no Visual C++ Redistributable. The bytes are built on GitHub-hosted Windows runners by .github/workflows/release-windows.yml from the pinned revs; the run id that built each pin is in its evidence."
   ],
   "version": 1,
   "release": "0.5.2",
@@ -30,7 +31,8 @@
         "bin": "citrate",
         "features": [],
         "env": {
-          "LZMA_API_STATIC": "1"
+          "LZMA_API_STATIC": "1",
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
         },
         "strip": false,
         "script": "scripts/build-sidecar.sh"
@@ -67,7 +69,9 @@
         "package": "node-agent",
         "bin": "node-agent",
         "features": [],
-        "env": {},
+        "env": {
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
+        },
         "strip": false,
         "script": "scripts/build-component.sh"
       },
@@ -114,7 +118,9 @@
           "rocksdb",
           "transformer"
         ],
-        "env": {},
+        "env": {
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
+        },
         "strip": false,
         "script": "scripts/build-component.sh"
       },
@@ -151,7 +157,9 @@
         "package": "comms-member-daemon",
         "bin": "comms-member-daemon",
         "features": [],
-        "env": {},
+        "env": {
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
+        },
         "strip": false,
         "script": "scripts/build-comms-daemon.sh"
       },
@@ -187,7 +195,9 @@
         "package": "cluster-daemon",
         "bin": "cluster-daemon",
         "features": [],
-        "env": {},
+        "env": {
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
+        },
         "strip": false,
         "script": "scripts/build-cluster-daemon.sh"
       },
@@ -224,7 +234,9 @@
         "package": "agent-sidecar",
         "bin": "citrate-agent-sidecar",
         "features": [],
-        "env": {},
+        "env": {
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS": "-Ctarget-feature=+crt-static"
+        },
         "strip": true,
         "script": "scripts/build-hermes.sh"
       },
