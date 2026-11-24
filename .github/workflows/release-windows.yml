@@ -462,7 +462,10 @@ jobs:
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
           done
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
-          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
+          # The stagers unpack with `tar`. Under Git Bash that is GNU tar, which reads "D:\..." as a
+          # remote host:file; Windows 10/11's own tar.exe (bsdtar, System32) is the one they expect.
+          W32=(env "PATH=/c/Windows/System32:$PATH")
+          "${W32[@]}" node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
           rm -rf "$RT/bge-extract" && mkdir -p "$RT/bge-extract" src-tauri/models/bge-base-en-v1.5
           tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RT/bge-extract"
           BGE_CFG="$(find "$RT/bge-extract" -name config.json | head -1)"
@@ -473,7 +476,7 @@ jobs:
           done
           mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
           cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
-          node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+          "${W32[@]}" node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
             --bge-dir src-tauri/models/bge-base-en-v1.5 \
             --mem-mcp "src-tauri/binaries/mem-mcp-$TRIPLE.exe"
 
