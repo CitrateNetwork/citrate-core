@@ -74,6 +74,8 @@ env:
   # earlier run of this workflow (same revs, same sidecar job) instead of rebuilding them, and the
   # build record says so. Empty for any run whose bytes are pinned or distributed.
   REUSE_SIDECARS_RUN: "45457441316"
+  # Bring-up only, the same way: smoke-test the installer an earlier run built (no bundle job).
+  REUSE_BUNDLE_RUN: "45466078872"
 
 jobs:
   # Whether this run builds the sidecars or reuses an earlier run's (REUSE_SIDECARS_RUN; job-level
@@ -84,11 +86,15 @@ jobs:
     permissions: {}
     outputs:
       reuse: ${{ steps.p.outputs.reuse }}
+      reuse_bundle: ${{ steps.p.outputs.reuse_bundle }}
     steps:
       - id: p
         run: |
           [[ "$REUSE_SIDECARS_RUN" =~ ^[0-9]*$ ]] || { echo "::error::REUSE_SIDECARS_RUN must be a run id or empty"; exit 1; }
+          [[ "$REUSE_BUNDLE_RUN" =~ ^[0-9]*$ ]] || { echo "::error::REUSE_BUNDLE_RUN must be a run id or empty"; exit 1; }
           echo "reuse=$REUSE_SIDECARS_RUN" >> "$GITHUB_OUTPUT"
+          echo "reuse_bundle=$REUSE_BUNDLE_RUN" >> "$GITHUB_OUTPUT"
+          echo "installer: ${REUSE_BUNDLE_RUN:+smoke-tests the installer of run $REUSE_BUNDLE_RUN}${REUSE_BUNDLE_RUN:-built in this run}" >> "$GITHUB_STEP_SUMMARY"
           echo "sidecars: ${REUSE_SIDECARS_RUN:+reused from run $REUSE_SIDECARS_RUN}${REUSE_SIDECARS_RUN:-built in this run}" >> "$GITHUB_STEP_SUMMARY"
 
   sidecar:
@@ -343,7 +349,7 @@ jobs:
   bundle:
     name: bundle (NSIS, unsigned, per-user)
     needs: [plan, sidecar, llama, network]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.plan.outputs.reuse_bundle == '' }}
     runs-on: windows-2022
     timeout-minutes: 120
     permissions:
@@ -576,8 +582,9 @@ jobs:
 
   smoke:
     name: smoke test (${{ matrix.image }})
-    needs: bundle
-    if: ${{ github.event_name == 'push' || inputs.smoke }}
+    needs: [plan, bundle]
+    # Explicit result checks: an upstream job skipped by a bring-up reuse would otherwise skip this.
+    if: ${{ !cancelled() && (needs.bundle.result == 'success' || (needs.bundle.result == 'skipped' && needs.plan.outputs.reuse_bundle != '')) && (github.event_name == 'push' || inputs.smoke) }}
     runs-on: ${{ matrix.image }}
     timeout-minutes: 45
     permissions:
@@ -602,6 +609,8 @@ jobs:
         with:
           name: citrate-core-windows-x64-${{ env.LABEL }}
           path: ${{ runner.temp }}/pkg
+          run-id: ${{ needs.plan.outputs.reuse_bundle || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install, launch, check the node, quit, uninstall
         shell: pwsh
