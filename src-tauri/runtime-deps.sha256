@@ -141,3 +141,5 @@ c61503a5ba65077080ddbe0f13e44e660b278c62794ced012418fd168e0876dc  citrate-aarch6
 8212c19376113126000bedb19ddff239ba37099ffe88ae33df2942aa98e16ccb  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f
 d6cd5e13cfaa2496e27414c46d9945334a7685b879565148ab449798d2aa0fac  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f.PROVENANCE.txt
 dcaba98434730346a10533c0249fe9dfb86ea0c1b811f541204a87fddb2a6c07  comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f.PROVENANCE.txt
+# TEMPORARY (replaced by scripts/network-cut.py apply in this PR): the Linux aarch64 node bytes, so cold-sync.yml can run them
+809fa547ac9180805b2802cd69c1dde386949f97f783d3a390529bcdfbcdf03a  citrate-aarch64-unknown-linux-gnu-68434069de70
