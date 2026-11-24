@@ -18,6 +18,7 @@ import {
   requirementByteErrors,
   requirementRevErrors,
   revContains,
+  revFor,
   stagedRequirementErrors,
 } from "./component-pins.mjs";
 
@@ -549,5 +550,50 @@ describe("pending pins (a target waiting on its builder)", () => {
     const r = fixture();
     pend(r, "hermes-sidecar", "aarch64-apple-darwin");
     expect(errorsOf(r)).toMatch(/'hermes-sidecar' aarch64-apple-darwin: may not be pending/);
+  });
+});
+
+describe("per-target source revs (source.target_revs)", () => {
+  const WIN = "x86_64-pc-windows-msvc";
+  const REV = "a".repeat(40);
+
+  it("builds a target from its own rev and every other target from source.rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "cluster-daemon");
+    c.source.target_revs = { [WIN]: { rev: REV, why: "Windows pipe-name fix only" } };
+    setManifest(r, m);
+    expect(revFor(c, WIN)).toBe(REV);
+    expect(revFor(c, "aarch64-apple-darwin")).toBe(c.source.rev);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("names a target's runtime-deps asset after that target's rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "cluster-daemon");
+    c.source.target_revs = { "aarch64-apple-darwin": { rev: REV, why: "test" } };
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'cluster-daemon' aarch64-apple-darwin: runtime-deps asset cluster-daemon-aarch64-apple-darwin-755cf2172260 is not the build of the pinned rev \(expected cluster-daemon-aarch64-apple-darwin-aaaaaaaaaaaa\)/);
+  });
+
+  it("refuses a target rev that is not a full commit, has no why, or equals source.rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "mem-mcp");
+    c.source.target_revs = { [WIN]: { rev: "abc123" }, "x86_64-unknown-linux-gnu": { rev: c.source.rev, why: "same" } };
+    setManifest(r, m);
+    const e = errorsOf(r);
+    expect(e).toMatch(/'mem-mcp' x86_64-pc-windows-msvc: source.target_revs rev must be a full 40-hex commit/);
+    expect(e).toMatch(/'mem-mcp' x86_64-pc-windows-msvc: source.target_revs needs a why/);
+    expect(e).toMatch(/'mem-mcp' x86_64-unknown-linux-gnu: source.target_revs rev equals source.rev/);
+  });
+
+  it("never lets the bundled node differ by platform", () => {
+    const r = fixture();
+    const m = manifest(r);
+    comp(m, "citrate-node").source.target_revs = { [WIN]: { rev: REV, why: "no" } };
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'citrate-node': source.target_revs is not allowed/);
   });
 });

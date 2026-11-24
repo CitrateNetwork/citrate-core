@@ -85,7 +85,8 @@ fi
 case "$KIND" in
   cargo)
     REPO="$(field source.repo)"
-    REV="$(field source.rev)"
+    # The rev for this target: source.target_revs[<target>] when the component names one, else source.rev.
+    REV="$("${PINS[@]}" rev "$ID" "$TARGET")"
     [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die "$ID: pinned rev is not a full commit: $REV"
     TOOLCHAIN="$("${PINS[@]}" field - toolchain.rust)"
     PKG="$(field build.package)"; CARGO_BIN="$(field build.bin)"

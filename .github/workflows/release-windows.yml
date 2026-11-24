@@ -115,10 +115,18 @@ jobs:
           # bindgen (librocksdb-sys) needs libclang; the image ships LLVM.
           $llvm = "${env:ProgramFiles}\LLVM\bin"
           if (Test-Path "$llvm\libclang.dll") { "LIBCLANG_PATH=$llvm" | Out-File $env:GITHUB_ENV -Append -Encoding utf8 }
+          # Vendored OpenSSL (openssl-src, in the node, mem-mcp and hermes graphs) runs its Configure
+          # with a full Perl; Git Bash's perl lacks modules it needs (Locale::Maketext::Simple).
+          # The image ships Strawberry Perl; openssl-src takes it from OPENSSL_SRC_PERL / PERL.
+          $sp = 'C:\Strawberry\perl\bin\perl.exe'
+          if (-not (Test-Path $sp)) { throw "Strawberry Perl not found at $sp" }
+          & $sp -v | Select-Object -First 2 | Write-Host
+          "OPENSSL_SRC_PERL=$sp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "PERL=$sp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           rustc -vV
 
-      - name: NASM (aws-lc-sys, comms only)
-        if: ${{ matrix.id == 'comms-member-daemon' }}
+      # NASM: aws-lc-sys (comms) and OpenSSL's assembly (openssl-src) on x86_64 MSVC.
+      - name: NASM
         shell: pwsh
         run: |
           choco install nasm -y --no-progress
@@ -130,7 +138,7 @@ jobs:
           set -euo pipefail
           # A full clone: the build engine takes the pinned commit from this object store.
           git clone --quiet "https://github.com/CitrateNetwork/${{ matrix.repo }}.git" "../${{ matrix.repo }}"
-          rev="$(node scripts/component-pins.mjs field "${{ matrix.id }}" source.rev)"
+          rev="$(node scripts/component-pins.mjs rev "${{ matrix.id }}" "$TRIPLE")"
           git -C "../${{ matrix.repo }}" cat-file -e "${rev}^{commit}"
           echo "pinned rev $rev present"
 
@@ -155,7 +163,7 @@ jobs:
           [ "$rc" = 0 ] || { echo "::error::$c failed to build for $TRIPLE (exit $rc); the log is in the artifact"; mkdir -p out; cp "$log" out/; exit "$rc"; }
           read -r id triple digest built <<<"$(tail -1 "$log")"
           [ "$id" = "$c" ] && [ "$triple" = "$TRIPLE" ] && [ -f "$built" ] || { echo "::error::$c: unexpected build output: $(tail -1 "$log")"; exit 1; }
-          rev="$(node scripts/component-pins.mjs field "$c" source.rev)"
+          rev="$(node scripts/component-pins.mjs rev "$c" "$TRIPLE")"
           name="$(basename "$(node scripts/component-pins.mjs field "$c" external_bin)")"
           mkdir -p out
           cp "$built" "out/$name-$TRIPLE.exe"
@@ -241,9 +249,15 @@ jobs:
             "-DGGML_NATIVE=OFF" "-DGGML_BACKEND_DL=ON" "-DGGML_CPU_ALL_VARIANTS=ON" `
             "-DGGML_OPENMP=OFF" 2>&1)
           $cfg | ForEach-Object { Write-Host $_ }
-          if (($cfg -join "`n") -notmatch 'UI:\s*embedded\s+0\s+assets') { throw 'configure did not print "UI: embedded 0 assets"' }
-          cmake --build $bld --config Release --target llama-server ggml-cpu -j $env:NUMBER_OF_PROCESSORS
+          # scripts/ui-assets.cmake runs at build time and prints "UI: embedded <n> assets".
+          $bout = @(cmake --build $bld --config Release --target llama-server -j $env:NUMBER_OF_PROCESSORS 2>&1)
+          $bout | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          $ui = ((($cfg + $bout) -join "`n") | Select-String -Pattern 'UI:\s*embedded\s+(\d+)\s+assets' -AllMatches).Matches
+          if (-not $ui -or @($ui | Where-Object { $_.Groups[1].Value -ne '0' }).Count) { throw 'the build log does not prove "UI: embedded 0 assets"' }
+          # GGML_BACKEND_DL: the CPU variants are separate targets the server loads at run time.
+          cmake --build $bld --config Release -j $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { throw "build (backends) failed" }
           $out = 'out\llama'; New-Item -ItemType Directory -Force $out | Out-Null
           $srv = @(Get-ChildItem $bld -Recurse -File -Filter llama-server.exe)
           if ($srv.Count -ne 1) { throw "expected one llama-server.exe, found $($srv.Count)" }
