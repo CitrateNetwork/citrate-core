@@ -141,5 +141,19 @@ c61503a5ba65077080ddbe0f13e44e660b278c62794ced012418fd168e0876dc  citrate-aarch6
 8212c19376113126000bedb19ddff239ba37099ffe88ae33df2942aa98e16ccb  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f
 d6cd5e13cfaa2496e27414c46d9945334a7685b879565148ab449798d2aa0fac  comms-member-daemon-aarch64-apple-darwin-f6652a56b92f.PROVENANCE.txt
 dcaba98434730346a10533c0249fe9dfb86ea0c1b811f541204a87fddb2a6c07  comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f.PROVENANCE.txt
-# TEMPORARY (replaced by scripts/network-cut.py apply in this PR): the Linux aarch64 node bytes, so cold-sync.yml can run them
+# 2026-11-24 (0.5.9 Linux aarch64, owner decision 2026-11-24): the Linux aarch64 packages of 0.5.9. comms-member-daemon
+# f6652a56 and hermes aa12b10e are the first aarch64 builds of their revs, made by release.yml's dry run 45444734676 on
+# ubuntu-24.04-arm (ubuntu24-arm64/20261116.188); node-agent, mem-mcp, cluster-daemon and llama-server keep their DGX pins
+# above, whose bytes were owed to runtime-deps and now come from the published v0.5.2 aarch64 .deb. Each asset is uploaded
+# under a new name with its PROVENANCE record (nothing overwritten) and verified by download. The node is in the r1007 cut below.
+69f843b069be349984e2ab1ec3dff14cd47a04a6859defe100a2c8816f80ca53  comms-member-daemon-aarch64-unknown-linux-gnu-f6652a56b92f
+9f5081399c9d5d34cc5cf8b7e3e2fadefffc241a10ff517d1b042b3bdd7448b9  hermes-aarch64-unknown-linux-gnu-aa12b10ee996
+78e7b8c56494020d79355d1639c8d9e06bd02722a805f200f88d7d1280882b4a  node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a.PROVENANCE.txt
+9b194b4c146876ea056042cc373cdfb91aadb124fee41a20efe2f33e8643cae5  mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369.PROVENANCE.txt
+3304a5dfa26ae4ff00712f7668fa599b744bd7e2b0e38d87549bae04ee92b828  comms-member-daemon-aarch64-unknown-linux-gnu-f6652a56b92f.PROVENANCE.txt
+97cbed88da10e777e6ff2ef21137fb6eb72996541d4529fe57f753266196f7cd  cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260.PROVENANCE.txt
+4057a4b32d78de39c195f13ed8867b68679522231060d85f34a55286d7c6389b  hermes-aarch64-unknown-linux-gnu-aa12b10ee996.PROVENANCE.txt
+ed685700be906d0cd9dd6728139d7bbe114d3c2b42eccaa8d81a4b813b67ecaf  llama-server-aarch64-unknown-linux-gnu-b9438.PROVENANCE.txt
+# r1007 network cut (scripts/network-cut.py): citrate is citrate-chain 68434069de70 (MIN_CHAIN_REV, the node rev for the r1007 network); each node build's PROVENANCE record ships next to its bytes.
 809fa547ac9180805b2802cd69c1dde386949f97f783d3a390529bcdfbcdf03a  citrate-aarch64-unknown-linux-gnu-68434069de70
+555df9660bf4ad11f85bf45356b0168515a0390c4f53050e5a1a0fa3aa8d7c79  citrate-aarch64-unknown-linux-gnu-68434069de70.PROVENANCE.txt

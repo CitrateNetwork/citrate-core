@@ -209,12 +209,14 @@ const R1007_CUT = {
 };
 
 describe("the shipped cut (release/network-cut.json, applied 2026-11-12)", SLOW, () => {
-  it("is the complete r1007 cut, applied: nothing pending, Linux aarch64 not built, r1007 active", () => {
+  it("is the complete r1007 cut, applied: nothing pending, every node target built (0.5.9 adds Linux aarch64), r1007 active", () => {
     expect(SHIPPED.profile).toBe("r1007");
     expect(Object.keys(SHIPPED.retire)).toEqual(["r1006"]);
     expect(SHIPPED).toMatchObject(R1007_CUT);
     expect(SHIPPED.pending).toEqual({});
-    expect(Object.keys(SHIPPED.notBuilt)).toEqual(["aarch64-unknown-linux-gnu"]);
+    // 0.5.9 (2026-11-24): Linux aarch64 is built (release.yml dry run 45444734676 on ubuntu-24.04-arm).
+    expect(SHIPPED.notBuilt).toBeUndefined();
+    expect(SHIPPED.node["aarch64-unknown-linux-gnu"].runtime_deps_asset).toBe("citrate-aarch64-unknown-linux-gnu-68434069de70");
     expect(SHIPPED.node["aarch64-apple-darwin"].runtime_deps_asset).toBe("citrate-aarch64-apple-darwin-68434069de70");
     expect(SHIPPED.node["x86_64-unknown-linux-gnu"].sha256).toMatch(/^[0-9a-f]{64}$/);
     const prof = JSON.parse(fs.readFileSync(path.join(repo, "src-tauri/network/profiles.json"), "utf8"));

@@ -54,6 +54,13 @@
 # packages and rebuilt sidecars as a 2-day workflow artifact (any logged-in GitHub user can
 # download a public repository's artifacts). Steps that sign carry `if: env.DRY_RUN != 'true'`;
 # `component-pins.mjs check` fails CI if one does not.
+# dry_run_stage: pinned (Linux aarch64 job only, 2026-11-24): instead of rebuilding the sidecars,
+# the dry run stages the pinned runtime-deps bytes, checked against src-tauri/runtime-deps.sha256,
+# exactly as a release run does, and bundles them unsigned. The aarch64 rebuilds of node-agent,
+# mem-mcp, cluster-daemon and llama-server on the runner do not reproduce their DGX pins, and the
+# node never reproduces (chain#427), so this is how the packages of the pinned bytes are made for a
+# release whose update files the release Mac signs (scripts/release-local.sh). It reads no signing
+# secret and signs nothing; the macOS job ignores it.
 #
 # ── Tag ───────────────────────────────────────────────────────────────────────────────────────
 # A tag push builds that tag. A manual release run checks out refs/tags/<tag input>, not the ref it
@@ -84,6 +91,12 @@ on:
         type: boolean
         required: false
         default: false
+      dry_run_stage:
+        description: "Dry run, Linux aarch64 only: build (rebuild the sidecars from the pinned sources) or pinned (stage the pinned runtime-deps bytes, as a release does)"
+        type: choice
+        options: [build, pinned]
+        required: false
+        default: build
 
 concurrency:
   group: release-${{ github.ref }}
@@ -466,6 +479,9 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       TRIPLE: aarch64-unknown-linux-gnu
+      # true for a release run, and for a dry run with dry_run_stage pinned: stage the pinned
+      # runtime-deps sidecars (a dry run with the default dry_run_stage rebuilds them instead).
+      STAGE_PINNED: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true || inputs.dry_run_stage == 'pinned' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -503,7 +519,7 @@ jobs:
       # notBuilt; 0.5.3, owner 2026-11-12) has no aarch64 package: the node pin is pending, so this
       # job stops here instead of shipping a bundle without its node.
       - name: Linux aarch64 is built for this release
-        if: ${{ env.DRY_RUN != 'true' }}
+        if: ${{ env.STAGE_PINNED == 'true' }}
         run: |
           set -euo pipefail
           if node scripts/component-pins.mjs pending | awk -F'\t' '$1 == "citrate-node" && $2 == "aarch64-unknown-linux-gnu"' | grep -q .; then
@@ -541,7 +557,7 @@ jobs:
       #    and the bytes are uploaded with the run, so a rebuild that reproduces a pin (or a new
       #    rev's first aarch64 build) can be reviewed, uploaded to runtime-deps and pinned.
       - name: Clone the pinned sidecar sources (dry run)
-        if: ${{ env.DRY_RUN == 'true' }}
+        if: ${{ env.DRY_RUN == 'true' && env.STAGE_PINNED != 'true' }}
         env:
           CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
         run: |
@@ -558,7 +574,7 @@ jobs:
           done
 
       - name: Build sidecars and llama-server from the pinned sources (dry run)
-        if: ${{ env.DRY_RUN == 'true' }}
+        if: ${{ env.DRY_RUN == 'true' && env.STAGE_PINNED != 'true' }}
         run: |
           set -euo pipefail
           export CITRATE_COMPONENT_BUILD_ROOT="$RUNNER_TEMP/component-build"
@@ -622,11 +638,14 @@ jobs:
             knowledge-corpus.tar.gz
           )
           SIDECARS=(citrate node-agent mem-mcp comms-member-daemon cluster-daemon hermes)
-          if [ "$DRY_RUN" != true ]; then
+          if [ "$STAGE_PINNED" = true ]; then
             ASSETS+=(
+              citrate-aarch64-unknown-linux-gnu-68434069de70
               node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a
               mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369
+              comms-member-daemon-aarch64-unknown-linux-gnu-f6652a56b92f
               cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260
+              hermes-aarch64-unknown-linux-gnu-aa12b10ee996
               llama-server-aarch64-unknown-linux-gnu-b9438
             )
           fi
@@ -636,7 +655,7 @@ jobs:
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
 
           mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
-          if [ "$DRY_RUN" != true ]; then
+          if [ "$STAGE_PINNED" = true ]; then
             for b in "${SIDECARS[@]}"; do
               f="$(cd "$DL" && ls "$b-$TRIPLE"-????????????)"
               install -m 755 "$DL/$f" "src-tauri/binaries/$b-$TRIPLE"

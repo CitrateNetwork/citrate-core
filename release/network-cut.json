@@ -53,10 +53,15 @@
         "sha256": "796dc755ac2676eb4db3a90c7e0c0f865d24473945c41351a4d543925dbcc72f"
       }
     },
-    "aarch64-unknown-linux-gnu": null
-  },
-  "notBuilt": {
-    "aarch64-unknown-linux-gnu": "owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
+    "aarch64-unknown-linux-gnu": {
+      "runtime_deps_asset": "citrate-aarch64-unknown-linux-gnu-68434069de70",
+      "sha256": "809fa547ac9180805b2802cd69c1dde386949f97f783d3a390529bcdfbcdf03a",
+      "evidence": "release.yml dry run 45444734676 (workflow_dispatch, label 0.5.9-arm64-dry, ref main = c3f10793), job 138625271636 on the GitHub-hosted runner ubuntu-24.04-arm (image ubuntu24-arm64/20261116.188: Ubuntu 24.04, glibc 2.39), 2026-11-24: scripts/build-sidecar.sh --target aarch64-unknown-linux-gnu --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache; public clone; the lineage gate passed), rustc 1.96.0, build root $RUNNER_TEMP/component-build, the fixed-asset recipe (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.39; bytes from the run's artifact, uploaded to runtime-deps as this asset with its PROVENANCE record (nothing overwritten), download-back sha256 matches; these exact bytes run by cold-sync.yml 45455716103 on ubuntu-24.04-arm on the rendered r1007 member node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 (= the macOS and Linux x86_64 builds), block 0 0xcf68634502b4, chain 40204, synced past height 5000 from 4 peers, a wrong genesis refused",
+      "provenance": {
+        "asset": "citrate-aarch64-unknown-linux-gnu-68434069de70.PROVENANCE.txt",
+        "sha256": "555df9660bf4ad11f85bf45356b0168515a0390c4f53050e5a1a0fa3aa8d7c79"
+      }
+    }
   },
   "pending": {}
 }
