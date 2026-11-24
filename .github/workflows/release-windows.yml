@@ -70,10 +70,31 @@ env:
   # llama.cpp: the tag the macOS app bundles (release/components.json llama.cpp source)
   LLAMA_TAG: b10909
   LLAMA_REV: a2878d30df0130dde503a7d9ba30d3d21bd71b9f
+  # Bring-up only: a run id here makes the bundle take the sidecar and llama artifacts of that
+  # earlier run of this workflow (same revs, same sidecar job) instead of rebuilding them, and the
+  # build record says so. Empty for any run whose bytes are pinned or distributed.
+  REUSE_SIDECARS_RUN: "45457441316"
 
 jobs:
+  # Whether this run builds the sidecars or reuses an earlier run's (REUSE_SIDECARS_RUN; job-level
+  # `if` cannot read `env`, so the value travels as an output).
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      reuse: ${{ steps.p.outputs.reuse }}
+    steps:
+      - id: p
+        run: |
+          [[ "$REUSE_SIDECARS_RUN" =~ ^[0-9]*$ ]] || { echo "::error::REUSE_SIDECARS_RUN must be a run id or empty"; exit 1; }
+          echo "reuse=$REUSE_SIDECARS_RUN" >> "$GITHUB_OUTPUT"
+          echo "sidecars: ${REUSE_SIDECARS_RUN:+reused from run $REUSE_SIDECARS_RUN}${REUSE_SIDECARS_RUN:-built in this run}" >> "$GITHUB_STEP_SUMMARY"
+
   sidecar:
     name: sidecar ${{ matrix.id }} (x86_64-pc-windows-msvc)
+    needs: plan
+    if: ${{ needs.plan.outputs.reuse == '' }}
     runs-on: windows-2022
     timeout-minutes: 120
     permissions:
@@ -216,6 +237,8 @@ jobs:
 
   llama:
     name: llama-server b10909 (x86_64-pc-windows-msvc, web UI off)
+    needs: plan
+    if: ${{ needs.plan.outputs.reuse == '' }}
     runs-on: windows-2022
     timeout-minutes: 90
     permissions:
@@ -319,7 +342,7 @@ jobs:
 
   bundle:
     name: bundle (NSIS, unsigned, per-user)
-    needs: [sidecar, llama, network]
+    needs: [plan, sidecar, llama, network]
     if: ${{ !cancelled() }}
     runs-on: windows-2022
     timeout-minutes: 120
@@ -385,9 +408,19 @@ jobs:
           scripts/check-network-profile.sh --release --require-active r1007
 
       - name: Download the sidecars and llama-server
+        if: ${{ env.REUSE_SIDECARS_RUN == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: ${{ runner.temp }}/in
+
+      - name: Download the sidecars and llama-server of run ${{ env.REUSE_SIDECARS_RUN }} (bring-up reuse)
+        if: ${{ env.REUSE_SIDECARS_RUN != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/in
+          run-id: ${{ env.REUSE_SIDECARS_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: "{sidecar-*,llama-windows}"
 
       - name: Stage the sidecars, llama-server and Kubo
         shell: bash
@@ -420,7 +453,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          DL="$RUNNER_TEMP/runtime-deps"
+          # MSYS form of the temp dir: Git Bash's GNU tar reads "D:\..." as a remote host:file.
+          RT="$(cygpath -u "$RUNNER_TEMP")"
+          DL="$RT/runtime-deps"
           rm -rf "$DL" && mkdir -p "$DL"
           ASSETS=(skills-bundle-35b4451bbd52.tar.gz bge-base-en-v1.5.tar.gz bge-base-en-v1.5-f16.gguf knowledge-corpus.tar.gz)
           for a in "${ASSETS[@]}"; do
@@ -428,9 +463,9 @@ jobs:
           done
           scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
           node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
-          rm -rf "$RUNNER_TEMP/bge-extract" && mkdir -p "$RUNNER_TEMP/bge-extract" src-tauri/models/bge-base-en-v1.5
-          tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RUNNER_TEMP/bge-extract"
-          BGE_CFG="$(find "$RUNNER_TEMP/bge-extract" -name config.json | head -1)"
+          rm -rf "$RT/bge-extract" && mkdir -p "$RT/bge-extract" src-tauri/models/bge-base-en-v1.5
+          tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RT/bge-extract"
+          BGE_CFG="$(find "$RT/bge-extract" -name config.json | head -1)"
           [ -n "$BGE_CFG" ] || { echo "::error::BGE bundle has no config.json"; exit 1; }
           cp -R "$(dirname "$BGE_CFG")"/. src-tauri/models/bge-base-en-v1.5/
           for f in config.json tokenizer.json model.safetensors; do
@@ -492,6 +527,7 @@ jobs:
             "source: CitrateNetwork/citrate-core@$env:GITHUB_SHA (label $env:LABEL)",
             "run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID (attempt $env:GITHUB_RUN_ATTEMPT)",
             "runner image: $env:ImageOS $env:ImageVersion",
+            $(if ($env:REUSE_SIDECARS_RUN) { "sidecars and llama-server: REUSED from run $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:REUSE_SIDECARS_RUN (bring-up; not for pinning)" } else { "sidecars and llama-server: built in this run" }),
             "installer: NSIS, per-user (currentUser), WebView2 downloadBootstrapper",
             "network: r1007, chain 40204, genesis from release/network-cut.json",
             "sidecars (built on GitHub-hosted Windows runners from the pins in release/components.json):"

@@ -46,6 +46,9 @@ for asset in "$@"; do
   [ -f "$dir/$asset" ] || { echo "::error::downloaded asset missing: $dir/$asset"; exit 1; }
   printf '%s\n' "$line" >> "$tmp"
 done
-( cd "$dir" && shasum -a 256 -c --strict "$tmp" ) || {
+# shasum where it exists (macOS, Linux runners); coreutils sha256sum otherwise (Git Bash on the
+# Windows runners has no shasum). Both read the same "<hex>  <asset>" lines; --strict either way.
+if command -v shasum >/dev/null 2>&1; then SUMCHECK=(shasum -a 256 -c --strict); else SUMCHECK=(sha256sum -c --strict); fi
+( cd "$dir" && "${SUMCHECK[@]}" "$tmp" ) || {
   echo "::error::runtime-deps digest mismatch — an asset differs from the reviewed pin"; exit 1; }
 echo "runtime-deps: $# assets verified against $manifest"
