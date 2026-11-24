@@ -31,7 +31,9 @@ param(
     [Parameter(Mandatory = $true)][string]$FingerprintScript,
     [int]$LaunchTimeout = 240,
     [int]$PeerTimeout = 420,
-    [int]$QuitTimeout = 90
+    [int]$QuitTimeout = 90,
+    # The memory daemon starts after the first-run knowledge import finishes.
+    [int]$MemoryTimeout = 1200
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +62,29 @@ function P($o, [string]$name) {
     if ($o.PSObject.Properties.Name -contains $name) { return $o.$name }
     return $null
 }
+# PBA-L7b-004: the per-install Windows pipe name both ends derive from the socket path P and the nonce
+# in <P>.pipe-nonce (citrate-core src-tauri/src/ipc_name.rs windows_pipe_name).
+function Pipe-Name([string]$p, [byte[]]$nonce) {
+    $slug = -join ([IO.Path]::GetFileName($p).ToCharArray() | ForEach-Object { if ($_ -match '[A-Za-z0-9._-]') { $_ } else { '-' } })
+    $bytes = [Text.Encoding]::UTF8.GetBytes('citrate/ipc-pipe/v1') + [Text.Encoding]::UTF8.GetBytes($p) + [byte[]]@(0) + $nonce
+    $h = [Security.Cryptography.SHA256]::Create().ComputeHash([byte[]]$bytes)
+    "citrate-" + (-join ($h[0..15] | ForEach-Object { $_.ToString('x2') })) + "-$slug"
+}
+function Pipes { @([IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { $_.Substring(9) }) }
+
+# Whether the daemon behind socket path $sock listens on the per-install name the app connects to.
+function Probe-Ipc([string]$label, [string]$sock) {
+    $noncePath = "$sock.pipe-nonce"
+    if (-not (Test-Path $noncePath)) { return [ordered]@{ ok = $false; detail = "no $noncePath (the app never connected to $label)" } }
+    $nonce = [IO.File]::ReadAllBytes($noncePath)
+    $want = Pipe-Name $sock $nonce
+    $all = Pipes
+    $slug = [IO.Path]::GetFileName($sock)
+    $bare = $all -contains $slug
+    $ok = $all -contains $want
+    [ordered]@{ ok = $ok; detail = "per-install pipe $want listening: $ok; bare '$slug' pipe (the pre-fix name): $bare; pipes ending in ${slug}: $((@($all | Where-Object { $_ -like "*$slug" })) -join ', ')" }
+}
+
 function Rpc([string]$method, [object[]]$params = @()) {
     $body = @{ jsonrpc = '2.0'; id = 1; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 5
     $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8545' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 5
@@ -211,6 +236,27 @@ try {
     Check 'connected to r1007 boot peers' ($bootSeen.Count -gt 0) "established TCP 30303 to: $(if ($bootSeen.Count) { ($bootSeen.GetEnumerator() | ForEach-Object { "$($_.Key) ($($_.Value))" }) -join ', ' } else { 'none' }); max net_peerCount $peers" -Req
     Check 'sync progresses' ($null -ne $firstH -and $lastH -gt $firstH) "appliedHeight $firstH -> $lastH" -Req
     try { (Rpc 'citrate_nodeIdentity') | ConvertTo-Json -Depth 8 | Out-File (Join-Path $Evidence 'nodeIdentity-last.json') -Encoding utf8 } catch { }
+
+    # Memory IPC: after the first-run knowledge import, the app starts mem-mcp's daemon and probes it
+    # over the per-install pipe. Required: the daemon listens on exactly the name the app connects to.
+    $memSock = Join-Path $env:APPDATA "$AppId\memory\memdag.sock"
+    $deadline = (Get-Date).AddSeconds($MemoryTimeout)
+    $mem = $null
+    do {
+        $mem = Probe-Ipc 'memory' $memSock
+        if ($mem.ok) { break }
+        Start-Sleep -Seconds 15
+    } while ((Get-Date) -lt $deadline)
+    $prog = Join-Path $env:APPDATA "$AppId\memory\knowledge-corpus.progress.json"
+    if (Test-Path $prog) { Copy-Item $prog (Join-Path $Evidence 'knowledge-corpus.progress.json') }
+    Check 'memory IPC (mem-mcp on the per-install pipe)' $mem.ok $mem.detail -Req
+    # Groups and chat: their daemons start on demand (Groups, sign-in), not at launch; probed when present.
+    foreach ($d in @(@{ n = 'cluster IPC (cluster-daemon)'; s = "cluster\cluster.sock" }, @{ n = 'comms IPC (comms-member-daemon)'; s = "comms\member.sock" })) {
+        $sock = Join-Path $env:APPDATA "$AppId\$($d.s)"
+        if (Test-Path "$sock.pipe-nonce") { $r = Probe-Ipc $d.n $sock; Check $d.n $r.ok $r.detail }
+        else { Check $d.n $true "not started at launch (no $sock.pipe-nonce); started on demand from the UI, not exercised here" }
+    }
+    Pipes | Where-Object { $_ -like 'citrate-*' -or $_ -like '*.sock' } | Out-File (Join-Path $Evidence 'pipes.txt') -Encoding utf8
 
     # Which sidecars the app started by itself (reported; the node is the required one)
     $running = Under $InstallDir
