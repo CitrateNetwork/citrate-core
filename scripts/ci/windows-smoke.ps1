@@ -49,6 +49,12 @@ function Check([string]$name, [bool]$ok, [string]$detail, [switch]$Req) {
     if ($Req) { $Required.Add($name) }
     Say ("{0} {1}: {2}" -f ($(if ($ok) { 'PASS' } else { 'FAIL' })), $name, $detail)
 }
+# A property of a JSON-RPC result, or $null when the node did not send it (StrictMode-safe).
+function P($o, [string]$name) {
+    if ($null -eq $o) { return $null }
+    if ($o.PSObject.Properties.Name -contains $name) { return $o.$name }
+    return $null
+}
 function Rpc([string]$method, [object[]]$params = @()) {
     $body = @{ jsonrpc = '2.0'; id = 1; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 5
     $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8545' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 5
@@ -82,6 +88,17 @@ function Save-Logs([string]$tag) {
 }
 
 $app = $null
+$InstallDir = $null
+
+# The uninstall entries of Citrate Core under one hive (an entry without a DisplayName is skipped;
+# StrictMode would otherwise throw on it).
+function Find-Uninstall([string]$hive) {
+    @(Get-ChildItem "${hive}:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue | Where-Object {
+        $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        $p -and ($p.PSObject.Properties.Name -contains 'DisplayName') -and ($p.DisplayName -like 'Citrate Core*')
+    })
+}
+
 try {
     # ── 1. install ───────────────────────────────────────────────────────────────────────────────
     $sig = Get-AuthenticodeSignature $Installer
@@ -91,19 +108,16 @@ try {
     $t0 = Get-Date
     $p = Start-Process -FilePath $Installer -ArgumentList '/S' -PassThru -Wait
     $Facts.installSeconds = [int]((Get-Date) - $t0).TotalSeconds
-    $key = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
-        Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like 'Citrate Core*' } | Select-Object -First 1
-    $hklm = Get-ChildItem 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
-        Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like 'Citrate Core*' }
+    $key = Find-Uninstall 'HKCU' | Select-Object -First 1
+    $hklm = Find-Uninstall 'HKLM'
     $props = if ($key) { Get-ItemProperty $key.PSPath } else { $null }
-    $InstallDir = $null
     if ($props) {
         $InstallDir = if ($props.PSObject.Properties.Name -contains 'InstallLocation' -and $props.InstallLocation) { $props.InstallLocation.Trim('"') } else { Split-Path ($props.UninstallString.Trim('"')) -Parent }
-        $Facts.displayVersion = $props.DisplayVersion
+        $Facts.displayVersion = if ($props.PSObject.Properties.Name -contains 'DisplayVersion') { $props.DisplayVersion } else { $null }
         $Facts.uninstallString = $props.UninstallString
     }
     Check 'install' (($p.ExitCode -eq 0) -and $InstallDir -and (Test-Path (Join-Path $InstallDir 'citrate-core.exe'))) "exit $($p.ExitCode) in $($Facts.installSeconds)s; per-user key $(if ($key) { $key.PSChildName } else { 'missing' }); dir $InstallDir" -Req
-    Check 'per-user (no machine-wide entry)' (-not $hklm) "HKLM uninstall entries: $(@($hklm).Count)" -Req
+    Check 'per-user (no machine-wide entry)' ($hklm.Count -eq 0) "HKLM uninstall entries: $($hklm.Count)" -Req
     if (-not $InstallDir) { throw 'no install dir' }
     $Facts.installDir = $InstallDir
     Get-ChildItem $InstallDir -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll' } |
@@ -142,9 +156,10 @@ try {
     }
     if ($ident) {
         $ident | ConvertTo-Json -Depth 8 | Out-File (Join-Path $Evidence 'nodeIdentity-first.json') -Encoding utf8
-        Check 'chain id 40204 (0x9d0c)' ("$($ident.chainId)" -eq '0x9d0c') "chainId $($ident.chainId)" -Req
-        Check 'r1007 genesis hash' ("$($ident.genesisHash)".ToLower() -eq $WantGenesis) "genesisHash $($ident.genesisHash) (want $WantGenesis)" -Req
-        Check 'consensus fingerprint' ("$($ident.consensusFingerprint)".ToLower() -eq $WantFingerprint) "consensusFingerprint $($ident.consensusFingerprint) (want $WantFingerprint)" -Req
+        $cid0 = "$(P $ident 'chainId')"; $gen = "$(P $ident 'genesisHash')".ToLower(); $fp = "$(P $ident 'consensusFingerprint')".ToLower()
+        Check 'chain id 40204 (0x9d0c)' ($cid0 -eq '0x9d0c') "chainId $cid0" -Req
+        Check 'r1007 genesis hash' ($gen -eq $WantGenesis) "genesisHash $gen (want $WantGenesis)" -Req
+        Check 'consensus fingerprint' ($fp -eq $WantFingerprint) "consensusFingerprint $fp (want $WantFingerprint)" -Req
         try { $cid = Rpc 'eth_chainId'; Check 'eth_chainId' ("$cid" -eq '0x9d0c') "eth_chainId $cid" } catch { Check 'eth_chainId' $false "$_" }
     } else {
         Check 'local RPC answers' $false 'citrate_nodeIdentity did not answer on 127.0.0.1:8545 within 180s' -Req
@@ -165,9 +180,10 @@ try {
         try {
             $pc = [Convert]::ToInt64((Rpc 'net_peerCount'), 16); $peers = [Math]::Max($peers, $pc)
             $i = Rpc 'citrate_nodeIdentity'
-            $h = [int64]$i.syncState.appliedHeight
+            $ss = P $i 'syncState'
+            $h = [int64](P $ss 'appliedHeight')
             if ($null -eq $firstH) { $firstH = $h }; $lastH = $h
-            $samples.Add([ordered]@{ t = (Get-Date).ToUniversalTime().ToString('o'); peers = $pc; state = $i.syncState.state; appliedHeight = $h; boot = ($bootSeen.Keys -join ',') })
+            $samples.Add([ordered]@{ t = (Get-Date).ToUniversalTime().ToString('o'); peers = $pc; state = (P $ss 'state'); appliedHeight = $h; boot = ($bootSeen.Keys -join ',') })
         } catch { $samples.Add([ordered]@{ t = (Get-Date).ToUniversalTime().ToString('o'); error = "$_" }) }
         if ($bootSeen.Count -gt 0 -and $peers -gt 0 -and $null -ne $firstH -and $lastH -gt $firstH + 50) { break }
         Start-Sleep -Seconds 10
@@ -216,8 +232,7 @@ try {
         $u = Start-Process -FilePath $un -ArgumentList '/S' -PassThru -Wait
         $deadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $deadline -and (Test-Path (Join-Path $InstallDir 'citrate-core.exe'))) { Start-Sleep -Seconds 2 }
-        $keyLeft = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
-            Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like 'Citrate Core*' }
+        $keyLeft = (Find-Uninstall 'HKCU').Count -gt 0
         $binsLeft = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.exe', '.dll' })
         Check 'uninstall' ($u.ExitCode -eq 0 -and $binsLeft.Count -eq 0 -and -not $keyLeft) "exit $($u.ExitCode); binaries left $($binsLeft.Count); uninstall key left: $([bool]$keyLeft)" -Req
     } else {
