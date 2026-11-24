@@ -7,6 +7,11 @@
 # Then the negative case: the same profile with another genesis must be refused
 # (the network RPC's block 0 and the node's block 0 both differ from it). Manual only: it builds
 # the node (~25 min) and reads a live network.
+# 2026-11-24 (0.5.9 Linux aarch64): `arch: aarch64` runs on the GitHub-hosted arm64 runner
+# ubuntu-24.04-arm, and `node_asset` runs the pinned runtime-deps node bytes instead of a build
+# (a node rebuild does not reproduce, chain#427, so only this proves the shipped bytes): the asset
+# is checked against src-tauri/runtime-deps.sha256 before it runs, and cold-sync.py checks its
+# sha256 again and its consensus fingerprint against release/network-cut.json.
 name: cold-sync
 
 on:
@@ -32,6 +37,16 @@ on:
         description: "List every K-th height of the agreeing selected-parent walk in the verdict"
         required: false
         default: "1000"
+      arch:
+        description: "Linux arch to run on: x86_64 (ubuntu-24.04) or aarch64 (ubuntu-24.04-arm)"
+        type: choice
+        options: [x86_64, aarch64]
+        required: false
+        default: x86_64
+      node_asset:
+        description: "Or: run this runtime-deps node asset (citrate-<arch>-unknown-linux-gnu-<rev12>), checked against its pin, instead of building"
+        required: false
+        default: ""
       negative:
         description: "Also run the wrong-genesis case and require a refusal"
         type: boolean
@@ -47,8 +62,8 @@ concurrency:
 
 jobs:
   cold-sync:
-    name: cold sync on the K6 profile (linux x86_64)
-    runs-on: ubuntu-24.04
+    name: cold sync on the K6 profile (linux ${{ inputs.arch || 'x86_64' }})
+    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 360
     env:
       CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
@@ -57,6 +72,8 @@ jobs:
       IN_BLOCKS: ${{ inputs.blocks }}
       IN_TIMEOUT: ${{ inputs.timeout }}
       IN_EVERY: ${{ inputs.every }}
+      IN_ARCH: ${{ inputs.arch || 'x86_64' }}
+      IN_NODE_ASSET: ${{ inputs.node_asset }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -89,11 +106,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev pkg-config libssl-dev protobuf-compiler
 
-      - name: Build the pinned node sidecar (scripts/build-sidecar.sh)
+      - name: Build the pinned node sidecar (scripts/build-sidecar.sh), or stage its pinned asset
         id: node
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          arch="${IN_ARCH:-x86_64}" asset="${IN_NODE_ASSET:-}"
+          triple="$arch-unknown-linux-gnu"
+          if [ -n "$asset" ]; then
+            # The input is a name, never shell text: one exact shape, for this runner's triple.
+            [[ "$asset" =~ ^citrate-${arch}-unknown-linux-gnu-[0-9a-f]{12}$ ]] \
+              || { echo "::error::node_asset must be citrate-$triple-<rev12>"; exit 1; }
+            DL="$RUNNER_TEMP/node-asset" && mkdir -p "$DL"
+            gh release download runtime-deps -p "$asset" -D "$DL" --clobber
+            scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "$asset"
+            chmod 755 "$DL/$asset"
+            digest="$(sha256sum "$DL/$asset" | cut -d' ' -f1)"
+            pin="$(node scripts/component-pins.mjs digest citrate-node "$triple" 2>/dev/null || echo none)"
+            echo "bin=$DL/$asset" >> "$GITHUB_OUTPUT"
+            echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Node sidecar (runtime-deps asset)"
+              echo
+              echo "\`$asset\`, $triple, sha256 \`$digest\` (pinned for citrate-node: \`$pin\`)"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # Full clone: build-component.sh takes the pinned commit from this object store.
           git clone --quiet https://github.com/CitrateNetwork/citrate-chain.git ../citrate-chain
           out="$(scripts/build-sidecar.sh --chain ../citrate-chain --print-digest | tail -1)"
