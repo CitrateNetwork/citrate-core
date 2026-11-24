@@ -395,6 +395,13 @@ jobs:
           "CARGO_TARGET_DIR=$($d.Name):\t" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "CITRATE_COMPONENT_BUILD_ROOT=$($d.Name):/cb" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+      # The app's own dependency graph has aws-lc-sys, whose x86_64 MSVC build needs NASM.
+      - name: NASM
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "${env:ProgramFiles}\NASM" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
       - run: npm ci
 
       # ── Release gates on the network this build syncs (each reported; the job fails at the end
