@@ -351,7 +351,13 @@ release run does, and bundles them unsigned (the macOS job ignores the option). 
 that does not reproduce its pin, and the node, which never does, would otherwise put other bytes in
 the packages. This is how the 0.5.9 aarch64 packages are made: the release has no GitHub release and
 no tag, so the release Mac signs their update files with the updater key, as it does for Linux x86_64
-(`scripts/release-local.sh` step 4), and the release ceremony adds them to the feed.
+(`scripts/release-local.sh` step 4), and the release ceremony adds them to the feed. The 0.5.9 packages
+came from run 45475840309 (artifact `citrate-core-linux-aarch64-0.5.9-arm64-pinned-checked`, AppImage
+`8d7e5bb3...`, .deb `b0927956...`), whose `check-bundle staged`, `deb` and `appimage` steps passed. Its
+.deb holds every pinned sidecar byte for byte, and every file under `usr/lib/Citrate Core` equals the
+0.5.9 x86_64 .deb's except `llama/llama-server` (the aarch64 build). Dispatch such a run from a
+branch other than a pull request's head: the merge gate counts every check run on that commit, so a
+cancelled macOS dry-run job fails it.
 
 ## Deferred (owner / infra gated)
 
