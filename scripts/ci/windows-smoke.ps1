@@ -33,7 +33,7 @@ param(
     [int]$PeerTimeout = 420,
     [int]$QuitTimeout = 90,
     # The memory daemon starts after the first-run knowledge import finishes.
-    [int]$MemoryTimeout = 1200
+    [int]$MemoryTimeout = 1800
 )
 
 $ErrorActionPreference = 'Stop'

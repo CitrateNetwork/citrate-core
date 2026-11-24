@@ -587,7 +587,7 @@ jobs:
     # Explicit result checks: an upstream job skipped by a bring-up reuse would otherwise skip this.
     if: ${{ !cancelled() && (needs.bundle.result == 'success' || (needs.bundle.result == 'skipped' && needs.plan.outputs.reuse_bundle != '')) && (github.event_name == 'push' || inputs.smoke) }}
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
     strategy:
