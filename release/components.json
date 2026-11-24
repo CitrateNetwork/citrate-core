@@ -18,7 +18,14 @@
       "source": {
         "repo": "CitrateNetwork/citrate-chain",
         "checkout": "citrate-chain",
-        "rev": "68434069de707e8454a1313a1f2e20ba449300f5"
+        "rev": "68434069de707e8454a1313a1f2e20ba449300f5",
+        "target_revs": {
+          "x86_64-pc-windows-msvc": {
+            "rev": "98c513ec47d8055a4a36ae48a507f62f9b736af0",
+            "base": "68434069de707e8454a1313a1f2e20ba449300f5",
+            "why": "68434069 (#492) does not compile for Windows: core/storage/src/fd_limit.rs calls libc's rlimit API with no cfg(unix) (release-windows run 45451597501). This rev is 68434069 plus cfg-only commits in citrate-chain#494 that touch no consensus path (scripts/build-sidecar.sh refuses one that does). citrate-chain is squash-only, so this is the PR branch's commit itself, reachable through refs/pull/494 and the branch fix/windows-fd-limit-cfg (kept); 0.5.10 takes the squash on every OS. Owner OK 2026-11-24 (Windows onboarding)."
+          }
+        }
       },
       "federation": {
         "rev": "68434069de707e8454a1313a1f2e20ba449300f5",
@@ -183,7 +190,13 @@
       "source": {
         "repo": "CitrateNetwork/citrate-cluster",
         "checkout": "citrate-cluster",
-        "rev": "755cf217226094147e4e67909ab96ccbb5aeeb2a"
+        "rev": "755cf217226094147e4e67909ab96ccbb5aeeb2a",
+        "target_revs": {
+          "x86_64-pc-windows-msvc": {
+            "rev": "b014f70aeed89482cded2df225db413ec3b8244a",
+            "why": "755cf217 binds the bare basename pipe on Windows while this app connects to the per-install name (PBA-L7b-004), so Cluster IPC never connects there. This rev is 755cf217 plus the fix (citrate-cluster#19: endpoint_name derives citrate-core's per-install pipe name; Unix unchanged; Windows CI job). citrate-cluster is squash-only with linear history and main has moved past 755cf217 (V60 mesh), so this is #19's fix commit itself, reachable through refs/pull/19 and the branch fix/windows-per-install-pipe-name (kept). macOS and Linux keep 755cf217 for 0.5.9."
+          }
+        }
       },
       "federation": {
         "rev": "fc35136a97f73e5404ce12450244520d628c57e4",

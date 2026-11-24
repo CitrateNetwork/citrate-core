@@ -26,6 +26,7 @@ const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = [
   "release/components.json",
   "release/licences.json",
+  "release/network-cut.json",
   "src-tauri/runtime-deps.sha256",
   "Cargo.toml",
   "src-tauri/Cargo.toml",
@@ -589,11 +590,59 @@ describe("per-target source revs (source.target_revs)", () => {
     expect(e).toMatch(/'mem-mcp' x86_64-unknown-linux-gnu: source.target_revs rev equals source.rev/);
   });
 
-  it("never lets the bundled node differ by platform", () => {
-    const r = fixture();
+  // The bundled node: one consensus. A per-target node rev must name its base (= source.rev), and a
+  // PINNED one carries the network cut's fingerprint and the smoke run (owner 2026-11-24).
+  const FP = JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8")).consensusFingerprint;
+  const RUN = "https://github.com/CitrateNetwork/citrate-core/actions/runs/1";
+  const nodeWin = (r, entry, pinned) => {
     const m = manifest(r);
-    comp(m, "citrate-node").source.target_revs = { [WIN]: { rev: REV, why: "no" } };
+    const n = comp(m, "citrate-node");
+    n.source.target_revs = { [WIN]: { rev: REV, why: "cfg-only Windows build fix", base: n.source.rev, ...entry } };
+    if (pinned) n.artifacts[WIN] = { sha256: "b".repeat(64), evidence: "test" };
     setManifest(r, m);
-    expect(errorsOf(r)).toMatch(/'citrate-node': source.target_revs is not allowed/);
+    return n;
+  };
+
+  it("lets the node build an unpinned target from the base plus a later rev", () => {
+    const r = fixture();
+    nodeWin(r, {}, false);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("refuses a node target rev that does not name the base it extends", () => {
+    const r = fixture();
+    nodeWin(r, { base: "1".repeat(40) }, false);
+    expect(errorsOf(r)).toMatch(/'citrate-node' x86_64-pc-windows-msvc: a node target rev must name its base/);
+    const r2 = fixture();
+    const m = manifest(r2);
+    comp(m, "citrate-node").source.target_revs = { [WIN]: { rev: REV, why: "x" } };
+    setManifest(r2, m);
+    expect(errorsOf(r2)).toMatch(/a node target rev must name its base/);
+  });
+
+  it("refuses a pinned node target rev without the cut's fingerprint and a smoke run", () => {
+    const r = fixture();
+    nodeWin(r, {}, true);
+    const e = errorsOf(r);
+    expect(e).toMatch(/a pinned node target rev needs consensusFingerprint equal to release\/network-cut.json's/);
+    expect(e).toMatch(/a pinned node target rev needs smokeRun/);
+    const r2 = fixture();
+    nodeWin(r2, { consensusFingerprint: "0x" + "0".repeat(32), smokeRun: RUN }, true);
+    expect(errorsOf(r2)).toMatch(/needs consensusFingerprint equal to/);
+    const r3 = fixture();
+    nodeWin(r3, { consensusFingerprint: FP, smokeRun: "https://example.com/run/1" }, true);
+    expect(errorsOf(r3)).toMatch(/needs smokeRun/);
+  });
+
+  it("accepts a pinned node target rev with the cut's fingerprint and its smoke run", () => {
+    const r = fixture();
+    nodeWin(r, { consensusFingerprint: FP, smokeRun: RUN }, true);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("refuses a recorded fingerprint that is not the cut's, even before the pin", () => {
+    const r = fixture();
+    nodeWin(r, { consensusFingerprint: "0xdeadbeef" }, false);
+    expect(errorsOf(r)).toMatch(/consensusFingerprint 0xdeadbeef is not the network cut's/);
   });
 });

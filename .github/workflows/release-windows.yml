@@ -49,6 +49,9 @@ on:
       - ".github/workflows/release-windows.yml"
       - "scripts/ci/windows-smoke.ps1"
       - "scripts/build-component.sh"
+      - "scripts/build-sidecar.sh"
+      - "scripts/component-pins.mjs"
+      - "release/components.json"
 
 permissions:
   contents: read

@@ -321,6 +321,39 @@ export function releaseUploadErrors(text) {
   return errors;
 }
 
+// The bundled node is one consensus: a per-target node rev is allowed only as the base rev
+// (source.rev) plus commits that touch no consensus path, so the platforms still run the same
+// consensus code (owner 2026-11-24, Windows 0.5.9: #492's fd_limit did not compile on Windows).
+// scripts/build-sidecar.sh enforces the "no consensus path" half against the checkout at build time
+// (NODE_CONSENSUS_PATHS); here: the record names its base, and a PINNED target rev carries the proof
+// that the built node is the same consensus: the fingerprint `citrate consensus --json` reported on
+// that platform's binary, equal to the network cut's, and the smoke run that saw the cut's genesis.
+export const NODE_CONSENSUS_PATHS = [
+  "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/", "contracts/", "genesis/",
+  "core/consensus/", "core/execution/", "core/genesis/", "core/economics/", "core/sequencer/",
+  "core/signing/", "core/network/", "core/storage/src/state/", "core/storage/src/state_manager.rs",
+  "core/storage/src/chain/", "core/storage/src/pruning/", "node/src/genesis",
+];
+export function nodeTargetRevErrors(c, t, tr, root) {
+  const errors = [];
+  const at = `'citrate-node' ${t}`;
+  if (!tr || typeof tr !== "object") return [`${at}: source.target_revs entry must be { rev, why, base }`];
+  if (tr.base !== c.source.rev) errors.push(`${at}: a node target rev must name its base (base = source.rev ${c.source.rev}), got ${tr.base}`);
+  const cut = readIf(path.join(root, "release", "network-cut.json"));
+  const want = cut ? JSON.parse(cut).consensusFingerprint : null;
+  if ((c.artifacts || {})[t]) {
+    if (!want || tr.consensusFingerprint !== want) errors.push(`${at}: a pinned node target rev needs consensusFingerprint equal to release/network-cut.json's (${want}), got ${tr.consensusFingerprint}`);
+    if (!/^https:\/\/github\.com\/CitrateNetwork\/citrate-core\/actions\/runs\/\d+/.test(tr.smokeRun || "")) errors.push(`${at}: a pinned node target rev needs smokeRun, the release-windows run whose smoke test saw the cut's genesis`);
+  } else if (tr.consensusFingerprint !== undefined && tr.consensusFingerprint !== want) {
+    errors.push(`${at}: consensusFingerprint ${tr.consensusFingerprint} is not the network cut's (${want})`);
+  }
+  if (c.source.checkout) {
+    const dir = path.join(root, "..", c.source.checkout);
+    if (HEX40.test(tr.rev || "") && revContains(dir, c.source.rev, tr.rev) === false) errors.push(`${at}: target rev ${tr.rev} does not descend from the base ${c.source.rev}`);
+  }
+  return errors;
+}
+
 export function check(root) {
   const errors = [];
   const err = (m) => errors.push(m);
@@ -409,8 +442,8 @@ export function check(root) {
       err(`'${c.id}': source.target_revs must map a target to { rev, why }`);
       continue;
     }
-    if (c.id === "citrate-node") err(`'citrate-node': source.target_revs is not allowed (every platform's node must run the same consensus code)`);
     for (const [t, tr] of Object.entries(trs)) {
+      if (c.id === "citrate-node") for (const e of nodeTargetRevErrors(c, t, tr, root)) err(e);
       if (!HEX40.test((tr && tr.rev) || "")) err(`'${c.id}' ${t}: source.target_revs rev must be a full 40-hex commit`);
       if (!(tr && typeof tr.why === "string" && tr.why.trim())) err(`'${c.id}' ${t}: source.target_revs needs a why`);
       if (tr && tr.rev === c.source.rev) err(`'${c.id}' ${t}: source.target_revs rev equals source.rev; drop the entry`);
@@ -596,6 +629,10 @@ function main(argv) {
       else process.stdout.write(`${v}\n`);
       return;
     }
+    if (cmd === "node-consensus-paths") {
+      process.stdout.write(NODE_CONSENSUS_PATHS.join("\n") + "\n");
+      return;
+    }
     if (cmd === "rev") {
       const [id, target] = rest;
       if (!id || !target) die("usage: rev <id> <target>");
@@ -644,7 +681,7 @@ function main(argv) {
       process.stdout.write("component requires: staged sidecars OK\n");
       return;
     }
-    die("usage: component-pins.mjs field|artifact|rev|digest|pending|check|requires|verify-bytes|verify-staged ...");
+    die("usage: component-pins.mjs field|artifact|rev|node-consensus-paths|digest|pending|check|requires|verify-bytes|verify-staged ...");
   } catch (e) {
     die(e.message);
   }
