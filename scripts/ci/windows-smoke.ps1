@@ -108,8 +108,8 @@ try {
     $t0 = Get-Date
     $p = Start-Process -FilePath $Installer -ArgumentList '/S' -PassThru -Wait
     $Facts.installSeconds = [int]((Get-Date) - $t0).TotalSeconds
-    $key = Find-Uninstall 'HKCU' | Select-Object -First 1
-    $hklm = Find-Uninstall 'HKLM'
+    $key = @(Find-Uninstall 'HKCU') | Select-Object -First 1
+    $hklm = @(Find-Uninstall 'HKLM')
     $props = if ($key) { Get-ItemProperty $key.PSPath } else { $null }
     if ($props) {
         $InstallDir = if ($props.PSObject.Properties.Name -contains 'InstallLocation' -and $props.InstallLocation) { $props.InstallLocation.Trim('"') } else { Split-Path ($props.UninstallString.Trim('"')) -Parent }
@@ -232,7 +232,7 @@ try {
         $u = Start-Process -FilePath $un -ArgumentList '/S' -PassThru -Wait
         $deadline = (Get-Date).AddSeconds(120)
         while ((Get-Date) -lt $deadline -and (Test-Path (Join-Path $InstallDir 'citrate-core.exe'))) { Start-Sleep -Seconds 2 }
-        $keyLeft = (Find-Uninstall 'HKCU').Count -gt 0
+        $keyLeft = @(Find-Uninstall 'HKCU').Count -gt 0
         $binsLeft = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.exe', '.dll' })
         Check 'uninstall' ($u.ExitCode -eq 0 -and $binsLeft.Count -eq 0 -and -not $keyLeft) "exit $($u.ExitCode); binaries left $($binsLeft.Count); uninstall key left: $([bool]$keyLeft)" -Req
     } else {
