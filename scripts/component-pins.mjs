@@ -341,11 +341,20 @@ export function nodeTargetRevErrors(c, t, tr, root) {
   if (tr.base !== c.source.rev) errors.push(`${at}: a node target rev must name its base (base = source.rev ${c.source.rev}), got ${tr.base}`);
   const cut = readIf(path.join(root, "release", "network-cut.json"));
   const want = cut ? JSON.parse(cut).consensusFingerprint : null;
+  const FP = /^0x[0-9a-f]{32}$/;
+  // The chain's fingerprint hashes git_sha with every consensus input, so a node built from another
+  // rev reports another fingerprint even when its consensus is the base's. The proof is the
+  // reported fingerprint recomputed with git_sha = the base (scripts/ci/consensus-fingerprint.py,
+  // a required smoke check): it must be the cut's.
   if ((c.artifacts || {})[t]) {
-    if (!want || tr.consensusFingerprint !== want) errors.push(`${at}: a pinned node target rev needs consensusFingerprint equal to release/network-cut.json's (${want}), got ${tr.consensusFingerprint}`);
-    if (!/^https:\/\/github\.com\/CitrateNetwork\/citrate-core\/actions\/runs\/\d+/.test(tr.smokeRun || "")) errors.push(`${at}: a pinned node target rev needs smokeRun, the release-windows run whose smoke test saw the cut's genesis`);
-  } else if (tr.consensusFingerprint !== undefined && tr.consensusFingerprint !== want) {
-    errors.push(`${at}: consensusFingerprint ${tr.consensusFingerprint} is not the network cut's (${want})`);
+    if (!FP.test(tr.consensusFingerprint || "")) errors.push(`${at}: a pinned node target rev needs consensusFingerprint, the fingerprint the built binary reports`);
+    if (!want || tr.baseEquivalentFingerprint !== want) errors.push(`${at}: a pinned node target rev needs baseEquivalentFingerprint (its fingerprint recomputed with git_sha = the base) equal to release/network-cut.json's (${want}), got ${tr.baseEquivalentFingerprint}`);
+    if (!/^https:\/\/github\.com\/CitrateNetwork\/citrate-core\/actions\/runs\/\d+/.test(tr.smokeRun || "")) errors.push(`${at}: a pinned node target rev needs smokeRun, the release-windows run whose smoke test saw the cut's genesis and checked the recomputed fingerprint`);
+  } else if (tr.baseEquivalentFingerprint !== undefined && tr.baseEquivalentFingerprint !== want) {
+    errors.push(`${at}: baseEquivalentFingerprint ${tr.baseEquivalentFingerprint} is not the network cut's (${want})`);
+  }
+  if (tr.consensusFingerprint !== undefined && tr.consensusFingerprint === want && tr.rev !== c.source.rev) {
+    errors.push(`${at}: consensusFingerprint equals the base's, which a binary of another rev cannot report (the fingerprint hashes git_sha); record what the binary reported`);
   }
   if (c.source.checkout) {
     const dir = path.join(root, "..", c.source.checkout);

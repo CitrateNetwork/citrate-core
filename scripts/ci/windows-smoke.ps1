@@ -24,6 +24,11 @@ param(
     [Parameter(Mandatory = $true)][string]$Installer,
     [Parameter(Mandatory = $true)][string]$Evidence,
     [Parameter(Mandatory = $true)][string]$NetworkCut,
+    # The node's base rev (release/components.json citrate-node source.rev). When the binary was
+    # built from another rev (a Windows target rev), its fingerprint is checked by recomputing it
+    # with git_sha = this base (scripts/ci/consensus-fingerprint.py).
+    [Parameter(Mandatory = $true)][string]$BaseRev,
+    [Parameter(Mandatory = $true)][string]$FingerprintScript,
     [int]$LaunchTimeout = 240,
     [int]$PeerTimeout = 420,
     [int]$QuitTimeout = 90
@@ -78,8 +83,15 @@ function Save-Logs([string]$tag) {
     foreach ($root in @((Join-Path $env:APPDATA $AppId), (Join-Path $env:LOCALAPPDATA $AppId))) {
         if (-not (Test-Path $root)) { continue }
         # Logs, crash records and the rendered node.toml only: never key files, the chain DB or the vault.
+        # Only the app's own logs\ tree, the rendered node.toml and crash records: never the chain
+        # database (RocksDB *.log WAL files), WebView storage, key files or the vault.
+        $logsDir = Join-Path $root 'logs'
         Get-ChildItem $root -Recurse -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { ($_.Extension -in '.log', '.jsonl' -or $_.Name -eq 'node.toml') -and $_.Length -lt 20MB -and $_.Name -notmatch 'key|secret|vault|seed' } |
+            Where-Object {
+                (($_.FullName.StartsWith($logsDir + '\', [StringComparison]::OrdinalIgnoreCase) -and $_.Extension -eq '.log') -or
+                 $_.Name -eq 'node.toml' -or $_.Name -eq 'crash-records.jsonl') -and
+                $_.Length -lt 20MB -and $_.Name -notmatch 'key|secret|vault|seed'
+            } |
             ForEach-Object {
                 $rel = $_.FullName.Substring($root.Length).TrimStart('\') -replace '[\\/:]', '__'
                 Copy-Item $_.FullName (Join-Path $dst ("{0}__{1}" -f (Split-Path $root -Leaf), $rel)) -ErrorAction SilentlyContinue
@@ -159,7 +171,14 @@ try {
         $cid0 = "$(P $ident 'chainId')"; $gen = "$(P $ident 'genesisHash')".ToLower(); $fp = "$(P $ident 'consensusFingerprint')".ToLower()
         Check 'chain id 40204 (0x9d0c)' ($cid0 -eq '0x9d0c') "chainId $cid0" -Req
         Check 'r1007 genesis hash' ($gen -eq $WantGenesis) "genesisHash $gen (want $WantGenesis)" -Req
-        Check 'consensus fingerprint' ($fp -eq $WantFingerprint) "consensusFingerprint $fp (want $WantFingerprint)" -Req
+        $git = "$(P $ident 'gitSha')"
+        $Facts.nodeGitSha = $git
+        $Facts.reportedFingerprint = $fp
+        if ($git -and $BaseRev.StartsWith($git)) {
+            Check 'consensus fingerprint' ($fp -eq $WantFingerprint) "consensusFingerprint $fp (want $WantFingerprint; node at the base rev $git)" -Req
+        } else {
+            Check 'consensus fingerprint (reported)' ($fp -match '^0x[0-9a-f]{32}$') "consensusFingerprint $fp from a node at $git (base $($BaseRev.Substring(0,12))); recomputed against the base after quit" -Req
+        }
         try { $cid = Rpc 'eth_chainId'; Check 'eth_chainId' ("$cid" -eq '0x9d0c') "eth_chainId $cid" } catch { Check 'eth_chainId' $false "$_" }
     } else {
         Check 'local RPC answers' $false 'citrate_nodeIdentity did not answer on 127.0.0.1:8545 within 180s' -Req
@@ -223,7 +242,13 @@ try {
     if ($toml) {
         $out = & (Join-Path $InstallDir 'citrate.exe') --config $toml.FullName consensus --json 2>&1 | Out-String
         $out | Out-File (Join-Path $Evidence 'consensus.json') -Encoding utf8
-        Check 'citrate consensus --json' ($out.ToLower().Contains($WantFingerprint)) "on $($toml.FullName): $(($out -replace '\s+', ' ').Substring(0, [Math]::Min(300, ($out -replace '\s+', ' ').Length)))"
+        $cj = Join-Path $Evidence 'consensus.json'
+        $fpOut = & python $FingerprintScript $cj --base-sha $BaseRev --want $WantFingerprint 2>&1 | Out-String
+        $fpOk = ($LASTEXITCODE -eq 0)
+        $fpOut | Out-File (Join-Path $Evidence 'consensus-fingerprint.json') -Encoding utf8
+        Check 'same consensus as the base rev (recomputed fingerprint)' $fpOk "scripts/ci/consensus-fingerprint.py --base-sha $($BaseRev.Substring(0,12)) --want ${WantFingerprint}: $(($fpOut -replace '\s+', ' ').Trim())" -Req
+    } else {
+        Check 'same consensus as the base rev (recomputed fingerprint)' $false "no rendered node.toml under %APPDATA%\$AppId, so consensus --json could not run" -Req
     }
 
     # ── 6. uninstall ─────────────────────────────────────────────────────────────────────────────

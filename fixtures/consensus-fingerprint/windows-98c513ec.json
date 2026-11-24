@@ -1,0 +1,40 @@
+{
+  "activation_gated": [
+    "0x0130 fold-verify precompile (verifier live)",
+    "0x0109 merkle proof index/depth check",
+    "0x0110 gas priced on n x dim",
+    "reserved precompile addresses fail",
+    "in-block model inference disabled"
+  ],
+  "agent_precompiles_height": 0,
+  "build_target": "x86_64-pc-windows-msvc",
+  "canonical_base_fee_per_gas": 1000000000,
+  "create_nonce_fix_activation_height": 0,
+  "epoch": 1000,
+  "exact_create_code_height": 0,
+  "feat_commd_fold_verify": true,
+  "feat_halo2_verifier": false,
+  "fingerprint": "0x2b0f96ee2bb3ff72d69370dc19a7ffd4",
+  "genesis_hash": "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
+  "genesis_profile": "r1007",
+  "genesis_rules": "pba_hardening:0|exact_create_code:0|vrf_canonical_encoding:0|storage_root_hardening:0|supply_hardening:0|mpt_state_root:0|params:slot_duration_secs=1,max_future_drift_secs=15,pruning_depth=10000,undo_window=10000,ghostdag_k=18,max_parents=10,merge_depth=100,checkpoint_interval=50,committee_size=100,checkpoint_vote_depth=3,include_gas_limit=30000000,accept_gas_limit=60000000,validator_activation_height=1000",
+  "git_dirty": false,
+  "git_sha": "98c513ec47d8",
+  "merge_depth_activation_height": 0,
+  "mpt_state_root_height": 0,
+  "pba_hardening_height": 0,
+  "pba_hardening_pins": [
+    {
+      "chain_id": 40204,
+      "pba_hardening_height": 0
+    }
+  ],
+  "r1006_genesis": "0xa3651a272fe411948cbb4cf7cca4cee44be4248d32ab4376cea7636821c6cdd4",
+  "r1007_genesis": "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",
+  "snapshot_lag": 200,
+  "storage_root_hardening_height": 0,
+  "supply_hardening_height": 0,
+  "value_transfer_activation_height": 0,
+  "version": "0.4.0",
+  "vrf_canonical_encoding_height": 0
+}

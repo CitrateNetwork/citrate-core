@@ -620,29 +620,37 @@ describe("per-target source revs (source.target_revs)", () => {
     expect(errorsOf(r2)).toMatch(/a node target rev must name its base/);
   });
 
-  it("refuses a pinned node target rev without the cut's fingerprint and a smoke run", () => {
+  const REPORTED = "0x2b0f96ee2bb3ff72d69370dc19a7ffd4";
+  it("refuses a pinned node target rev without both fingerprints and a smoke run", () => {
     const r = fixture();
     nodeWin(r, {}, true);
     const e = errorsOf(r);
-    expect(e).toMatch(/a pinned node target rev needs consensusFingerprint equal to release\/network-cut.json's/);
+    expect(e).toMatch(/a pinned node target rev needs consensusFingerprint, the fingerprint the built binary reports/);
+    expect(e).toMatch(/a pinned node target rev needs baseEquivalentFingerprint/);
     expect(e).toMatch(/a pinned node target rev needs smokeRun/);
     const r2 = fixture();
-    nodeWin(r2, { consensusFingerprint: "0x" + "0".repeat(32), smokeRun: RUN }, true);
-    expect(errorsOf(r2)).toMatch(/needs consensusFingerprint equal to/);
+    nodeWin(r2, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: "0x" + "0".repeat(32), smokeRun: RUN }, true);
+    expect(errorsOf(r2)).toMatch(/needs baseEquivalentFingerprint .* equal to release\/network-cut.json's/);
     const r3 = fixture();
-    nodeWin(r3, { consensusFingerprint: FP, smokeRun: "https://example.com/run/1" }, true);
+    nodeWin(r3, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: FP, smokeRun: "https://example.com/run/1" }, true);
     expect(errorsOf(r3)).toMatch(/needs smokeRun/);
   });
 
-  it("accepts a pinned node target rev with the cut's fingerprint and its smoke run", () => {
+  it("accepts a pinned node target rev with its reported fingerprint, the base-equivalent one and its smoke run", () => {
     const r = fixture();
-    nodeWin(r, { consensusFingerprint: FP, smokeRun: RUN }, true);
+    nodeWin(r, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: FP, smokeRun: RUN }, true);
     expect(errorsOf(r)).toBe("");
   });
 
-  it("refuses a recorded fingerprint that is not the cut's, even before the pin", () => {
+  it("refuses a recorded fingerprint equal to the base's for another rev (it cannot be what the binary reported)", () => {
     const r = fixture();
-    nodeWin(r, { consensusFingerprint: "0xdeadbeef" }, false);
-    expect(errorsOf(r)).toMatch(/consensusFingerprint 0xdeadbeef is not the network cut's/);
+    nodeWin(r, { consensusFingerprint: FP, baseEquivalentFingerprint: FP, smokeRun: RUN }, true);
+    expect(errorsOf(r)).toMatch(/consensusFingerprint equals the base's, which a binary of another rev cannot report/);
+  });
+
+  it("refuses a base-equivalent fingerprint that is not the cut's, even before the pin", () => {
+    const r = fixture();
+    nodeWin(r, { baseEquivalentFingerprint: "0xdeadbeef" }, false);
+    expect(errorsOf(r)).toMatch(/baseEquivalentFingerprint 0xdeadbeef is not the network cut's/);
   });
 });

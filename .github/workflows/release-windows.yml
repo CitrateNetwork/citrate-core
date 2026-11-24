@@ -48,6 +48,7 @@ on:
     paths:
       - ".github/workflows/release-windows.yml"
       - "scripts/ci/windows-smoke.ps1"
+      - "scripts/ci/consensus-fingerprint.py"
       - "scripts/build-component.sh"
       - "scripts/build-sidecar.sh"
       - "scripts/component-pins.mjs"
@@ -602,7 +603,9 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             scripts/ci/windows-smoke.ps1
+            scripts/ci/consensus-fingerprint.py
             release/network-cut.json
+            release/components.json
           sparse-checkout-cone-mode: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -616,7 +619,9 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem "$env:RUNNER_TEMP\pkg\Citrate-Core_*_x64-setup.exe" | Select-Object -First 1
-          & .\scripts\ci\windows-smoke.ps1 -Installer $setup.FullName -Evidence "$env:GITHUB_WORKSPACE\smoke-evidence" -NetworkCut release\network-cut.json
+          $base = ((Get-Content release\components.json -Raw | ConvertFrom-Json).components | Where-Object { $_.id -eq 'citrate-node' }).source.rev
+          & .\scripts\ci\windows-smoke.ps1 -Installer $setup.FullName -Evidence "$env:GITHUB_WORKSPACE\smoke-evidence" -NetworkCut release\network-cut.json `
+            -BaseRev $base -FingerprintScript scripts\ci\consensus-fingerprint.py
           exit $LASTEXITCODE
 
       - name: Upload the evidence
