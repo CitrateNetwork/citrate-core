@@ -91,6 +91,41 @@ describe("release.yml jobs", () => {
   });
 });
 
+// 2026-11-24 (0.5.9 Linux aarch64): `dry_run_stage: pinned` stages the pinned runtime-deps bytes in
+// a dry run, as a release does, and the job checks what it packaged (check-bundle).
+describe("release-linux-aarch64: pinned staging and the package checks", () => {
+  const text = () => J["release-linux-aarch64"];
+  const steps = () => workflowSteps(text());
+  const at = (re) => steps().findIndex((x) => re.test(stepName(x)));
+  const ifOf = (i) => (/^ {8}if: (.*)$/m.exec(steps()[i]) || [])[1] || "";
+
+  it("stages the pinned bytes in a release run and in a pinned dry run, and only then", () => {
+    expect(text()).toContain("STAGE_PINNED: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true || inputs.dry_run_stage == 'pinned' }}");
+    expect(wf).toMatch(/dry_run_stage:\n(?: {8}.*\n)*? {8}options: \[build, pinned\]\n(?: {8}.*\n)*? {8}default: build\n/);
+    const stage = steps()[at(/^Stage runtime deps/)];
+    expect(stage.match(/if \[ "\$STAGE_PINNED" = true \]; then/g)).toHaveLength(2);
+    expect(stage).not.toMatch(/"\$DRY_RUN" != true/);
+    for (const re of [/^Clone the pinned sidecar sources/, /^Build sidecars and llama-server/]) {
+      expect(ifOf(at(re))).toBe("${{ env.DRY_RUN == 'true' && env.STAGE_PINNED != 'true' }}");
+    }
+    // A pinned dry run also refuses a release whose aarch64 node is not built.
+    expect(ifOf(at(/^Linux aarch64 is built for this release/))).toBe("${{ env.STAGE_PINNED == 'true' }}");
+  });
+
+  it("checks the staged tree before the build and both packages after it, before anything is signed", () => {
+    const staged = at(/check-bundle staged/), build = at(/^Build the AppImage and \.deb/);
+    const pkgs = at(/check-bundle deb, appimage/), sign = at(/^Sign the update files/);
+    expect([staged, build, pkgs, sign].every((i) => i >= 0)).toBe(true);
+    expect(staged).toBeLessThan(build);
+    expect(build).toBeLessThan(pkgs);
+    expect(pkgs).toBeLessThan(sign);
+    for (const i of [staged, pkgs]) expect(ifOf(i)).toBe("");
+    expect(steps()[pkgs]).toMatch(/check-bundle\.mjs deb --deb out\/Citrate-Core-linux-aarch64\.deb/);
+    expect(steps()[pkgs]).toMatch(/check-bundle\.mjs appimage --appimage out\/Citrate-Core-linux-aarch64\.AppImage/);
+    expect(steps()[at(/^Install the Linux build deps/)]).toMatch(/\bsquashfs-tools\b/);
+  });
+});
+
 describe("ci.yml", () => {
   // The RUSTSEC-2026-0387 ignore expires on a date: a repo with no pushes must still run the
   // guard, or the expiry passes unseen.
