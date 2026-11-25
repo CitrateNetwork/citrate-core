@@ -66,9 +66,38 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 MIN_CHAIN_REV="68434069de707e8454a1313a1f2e20ba449300f5"
 
 [ -d "$CHAIN_DIR" ] || die "citrate-chain not found at $CHAIN_DIR (use --chain <path>)"
-REV="$(node "$REPO_ROOT/scripts/component-pins.mjs" field citrate-node source.rev)"
-git -C "$CHAIN_DIR" cat-file -e "${REV}^{commit}" 2>/dev/null || git -C "$CHAIN_DIR" fetch --quiet origin 2>/dev/null || true
-git -C "$CHAIN_DIR" cat-file -e "${REV}^{commit}" 2>/dev/null || die "citrate-chain checkout does not have the pinned rev $REV (git -C \"$CHAIN_DIR\" fetch origin)"
+PINS=(node "$REPO_ROOT/scripts/component-pins.mjs")
+BASE="$("${PINS[@]}" field citrate-node source.rev)"
+TARGET=""
+for ((i = 0; i < ${#PASS[@]}; i++)); do [ "${PASS[$i]}" = --target ] && TARGET="${PASS[$((i + 1))]}"; done
+[ -n "$TARGET" ] || TARGET="$(rustc -vV 2>/dev/null | awk '/^host:/{print $2}')"
+# The rev this target builds: source.target_revs[<target>] when the node names one (Windows 0.5.9:
+# the base plus cfg-only commits), else source.rev.
+REV="$("${PINS[@]}" rev citrate-node "${TARGET:-none}")"
+for r in "$BASE" "$REV"; do
+  git -C "$CHAIN_DIR" cat-file -e "${r}^{commit}" 2>/dev/null || git -C "$CHAIN_DIR" fetch --quiet origin 2>/dev/null || true
+  git -C "$CHAIN_DIR" cat-file -e "${r}^{commit}" 2>/dev/null || die "citrate-chain checkout does not have the pinned rev $r (git -C \"$CHAIN_DIR\" fetch origin)"
+done
+if [ "$REV" != "$BASE" ]; then
+  # A per-target node rev is the base plus commits that touch no consensus path, or it is refused:
+  # every platform must run the same consensus code (component-pins.mjs NODE_CONSENSUS_PATHS).
+  echo "▶ $TARGET builds the node at $REV, the base $BASE plus:"
+  git -C "$CHAIN_DIR" merge-base --is-ancestor "$BASE" "$REV" \
+    || die "the $TARGET node rev $REV does not descend from the base $BASE"
+  git -C "$CHAIN_DIR" log --format='    %h %s' "$BASE..$REV"
+  touched="$(git -C "$CHAIN_DIR" diff --name-only "$BASE" "$REV")"
+  printf '%s\n' "$touched" | sed 's/^/    touches /'
+  bad=""
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    while IFS= read -r pfx; do
+      [ -n "$pfx" ] || continue
+      case "$f" in "$pfx"*) bad="$bad $f" ;; esac
+    done < <("${PINS[@]}" node-consensus-paths)
+  done <<<"$touched"
+  [ -z "$bad" ] || die "the $TARGET node rev $REV changes consensus paths relative to $BASE:$bad"
+  echo "    OK: no consensus path changed"
+fi
 
 echo "▶ verifying the pinned citrate-chain source ($REV)"
 src() { git -C "$CHAIN_DIR" show "$REV:$1" 2>/dev/null; }

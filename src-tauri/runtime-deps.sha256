@@ -157,3 +157,18 @@ ed685700be906d0cd9dd6728139d7bbe114d3c2b42eccaa8d81a4b813b67ecaf  llama-server-a
 # r1007 network cut (scripts/network-cut.py): citrate is citrate-chain 68434069de70 (MIN_CHAIN_REV, the node rev for the r1007 network); each node build's PROVENANCE record ships next to its bytes.
 809fa547ac9180805b2802cd69c1dde386949f97f783d3a390529bcdfbcdf03a  citrate-aarch64-unknown-linux-gnu-68434069de70
 555df9660bf4ad11f85bf45356b0168515a0390c4f53050e5a1a0fa3aa8d7c79  citrate-aarch64-unknown-linux-gnu-68434069de70.PROVENANCE.txt
+# 0.5.9 Windows x64 (x86_64-pc-windows-msvc): the six cargo sidecars built on a GitHub-hosted windows-2022
+# runner by .github/workflows/release-windows.yml, run 45525459608 (static C runtime; release/components.json
+# evidence per component), each with its PROVENANCE record. The same run built and smoke-tested the installer.
+a724111e02ab42377ac9f430fa9577ac132787e9035477eec529fc1fd99496d6  citrate-x86_64-pc-windows-msvc-98c513ec47d8
+dfbc786ba52265fba193b1081de6f6a2fbb2b1572fde9717485b99f355eb53b6  citrate-x86_64-pc-windows-msvc-98c513ec47d8.PROVENANCE.txt
+0850d618919f3f1e618bba4f02cec928a12a2c5ff1d4b503761618ef0d3370ee  node-agent-x86_64-pc-windows-msvc-1d8cb8e4e24a
+c939cb395b91fe62342c4837f45adf9ab97e78b18d2523c0d52b7993488fee01  node-agent-x86_64-pc-windows-msvc-1d8cb8e4e24a.PROVENANCE.txt
+87d01917063e3c3ed0a4e6ed3723d2272d49895213384b09f305876e09d082d7  mem-mcp-x86_64-pc-windows-msvc-451857e035dd
+93795244964d9927950e986d2929f373650ad168e02b23099398912db80a299a  mem-mcp-x86_64-pc-windows-msvc-451857e035dd.PROVENANCE.txt
+3bc305840b5affc8489955fe861d7c0d31086a44a4d251425d9dc13dd189e981  comms-member-daemon-x86_64-pc-windows-msvc-f6652a56b92f
+b77d63d012704cb0f85d2d108af7e31bdff452cfadbdeb0bb381d77ed116dcbc  comms-member-daemon-x86_64-pc-windows-msvc-f6652a56b92f.PROVENANCE.txt
+11ff6d9859eabea91ff7be7bae55aabd3e20ada0c74d63cb4d7b017b54a55a46  cluster-daemon-x86_64-pc-windows-msvc-b014f70aeed8
+2bbf529360e518427fb689d1d9811b045529b94b6bb05b4d9b45b4a393e760d0  cluster-daemon-x86_64-pc-windows-msvc-b014f70aeed8.PROVENANCE.txt
+36f513a0d193f415be5e4011d474e95b3e517193b1a2a96d81c59c32a40d6a85  hermes-x86_64-pc-windows-msvc-aa12b10ee996
+b91dfda9b586d4deefea27809f51124881675dde7ebef76f117716bf6e86ecb7  hermes-x86_64-pc-windows-msvc-aa12b10ee996.PROVENANCE.txt

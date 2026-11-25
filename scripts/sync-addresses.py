@@ -205,7 +205,8 @@ def main() -> None:
         print(f"sync-addresses: OK ({len(pins)} pins{', verified live' if a.rpc else ''})")
         return
     dest = Path(a.out)
-    dest.write_text(json.dumps(out, indent=2) + "\n")
+    # Bytes, not text: the book is byte-compared and embedded, and text mode on Windows writes CRLF.
+    dest.write_bytes((json.dumps(out, indent=2) + "\n").encode("utf-8"))
     canonical_copy(dest).write_bytes(raw)
     shown = dest.resolve().relative_to(REPO) if dest.resolve().is_relative_to(REPO) else dest
     print(f"sync-addresses: wrote {shown} ({len(pins)} pins{', verified live' if a.rpc else ''})")

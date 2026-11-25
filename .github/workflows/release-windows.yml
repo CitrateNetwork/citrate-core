@@ -1,0 +1,634 @@
+# created: 2026-11-24 | branch: feat/059-windows
+# author: Larry Klosowski + Claude Opus 5.5 (Windows lane, 0.5.9)
+# status: active (bring-up: builds and smoke-tests, publishes nothing)
+#
+# The Windows x64 build of Citrate Core, on GitHub-hosted Windows runners (this repository is
+# public, so they are free). It mirrors release.yml's dry run: every sidecar is built from the rev
+# release/components.json pins, ON the Windows runner, with the release build scripts
+# (scripts/build-component.sh and its wrappers; the node through scripts/build-sidecar.sh and its
+# lineage gate), then the app is bundled as an UNSIGNED per-user NSIS installer that downloads the
+# WebView2 bootstrapper when the runtime is missing (src-tauri/tauri.bundle-windows.conf.json).
+#
+# PUBLISHES NOTHING. No step creates, edits or uploads to a GitHub release, writes the repository,
+# reads a signing secret, signs, or touches the CDN or the updater feed; every job has
+# `contents: read` and only its own GITHUB_TOKEN. The outputs are short-lived workflow artifacts:
+# the installer, each sidecar .exe (and its asset name <bin>-x86_64-pc-windows-msvc-<rev12>) with
+# its sha256, a PROVENANCE draft, and the smoke-test evidence. Pinning those bytes (runtime-deps
+# assets, release/components.json) and any distribution are separate, reviewed, owner-approved
+# steps (docs/release/WINDOWS_BUILD.md).
+#
+# Jobs:
+#   sidecar  (matrix, one runner each, in parallel): clone the source repo, build at the pin with
+#            --print-digest, report its DLL imports (a member's PC has no Visual C++ runtime).
+#   llama    llama.cpp b10909 from source with the web UI off (docs/RELEASE_WINDOWS.md step 2).
+#   bundle   network release gates (K6, network cut), stage every input, notices, NSIS bundle.
+#   smoke    on a fresh runner per image (Server 2022 = the Windows 10 21H2 code base, Server 2025 =
+#            Windows 11 24H2): silent per-user install, launch, sidecars up, the node reaches the
+#            r1007 boot peers and reports the r1007 genesis over local RPC, quit, uninstall.
+#
+# Bring-up triggers: a manual run, and a push to the bring-up branch that changes this file.
+# (workflow_dispatch only lists a workflow that is on the default branch.)
+
+name: release-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Run label for the artifact names (letters, digits, . _ -)"
+        required: false
+        default: "windows-dry-run"
+      smoke:
+        description: "Smoke-test the installer on fresh Windows runners"
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: ["feat/059-windows"]
+    paths:
+      - ".github/workflows/release-windows.yml"
+      - "scripts/ci/windows-smoke.ps1"
+      - "scripts/ci/consensus-fingerprint.py"
+      - "scripts/build-component.sh"
+      - "scripts/build-sidecar.sh"
+      - "scripts/component-pins.mjs"
+      - "release/components.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIPLE: x86_64-pc-windows-msvc
+  LABEL: ${{ github.event.inputs.label || 'windows-dry-run' }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  GIT_TERMINAL_PROMPT: "0"
+  # release/components.json toolchain.rust
+  RUST_TOOLCHAIN: "1.96.0"
+  # llama.cpp: the tag the macOS app bundles (release/components.json llama.cpp source)
+  LLAMA_TAG: b10909
+  LLAMA_REV: a2878d30df0130dde503a7d9ba30d3d21bd71b9f
+  # Bring-up only: a run id here makes the bundle take the sidecar and llama artifacts of that
+  # earlier run of this workflow (same revs, same sidecar job) instead of rebuilding them, and the
+  # build record says so. Empty for any run whose bytes are pinned or distributed.
+  REUSE_SIDECARS_RUN: ""
+  # Bring-up only, the same way: smoke-test the installer an earlier run built (no bundle job).
+  REUSE_BUNDLE_RUN: ""
+
+jobs:
+  # Whether this run builds the sidecars or reuses an earlier run's (REUSE_SIDECARS_RUN; job-level
+  # `if` cannot read `env`, so the value travels as an output).
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      reuse: ${{ steps.p.outputs.reuse }}
+      reuse_bundle: ${{ steps.p.outputs.reuse_bundle }}
+    steps:
+      - id: p
+        run: |
+          [[ "$REUSE_SIDECARS_RUN" =~ ^[0-9]*$ ]] || { echo "::error::REUSE_SIDECARS_RUN must be a run id or empty"; exit 1; }
+          [[ "$REUSE_BUNDLE_RUN" =~ ^[0-9]*$ ]] || { echo "::error::REUSE_BUNDLE_RUN must be a run id or empty"; exit 1; }
+          echo "reuse=$REUSE_SIDECARS_RUN" >> "$GITHUB_OUTPUT"
+          echo "reuse_bundle=$REUSE_BUNDLE_RUN" >> "$GITHUB_OUTPUT"
+          echo "installer: ${REUSE_BUNDLE_RUN:+smoke-tests the installer of run $REUSE_BUNDLE_RUN}${REUSE_BUNDLE_RUN:-built in this run}" >> "$GITHUB_STEP_SUMMARY"
+          echo "sidecars: ${REUSE_SIDECARS_RUN:+reused from run $REUSE_SIDECARS_RUN}${REUSE_SIDECARS_RUN:-built in this run}" >> "$GITHUB_STEP_SUMMARY"
+
+  sidecar:
+    name: sidecar ${{ matrix.id }} (x86_64-pc-windows-msvc)
+    needs: plan
+    if: ${{ needs.plan.outputs.reuse == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: citrate-node, repo: citrate-chain }
+          - { id: node-agent, repo: citrate-node-agent }
+          - { id: mem-mcp, repo: citrate-memories }
+          - { id: comms-member-daemon, repo: citrate-comms }
+          - { id: cluster-daemon, repo: citrate-cluster }
+          - { id: hermes-sidecar, repo: citrate-agent-runtime }
+    steps:
+      # The checkout must be byte-identical to the commit: the image's git converts LF to CRLF on
+      # checkout (core.autocrlf), which changes every embedded text file (the address book the
+      # app compiles in no longer matches its pinned sha256, and the K6 gate refuses it).
+      - name: Git for a byte-exact checkout (LF kept, long paths)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --global core.longpaths true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.96.0"
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      # The build root goes on the drive with the most free space (the chain node's target dir
+      # alone is several GB), at a short path (MAX_PATH).
+      - name: Pick the build drive; tools on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, Root | Out-String | Write-Host
+          $d = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free } | Sort-Object Free -Descending | Select-Object -First 1
+          "CITRATE_COMPONENT_BUILD_ROOT=$($d.Name):/cb" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # bindgen (librocksdb-sys) needs libclang; the image ships LLVM.
+          $llvm = "${env:ProgramFiles}\LLVM\bin"
+          if (Test-Path "$llvm\libclang.dll") { "LIBCLANG_PATH=$llvm" | Out-File $env:GITHUB_ENV -Append -Encoding utf8 }
+          # Vendored OpenSSL (openssl-src, in the node, mem-mcp and hermes graphs) runs its Configure
+          # with a full Perl; Git Bash's perl lacks modules it needs (Locale::Maketext::Simple).
+          # The image ships Strawberry Perl; openssl-src takes it from OPENSSL_SRC_PERL / PERL.
+          $sp = 'C:\Strawberry\perl\bin\perl.exe'
+          if (-not (Test-Path $sp)) { throw "Strawberry Perl not found at $sp" }
+          & $sp -v | Select-Object -First 2 | Write-Host
+          "OPENSSL_SRC_PERL=$sp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "PERL=$sp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          rustc -vV
+
+      # NASM: aws-lc-sys (comms) and OpenSSL's assembly (openssl-src) on x86_64 MSVC.
+      - name: NASM
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "${env:ProgramFiles}\NASM" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Clone the pinned source (${{ matrix.repo }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A full clone: the build engine takes the pinned commit from this object store.
+          git clone --quiet "https://github.com/CitrateNetwork/${{ matrix.repo }}.git" "../${{ matrix.repo }}"
+          rev="$(node scripts/component-pins.mjs rev "${{ matrix.id }}" "$TRIPLE")"
+          git -C "../${{ matrix.repo }}" cat-file -e "${rev}^{commit}"
+          echo "pinned rev $rev present"
+
+      - name: Build at the pin (release build script, --print-digest)
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          c="${{ matrix.id }}"
+          script="$(node scripts/component-pins.mjs field "$c" build.script)"
+          log="$RUNNER_TEMP/build-$c.log"
+          set +e
+          if [ "$script" = scripts/build-component.sh ]; then
+            scripts/build-component.sh "$c" --target "$TRIPLE" --print-digest 2>&1 | tee "$log"
+          else
+            # citrate-node: scripts/build-sidecar.sh runs the lineage gate first (both activation
+            # heights 0, contains MIN_CHAIN_REV, V2 native signing) and refuses a stale source.
+            "$script" --target "$TRIPLE" --print-digest 2>&1 | tee "$log"
+          fi
+          rc=${PIPESTATUS[0]}
+          set -e
+          [ "$rc" = 0 ] || { echo "::error::$c failed to build for $TRIPLE (exit $rc); the log is in the artifact"; mkdir -p out; cp "$log" out/; exit "$rc"; }
+          read -r id triple digest built <<<"$(tail -1 "$log")"
+          [ "$id" = "$c" ] && [ "$triple" = "$TRIPLE" ] && [ -f "$built" ] || { echo "::error::$c: unexpected build output: $(tail -1 "$log")"; exit 1; }
+          rev="$(node scripts/component-pins.mjs rev "$c" "$TRIPLE")"
+          name="$(basename "$(node scripts/component-pins.mjs field "$c" external_bin)")"
+          mkdir -p out
+          cp "$built" "out/$name-$TRIPLE.exe"
+          cp "$built" "out/$name-$TRIPLE-${rev:0:12}"
+          cp "$log" out/
+          (cd out && sha256sum "$name-$TRIPLE.exe" "$name-$TRIPLE-${rev:0:12}" > "SHA256SUMS-$name")
+          printf '%s  %s  %s@%s  toolchain=%s  sha256=%s  runner=%s/%s  run=%s/%s/actions/runs/%s\n' \
+            "$TRIPLE" "$c" "$(node scripts/component-pins.mjs field "$c" source.repo)" "$rev" "$RUST_TOOLCHAIN" "$digest" \
+            "$ImageOS" "$ImageVersion" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "out/$name.provenance"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $c ($TRIPLE)"
+            echo
+            echo "rev \`$rev\` · sha256 \`$digest\` · asset name \`$name-$TRIPLE-${rev:0:12}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A member's PC may have no Visual C++ Redistributable: a sidecar must import only DLLs that
+      # are part of Windows 10/11 (the components link the C runtime statically, build.env).
+      - name: DLL imports (no Visual C++ runtime)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $exe = "out\${{ steps.build.outputs.name }}-$env:TRIPLE.exe"
+          $imports = & $dumpbin.FullName /nologo /dependents $exe | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+          $imports | Out-File "out\${{ steps.build.outputs.name }}.imports.txt" -Encoding utf8
+          "imports: $($imports -join ', ')" | Write-Host
+          "imports: ``$($imports -join ', ')``" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $bad = @($imports | Where-Object { $_ -match '^(vcruntime|msvcp|concrt|vccorlib)\d+' })
+          if ($bad.Count) { throw "imports the Visual C++ runtime ($($bad -join ', ')); a member PC without the redistributable cannot start it" }
+
+      - name: Upload the sidecar
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sidecar-${{ matrix.id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 7
+
+  llama:
+    name: llama-server b10909 (x86_64-pc-windows-msvc, web UI off)
+    needs: plan
+    if: ${{ needs.plan.outputs.reuse == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Git for a byte-exact checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - name: Clone llama.cpp at the pinned tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git llama.cpp
+          got="$(git -C llama.cpp rev-parse "refs/tags/$LLAMA_TAG^{commit}")"
+          [ "$got" = "$LLAMA_REV" ] || { echo "::error::tag $LLAMA_TAG is $got, pinned $LLAMA_REV"; exit 1; }
+          git -C llama.cpp checkout --quiet --detach "$LLAMA_REV"
+          # The web UI must not be in the tree (docs/LICENCE_REVIEW.md 9.3 a).
+          [ ! -d llama.cpp/tools/ui/dist ] || { echo "::error::tools/ui/dist is in the tree"; exit 1; }
+
+      # upstream's windows-cpu x64 build at this tag (clang toolchain file, BoringSSL, GGML_NATIVE
+      # off, CPU variants loaded at run time) with the web UI off, as RELEASE_WINDOWS.md step 2
+      # says. The C runtime is linked statically, and OpenMP is off (as on macOS, whose build has no
+      # OpenMP): either one would otherwise need a DLL a member's PC does not have
+      # (vcruntime140.dll, libomp140.x86_64.dll). The import check below enforces it.
+      - name: Configure and build llama-server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
+          $src = (Resolve-Path llama.cpp).Path
+          $bld = Join-Path $src 'build-win'
+          $cfg = @(cmake -S $src -B $bld -G Ninja `
+            "-DCMAKE_BUILD_TYPE=Release" `
+            "-DCMAKE_TOOLCHAIN_FILE=$src\cmake\x64-windows-llvm.cmake" `
+            "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" `
+            "-DBUILD_SHARED_LIBS=ON" `
+            "-DLLAMA_BUILD_SERVER=ON" "-DLLAMA_BUILD_TESTS=OFF" "-DLLAMA_BUILD_EXAMPLES=OFF" `
+            "-DLLAMA_BUILD_BORINGSSL=ON" `
+            "-DLLAMA_BUILD_WEBUI=OFF" "-DLLAMA_USE_PREBUILT_UI=OFF" `
+            "-DGGML_NATIVE=OFF" "-DGGML_BACKEND_DL=ON" "-DGGML_CPU_ALL_VARIANTS=ON" `
+            "-DGGML_OPENMP=OFF" 2>&1)
+          $cfg | ForEach-Object { Write-Host $_ }
+          # scripts/ui-assets.cmake runs at build time and prints "UI: embedded <n> assets".
+          $bout = @(cmake --build $bld --config Release --target llama-server -j $env:NUMBER_OF_PROCESSORS 2>&1)
+          $bout | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          $ui = ((($cfg + $bout) -join "`n") | Select-String -Pattern 'UI:\s*embedded\s+(\d+)\s+assets' -AllMatches).Matches
+          if (-not $ui -or @($ui | Where-Object { $_.Groups[1].Value -ne '0' }).Count) { throw 'the build log does not prove "UI: embedded 0 assets"' }
+          # GGML_BACKEND_DL: the CPU variants are separate targets the server loads at run time.
+          cmake --build $bld --config Release -j $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { throw "build (backends) failed" }
+          $out = 'out\llama'; New-Item -ItemType Directory -Force $out | Out-Null
+          $srv = @(Get-ChildItem $bld -Recurse -File -Filter llama-server.exe)
+          if ($srv.Count -ne 1) { throw "expected one llama-server.exe, found $($srv.Count)" }
+          Copy-Item $srv[0].FullName $out
+          Get-ChildItem $bld -Recurse -File -Filter *.dll | ForEach-Object { Copy-Item $_.FullName $out -Force }
+          $web = @(Get-ChildItem $out -Recurse -File | Where-Object { $_.Extension -in '.html','.js','.css','.wasm' })
+          if ($web.Count) { throw "web UI assets in the output: $($web.Name -join ', ')" }
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $own = @(Get-ChildItem $out -File | ForEach-Object Name)
+          $report = foreach ($f in Get-ChildItem $out -File) {
+            $imp = & $dumpbin.FullName /nologo /dependents $f.FullName | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+            "$($f.Name): $($imp -join ', ')"
+            foreach ($i in $imp) {
+              if ($own -contains $i) { continue }
+              if ($i -match '^(vcruntime|msvcp|concrt|vccorlib|libomp)') { throw "$($f.Name) imports $i, which a member PC does not have" }
+            }
+          }
+          $report | Out-File out\llama-imports.txt -Encoding utf8
+          $report | Write-Host
+          Get-ChildItem $out -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } | Out-File out\SHA256SUMS-llama -Encoding ascii
+          Get-Content out\SHA256SUMS-llama | Write-Host
+
+      - name: Upload llama-server
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-windows
+          path: out
+          if-no-files-found: warn
+          retention-days: 7
+
+  # The r1007 network cut is complete and applied on this commit, and rpc.citrate.ai serves that
+  # genesis (scripts/network-cut.py check --release). Platform-independent; it runs on Linux because
+  # its helper calls `bash`, which a Windows process resolves to WSL's bash.exe.
+  network:
+    name: network cut (r1007)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: network-cut check --release
+        run: python3 scripts/network-cut.py check --release
+
+  bundle:
+    name: bundle (NSIS, unsigned, per-user)
+    needs: [plan, sidecar, llama, network]
+    if: ${{ !cancelled() && needs.plan.outputs.reuse_bundle == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      # The checkout must be byte-identical to the commit: the image's git converts LF to CRLF on
+      # checkout (core.autocrlf), which changes every embedded text file (the address book the
+      # app compiles in no longer matches its pinned sha256, and the K6 gate refuses it).
+      - name: Git for a byte-exact checkout (LF kept, long paths)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --global core.longpaths true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          [[ "$LABEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::label '$LABEL' must be letters, digits, . _ -"; exit 1; }
+          echo "app version $V, commit $GITHUB_SHA, label $LABEL"
+          echo "APP_VERSION=$V" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.96.0"
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Pick the build drive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, Root | Out-String | Write-Host
+          $d = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free } | Sort-Object Free -Descending | Select-Object -First 1
+          "CARGO_TARGET_DIR=$($d.Name):\t" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "CITRATE_COMPONENT_BUILD_ROOT=$($d.Name):/cb" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The app's own dependency graph has aws-lc-sys, whose x86_64 MSVC build needs NASM.
+      - name: NASM
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "${env:ProgramFiles}\NASM" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - run: npm ci
+
+      # ── Release gates on the network this build syncs (each reported; the job fails at the end
+      #    if any did not pass, after the files are uploaded for inspection).
+      - name: "Gate: network profile (K6)"
+        id: gate_k6
+        continue-on-error: true
+        shell: bash
+        run: |
+          python3() { python "$@"; }; export -f python3
+          scripts/check-network-profile.sh --release --require-active r1007
+
+      - name: Download the sidecars and llama-server
+        if: ${{ env.REUSE_SIDECARS_RUN == '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/in
+
+      - name: Download the sidecars and llama-server of run ${{ env.REUSE_SIDECARS_RUN }} (bring-up reuse)
+        if: ${{ env.REUSE_SIDECARS_RUN != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/in
+          run-id: ${{ env.REUSE_SIDECARS_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: "{sidecar-*,llama-windows}"
+
+      - name: Stage the sidecars, llama-server and Kubo
+        shell: bash
+        run: |
+          set -euo pipefail
+          IN="$RUNNER_TEMP/in"
+          mkdir -p src-tauri/binaries src-tauri/llama
+          missing=()
+          for c in citrate-node node-agent mem-mcp comms-member-daemon cluster-daemon hermes-sidecar; do
+            name="$(basename "$(node scripts/component-pins.mjs field "$c" external_bin)")"
+            f="$IN/sidecar-$c/$name-$TRIPLE.exe"
+            if [ -f "$f" ]; then cp "$f" "src-tauri/binaries/$name-$TRIPLE.exe"; else missing+=("$c"); fi
+          done
+          if [ -f "$IN/llama-windows/llama/llama-server.exe" ]; then
+            cp "$IN/llama-windows/llama/"* src-tauri/llama/
+            cp "$IN/llama-windows/llama/llama-server.exe" "src-tauri/binaries/llama-server-$TRIPLE.exe"
+          else
+            missing+=(llama-server)
+          fi
+          [ "${#missing[@]}" = 0 ] || { echo "::error::not built, so not bundled: ${missing[*]}"; exit 1; }
+          # Kubo from its upstream release: archive and binary both match release/components.json.
+          scripts/build-component.sh kubo --target "$TRIPLE"
+          # Every interface the app requires of a sidecar is in the staged bytes (`requires`).
+          node scripts/component-pins.mjs verify-staged src-tauri/binaries "$TRIPLE"
+          ls -la src-tauri/binaries src-tauri/llama
+
+      - name: Stage runtime deps (skills · BGE embedder · knowledge corpus)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # MSYS form of the temp dir: Git Bash's GNU tar reads "D:\..." as a remote host:file.
+          RT="$(cygpath -u "$RUNNER_TEMP")"
+          DL="$RT/runtime-deps"
+          rm -rf "$DL" && mkdir -p "$DL"
+          ASSETS=(skills-bundle-35b4451bbd52.tar.gz bge-base-en-v1.5.tar.gz bge-base-en-v1.5-f16.gguf knowledge-corpus.tar.gz)
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
+          # The stagers unpack with `tar`. Under Git Bash that is GNU tar, which reads "D:\..." as a
+          # remote host:file; Windows 10/11's own tar.exe (bsdtar, System32) is the one they expect.
+          W32=(env "PATH=/c/Windows/System32:$PATH")
+          "${W32[@]}" node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle-35b4451bbd52.tar.gz" --out src-tauri/skills-bundle
+          rm -rf "$RT/bge-extract" && mkdir -p "$RT/bge-extract" src-tauri/models/bge-base-en-v1.5
+          tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RT/bge-extract"
+          BGE_CFG="$(find "$RT/bge-extract" -name config.json | head -1)"
+          [ -n "$BGE_CFG" ] || { echo "::error::BGE bundle has no config.json"; exit 1; }
+          cp -R "$(dirname "$BGE_CFG")"/. src-tauri/models/bge-base-en-v1.5/
+          for f in config.json tokenizer.json model.safetensors; do
+            test -s "src-tauri/models/bge-base-en-v1.5/$f" || { echo "::error::BGE embedder missing $f"; exit 1; }
+          done
+          mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+          cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+          "${W32[@]}" node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+            --bge-dir src-tauri/models/bge-base-en-v1.5 \
+            --mem-mcp "src-tauri/binaries/mem-mcp-$TRIPLE.exe"
+
+      - name: Knowledge corpus staged (pre-bundle check)
+        shell: bash
+        run: node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+
+      - name: "Gate: third-party notices"
+        id: gate_notices
+        continue-on-error: true
+        shell: bash
+        run: |
+          node scripts/third-party-notices.mjs check
+          node scripts/licence-inventory.mjs --require-notices
+
+      # Unsigned: there is no Windows code-signing certificate yet (SmartScreen shows "Windows
+      # protected your PC"; More info, Run anyway). No updater artifacts (no updater key here).
+      # STATIC_VCRUNTIME: tauri-build links the VC runtime into citrate-core.exe statically.
+      - name: Build the NSIS installer (unsigned)
+        shell: bash
+        env:
+          STATIC_VCRUNTIME: "true"
+        run: |
+          set -euo pipefail
+          npx tauri build --no-sign \
+            --config src-tauri/tauri.bundle-windows.conf.json \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect the installer, sha256s and the build record
+        id: collect
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $V = $env:APP_VERSION
+          $nsis = Join-Path $env:CARGO_TARGET_DIR 'release\bundle\nsis'
+          $setup = @(Get-ChildItem $nsis -Filter "*_${V}_x64-setup.exe")
+          if ($setup.Count -ne 1) { Get-ChildItem -Recurse $nsis | Write-Host; throw "expected one ${V} x64 setup.exe under $nsis" }
+          New-Item -ItemType Directory -Force out | Out-Null
+          $inst = "Citrate-Core_${V}_x64-setup.exe"
+          Copy-Item $setup[0].FullName "out\$inst"
+          $app = Join-Path $env:CARGO_TARGET_DIR 'release\citrate-core.exe'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $imports = & $dumpbin.FullName /nologo /dependents $app | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+          "citrate-core.exe: $($imports -join ', ')" | Out-File out\app-imports.txt -Encoding utf8
+          $files = @("out\$inst", $app) + @(Get-ChildItem src-tauri\binaries\*-x86_64-pc-windows-msvc.exe | ForEach-Object FullName) + @(Get-ChildItem src-tauri\llama -File | ForEach-Object FullName)
+          $sums = foreach ($f in $files) { $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); "$h  $([IO.Path]::GetFileName($f))" }
+          $sums | Out-File out\SHA256SUMS-windows -Encoding ascii
+          $prov = @(
+            "Citrate Core $V for Windows x64 (x86_64-pc-windows-msvc), UNSIGNED, not published",
+            "source: CitrateNetwork/citrate-core@$env:GITHUB_SHA (label $env:LABEL)",
+            "run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID (attempt $env:GITHUB_RUN_ATTEMPT)",
+            "runner image: $env:ImageOS $env:ImageVersion",
+            $(if ($env:REUSE_SIDECARS_RUN) { "sidecars and llama-server: REUSED from run $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:REUSE_SIDECARS_RUN (bring-up; not for pinning)" } else { "sidecars and llama-server: built in this run" }),
+            "installer: NSIS, per-user (currentUser), WebView2 downloadBootstrapper",
+            "network: r1007, chain 40204, genesis from release/network-cut.json",
+            "sidecars (built on GitHub-hosted Windows runners from the pins in release/components.json):"
+          )
+          foreach ($p in Get-ChildItem "$env:RUNNER_TEMP\in\sidecar-*\*.provenance") { $prov += "  " + (Get-Content $p -Raw).Trim() }
+          $prov += "llama-server: ggml-org/llama.cpp $env:LLAMA_TAG ($env:LLAMA_REV), web UI off, static CRT, OpenMP off"
+          $prov += "kubo: " + (Get-Content src-tauri\binaries\ipfs-x86_64-pc-windows-msvc.exe.provenance -Raw).Trim()
+          $prov += "app imports: $($imports -join ', ')"
+          $prov | Out-File out\PROVENANCE-windows.txt -Encoding utf8
+          Copy-Item "$env:RUNNER_TEMP\in\llama-windows\llama-imports.txt" out\ -ErrorAction SilentlyContinue
+          Get-ChildItem "$env:RUNNER_TEMP\in\sidecar-*\*.imports.txt" | ForEach-Object { Copy-Item $_.FullName out\ }
+          "### Windows x64 installer (unsigned, not published)`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $sums | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "app imports: $($imports -join ', ')" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          (Get-Item "out\$inst").Length | ForEach-Object { "installer size: $([math]::Round($_/1MB,1)) MB" } | Write-Host
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: citrate-core-windows-x64-${{ env.LABEL }}
+          path: out
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Release gates
+        shell: bash
+        run: |
+          fail=0
+          for g in "K6 network profile=${{ steps.gate_k6.outcome }}" "network cut (linux job)=${{ needs.network.result }}" "third-party notices=${{ steps.gate_notices.outcome }}"; do
+            echo "gate ${g%%=*}: ${g##*=}"; echo "- gate ${g%%=*}: ${g##*=}" >> "$GITHUB_STEP_SUMMARY"
+            [ "${g##*=}" = success ] || fail=1
+          done
+          exit $fail
+
+  smoke:
+    name: smoke test (${{ matrix.image }})
+    needs: [plan, bundle]
+    # Explicit result checks: an upstream job skipped by a bring-up reuse would otherwise skip this.
+    if: ${{ !cancelled() && (needs.bundle.result == 'success' || (needs.bundle.result == 'skipped' && needs.plan.outputs.reuse_bundle != '')) && (github.event_name == 'push' || inputs.smoke) }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [windows-2022, windows-2025]
+    steps:
+      - name: Git for a byte-exact checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci/windows-smoke.ps1
+            scripts/ci/consensus-fingerprint.py
+            release/network-cut.json
+            release/components.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: citrate-core-windows-x64-${{ env.LABEL }}
+          path: ${{ runner.temp }}/pkg
+          run-id: ${{ needs.plan.outputs.reuse_bundle || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install, launch, check the node, quit, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "$env:RUNNER_TEMP\pkg\Citrate-Core_*_x64-setup.exe" | Select-Object -First 1
+          $base = ((Get-Content release\components.json -Raw | ConvertFrom-Json).components | Where-Object { $_.id -eq 'citrate-node' }).source.rev
+          & .\scripts\ci\windows-smoke.ps1 -Installer $setup.FullName -Evidence "$env:GITHUB_WORKSPACE\smoke-evidence" -NetworkCut release\network-cut.json `
+            -BaseRev $base -FingerprintScript scripts\ci\consensus-fingerprint.py
+          exit $LASTEXITCODE
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-${{ matrix.image }}-${{ env.LABEL }}
+          path: smoke-evidence
+          if-no-files-found: warn
+          retention-days: 7

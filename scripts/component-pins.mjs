@@ -13,6 +13,8 @@
 // Usage:
 //   node scripts/component-pins.mjs field <id> <dotted.path>   print one manifest value
 //   node scripts/component-pins.mjs artifact <id> <target>     print the artifact record (JSON)
+//   node scripts/component-pins.mjs rev <id> <target>          print the source rev for that target
+//                                                              (source.target_revs, else source.rev)
 //   node scripts/component-pins.mjs digest <id> <target>       print the pinned sha256; exit 1 if none
 //   node scripts/component-pins.mjs pending                    list "<id> <target> <reason>" for every
 //                                                              target whose pin waits on its builder
@@ -87,6 +89,17 @@ export function getField(obj, dotted) {
     v = v[k];
   }
   return v;
+}
+
+/**
+ * The source rev a component is built from for one target: `source.target_revs[target].rev` when
+ * the component names a per-target rev (a fix that only that platform needs, so the other targets'
+ * reviewed pins stay put), else `source.rev`. The bundled node never has one: every platform's
+ * node must be the same consensus code (check refuses it).
+ */
+export function revFor(c, target) {
+  const t = c && c.source && c.source.target_revs && c.source.target_revs[target];
+  return (t && t.rev) || (c && c.source && c.source.rev);
 }
 
 /** The pinned sha256 for one component on one target, or throw (fail closed). */
@@ -308,6 +321,48 @@ export function releaseUploadErrors(text) {
   return errors;
 }
 
+// The bundled node is one consensus: a per-target node rev is allowed only as the base rev
+// (source.rev) plus commits that touch no consensus path, so the platforms still run the same
+// consensus code (owner 2026-11-24, Windows 0.5.9: #492's fd_limit did not compile on Windows).
+// scripts/build-sidecar.sh enforces the "no consensus path" half against the checkout at build time
+// (NODE_CONSENSUS_PATHS); here: the record names its base, and a PINNED target rev carries the proof
+// that the built node is the same consensus: the fingerprint `citrate consensus --json` reported on
+// that platform's binary, equal to the network cut's, and the smoke run that saw the cut's genesis.
+export const NODE_CONSENSUS_PATHS = [
+  "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/", "contracts/", "genesis/",
+  "core/consensus/", "core/execution/", "core/genesis/", "core/economics/", "core/sequencer/",
+  "core/signing/", "core/network/", "core/storage/src/state/", "core/storage/src/state_manager.rs",
+  "core/storage/src/chain/", "core/storage/src/pruning/", "node/src/genesis",
+];
+export function nodeTargetRevErrors(c, t, tr, root) {
+  const errors = [];
+  const at = `'citrate-node' ${t}`;
+  if (!tr || typeof tr !== "object") return [`${at}: source.target_revs entry must be { rev, why, base }`];
+  if (tr.base !== c.source.rev) errors.push(`${at}: a node target rev must name its base (base = source.rev ${c.source.rev}), got ${tr.base}`);
+  const cut = readIf(path.join(root, "release", "network-cut.json"));
+  const want = cut ? JSON.parse(cut).consensusFingerprint : null;
+  const FP = /^0x[0-9a-f]{32}$/;
+  // The chain's fingerprint hashes git_sha with every consensus input, so a node built from another
+  // rev reports another fingerprint even when its consensus is the base's. The proof is the
+  // reported fingerprint recomputed with git_sha = the base (scripts/ci/consensus-fingerprint.py,
+  // a required smoke check): it must be the cut's.
+  if ((c.artifacts || {})[t]) {
+    if (!FP.test(tr.consensusFingerprint || "")) errors.push(`${at}: a pinned node target rev needs consensusFingerprint, the fingerprint the built binary reports`);
+    if (!want || tr.baseEquivalentFingerprint !== want) errors.push(`${at}: a pinned node target rev needs baseEquivalentFingerprint (its fingerprint recomputed with git_sha = the base) equal to release/network-cut.json's (${want}), got ${tr.baseEquivalentFingerprint}`);
+    if (!/^https:\/\/github\.com\/CitrateNetwork\/citrate-core\/actions\/runs\/\d+/.test(tr.smokeRun || "")) errors.push(`${at}: a pinned node target rev needs smokeRun, the release-windows run whose smoke test saw the cut's genesis and checked the recomputed fingerprint`);
+  } else if (tr.baseEquivalentFingerprint !== undefined && tr.baseEquivalentFingerprint !== want) {
+    errors.push(`${at}: baseEquivalentFingerprint ${tr.baseEquivalentFingerprint} is not the network cut's (${want})`);
+  }
+  if (tr.consensusFingerprint !== undefined && tr.consensusFingerprint === want && tr.rev !== c.source.rev) {
+    errors.push(`${at}: consensusFingerprint equals the base's, which a binary of another rev cannot report (the fingerprint hashes git_sha); record what the binary reported`);
+  }
+  if (c.source.checkout) {
+    const dir = path.join(root, "..", c.source.checkout);
+    if (HEX40.test(tr.rev || "") && revContains(dir, c.source.rev, tr.rev) === false) errors.push(`${at}: target rev ${tr.rev} does not descend from the base ${c.source.rev}`);
+  }
+  return errors;
+}
+
 export function check(root) {
   const errors = [];
   const err = (m) => errors.push(m);
@@ -374,7 +429,7 @@ export function check(root) {
       // A cargo build's runtime-deps asset is named after the rev it was built from, so a rev
       // bump that keeps the old bytes fails here.
       if (b.kind === "cargo" && a.runtime_deps_asset) {
-        const want = `${path.basename(c.external_bin || "")}-${t}-${(src.rev || "").slice(0, 12)}`;
+        const want = `${path.basename(c.external_bin || "")}-${t}-${(revFor(c, t) || "").slice(0, 12)}`;
         if (a.runtime_deps_asset !== want) err(`'${c.id}' ${t}: runtime-deps asset ${a.runtime_deps_asset} is not the build of the pinned rev (expected ${want})`);
       }
       if (b.kind === "download") {
@@ -382,6 +437,30 @@ export function check(root) {
         if (!HEX64.test(a.archive_sha256 || "")) err(`'${c.id}' ${t}: archive_sha256 missing or not 64 hex`);
         if (!a.member) err(`'${c.id}' ${t}: archive member path missing`);
         if (a.url && src.version && !a.url.includes(src.version)) err(`'${c.id}' ${t}: url does not name version ${src.version}`);
+      }
+    }
+  }
+
+  // `source.target_revs`: a per-target source rev, each a full commit with the reason it differs
+  // from source.rev, and (where the source checkout sits beside this repo) containing every rev the
+  // app requires. Never for the bundled node: a node on another rev is another consensus.
+  for (const c of comps) {
+    const trs = c.source && c.source.target_revs;
+    if (trs === undefined) continue;
+    if (!trs || typeof trs !== "object" || Array.isArray(trs)) {
+      err(`'${c.id}': source.target_revs must map a target to { rev, why }`);
+      continue;
+    }
+    for (const [t, tr] of Object.entries(trs)) {
+      if (c.id === "citrate-node") for (const e of nodeTargetRevErrors(c, t, tr, root)) err(e);
+      if (!HEX40.test((tr && tr.rev) || "")) err(`'${c.id}' ${t}: source.target_revs rev must be a full 40-hex commit`);
+      if (!(tr && typeof tr.why === "string" && tr.why.trim())) err(`'${c.id}' ${t}: source.target_revs needs a why`);
+      if (tr && tr.rev === c.source.rev) err(`'${c.id}' ${t}: source.target_revs rev equals source.rev; drop the entry`);
+      if (c.requires && c.source.checkout && tr && HEX40.test(tr.rev || "")) {
+        const dir = path.join(root, "..", c.source.checkout);
+        for (const r of c.requires) {
+          if (revContains(dir, r.rev, tr.rev) === false) err(`'${c.id}' ${t}: target rev ${tr.rev} predates ${r.rev}, which it requires (${r.why})`);
+        }
       }
     }
   }
@@ -559,6 +638,18 @@ function main(argv) {
       else process.stdout.write(`${v}\n`);
       return;
     }
+    if (cmd === "node-consensus-paths") {
+      process.stdout.write(NODE_CONSENSUS_PATHS.join("\n") + "\n");
+      return;
+    }
+    if (cmd === "rev") {
+      const [id, target] = rest;
+      if (!id || !target) die("usage: rev <id> <target>");
+      const r = revFor(component(m, id), target);
+      if (!r) die(`no source rev for '${id}'`);
+      process.stdout.write(`${r}\n`);
+      return;
+    }
     if (cmd === "artifact") {
       const [id, target] = rest;
       const a = (component(m, id).artifacts || {})[target];
@@ -599,7 +690,7 @@ function main(argv) {
       process.stdout.write("component requires: staged sidecars OK\n");
       return;
     }
-    die("usage: component-pins.mjs field|artifact|digest|pending|check|requires|verify-bytes|verify-staged ...");
+    die("usage: component-pins.mjs field|artifact|rev|node-consensus-paths|digest|pending|check|requires|verify-bytes|verify-staged ...");
   } catch (e) {
     die(e.message);
   }

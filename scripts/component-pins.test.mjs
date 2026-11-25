@@ -18,6 +18,7 @@ import {
   requirementByteErrors,
   requirementRevErrors,
   revContains,
+  revFor,
   stagedRequirementErrors,
 } from "./component-pins.mjs";
 
@@ -25,6 +26,7 @@ const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = [
   "release/components.json",
   "release/licences.json",
+  "release/network-cut.json",
   "src-tauri/runtime-deps.sha256",
   "Cargo.toml",
   "src-tauri/Cargo.toml",
@@ -549,5 +551,123 @@ describe("pending pins (a target waiting on its builder)", () => {
     const r = fixture();
     pend(r, "hermes-sidecar", "aarch64-apple-darwin");
     expect(errorsOf(r)).toMatch(/'hermes-sidecar' aarch64-apple-darwin: may not be pending/);
+  });
+});
+
+describe("per-target source revs (source.target_revs)", () => {
+  const WIN = "x86_64-pc-windows-msvc";
+  const REV = "a".repeat(40);
+
+  it("builds a target from its own rev and every other target from source.rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "cluster-daemon");
+    // The real Windows pin names its asset after the real target rev; this case sets a synthetic one.
+    delete c.artifacts[WIN];
+    c.source.target_revs = { [WIN]: { rev: REV, why: "Windows pipe-name fix only" } };
+    setManifest(r, m);
+    expect(revFor(c, WIN)).toBe(REV);
+    expect(revFor(c, "aarch64-apple-darwin")).toBe(c.source.rev);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("names a target's runtime-deps asset after that target's rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "cluster-daemon");
+    c.source.target_revs = { "aarch64-apple-darwin": { rev: REV, why: "test" } };
+    setManifest(r, m);
+    expect(errorsOf(r)).toMatch(/'cluster-daemon' aarch64-apple-darwin: runtime-deps asset cluster-daemon-aarch64-apple-darwin-755cf2172260 is not the build of the pinned rev \(expected cluster-daemon-aarch64-apple-darwin-aaaaaaaaaaaa\)/);
+  });
+
+  it("refuses a target rev that is not a full commit, has no why, or equals source.rev", () => {
+    const r = fixture();
+    const m = manifest(r);
+    const c = comp(m, "mem-mcp");
+    c.source.target_revs = { [WIN]: { rev: "abc123" }, "x86_64-unknown-linux-gnu": { rev: c.source.rev, why: "same" } };
+    setManifest(r, m);
+    const e = errorsOf(r);
+    expect(e).toMatch(/'mem-mcp' x86_64-pc-windows-msvc: source.target_revs rev must be a full 40-hex commit/);
+    expect(e).toMatch(/'mem-mcp' x86_64-pc-windows-msvc: source.target_revs needs a why/);
+    expect(e).toMatch(/'mem-mcp' x86_64-unknown-linux-gnu: source.target_revs rev equals source.rev/);
+  });
+
+  // The bundled node: one consensus. A per-target node rev must name its base (= source.rev), and a
+  // PINNED one carries the network cut's fingerprint and the smoke run (owner 2026-11-24).
+  const FP = JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8")).consensusFingerprint;
+  const RUN = "https://github.com/CitrateNetwork/citrate-core/actions/runs/1";
+  const nodeWin = (r, entry, pinned) => {
+    const m = manifest(r);
+    const n = comp(m, "citrate-node");
+    // The real Windows pin names its asset after the real target rev; these cases set a synthetic one.
+    delete n.artifacts[WIN];
+    n.source.target_revs = { [WIN]: { rev: REV, why: "cfg-only Windows build fix", base: n.source.rev, ...entry } };
+    if (pinned) n.artifacts[WIN] = { sha256: "b".repeat(64), evidence: "test" };
+    setManifest(r, m);
+    return n;
+  };
+
+  it("lets the node build an unpinned target from the base plus a later rev", () => {
+    const r = fixture();
+    nodeWin(r, {}, false);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("refuses a node target rev that does not name the base it extends", () => {
+    const r = fixture();
+    nodeWin(r, { base: "1".repeat(40) }, false);
+    expect(errorsOf(r)).toMatch(/'citrate-node' x86_64-pc-windows-msvc: a node target rev must name its base/);
+    const r2 = fixture();
+    const m = manifest(r2);
+    comp(m, "citrate-node").source.target_revs = { [WIN]: { rev: REV, why: "x" } };
+    setManifest(r2, m);
+    expect(errorsOf(r2)).toMatch(/a node target rev must name its base/);
+  });
+
+  const REPORTED = "0x2b0f96ee2bb3ff72d69370dc19a7ffd4";
+  it("refuses a pinned node target rev without both fingerprints and a smoke run", () => {
+    const r = fixture();
+    nodeWin(r, {}, true);
+    const e = errorsOf(r);
+    expect(e).toMatch(/a pinned node target rev needs consensusFingerprint, the fingerprint the built binary reports/);
+    expect(e).toMatch(/a pinned node target rev needs baseEquivalentFingerprint/);
+    expect(e).toMatch(/a pinned node target rev needs smokeRun/);
+    const r2 = fixture();
+    nodeWin(r2, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: "0x" + "0".repeat(32), smokeRun: RUN }, true);
+    expect(errorsOf(r2)).toMatch(/needs baseEquivalentFingerprint .* equal to release\/network-cut.json's/);
+    const r3 = fixture();
+    nodeWin(r3, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: FP, smokeRun: "https://example.com/run/1" }, true);
+    expect(errorsOf(r3)).toMatch(/needs smokeRun/);
+  });
+
+  it("accepts a pinned node target rev with its reported fingerprint, the base-equivalent one and its smoke run", () => {
+    const r = fixture();
+    nodeWin(r, { consensusFingerprint: REPORTED, baseEquivalentFingerprint: FP, smokeRun: RUN }, true);
+    expect(errorsOf(r)).toBe("");
+  });
+
+  it("refuses a recorded fingerprint equal to the base's for another rev (it cannot be what the binary reported)", () => {
+    const r = fixture();
+    nodeWin(r, { consensusFingerprint: FP, baseEquivalentFingerprint: FP, smokeRun: RUN }, true);
+    expect(errorsOf(r)).toMatch(/consensusFingerprint equals the base's, which a binary of another rev cannot report/);
+  });
+
+  it("refuses a base-equivalent fingerprint that is not the cut's, even before the pin", () => {
+    const r = fixture();
+    nodeWin(r, { baseEquivalentFingerprint: "0xdeadbeef" }, false);
+    expect(errorsOf(r)).toMatch(/baseEquivalentFingerprint 0xdeadbeef is not the network cut's/);
+  });
+});
+
+describe("the committed Windows pins", () => {
+  it("pin the node at a target rev with both fingerprints and the smoke run, and pass the check", () => {
+    const m = JSON.parse(fs.readFileSync(path.join(repo, "release/components.json"), "utf8"));
+    const n = m.components.find((c) => c.id === "citrate-node");
+    const tr = n.source.target_revs["x86_64-pc-windows-msvc"];
+    expect(tr.base).toBe(n.source.rev);
+    expect(tr.baseEquivalentFingerprint).toBe(JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8")).consensusFingerprint);
+    expect(tr.consensusFingerprint).not.toBe(tr.baseEquivalentFingerprint);
+    expect(n.artifacts["x86_64-pc-windows-msvc"].runtime_deps_asset).toBe(`citrate-x86_64-pc-windows-msvc-${tr.rev.slice(0, 12)}`);
+    expect(check(repo)).toEqual([]);
   });
 });
