@@ -562,6 +562,8 @@ describe("per-target source revs (source.target_revs)", () => {
     const r = fixture();
     const m = manifest(r);
     const c = comp(m, "cluster-daemon");
+    // The real Windows pin names its asset after the real target rev; this case sets a synthetic one.
+    delete c.artifacts[WIN];
     c.source.target_revs = { [WIN]: { rev: REV, why: "Windows pipe-name fix only" } };
     setManifest(r, m);
     expect(revFor(c, WIN)).toBe(REV);
@@ -597,6 +599,8 @@ describe("per-target source revs (source.target_revs)", () => {
   const nodeWin = (r, entry, pinned) => {
     const m = manifest(r);
     const n = comp(m, "citrate-node");
+    // The real Windows pin names its asset after the real target rev; these cases set a synthetic one.
+    delete n.artifacts[WIN];
     n.source.target_revs = { [WIN]: { rev: REV, why: "cfg-only Windows build fix", base: n.source.rev, ...entry } };
     if (pinned) n.artifacts[WIN] = { sha256: "b".repeat(64), evidence: "test" };
     setManifest(r, m);
@@ -652,5 +656,18 @@ describe("per-target source revs (source.target_revs)", () => {
     const r = fixture();
     nodeWin(r, { baseEquivalentFingerprint: "0xdeadbeef" }, false);
     expect(errorsOf(r)).toMatch(/baseEquivalentFingerprint 0xdeadbeef is not the network cut's/);
+  });
+});
+
+describe("the committed Windows pins", () => {
+  it("pin the node at a target rev with both fingerprints and the smoke run, and pass the check", () => {
+    const m = JSON.parse(fs.readFileSync(path.join(repo, "release/components.json"), "utf8"));
+    const n = m.components.find((c) => c.id === "citrate-node");
+    const tr = n.source.target_revs["x86_64-pc-windows-msvc"];
+    expect(tr.base).toBe(n.source.rev);
+    expect(tr.baseEquivalentFingerprint).toBe(JSON.parse(fs.readFileSync(path.join(repo, "release/network-cut.json"), "utf8")).consensusFingerprint);
+    expect(tr.consensusFingerprint).not.toBe(tr.baseEquivalentFingerprint);
+    expect(n.artifacts["x86_64-pc-windows-msvc"].runtime_deps_asset).toBe(`citrate-x86_64-pc-windows-msvc-${tr.rev.slice(0, 12)}`);
+    expect(check(repo)).toEqual([]);
   });
 });

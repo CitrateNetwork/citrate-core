@@ -4,7 +4,8 @@
     "Each artifact's digest lives in one place: its own sha256, or, for bytes uploaded to the runtime-deps prerelease, the pin of its runtime_deps_asset in src-tauri/runtime-deps.sha256 (release.yml verifies that pin before staging). Digests are of the bytes staged into src-tauri/binaries before bundling; Tauri then signs each externalBin with the Developer ID, so the copies inside a signed macOS app differ.",
     "macOS cargo builds reproduce byte for byte only on the machine and build root that recorded them (the linker derives the Mach-O UUID from the output path; see scripts/build-component.sh). Linux pins are DGX-lane builds (v0.5.1 PROVENANCE-linux.txt for the components that did not move). A component whose rev moved lists its Linux targets under `pending`, with who builds them and how, until the DGX records them with build-component.sh --print-digest; nothing builds or stages a pending target (`component-pins.mjs pending` lists them). Since 2026-11-08 the aarch64-unknown-linux-gnu bytes are runtime_deps_asset pins that release.yml's release-linux-aarch64 job (ubuntu-24.04-arm) stages; with the DGX sold, a moved aarch64 pin is first built by that job's dry run (docs/RELEASE_LINUX.md).",
     "federation: the citrate-federation manifest.toml pin of the source repo, and whether it matches. A mismatch is recorded with a note, never silent (Rule 11). Changing any pin is a reviewed PR.",
-    "Windows (x86_64-pc-windows-msvc, from 0.5.9): every cargo sidecar links the C runtime statically (build.env CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS, which only a Windows target build reads), so a member's PC needs no Visual C++ Redistributable. The bytes are built on GitHub-hosted Windows runners by .github/workflows/release-windows.yml from the pinned revs; the run id that built each pin is in its evidence."
+    "Windows (x86_64-pc-windows-msvc, from 0.5.9): every cargo sidecar links the C runtime statically (build.env CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS, which only a Windows target build reads), so a member's PC needs no Visual C++ Redistributable. The bytes are built on GitHub-hosted Windows runners by .github/workflows/release-windows.yml from the pinned revs; the run id that built each pin is in its evidence.",
+    "Windows pins (0.5.9): the runtime_deps_asset bytes of release-windows run 45525459608. Kubo's Windows pin is the upstream v0.42.0 binary, unchanged. llama-server for Windows is built in the same workflow from b10909 with the web UI off and is not pinned here yet (as llama.cpp's other targets, it is a manual-kind component)."
   ],
   "version": 1,
   "release": "0.5.2",
@@ -23,7 +24,10 @@
           "x86_64-pc-windows-msvc": {
             "rev": "98c513ec47d8055a4a36ae48a507f62f9b736af0",
             "base": "68434069de707e8454a1313a1f2e20ba449300f5",
-            "why": "68434069 (#492) does not compile for Windows: core/storage/src/fd_limit.rs calls libc's rlimit API with no cfg(unix) (release-windows run 45451597501). This rev is 68434069 plus cfg-only commits in citrate-chain#494 that touch no consensus path (scripts/build-sidecar.sh refuses one that does). citrate-chain is squash-only, so this is the PR branch's commit itself, reachable through refs/pull/494 and the branch pin/windows-0.5.9-node (kept at this commit after the squash); 0.5.10 takes the squash on every OS. Owner OK 2026-11-24 (Windows onboarding)."
+            "why": "68434069 (#492) does not compile for Windows: core/storage/src/fd_limit.rs calls libc's rlimit API with no cfg(unix) (release-windows run 45451597501). This rev is 68434069 plus cfg-only commits in citrate-chain#494 that touch no consensus path (scripts/build-sidecar.sh refuses one that does). citrate-chain is squash-only, so this is the PR branch's commit itself, reachable through refs/pull/494 and the branch pin/windows-0.5.9-node (kept at this commit after the squash); 0.5.10 takes the squash on every OS. Owner OK 2026-11-24 (Windows onboarding).",
+            "consensusFingerprint": "0x2b0f96ee2bb3ff72d69370dc19a7ffd4",
+            "baseEquivalentFingerprint": "0xa2f16115438794f0410b187c99a14e34",
+            "smokeRun": "https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608"
           }
         }
       },
@@ -52,6 +56,10 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "65617d817c6cf3eea505c3cef47f9f893116ac57d017fff5a80b2564fde8feaa",
           "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-22: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-68434069de70; consensus --json on the rendered r1007 node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 (git_sha 68434069de70, git_dirty false) = the macOS build"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "citrate-x86_64-pc-windows-msvc-98c513ec47d8",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar citrate-node\", 2026-11-25: scripts/build-sidecar.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-chain 98c513ec47d8, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record citrate-x86_64-pc-windows-msvc-98c513ec47d8.PROVENANCE.txt (sha256 dfbc786ba52265fba193b1081de6f6a2fbb2b1572fde9717485b99f355eb53b6). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall). Node bytes do not reproduce run to run on Windows (as on Linux, chain#427), so the pin is this run's bytes."
         }
       },
       "pending": {
@@ -94,6 +102,10 @@
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a",
           "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root. Replaces the 0.5.1 pin 3fbd39c8, which a hand build made (cargo build without -p/--target), not this script"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "node-agent-x86_64-pc-windows-msvc-1d8cb8e4e24a",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar node-agent\", 2026-11-25: scripts/build-component.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-node-agent 1d8cb8e4e24a, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record node-agent-x86_64-pc-windows-msvc-1d8cb8e4e24a.PROVENANCE.txt (sha256 c939cb395b91fe62342c4837f45adf9ab97e78b18d2523c0d52b7993488fee01). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall)."
         }
       }
     },
@@ -149,6 +161,10 @@
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369",
           "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "mem-mcp-x86_64-pc-windows-msvc-451857e035dd",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar mem-mcp\", 2026-11-25: scripts/build-component.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-memories 451857e035dd, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record mem-mcp-x86_64-pc-windows-msvc-451857e035dd.PROVENANCE.txt (sha256 93795244964d9927950e986d2929f373650ad168e02b23099398912db80a299a). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall)."
         }
       }
     },
@@ -184,6 +200,10 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "0dddd440f800eaeac6907167772c148d869cb450ebb7110aa982afe713de8835",
           "evidence": "scripts/build-comms-daemon.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-23; same bytes from a second build after removing the target dir; highest symbol GLIBC_2.34; bytes and PROVENANCE also uploaded to runtime-deps as comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f. Replaces the 9cd12c41 pin 96a63e58"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "comms-member-daemon-x86_64-pc-windows-msvc-f6652a56b92f",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar comms-member-daemon\", 2026-11-25: scripts/build-comms-daemon.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-comms f6652a56b92f, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record comms-member-daemon-x86_64-pc-windows-msvc-f6652a56b92f.PROVENANCE.txt (sha256 b77d63d012704cb0f85d2d108af7e31bdff452cfadbdeb0bb381d77ed116dcbc). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall)."
         }
       },
       "pending": {
@@ -232,6 +252,10 @@
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260",
           "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "cluster-daemon-x86_64-pc-windows-msvc-b014f70aeed8",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar cluster-daemon\", 2026-11-25: scripts/build-cluster-daemon.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-cluster b014f70aeed8, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record cluster-daemon-x86_64-pc-windows-msvc-b014f70aeed8.PROVENANCE.txt (sha256 2bbf529360e518427fb689d1d9811b045529b94b6bb05b4d9b45b4a393e760d0). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall)."
         }
       }
     },
@@ -267,6 +291,10 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "5f4757d4910ffd680c4d01bd40edb23d346fad268adc050d5fe181d7c0b599a5",
           "evidence": "scripts/build-hermes.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-16; same bytes from a second build after removing the target dir. Replaces the f68d041c pin 9b3bac62"
+        },
+        "x86_64-pc-windows-msvc": {
+          "runtime_deps_asset": "hermes-x86_64-pc-windows-msvc-aa12b10ee996",
+          "evidence": "GitHub-hosted windows-2022 runner (image win22 20261116.370.1), https://github.com/CitrateNetwork/citrate-core/actions/runs/45525459608 job \"sidecar hermes-sidecar\", 2026-11-25: scripts/build-hermes.sh --target x86_64-pc-windows-msvc --print-digest at CitrateNetwork/citrate-agent-runtime aa12b10ee996, rustc 1.96.0, --locked, static C runtime (build.env); imports only Windows system DLLs; record hermes-x86_64-pc-windows-msvc-aa12b10ee996.PROVENANCE.txt (sha256 b91dfda9b586d4deefea27809f51124881675dde7ebef76f117716bf6e86ecb7). The installer built from these bytes in the same run passed the smoke test on windows-2022 and windows-2025 (install, node on r1007, Memory IPC on the per-install pipe, quit, uninstall)."
         }
       },
       "pending": {

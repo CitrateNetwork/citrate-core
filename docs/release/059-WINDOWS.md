@@ -26,7 +26,7 @@ Distribution, signing and the update feed are owner decisions; see the last sect
   |---|---|---|---|
   | node (`citrate`) | citrate-chain 98c513ec (`pin/windows-0.5.9-node`) | 68434069 | #492's open-file-limit code did not compile on Windows; #494 gates it with cfg(unix), touching no consensus path |
   | cluster-daemon | citrate-cluster b014f70a (`pin/windows-0.5.9-cluster-daemon`) | 755cf217 | bound the wrong named-pipe name on Windows (#19) |
-  | mem-mcp | citrate-memories main after #34 and #36 | 5aeda317 | bound the wrong named-pipe name on Windows (#36; #34 clears the zip advisories) |
+  | mem-mcp | citrate-memories 451857e0 (main after #34 and #36) | 5aeda317 | bound the wrong named-pipe name on Windows (#36; #34 clears the zip advisories) |
 
 - **No VC++ runtime needed:** every executable imports only DLLs that ship with Windows 10 and 11
   (the cargo sidecars and llama-server link the C runtime statically, and the app links the VC
@@ -63,11 +63,25 @@ Distribution, signing and the update feed are owner decisions; see the last sect
    The member's data (`%APPDATA%\ai.citrate.core`: wallet vault, node database, settings) stays, as
    on macOS and Linux.
 
+## The pinned build
+
+Release-windows run 45525459608 built every sidecar from scratch, then the installer, then the smoke,
+all green. It produced:
+
+- the installer `Citrate-Core_0.5.9_x64-setup.exe`, sha256
+  `17a3852fe8167cf29cb9f123fe47798371fa8a5d6717b52a78d32cf25e3883aa`;
+- the six sidecars, pinned in `release/components.json` and `src-tauri/runtime-deps.sha256`;
+- for each sidecar, a new runtime-deps asset `<bin>-x86_64-pc-windows-msvc-<rev12>` and its
+  `.PROVENANCE.txt`, both uploaded and verified by download.
+
+The Windows node does not rebuild byte for byte from run to run (as on Linux, chain#427), so the pin
+is this run's bytes.
+
 ## Smoke test on the hosted runners
 
 The `smoke` job runs on fresh windows-2022 and windows-2025 runners. Windows Server 2022 shares the
 Windows 10 21H2 code base, and Server 2025 shares Windows 11 24H2's. Run 45472309246 tested the
-installer of run 45466078872, and these passed on both:
+installer of run 45466078872, and run 45525459608 tested the pinned build. These passed on both:
 
 - silent per-user install (48 to 54 s);
 - launch, and the node up in 10 to 12 s;
@@ -75,10 +89,13 @@ installer of run 45466078872, and these passed on both:
 - established connections to all four r1007 boot peers;
 - applied height moving;
 - quit (window close), which ended the app and every sidecar;
+- the memory daemon listening on the per-install pipe the app connects to (and not on the old bare name);
 - silent uninstall.
 
-The node log had no WARN or ERROR line. The smoke does not exercise the UI, Groups, chat, Hermes or
-the model download (those sidecars start on demand).
+The node log had no WARN or ERROR line. The smoke does not exercise the UI, Groups (cluster-daemon), chat (comms-member-daemon), Hermes or the
+model download: those start on demand from the UI. The Groups and chat daemons use the same
+per-install pipe naming as the memory daemon (citrate-cluster#19, citrate-comms#24), but that is not
+proven on Windows at run time.
 
 ## Windows versions
 
