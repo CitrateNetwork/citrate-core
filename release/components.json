@@ -43,10 +43,11 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "65617d817c6cf3eea505c3cef47f9f893116ac57d017fff5a80b2564fde8feaa",
           "evidence": "citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), 2026-11-22: scripts/build-sidecar.sh --target x86_64-unknown-linux-gnu --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache; public clone), rustc 1.96.0, the fixed-asset recipe in docs/RELEASE_LINUX.md (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.34; bytes uploaded to runtime-deps as citrate-x86_64-unknown-linux-gnu-68434069de70; consensus --json on the rendered r1007 node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 (git_sha 68434069de70, git_dirty false) = the macOS build"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "runtime_deps_asset": "citrate-aarch64-unknown-linux-gnu-68434069de70",
+          "evidence": "release.yml dry run 45444734676 (workflow_dispatch, label 0.5.9-arm64-dry, ref main = c3f10793), job 138625271636 on the GitHub-hosted runner ubuntu-24.04-arm (image ubuntu24-arm64/20261116.188: Ubuntu 24.04, glibc 2.39), 2026-11-24: scripts/build-sidecar.sh --target aarch64-unknown-linux-gnu --print-digest at citrate-chain 68434069de70 (main: #492 the node raises its open-file limit (RLIMIT_NOFILE) at start and bounds RocksDB's table cache; public clone; the lineage gate passed), rustc 1.96.0, build root $RUNNER_TEMP/component-build, the fixed-asset recipe (the node rebuild does not reproduce, chain#427); highest symbol GLIBC_2.39; bytes from the run's artifact, uploaded to runtime-deps as this asset with its PROVENANCE record (nothing overwritten), download-back sha256 matches; these exact bytes run by cold-sync.yml 45455716103 on ubuntu-24.04-arm on the rendered r1007 member node.toml: fingerprint 0xa2f16115438794f0410b187c99a14e34 (= the macOS and Linux x86_64 builds), block 0 0xcf68634502b4, chain 40204, synced past height 5000 from 4 peers, a wrong genesis refused; cold-sync.yml 45471958218 (bounded, the anchored prefix check) on the same bytes: PASS on every rule, the network serves the node's block 0x771f52124908 at height 5342 and names the node's block by number at 0, 1000, 2000, 3000, 4000, 5000 and 5342"
         }
-      },
-      "pending": {
-        "aarch64-unknown-linux-gnu": "not built for this release (release/network-cut.json notBuilt): owner 2026-11-12: 0.5.3 ships macOS and Linux x86_64 only; Linux aarch64 is not built, and the updater feed has no linux-aarch64 entry (an aarch64 install is offered no update)"
       }
     },
     {
@@ -82,7 +83,7 @@
         },
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a",
-          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root. Replaces the 0.5.1 pin 3fbd39c8, which a hand build made (cargo build without -p/--target), not this script"
+          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root. Replaces the 0.5.1 pin 3fbd39c8, which a hand build made (cargo build without -p/--target), not this script; the bytes were owed to runtime-deps until 2026-11-24, when they were taken from usr/bin of the published v0.5.2 Citrate-Core-linux-aarch64.deb (b1ac4043..., its SHA256SUMS-linux line), checked equal to this pin, and uploaded under this name with a PROVENANCE record (nothing overwritten; download-back sha256 matches). The release.yml dry run 45444734676 on ubuntu-24.04-arm does not reproduce them (another build root and toolchain host), so these DGX bytes stay the pin"
         }
       }
     },
@@ -129,7 +130,7 @@
         },
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369",
-          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root"
+          "evidence": "build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27; same bytes from a second clean build in a different build root; the bytes were owed to runtime-deps until 2026-11-24, when they were taken from usr/bin of the published v0.5.2 Citrate-Core-linux-aarch64.deb (b1ac4043..., its SHA256SUMS-linux line), checked equal to this pin, and uploaded under this name with a PROVENANCE record (nothing overwritten; download-back sha256 matches). The release.yml dry run 45444734676 on ubuntu-24.04-arm does not reproduce them (another build root and toolchain host), so these DGX bytes stay the pin"
         }
       }
     },
@@ -163,10 +164,11 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "0dddd440f800eaeac6907167772c148d869cb450ebb7110aa982afe713de8835",
           "evidence": "scripts/build-comms-daemon.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04.5, GCC 11.4, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-23; same bytes from a second build after removing the target dir; highest symbol GLIBC_2.34; bytes and PROVENANCE also uploaded to runtime-deps as comms-member-daemon-x86_64-unknown-linux-gnu-f6652a56b92f. Replaces the 9cd12c41 pin 96a63e58"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "runtime_deps_asset": "comms-member-daemon-aarch64-unknown-linux-gnu-f6652a56b92f",
+          "evidence": "scripts/build-comms-daemon.sh --target aarch64-unknown-linux-gnu --print-digest in the release.yml dry run 45444734676 (workflow_dispatch, label 0.5.9-arm64-dry, ref main = c3f10793), job 138625271636 on the GitHub-hosted runner ubuntu-24.04-arm (image ubuntu24-arm64/20261116.188: Ubuntu 24.04, glibc 2.39), rustc 1.96.0, build root $RUNNER_TEMP/component-build, 2026-11-24 (the first aarch64 build of this rev; the DGX is sold, docs/RELEASE_LINUX.md), --locked; highest symbol GLIBC_2.38; bytes taken from the run's artifact (dry-run-sidecars/), uploaded to runtime-deps 2026-11-24 under this new name with its PROVENANCE record (nothing overwritten), download-back sha256 matches the pin"
         }
-      },
-      "pending": {
-        "aarch64-unknown-linux-gnu": "not built for this release: owner 2026-11-23 (as 0.5.3 to 0.5.8): 0.5.9 ships macOS and Linux x86_64 only; with the DGX sold, an aarch64 comms-member-daemon pin at f6652a56 is first built by release.yml's release-linux-aarch64 dry run (docs/RELEASE_LINUX.md)"
       }
     },
     {
@@ -202,7 +204,7 @@
         },
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260",
-          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root"
+          "evidence": "v0.5.1 PROVENANCE-linux.txt (byte-identical to 0.5.0); reproduced byte for byte by build-component.sh --print-digest on the DGX spark-2e01 (Ubuntu 24.04, GCC 13.3, glibc 2.39), rustc 1.96.0, default build root ~/.cache/citrate-components, 2026-10-27, and again in a different build root; the bytes were owed to runtime-deps until 2026-11-24, when they were taken from usr/bin of the published v0.5.2 Citrate-Core-linux-aarch64.deb (b1ac4043..., its SHA256SUMS-linux line), checked equal to this pin, and uploaded under this name with a PROVENANCE record (nothing overwritten; download-back sha256 matches). The release.yml dry run 45444734676 on ubuntu-24.04-arm does not reproduce them (another build root and toolchain host), so these DGX bytes stay the pin"
         }
       }
     },
@@ -236,10 +238,11 @@
         "x86_64-unknown-linux-gnu": {
           "sha256": "5f4757d4910ffd680c4d01bd40edb23d346fad268adc050d5fe181d7c0b599a5",
           "evidence": "scripts/build-hermes.sh --print-digest on citrate-core-linux-build (Ubuntu 22.04, glibc 2.35), rustc 1.96.0, --locked, default build root /root/.cache/citrate-components, 2026-11-16; same bytes from a second build after removing the target dir. Replaces the f68d041c pin 9b3bac62"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "runtime_deps_asset": "hermes-aarch64-unknown-linux-gnu-aa12b10ee996",
+          "evidence": "scripts/build-hermes.sh --target aarch64-unknown-linux-gnu --print-digest in the release.yml dry run 45444734676 (workflow_dispatch, label 0.5.9-arm64-dry, ref main = c3f10793), job 138625271636 on the GitHub-hosted runner ubuntu-24.04-arm (image ubuntu24-arm64/20261116.188: Ubuntu 24.04, glibc 2.39), rustc 1.96.0, build root $RUNNER_TEMP/component-build, 2026-11-24 (the first aarch64 build of this rev; the DGX is sold, docs/RELEASE_LINUX.md), --locked, stripped on the runner (host == target); highest symbol GLIBC_2.39; bytes taken from the run's artifact (dry-run-sidecars/), uploaded to runtime-deps 2026-11-24 under this new name with its PROVENANCE record (nothing overwritten), download-back sha256 matches the pin"
         }
-      },
-      "pending": {
-        "aarch64-unknown-linux-gnu": "not built for this release: owner 2026-11-16 (as 0.5.3): 0.5.4 ships macOS and Linux x86_64 only; with the DGX sold, an aarch64 hermes pin is first built by release.yml's release-linux-aarch64 dry run (docs/RELEASE_LINUX.md)"
       }
     },
     {
@@ -318,7 +321,7 @@
         },
         "aarch64-unknown-linux-gnu": {
           "runtime_deps_asset": "llama-server-aarch64-unknown-linux-gnu-b9438",
-          "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt"
+          "evidence": "llama.cpp b9438 (d749821d); v0.5.1 PROVENANCE-linux.txt; the bytes were owed to runtime-deps until 2026-11-24, when they were taken from usr/bin of the published v0.5.2 Citrate-Core-linux-aarch64.deb (b1ac4043..., its SHA256SUMS-linux line), checked equal to this pin, and uploaded under this name with a PROVENANCE record (nothing overwritten; download-back sha256 matches). The release.yml dry run 45444734676 on ubuntu-24.04-arm does not reproduce them (another build root and toolchain host), so these DGX bytes stay the pin"
         }
       }
     }

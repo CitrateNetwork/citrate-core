@@ -20,7 +20,17 @@ starts it (src-tauri/src/node.rs), on the network a K6 profile names, and proves
                      block off the selected chain, even deep below the tip (chain#421 class, DGX G4
                      fed#331). A block either side cannot serve on its walk fails the rule, and so
                      does a network walk longer than --walk-limit. On a mismatch the walks go on
-                     down to the common ancestor and the first height above it is named;
+                     down to the common ancestor and the first height above it is named.
+                     Bounded mode on a network whose head is more than --walk-limit above the
+                     anchor (r1007 at 525k, 2026-11-24): the network walk cannot reach the anchor,
+                     so the anchor is checked from the node's side instead. The node's walk goes
+                     from its head to the profile genesis; the network must serve the node's
+                     anchor block by hash with the same height and selected parent (so it has the
+                     node's whole chain 0..anchor, each hash committing to its parent), and
+                     eth_getBlockByNumber must name the node's block at 0, every --every height
+                     and the anchor. Equal hashes cannot come from a by-number answer off the
+                     selected chain, so this can fail where `agrees` by walk would pass (chain#421
+                     class), never the reverse;
   fingerprint        with --expect-fingerprint: the node reports exactly that consensus fingerprint
                      in citrate_nodeIdentity (the build the network cut pinned; CORE-N6);
   not_wedged         a node that reports citrate_nodeIdentity.syncState is not `wedged` at the end
@@ -229,6 +239,44 @@ class Walk:
             self.hashes.add(ref[1])
             self.last = ref
         return self.last
+
+
+def anchored_prefix(local, remote, anchor, genesis, every):
+    """Bounded mode when the network walk cannot reach the anchor (see `agrees`): the node's
+    selected-parent chain from its head to block 0, its anchor block served by hash on the network
+    (same height and selected parent), and the network's by-number block at 0, every `every`
+    height and the anchor equal to the node's. Same shape as `ancestry`, plus `by_number`."""
+    lw = Walk(local, "node", head_block(local))
+    out = {"anchor": None, "mismatch": None, "common_ancestor": None, "chain": lw.chain, "by_number": []}
+    la = lw.down_to(anchor)
+    if la is not None:
+        lw.down_to(0)
+    walk = {"method": "node walk + anchor by hash", "local_blocks": lw.steps, "remote_blocks": 0,
+            "reaches_genesis": lw.last[0] == 0 and lw.last[1] == genesis, "error": lw.error}
+    out["walk"] = walk
+    if la is None or walk["error"]:
+        return out
+    if not walk["reaches_genesis"]:
+        walk["error"] = (f"the node's selected-parent walk ends at block {lw.last[1]} (height {lw.last[0]}), "
+                         f"not at the profile genesis {genesis}")
+        return out
+    b = rpc(remote, "eth_getBlockByHash", [la[1], False])
+    walk["remote_blocks"] = 1
+    if b is None:
+        out["mismatch"] = {"height": la[0], "local": la[1], "remote": block_hash(remote, la[0])}
+        return out
+    ref = block_ref(b, f"eth_getBlockByHash({la[1]})")
+    if ref != la:
+        walk["error"] = (f"the network serves the node's block {la[1]} as height {ref[0]} with selected parent "
+                         f"{ref[2]}; the node has height {la[0]}, selected parent {la[2]}")
+        return out
+    out["anchor"] = {"height": la[0], "hash": la[1]}
+    for h in sorted({0, la[0]} | set(range(every, la[0] + 1, every))):
+        net_hash = block_hash(remote, h)
+        out["by_number"].append({"height": h, "node": lw.chain.get(h), "network": net_hash})
+        if net_hash != lw.chain.get(h) and out["mismatch"] is None:
+            out["mismatch"] = {"height": h, "local": lw.chain.get(h), "remote": net_hash}
+    return out
 
 
 def ancestry(local, remote, anchor, genesis, limit):
@@ -762,7 +810,7 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
 
     # Agreement by selected-parent ancestry (see `agrees`): from both heads down to the anchor, the
     # last safe height, then the node's walk on to block 0. A pass covers every height 0..anchor.
-    checked, mismatches, walk, anchor, ancestor = [], [], None, None, None
+    checked, mismatches, walk, anchor, ancestor, by_number = [], [], None, None, None, None
     elapsed = time.time() - start
     if head is not None and remote_head is not None and proc.poll() is None:
         try:
@@ -772,8 +820,15 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
             if target_anchor < 0:
                 v.set("agrees", False, f"no height to compare: heads {head} and {remote_head} are within --lag {a.lag}")
             else:
-                log(f"agreement: walking selected parents down to height {target_anchor}")
-                res = ancestry(local, remote, target_anchor, prof["genesisHash"], a.walk_limit)
+                if mode == "bounded" and remote_head - target_anchor > a.walk_limit:
+                    log(f"agreement: network head {remote_head} is more than --walk-limit {a.walk_limit} above "
+                        f"height {target_anchor}; the node's walk to block 0, its block there by hash on the network, "
+                        f"and by number every {a.every}")
+                    res = anchored_prefix(local, remote, target_anchor, prof["genesisHash"], a.every)
+                    by_number = res["by_number"]
+                else:
+                    log(f"agreement: walking selected parents down to height {target_anchor}")
+                    res = ancestry(local, remote, target_anchor, prof["genesisHash"], a.walk_limit)
                 walk, anchor, ancestor = res["walk"], res["anchor"], res["common_ancestor"]
                 if res["mismatch"]:
                     mismatches.append(res["mismatch"])
@@ -790,6 +845,8 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
                      "every": a.every, "lag": a.lag, "anchor": anchor, "walk": walk,
                      "checked_heights": checked, "mismatches": mismatches, "common_ancestor": ancestor,
                      "max_peers": max_peers}
+    if by_number is not None:
+        v.doc["sync"]["by_number"] = by_number
     if mismatches:
         m = mismatches[0]
         where = (f"common ancestor at height {ancestor['height']}, first height that disagrees {m['height']}"
@@ -798,7 +855,13 @@ def sync_node(a, v, prof, remote, local, proc, endpoint_ok, data):
     elif walk and walk["error"]:
         v.set("agrees", False, walk["error"])
     elif v.rules["agrees"][0] != "FAIL":
-        if anchor:
+        if anchor and by_number is not None:
+            v.set("agrees", True, f"the network serves the node's block {anchor['hash']} at height {anchor['height']} "
+                                  f"(same selected parent), and names the node's block by number at heights "
+                                  f"{', '.join(str(x['height']) for x in by_number)}; the node's walk reaches the "
+                                  f"profile genesis ({walk['local_blocks']} node blocks walked; the network's head "
+                                  f"{remote_head} is beyond --walk-limit {a.walk_limit} of the anchor)")
+        elif anchor:
             v.set("agrees", True, f"selected-parent ancestry agrees at height {anchor['height']} (block {anchor['hash']}): "
                                   f"every height 0..{anchor['height']} is the same chain on the node and the network; "
                                   f"the node's walk reaches the profile genesis ({walk['local_blocks']} node and "

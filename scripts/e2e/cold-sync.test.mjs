@@ -428,6 +428,61 @@ describe("every height is covered by the selected-parent walk (review round 1, i
   });
 });
 
+// 2026-11-24 (0.5.9 Linux aarch64, r1007 at 525k blocks): in bounded mode the network's head can be
+// more than --walk-limit above the anchor, so its walk from the tip never reaches it. The anchor is
+// then checked from the node's side: its walk to block 0, its anchor block by hash on the network,
+// and the network's by-number block at every K-th height and the anchor.
+describe("bounded mode with the network head beyond --walk-limit (anchored prefix)", () => {
+  const anchored = (extra = {}) => {
+    remote.head = 5000;
+    return run({ blocks: "1000", every: "100", extra: ["--walk-limit", "200"], behaviour: { headMax: 1010, ...extra } });
+  };
+
+  it("passes: the network serves the node's anchor block, and every K-th height is the same block by number", async () => {
+    const r = await anchored();
+    expect(r.code, r.stderr).toBe(0);
+    expect(failed(r.v)).toEqual([]);
+    expect(r.v.sync.walk).toMatchObject({ method: "node walk + anchor by hash", reaches_genesis: true, error: null, remote_blocks: 1 });
+    expect(r.v.sync.anchor.height).toBe(1004);
+    const heights = r.v.sync.by_number.map((x) => x.height);
+    expect(heights).toEqual([0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1004]);
+    expect(r.v.sync.by_number.every((x) => x.node === x.network)).toBe(true);
+    expect(r.v.sync.checked_heights).toEqual(heights);
+    expect(r.v.rules.find((x) => x.rule === "agrees").detail).toMatch(/serves the node's block 0x[0-9a-f]{64} at height 1004/);
+  });
+
+  it("fails a node on a fork: the network does not have its anchor block", async () => {
+    const r = await anchored({ forkAt: 450 });
+    expect(r.code).toBe(1);
+    expect(failed(r.v)).toEqual(["agrees"]);
+    expect(r.v.sync.mismatches[0].height).toBe(1004);
+  });
+
+  it("fails when a sampled height names another block by number (strict: never a pass on a by-number doubt)", async () => {
+    remote.decoyEvery = 300;
+    const r = await anchored();
+    expect(r.code).toBe(1);
+    expect(failed(r.v)).toEqual(["agrees"]);
+    expect(r.v.sync.mismatches[0].height).toBe(300);
+  });
+
+  it("fails a node whose walk does not reach the profile genesis", async () => {
+    const r = await anchored({ missing: [1, 500] });
+    expect(r.code).toBe(1);
+    expect(failed(r.v)).toEqual(["agrees"]);
+    expect(r.v.sync.walk.error).toMatch(/the node's selected-parent walk stopped at height \d+/);
+  });
+
+  it("walks from the tip as before when the network head is within --walk-limit", async () => {
+    remote.head = 1100;
+    const r = await run({ blocks: "1000", every: "100", extra: ["--walk-limit", "200"], behaviour: { headMax: 1010 } });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.v.sync.walk.method).toBeUndefined();
+    expect(r.v.sync.by_number).toBeUndefined();
+    expect(r.v.sync.walk.remote_blocks).toBeGreaterThan(0);
+  });
+});
+
 describe("every error path writes a verdict (review round 1, item 2)", () => {
   it("accepts a relative --node-bin", async () => {
     const { bin } = node();
