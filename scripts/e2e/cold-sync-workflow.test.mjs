@@ -171,7 +171,7 @@ describe("Paths, Authenticate, Install the node's build deps", () => {
 });
 
 describe("Build the pinned node sidecar", () => {
-  const STEP = "Build the pinned node sidecar (scripts/build-sidecar.sh)";
+  const STEP = "Build the pinned node sidecar (scripts/build-sidecar.sh), or stage its pinned asset";
   // A checkout with the real component-pins.mjs and components.json, a build-sidecar.sh that prints
   // `line`, and a git that records the clone.
   function build(line) {
@@ -208,6 +208,66 @@ describe("Build the pinned node sidecar", () => {
     const r = build(`citrate-node x86_64-unknown-linux-gnu ${"cd".repeat(32)} ${path.join(dir, "absent")}`);
     expect(r.status).toBe(1);
     expect(r.stdout).toMatch(/::error::unexpected build output/);
+  });
+});
+
+// 2026-11-24 (0.5.9 Linux aarch64): `node_asset` runs the pinned runtime-deps bytes instead of a
+// build. The name is checked before anything is fetched, and the bytes against their pin before
+// they run (the real verify-runtime-deps.sh).
+describe("Stage the pinned node asset (node_asset)", () => {
+  const STEP = "Build the pinned node sidecar (scripts/build-sidecar.sh), or stage its pinned asset";
+  const A64 = "citrate-aarch64-unknown-linux-gnu-68434069de70";
+  // A checkout with the real verify script and component-pins.mjs, a runtime-deps.sha256 pinning
+  // `asset` to the digest of "node-bytes" (or `pinned`), and a gh that "downloads" `bytes`.
+  function stage(env, { bytes = "node-bytes", pinned } = {}) {
+    const root = path.join(dir, "repo");
+    fs.mkdirSync(path.join(root, "scripts", "ci"), { recursive: true });
+    fs.mkdirSync(path.join(root, "release"), { recursive: true });
+    fs.mkdirSync(path.join(root, "src-tauri"), { recursive: true });
+    fs.copyFileSync(path.join(repo, "scripts", "ci", "verify-runtime-deps.sh"), path.join(root, "scripts", "ci", "verify-runtime-deps.sh"));
+    fs.chmodSync(path.join(root, "scripts", "ci", "verify-runtime-deps.sh"), 0o755);
+    fs.copyFileSync(path.join(repo, "scripts", "component-pins.mjs"), path.join(root, "scripts", "component-pins.mjs"));
+    fs.copyFileSync(path.join(repo, "release", "components.json"), path.join(root, "release", "components.json"));
+    const sha = (t) => spawnSync("sh", ["-c", "printf %s \"$1\" | shasum -a 256 | cut -d' ' -f1", "sh", t], { encoding: "utf8" }).stdout.trim();
+    const asset = env.IN_NODE_ASSET;
+    fs.writeFileSync(path.join(root, "src-tauri", "runtime-deps.sha256"),
+      `${"0".repeat(64)}  knowledge-corpus.tar.gz\n${pinned ?? sha("node-bytes")}  ${asset}\n`);
+    const bin = path.join(dir, "gh-bin");
+    fs.mkdirSync(bin);
+    // gh release download runtime-deps -p <asset> -D <dir> --clobber
+    fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${dir}/gh-log"\nprintf %s '${bytes}' > "$7/$5"\n`, { mode: 0o755 });
+    if (!spawnSync("sh", ["-c", "command -v sha256sum"]).stdout.length) {
+      fs.writeFileSync(path.join(bin, "sha256sum"), `#!/bin/sh\nexec shasum -a 256 "$@"\n`, { mode: 0o755 });
+    }
+    return { r: runStep(STEP, { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: path.join(dir, "rt"), ...outputs(), ...env }, root), digest: sha(bytes) };
+  }
+  const ghOutput = () => Object.fromEntries(fs.readFileSync(path.join(dir, "gh-output"), "utf8").split("\n").filter(Boolean).map((l) => l.split(/=(.*)/s).slice(0, 2)));
+
+  it("downloads the named asset, checks it against its pin, and outputs it (no clone, no build)", () => {
+    const { r, digest } = stage({ IN_ARCH: "aarch64", IN_NODE_ASSET: A64 });
+    expect(r.status, r.stderr + r.stdout).toBe(0);
+    expect(fs.readFileSync(path.join(dir, "gh-log"), "utf8")).toMatch(new RegExp(`^release download runtime-deps -p ${A64} -D \\S+ --clobber$`, "m"));
+    expect(ghOutput()).toEqual({ bin: path.join(dir, "rt", "node-asset", A64), sha256: digest });
+    expect(fs.existsSync(path.join(dir, "git-log"))).toBe(false);
+    expect(fs.readFileSync(path.join(dir, "summary"), "utf8")).toContain(`\`${A64}\`, aarch64-unknown-linux-gnu`);
+  });
+
+  it("refuses bytes that are not the pinned ones", () => {
+    const { r } = stage({ IN_ARCH: "aarch64", IN_NODE_ASSET: A64 }, { bytes: "other-bytes" });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toMatch(/::error::runtime-deps digest mismatch/);
+    expect(fs.existsSync(path.join(dir, "gh-output"))).toBe(false);
+  });
+
+  it.each([
+    ["another arch's asset", "x86_64", A64],
+    ["a name with shell text", "aarch64", `${A64}; echo pwned`],
+    ["a short rev", "aarch64", "citrate-aarch64-unknown-linux-gnu-684340"],
+  ])("refuses %s before fetching anything", (_, arch, name) => {
+    const { r } = stage({ IN_ARCH: arch, IN_NODE_ASSET: name });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/::error::node_asset must be citrate-/);
+    expect(fs.existsSync(path.join(dir, "gh-log"))).toBe(false);
   });
 });
 

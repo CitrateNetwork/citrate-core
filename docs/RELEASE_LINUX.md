@@ -321,25 +321,22 @@ reviewed PR.
    files at the release, but before it they are early, so run the ceremony promptly after the tag. The release step copies the files to the CDN. It merges the fragment
    with the macOS and x86_64 ones (`updater-feed.mjs merge`) into the one `latest.json`.
 
-**Owed before the first aarch64 release run.** Only `citrate-aarch64-unknown-linux-gnu-56cc2bc80439`
-is on `runtime-deps` (its sha256 was checked against the pin by download on 2026-11-08). The other
-six assets must be uploaded under the pinned names, or the job fails closed at the download. Their
-bytes are in the published v0.5.2 `Citrate-Core-linux-aarch64.deb`: each `usr/bin/<bin>` equals its
-pin, re-checked 2026-11-08. A dry run's rebuild that reproduces a pin also works.
+**The aarch64 runtime-deps assets (0.5.9, 2026-11-24).** All seven pinned aarch64 sidecars are on
+`runtime-deps`, each with a `.PROVENANCE.txt` record pinned beside it, uploaded under new names and
+checked by download. `citrate` (68434069), `comms-member-daemon` (f6652a56) and `hermes` (aa12b10e) are
+the first aarch64 builds of their revs, from the dry run below (run 45444734676). `node-agent`,
+`mem-mcp`, `cluster-daemon` and `llama-server` keep their DGX pins: the runner's rebuilds of them do
+not reproduce those bytes, so the uploaded bytes are the ones in the published v0.5.2
+`Citrate-Core-linux-aarch64.deb`, each equal to its pin. To re-check one:
 
 ```bash
-gh release download v0.5.2 -R CitrateNetwork/citrate-core -p Citrate-Core-linux-aarch64.deb -p SHA256SUMS-linux
-grep aarch64.deb SHA256SUMS-linux | sha256sum -c
-dpkg-deb -x Citrate-Core-linux-aarch64.deb deb
-mkdir rd
-for f in node-agent-aarch64-unknown-linux-gnu-1d8cb8e4e24a mem-mcp-aarch64-unknown-linux-gnu-5aeda3172369 \
-  comms-member-daemon-aarch64-unknown-linux-gnu-9cd12c41ae1c cluster-daemon-aarch64-unknown-linux-gnu-755cf2172260 \
-  hermes-aarch64-unknown-linux-gnu-05243c72bd52; do cp "deb/usr/bin/${f%-aarch64-unknown-linux-gnu-*}" "rd/$f"; done
-cp deb/usr/bin/llama-server rd/llama-server-aarch64-unknown-linux-gnu-b9438
-grep -E '  (node-agent|mem-mcp|comms-member-daemon|cluster-daemon|hermes|llama-server)-aarch64-unknown-linux-gnu-' \
-  src-tauri/runtime-deps.sha256 | (cd rd && sha256sum -c --strict)
-gh release upload runtime-deps rd/* -R CitrateNetwork/citrate-core
+gh release download runtime-deps -R CitrateNetwork/citrate-core -p '<asset>' -p '<asset>.PROVENANCE.txt' -D rd
+grep -E '  <asset>(\.PROVENANCE\.txt)?$' src-tauri/runtime-deps.sha256 | (cd rd && sha256sum -c --strict)
 ```
+
+The exact node bytes are run on the arm64 runner with `cold-sync.yml` (`arch: aarch64`,
+`node_asset: citrate-aarch64-unknown-linux-gnu-<rev12>`): it checks them against their pin, runs them
+on the K6 profile, and requires the cut's consensus fingerprint.
 
 **Dry run** (`dry_run: true`): the job builds the six sidecars at their pinned revs and llama.cpp
 b9438 on the runner. The summary compares each digest with its pin, and the bytes are in the
@@ -347,6 +344,20 @@ artifact (`dry-run-sidecars/`, kept 2 days). Then it bundles unsigned, with no k
 pin moves (a new node rev), this is how the first aarch64 build of that rev is made. Review it, pin
 it, then upload it. If a component's aarch64 pin is owed, list it under `pending`; the check then
 does not demand it of release.yml, and the Linux bundle build fails closed until it is pinned.
+
+**Dry run of the pinned bytes** (`dry_run: true`, `dry_run_stage: pinned`, 2026-11-24): the aarch64 job
+stages the pinned runtime-deps sidecars, checked against `src-tauri/runtime-deps.sha256`, exactly as a
+release run does, and bundles them unsigned (the macOS job ignores the option). A rebuilt sidecar
+that does not reproduce its pin, and the node, which never does, would otherwise put other bytes in
+the packages. This is how the 0.5.9 aarch64 packages are made: the release has no GitHub release and
+no tag, so the release Mac signs their update files with the updater key, as it does for Linux x86_64
+(`scripts/release-local.sh` step 4), and the release ceremony adds them to the feed. The 0.5.9 packages
+came from run 45475840309 (artifact `citrate-core-linux-aarch64-0.5.9-arm64-pinned-checked`, AppImage
+`8d7e5bb3...`, .deb `b0927956...`), whose `check-bundle staged`, `deb` and `appimage` steps passed. Its
+.deb holds every pinned sidecar byte for byte, and every file under `usr/lib/Citrate Core` equals the
+0.5.9 x86_64 .deb's except `llama/llama-server` (the aarch64 build). Dispatch such a run from a
+branch other than a pull request's head: the merge gate counts every check run on that commit, so a
+cancelled macOS dry-run job fails it.
 
 ## Deferred (owner / infra gated)
 
