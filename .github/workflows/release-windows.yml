@@ -74,9 +74,9 @@ env:
   # Bring-up only: a run id here makes the bundle take the sidecar and llama artifacts of that
   # earlier run of this workflow (same revs, same sidecar job) instead of rebuilding them, and the
   # build record says so. Empty for any run whose bytes are pinned or distributed.
-  REUSE_SIDECARS_RUN: "45457441316"
+  REUSE_SIDECARS_RUN: ""
   # Bring-up only, the same way: smoke-test the installer an earlier run built (no bundle job).
-  REUSE_BUNDLE_RUN: "45466078872"
+  REUSE_BUNDLE_RUN: ""
 
 jobs:
   # Whether this run builds the sidecars or reuses an earlier run's (REUSE_SIDECARS_RUN; job-level

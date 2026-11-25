@@ -103,7 +103,13 @@
       "source": {
         "repo": "CitrateNetwork/citrate-memories",
         "checkout": "citrate-memories",
-        "rev": "5aeda31723693edf577f0bad238f691586ccde39"
+        "rev": "5aeda31723693edf577f0bad238f691586ccde39",
+        "target_revs": {
+          "x86_64-pc-windows-msvc": {
+            "rev": "451857e035dd624ffe322f71192e96cbe4630e14",
+            "why": "5aeda317 binds the bare basename pipe (memdag.sock) on Windows while this app connects to the per-install name (PBA-L7b-004), so Memory IPC never connects there (proven at run time: release-windows run 45475487753). This rev is citrate-memories main after #34 (candle 0.11.1 and tokenizers 0.23, which clear the zip advisories RUSTSEC-2026-0367/0368/0369; bge embeddings equal 0.10.2's within 1e-5, golden test) and #36 (the per-install pipe name; Unix unchanged). It descends from 5aeda317, so the store-key-file requirement holds. macOS and Linux keep 5aeda317 for 0.5.9."
+          }
+        }
       },
       "requires": [
         {
