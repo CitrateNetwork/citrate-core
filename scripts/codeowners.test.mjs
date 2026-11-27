@@ -8,7 +8,8 @@
 // being the last (winning) CODEOWNERS rule, or when lane-guard puts a branch name into a shell line.
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generate, parseMap, toCodeownersPattern } from "./gen-codeowners.mjs";
@@ -49,6 +50,38 @@ describe("CODEOWNERS is generated from the v60 ownership map", () => {
     const out = execFileSync("bash", ["scripts/cx-ownership-check.sh", "--selftest"], { cwd: repo, encoding: "utf8" });
     expect(out).toContain("SELFTEST: PASS");
     expect(out).not.toContain("SELFTEST FAIL");
+  });
+
+  it("a lane that moves another lane's file out is still caught (renames list both paths)", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "lane-guard-"));
+    try {
+      mkdirSync(path.join(tmp, "scripts"));
+      mkdirSync(path.join(tmp, ".agentile"));
+      mkdirSync(path.join(tmp, "src/shell"), { recursive: true });
+      copyFileSync(path.join(repo, "scripts/cx-ownership-check.sh"), path.join(tmp, "scripts/cx-ownership-check.sh"));
+      copyFileSync(path.join(repo, ".agentile/v60-ownership.map"), path.join(tmp, ".agentile/v60-ownership.map"));
+      writeFileSync(path.join(tmp, "src/shell/store.ts"), "export const store = 1;\n");
+      const git = (...a) =>
+        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], { cwd: tmp, encoding: "utf8" });
+      git("init", "-q");
+      git("add", "-A");
+      git("commit", "-q", "-m", "base");
+      mkdirSync(path.join(tmp, "src/models"));
+      git("mv", "src/shell/store.ts", "src/models/store.ts");
+      git("commit", "-q", "-m", "l5 moves the L0 hotspot into its own directory");
+      let failed = false;
+      let stderr = "";
+      try {
+        execFileSync("bash", ["scripts/cx-ownership-check.sh", "--map", "v60", "l5", "HEAD~1"], { cwd: tmp, encoding: "utf8", stdio: "pipe" });
+      } catch (e) {
+        failed = true;
+        stderr = String(e.stderr);
+      }
+      expect(failed).toBe(true);
+      expect(stderr).toContain("src/shell/store.ts (owner: l0)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
