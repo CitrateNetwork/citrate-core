@@ -456,6 +456,46 @@ describe("L8 characterization registry (L8-WP01)", () => {
     expect(countTests("cargo", after)).toBe(1);
     expect(protectedDeclares("cargo", after, "guard")).toBe(false);
   });
+  it("cargo_checks_reject_a_test_in_a_cfgd_out_module", () => {
+    // A cfg on an enclosing module turns off every test in it while each fn keeps its own #[test]
+    // block, so no pinned or protected file carries a cfg other than cfg(test), an inner
+    // attribute, or a mod other than the suite's own opening module, wherever it sits.
+    const inner = "    #[test]\n    fn guard() {}\n";
+    const lost = [
+      `#[cfg(any())]\nmod off {\n${inner}}\n`,
+      `#[cfg(not(test))]\npub(crate) mod off {\n${inner}}\n`,
+      `fn x() {} #[cfg(any())] mod off {\n${inner}}\n`,
+      `#[cfg(test)] #[cfg(any())] mod off {\n${inner}}\n`,
+      `#[cfg(\n    any()\n)]\nmod off {\n${inner}}\n`,
+      `mod off {\n    #![cfg(any())]\n${inner}}\n`,
+      `#![cfg(any())]\n${inner}`,
+      `mod plain {\n${inner}}\n`,
+    ];
+    for (const rs of lost) {
+      // The hole: the fn's own attribute block still reads as a live test.
+      expect(declaredCargo(rs), rs).toEqual(["guard"]);
+      expect(disabledCargo(rs), rs).not.toEqual([]);
+    }
+    // The suite file's own opening module is the one mod allowed, and only under its own name.
+    const suite = `mod lq_g {\n${inner}}\n`;
+    expect(disabledCargo(suite, "lq_g")).toEqual([]);
+    expect(disabledCargo(suite)).toEqual(["mod lq_g"]);
+    expect(disabledCargo(`${suite}mod more {\n${inner}}\n`, "lq_g")).toEqual(["mod more"]);
+    // cfg(test), a derive, and text inside a string, a char or a comment stay live.
+    const live = [
+      "#[cfg(test)]",
+      "#[test]",
+      "fn guard() {}",
+      "#[derive(Default)]",
+      "struct S;",
+      'const A: &str = "#[cfg(test)] mod guard; #[cfg(any())]";',
+      'const B: &str = r#"mod off { "#;',
+      "const C: char = '\"';",
+      "fn d() {} // a trailing comment: mod off, #[cfg(any())]",
+    ].join("\n");
+    expect(disabledCargo(live)).toEqual([]);
+  });
+
   it("host_checks_reject_a_cfgd_out_test_module", () => {
     // A cfg'd-out host module or lib.rs line drops every test the file declares, names intact.
     const inc = 'include!("g_tests.rs");';

@@ -36,6 +36,7 @@
         "payouts_gate_passes_frl_commit_and_finalize",
         "collector_safety_tests_stay_declared",
         "collector_check_rejects_an_ignored_or_cfgd_out_test",
+        "collector_check_rejects_a_test_in_a_cfgd_out_module",
         "host_check_rejects_a_cfgd_out_test_module"
       ],
       "supersededBy": ["L8-WP12", "L8-WP17"]
@@ -58,6 +59,7 @@
         "no_protected_or_l8_vitest_suite_is_skipped",
         "declaration_checks_ignore_commented_out_tests",
         "cargo_checks_reject_an_ignored_or_cfgd_out_test",
+        "cargo_checks_reject_a_test_in_a_cfgd_out_module",
         "host_checks_reject_a_cfgd_out_test_module",
         "vitest_checks_reject_a_skipped_or_focused_describe"
       ]

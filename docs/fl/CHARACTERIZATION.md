@@ -45,6 +45,7 @@ File: `src-tauri/src/fl_characterization_tests.rs`, compiled into `fl_payouts::t
 | `payouts_gate_passes_frl_commit_and_finalize` | FRL `commitRound` and `finalize` are not money classes: the gate passes them with the flag off or on, and reads no code; an FRL challenge is still refused while dark | L8-WP17 | (lane invariant: coordinator rounds commit to FRL while payouts are dark) |
 | `collector_safety_tests_stay_declared` | the eight collector safety tests below stay declared and live in `src-tauri/src/fl_collect_tests.rs`: under `#[test]`, with no `#[ignore]`, `cfg_attr` or `cfg` other than `cfg(test)` anywhere in the attribute block, and that file stays compiled in: `fl_collect.rs` includes it, once and uncommented, in its column-0 `#[cfg(test)] mod tests { ... }` with no other attribute on that module and no inner `#![cfg...]`, and `lib.rs` declares `mod fl_collect;` at column 0 with no attribute | (lane invariant) | none: the collector rules 1-8 (`fl_collect.rs` header) do not change in 0.6.0 |
 | `collector_check_rejects_an_ignored_or_cfgd_out_test` | the check above fails a safety test that is `#[ignore]`d above or below `#[test]`, on the same line, behind a trailing comment, cfg'd out or behind a `cfg_attr`, and passes `#[should_panic]` and `cfg(test)` | (lane invariant) | none |
+| `collector_check_rejects_a_test_in_a_cfgd_out_module` | the check above fails a safety test inside a module that is cfg'd out (`cfg(any())`, `cfg(not(test))`, a wrapped or same-line `cfg`, one after `cfg(test)`), behind an inner `#![cfg(...)]`, or inside any `mod` at all, and passes a `derive` and `cfg(test)` | (lane invariant) | none |
 | `host_check_rejects_a_cfgd_out_test_module` | the host check above fails a test module under `cfg(any())` or `cfg(not(test))`, an attribute stacked above or below `#[cfg(test)]`, a commented or cfg'd include, an inner `#![cfg(...)]`, a block comment, a missing or doubled include; and the `lib.rs` check fails a cfg'd, commented, nested or missing `mod` line and a crate-level `#![cfg(...)]` | (lane invariant) | none |
 
 This suite cannot report its own host chain cfg'd out (`fl_payouts.rs`'s test module, or `mod
@@ -60,7 +61,8 @@ File: `src/fl/flRegistry.characterization.test.ts`. Tests: `registry_lists_every
 `protected_cargo_files_are_compiled_in`, `no_protected_or_l8_vitest_suite_is_skipped`,
 `no_pinned_or_protected_cargo_test_is_disabled`,
 `characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`,
-`cargo_checks_reject_an_ignored_or_cfgd_out_test`, `host_checks_reject_a_cfgd_out_test_module`,
+`cargo_checks_reject_an_ignored_or_cfgd_out_test`,
+`cargo_checks_reject_a_test_in_a_cfgd_out_module`, `host_checks_reject_a_cfgd_out_test_module`,
 `vitest_checks_reject_a_skipped_or_focused_describe`.
 
 A test that no longer runs counts as lost, at every level it can be turned off:

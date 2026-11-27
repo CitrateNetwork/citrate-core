@@ -703,6 +703,29 @@ mod lq_l8_fl {
     }
 
     #[test]
+    fn collector_check_rejects_a_test_in_a_cfgd_out_module() {
+        // A cfg on an enclosing module turns off every test in it while each fn keeps its own
+        // #[test] block, so the collector file carries no cfg but cfg(test), no inner attribute
+        // and no mod, wherever it sits.
+        let inner = "    #[test]\n    fn t() {\n    }\n";
+        let lost = [
+            format!("#[cfg(any())]\nmod off {{\n{inner}}}\n"),
+            format!("#[cfg(not(test))]\npub(crate) mod off {{\n{inner}}}\n"),
+            format!("fn x() {{}} #[cfg(any())] mod off {{\n{inner}}}\n"),
+            format!("#[cfg(test)] #[cfg(any())] mod off {{\n{inner}}}\n"),
+            format!("#[cfg(\n    any()\n)]\nmod off {{\n{inner}}}\n"),
+            format!("mod off {{\n    #![cfg(any())]\n{inner}}}\n"),
+            format!("#![cfg(any())]\n{inner}"),
+            format!("mod plain {{\n{inner}}}\n"),
+        ];
+        for case in &lost {
+            assert!(live_test(case, "t").is_err(), "{case}");
+        }
+        let live = "#[derive(Default)]\nstruct S;\n\n#[cfg(test)]\n#[test]\nfn t() {\n}\n";
+        assert_eq!(live_test(live, "t"), Ok(()));
+    }
+
+    #[test]
     fn host_check_rejects_a_cfgd_out_test_module() {
         // A cfg'd-out host test module, or lib.rs line, drops every test the file declares while
         // each name stays in place.
@@ -724,6 +747,7 @@ mod lq_l8_fl {
             good.replace("#[cfg(test)]", "#[cfg(not(test))]"),
             good.replace("#[cfg(test)]", "#[cfg(any())]\n#[cfg(test)]"),
             good.replace("#[cfg(test)]", "#[cfg(test)]\n#[cfg(any())]"),
+            good.replace("#[cfg(test)]", "#[cfg(any())] // for now\n#[cfg(test)]"),
             good.replace(inc, "    // include!(\"g_tests.rs\");"),
             good.replace(inc, &format!("    #[cfg(any())]\n{inc}")),
             good.replace("mod tests {\n", "mod tests {\n    #![cfg(any())]\n"),
