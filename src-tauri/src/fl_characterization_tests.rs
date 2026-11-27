@@ -465,7 +465,7 @@ mod lq_l8_fl {
 
     /// True where the item before an attribute block ends (or the source starts).
     fn item_ends(code: &str) -> bool {
-        code.is_empty() || code.ends_with(|c: char| matches!(c, '}' | ';' | '{'))
+        code.is_empty() || code.ends_with(['}', ';', '{'])
     }
 
     /// The attributes directly above byte `at` of `code`, nearest first, whitespace removed. Any
