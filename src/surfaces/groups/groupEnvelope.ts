@@ -185,13 +185,13 @@ export function threadModel(messages: GroupMessage[]): ThreadItem[] {
   const byRef = new Map<string, ThreadItem>();
   for (const m of messages) {
     const body = m.body;
-    if (isControlMessage(body) || body.startsWith("\u0001")) continue;
+    if (isControlMessage(body)) continue;
     const ref = messageRef(m.sender, body);
     const reply = decodeReply(body);
     if (reply) {
       const parent = byRef.get(reply.to);
       if (parent) {
-        parent.replies.push({ ref, sender: m.sender, text: reply.text });
+        parent.replies.unshift({ ref, sender: m.sender, text: reply.text });
         continue;
       }
       const item: ThreadItem = { kind: "message", ref, sender: m.sender, text: reply.text, ts: m.ts, replies: [] };

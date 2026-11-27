@@ -1332,3 +1332,8 @@ mod tests {
         let _ = std::fs::remove_file(p);
     }
 }
+
+// 0.6.0 L4-WP01: characterization of resolve and ingest (test-only; see the file).
+#[cfg(test)]
+#[path = "social_char_tests.rs"]
+mod char_tests;
