@@ -637,8 +637,8 @@ fn the_revoke_command_takes_a_confirmation_id_not_a_device() {
     let sig = &src[i..i + src[i..].find(')').expect("end")];
     assert!(sig.contains("confirm_id: String"), "{sig}");
     assert!(!sig.contains("device: String"), "{sig}");
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     assert!(lib.contains("device_link::device_link_revoke_prepare"));
     assert!(acl.contains("\"device_link_revoke_prepare\""));
 }

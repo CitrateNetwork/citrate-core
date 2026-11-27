@@ -302,7 +302,7 @@ fn report_carries_all_three_profiles_and_the_override() {
 
 #[test]
 fn both_commands_are_registered_in_the_invoke_handler() {
-    let src = include_str!("lib.rs");
+    let src = crate::commands::registry_source();
     for cmd in ["tier::tier_recommend,", "tier::tier_set_override,"] {
         assert!(src.contains(cmd), "not registered: {cmd}");
     }

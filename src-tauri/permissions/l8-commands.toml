@@ -1,0 +1,59 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L8, train together.
+#
+# Only L8 edits this file. It lists exactly the commands `src/commands/l8.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l8-commands"
+description = "Lane L8 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "fl_market_offers",
+  "fl_overview",
+  "fl_coordinator_set",
+  "fl_round_plan",
+  "fl_round_plan_lookup",
+  "fl_round_start",
+  "fl_round_consent_revoke",
+  "fl_adapter_gate",
+  "fl_adapter_load",
+  "fl_adapter_unload",
+  "trajectories_settings_get",
+  "trajectories_settings_set",
+  "trajectories_consent_revoke",
+  "trajectories_dataset_build",
+  "fl_dataset_list",
+  "fl_dataset_manifest",
+  "fl_dataset_create",
+  "fl_dataset_sample",
+  "fl_dataset_clean_preview",
+  "fl_dataset_clean_apply",
+  "fl_dataset_consent_list",
+  "fl_dataset_consent_withdraw",
+  "fl_dataset_delete",
+  "fl_dataset_publish_preview",
+  "fl_dataset_publish",
+  "fl_dataset_published",
+  "trajectories_datasets_list",
+  "fl_work_terms_get",
+  "fl_work_terms_save",
+  "fl_work_envelope_get",
+  "fl_work_envelope_approve",
+  "fl_work_envelope_off",
+  "fl_requirements_publish",
+  "fl_envelope_status",
+  "fl_envelope_check",
+  "fl_payouts_status",
+  "training_status",
+  "training_reward",
+  "fl_dataset_pii_scan",
+  "fl_dataset_license_check",
+  "fl_dataset_publish_check",
+  "fl_collect_policy",
+  "fl_collect_source_check",
+  "fl_collect_plan",
+  "fl_collect_plan_decide",
+  "fl_collect_run",
+]

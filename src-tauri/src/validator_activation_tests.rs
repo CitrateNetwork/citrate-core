@@ -374,7 +374,7 @@ fn a_registry_status_outside_the_enum_is_not_reported() {
 
 #[test]
 fn the_command_is_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"validator_activation_status\""));
     assert!(acl.contains("\"validator_activation_forget\""), "Forget writes the durable record");
 }

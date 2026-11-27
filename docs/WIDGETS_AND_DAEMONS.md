@@ -145,7 +145,7 @@ budget. Rust (`src-tauri/src/daemons.rs`) owns every schedule, budget and ledger
 `daemons_list`, `daemon_save`, `daemon_set_paused`, `daemons_set_all_paused`, `daemon_delete`,
 `daemons_claim_due`, `daemons_finish_run`; `widgets_list`, `widget_save`, `widget_delete`,
 `widget_source`; `hermes_session_open_unattended`, `hermes_session_close`. All are async (off the
-main thread) and allowed for the main window only (`permissions/main-window.toml`).
+main thread) and allowed for the main window only (the lane ACLs, `permissions/l<N>-commands.toml`).
 
 ## Proof
 

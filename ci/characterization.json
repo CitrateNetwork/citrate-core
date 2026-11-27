@@ -10,7 +10,7 @@
       "runner": "cargo",
       "package": "citrate-core",
       "filter": "seams_tests::",
-      "covers": ["src-tauri/src/lib.rs", "src-tauri/permissions/main-window.toml"],
+      "covers": ["src-tauri/src/lib.rs", "src-tauri/src/commands/**", "src-tauri/permissions/l*-commands.toml", "src-tauri/capabilities/default.json"],
       "fixtures": ["src-tauri/tests/fixtures/seams/commands.a826e441.txt", "src-tauri/tests/fixtures/seams/lib-mods.a826e441.txt"]
     },
     {

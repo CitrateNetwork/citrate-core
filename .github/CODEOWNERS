@@ -416,7 +416,6 @@
 /src-tauri/src/commands/mod.rs @CitrateNetwork/maintainers
 /src-tauri/src/lanes/mod.rs @CitrateNetwork/maintainers
 /src-tauri/capabilities/default.json @CitrateNetwork/maintainers
-/src-tauri/permissions/main-window.toml @CitrateNetwork/maintainers
 /src-tauri/Cargo.toml @CitrateNetwork/maintainers
 /Cargo.toml @CitrateNetwork/maintainers
 /Cargo.lock @CitrateNetwork/maintainers

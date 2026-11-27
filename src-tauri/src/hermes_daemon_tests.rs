@@ -144,8 +144,8 @@ fn a_transport_without_delete_fails_honestly() {
 
 #[test]
 fn both_daemon_session_commands_are_async_registered_and_in_the_main_window_acl() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     let src = include_str!("hermes.rs");
     for cmd in ["hermes_session_open_unattended", "hermes_session_close"] {
         assert!(lib.contains(&format!("hermes::{cmd},")), "{cmd} registered");

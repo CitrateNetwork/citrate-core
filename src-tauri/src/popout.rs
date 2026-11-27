@@ -9,8 +9,8 @@
 //!   others are refused with an honest "not built yet".
 //! - **Only the main window opens them** ([`check_open_request`]).
 //! - **Least privilege.** Pop-out windows are covered by `capabilities/popout.json`, which grants
-//!   the bridge events and nothing else: no app commands (the app-command allowlist in
-//!   `permissions/main-window.toml` goes to the main window only), no shell, no fs, no opener.
+//!   the bridge events and nothing else: no app commands (the per-lane app-command allowlists in
+//!   `permissions/l<N>-commands.toml` go to the main window only), no shell, no fs, no opener.
 //!   They may only show the app's own pages ([`navigation_allowed`]).
 //! - **One per kind.** Opening a kind that is already open focuses it.
 //! - **Size and position persist** per kind (`popouts.json` in the app config dir), and a saved
@@ -30,10 +30,6 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 pub(crate) const MAIN_LABEL: &str = "main";
 /// Every pop-out label is this prefix plus the kind.
 pub(crate) const LABEL_PREFIX: &str = "popout-";
-/// The app permission (permissions/main-window.toml) that allows the app's commands. Only the
-/// main window's capability holds it (enforced by the capability tests).
-#[cfg(test)]
-pub(crate) const MAIN_WINDOW_COMMANDS: &str = "main-window-commands";
 /// No pop-out is ever larger than this (logical px) in either dimension.
 pub(crate) const MAX_DIMENSION: f64 = 8192.0;
 /// A saved coordinate further out than this (logical px) is treated as corrupt.

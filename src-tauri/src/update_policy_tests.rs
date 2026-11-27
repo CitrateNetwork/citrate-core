@@ -310,8 +310,8 @@ fn a_policy_dated_more_than_a_day_ahead_of_the_clock_is_refused() {
 
 #[test]
 fn update_policy_commands_are_registered_and_allowed_for_the_main_window() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for cmd in ["update_policy_apply", "update_policy_status", "update_policy_refresh"] {
         assert!(lib.contains(&format!("update_policy::{cmd}")), "{cmd} in generate_handler!");
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");

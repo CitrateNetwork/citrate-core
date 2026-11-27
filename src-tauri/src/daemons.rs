@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-/// The commands this module registers (kept in step with lib.rs and main-window.toml by a test).
+/// The commands this module registers (kept in step with its lane list and ACL by a test).
 #[cfg(test)]
 pub(crate) const COMMANDS: [&str; 8] = [
     "daemons_list",

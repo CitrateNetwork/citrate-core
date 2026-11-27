@@ -840,8 +840,8 @@ fn no_capability_names_the_challenge_window() {
 
 #[test]
 fn the_commands_are_registered_and_allowed_for_the_main_window_only() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for cmd in [
         "faucet_status",
         "faucet_grant",

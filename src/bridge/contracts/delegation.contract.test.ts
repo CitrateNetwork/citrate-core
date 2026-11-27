@@ -54,8 +54,9 @@ describe("bridge contract — delegation + cloud session (D-11)", () => {
 
   it("every command is registered in Rust and allowed for the main window", () => {
     const root = join(__dirname, "..", "..", "..", "src-tauri");
-    const lib = readFileSync(join(root, "src", "lib.rs"), "utf8");
-    const acl = readFileSync(join(root, "permissions", "main-window.toml"), "utf8");
+    // L0-WP03: one command list and one ACL per lane (src/commands/l<N>.rs, permissions/l<N>-commands.toml).
+    const lib = Array.from({ length: 10 }, (_, n) => readFileSync(join(root, "src", "commands", `l${n}.rs`), "utf8")).join("\n");
+    const acl = Array.from({ length: 10 }, (_, n) => readFileSync(join(root, "permissions", `l${n}-commands.toml`), "utf8")).join("\n");
     for (const cmd of ["delegation_prepare", "delegation_decline", "delegation_approve", "delegation_status", "hermes_session_open_cloud", "providers_preferred_get", "providers_preferred_set"]) {
       expect(lib).toMatch(new RegExp(`::${cmd},`));
       expect(acl).toContain(`"${cmd}"`);
