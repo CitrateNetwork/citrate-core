@@ -19,10 +19,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The checkout whose diff is judged. lane-guard runs the base's copy of this script and map from a
 # temp dir (so a PR cannot change the rules it is judged by) and points this at the PR checkout.
 DIFF_ROOT="${CX_DIFF_ROOT:-$REPO_ROOT}"
+# The commit judged: lane-guard passes the event sha, so a moved HEAD cannot shrink the diff.
+DIFF_HEAD="${CX_DIFF_HEAD:-HEAD}"
 MAP_NAME=cx
 MAP="$REPO_ROOT/.agentile/cx-ownership.map"
 V60_LANES=()
 V60_RES=()
+V60_CREATE_LANES=()
+V60_CREATE_RES=()
 
 use_map() { # cx | v60
   case "$1" in
@@ -50,9 +54,15 @@ glob_to_ere() {
 load_v60() {
   local l pat
   [[ -f "$MAP" ]] || { echo "missing $MAP" >&2; return 2; }
-  V60_LANES=(); V60_RES=()
+  V60_LANES=(); V60_RES=(); V60_CREATE_LANES=(); V60_CREATE_RES=()
   while read -r l pat || [[ -n "${l:-}" ]]; do # '||': keep a last row with no trailing newline
     [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
+    # CODEOWNERS reads 'dir/' as the directory, this matcher as a literal path: refuse the form.
+    [[ "$pat" == */ ]] && { echo "v60 map: glob '$pat' ends in '/'; write '${pat}**'" >&2; return 2; }
+    if [[ "$l" == create:* ]]; then # seed grant: never an owner, see v60_may_create
+      V60_CREATE_LANES+=("${l#create:}"); V60_CREATE_RES+=("^$(glob_to_ere "$pat")\$")
+      continue
+    fi
     V60_LANES+=("$l"); V60_RES+=("^$(glob_to_ere "$pat")\$")
   done < "$MAP"
 }
@@ -67,6 +77,16 @@ v60_owner() {
   printf '%s' "$owner"
 }
 
+# 'create:<lanes> <glob>' rows: those lanes may ADD a matching file absent at the base (L0 seeding
+# another lane's registration point, section 2.2). Editing or deleting it stays with its owner.
+v60_may_create() {
+  local lane="$1" file="$2" i
+  for ((i = 0; i < ${#V60_CREATE_LANES[@]}; i++)); do
+    [[ ",${V60_CREATE_LANES[i]}," == *",$lane,"* && "$file" =~ ${V60_CREATE_RES[i]} ]] && return 0
+  done
+  return 1
+}
+
 v60_always_allowed() {
   local file="$1" i
   for ((i = 0; i < ${#V60_LANES[@]}; i++)); do
@@ -76,28 +96,36 @@ v60_always_allowed() {
 }
 
 # Branch -> lane for lane-guard. Prints the lane and returns 0; returns 1 for a branch the guard
-# does not govern (not feat/v60-*, or the chain lane, which LQ's chain-touch guard covers); returns
-# 2 for a feat/v60-* branch that does not follow feat/v60-l<N>-wpNN[a-z]-<slug>.
+# does not govern (not feat/v60-*); returns 2 for a feat/v60-* branch that is neither
+# feat/v60-l<N>-wpNN[a-z]-<slug> nor feat/v60-chain-<slug>. The chain lane gets 'chain': here it is
+# held to the frozen paths only, and LQ's chain-touch guard judges the rest.
 lane_of() {
   local b="$1"
   [[ "$b" == feat/v60-* ]] || return 1
-  [[ "$b" == feat/v60-chain-* ]] && return 1
+  if [[ "$b" =~ ^feat/v60-chain-[a-z0-9][a-z0-9.-]*$ ]]; then printf chain; return 0; fi
   if [[ "$b" =~ ^feat/v60-(l[0-9]|lq)-wp[0-9]{2}[a-z]?-[a-z0-9][a-z0-9.-]*$ ]]; then
     printf '%s' "${BASH_REMATCH[1]}"; return 0
   fi
   return 2
 }
 
-# Returns 0 if $file is allowed for $lane.
+# Returns 0 if $file is allowed for $lane. $3 is the file's git status in the diff (A added,
+# D deleted, M or anything else modified; default M).
 # cx: in [[ str == pat ]], '*' spans '/', so a trailing '**' or '*' matches any subpath; a file is
-# allowed by any of the lane's globs plus the always-allowed '*' globs.
-# v60: the owner is the last matching row (see v60_owner); '*' rows are always allowed.
+# allowed by any of the lane's globs plus the always-allowed '*' globs. The status is not used.
+# v60: the owner is the last matching row (see v60_owner); '*' rows are always allowed; a 'create:'
+# row also allows an added file; frozen files are allowed to no lane; 'chain' may touch any file
+# that is not frozen.
 file_allowed() {
-  local lane="$1" file="$2" l pat
+  local lane="$1" file="$2" status="${3:-M}" l pat owner
   if [[ "$MAP_NAME" == v60 ]]; then
     v60_always_allowed "$file" && return 0
-    [[ ",$(v60_owner "$file")," == *",$lane,"* ]]
-    return
+    owner="$(v60_owner "$file")"
+    [[ "$owner" == frozen ]] && return 1
+    [[ "$lane" == chain ]] && return 0
+    [[ ",$owner," == *",$lane,"* ]] && return 0
+    [[ "$status" == A ]] && v60_may_create "$lane" "$file" && return 0
+    return 1
   fi
   while read -r l pat || [[ -n "${l:-}" ]]; do
     [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
@@ -214,19 +242,23 @@ main() {
   if [[ "${1:-}" == "--map" ]]; then use_map "${2:?--map needs cx or v60}"; shift 2; fi
   local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --selftest}"
   local base="${2:-origin/main}"
-  local f list offenders=() changed=()
+  local f st i list offenders=() changed=() statuses=()
   # -z: paths arrive raw and NUL-delimited (no C-quoting of non-ASCII names, no newline splitting).
-  # --no-renames: a rename lists both paths, so moving another lane's file out still names it.
+  # --no-renames: a rename lists both paths (D old, A new), so moving another lane's file out still
+  # names it. --name-status: an added file (A) is absent at the base, which a 'create:' row needs.
   list="$(mktemp)"
-  if ! (cd "$DIFF_ROOT" && { git diff -z --no-renames --name-only "${base}...HEAD" >"$list" 2>/dev/null ||
-    git diff -z --no-renames --name-only "$base" >"$list" 2>/dev/null; }); then
+  if ! (cd "$DIFF_ROOT" && { git diff -z --no-renames --name-status "${base}...${DIFF_HEAD}" >"$list" 2>/dev/null ||
+    git diff -z --no-renames --name-status "$base" "$DIFF_HEAD" >"$list" 2>/dev/null; }); then
     rm -f "$list"; echo "cannot diff against '$base' in $DIFF_ROOT" >&2; return 2
   fi
-  while IFS= read -r -d '' f; do if [[ -n "$f" ]]; then changed+=("$f"); fi; done <"$list"
+  while IFS= read -r -d '' st && IFS= read -r -d '' f; do
+    if [[ -n "$f" ]]; then statuses+=("${st:0:1}"); changed+=("$f"); fi
+  done <"$list"
   rm -f "$list"
   [[ ${#changed[@]} -eq 0 ]] && { echo "no changes vs $base — nothing to check"; return 0; }
-  for f in "${changed[@]}"; do
-    if ! file_allowed "$lane" "$f"; then
+  for ((i = 0; i < ${#changed[@]}; i++)); do
+    f="${changed[i]}"
+    if ! file_allowed "$lane" "$f" "${statuses[i]}"; then
       if [[ "$MAP_NAME" == v60 ]]; then offenders+=("$f (owner: $(v60_owner "$f"))"); else offenders+=("$f"); fi
     fi
   done

@@ -127,11 +127,12 @@ describe("lane-guard workflow", () => {
 
   it("a queued PR is judged on its own queue entry, not on the PRs queued ahead of it", () => {
     // In a merge group each queued PR is one commit (squash) or one merge commit on top of the
-    // entry ahead of it, so HEAD^1...HEAD is exactly that PR. merge_group.base_sha is the tip of
+    // entry ahead of it, so SHA^1...SHA (the event sha) is exactly that PR. merge_group.base_sha is the tip of
     // main under the WHOLE group: diffing against it blames an l5 PR for an l4 PR ahead of it.
     const wf = read(".github/workflows/lane-guard.yml");
     expect(wf).not.toContain("merge_group.base_sha");
-    expect(wf).toMatch(/^ {10}base="HEAD\^1"$/m);
+    expect(wf).toMatch(/^ {10}head=\$\(git rev-parse --verify "\$SHA\^\{commit\}"\)$/m);
+    expect(wf).toMatch(/^ {10}base=\$\(git rev-parse --verify "\$head\^1"\)$/m);
     expect(wf.match(/base=/g)).toHaveLength(1);
 
     const tmp = mkdtempSync(path.join(os.tmpdir(), "lane-guard-mq-"));

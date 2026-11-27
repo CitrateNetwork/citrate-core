@@ -10,7 +10,8 @@
 //
 // Map rows keep their order: CODEOWNERS and scripts/cx-ownership-check.sh --map v60 both let the
 // last matching row win. A glob CODEOWNERS cannot express with the same meaning the matcher gives
-// it is refused, so the two can never disagree about who owns a path.
+// it is refused, so the two can never disagree about who owns a path. 'create:<lanes>' seed rows
+// grant no ownership, so they are checked like any glob and left out of CODEOWNERS.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +20,7 @@ const LANE = /^(l[0-9]|lq|frozen)$/;
 
 export function parseMap(text) {
   const rows = [];
+  const creates = [];
   const reviewers = new Map();
   const tail = [];
   text.split("\n").forEach((raw, i) => {
@@ -37,14 +39,20 @@ export function parseMap(text) {
     if (!line || line.startsWith("#")) return;
     const parts = line.split(/\s+/);
     if (parts.length !== 2) throw new Error(`${where}: want '<lanes> <glob>', got '${line}'`);
-    const lanes = parts[0].split(",");
-    if (!(parts[0] === "*" || lanes.every((l) => LANE.test(l)))) {
+    const seed = parts[0].startsWith("create:");
+    const lanes = (seed ? parts[0].slice(7) : parts[0]).split(",");
+    if (!((!seed && parts[0] === "*") || lanes.every((l) => LANE.test(l) && !(seed && l === "frozen")))) {
       throw new Error(`${where}: unknown lane list '${parts[0]}'`);
     }
-    rows.push({ lanes, glob: parts[1], line: i + 1 });
+    try {
+      toCodeownersPattern(parts[1]);
+    } catch (e) {
+      throw new Error(`${where}: ${e.message}`);
+    }
+    (seed ? creates : rows).push({ lanes, glob: parts[1], line: i + 1 });
   });
   if (!reviewers.has("*")) throw new Error("v60-ownership.map: missing '#! reviewers * ...'");
-  return { rows, reviewers, tail };
+  return { rows, creates, reviewers, tail };
 }
 
 // Map glob -> CODEOWNERS pattern with the same meaning, or throw.
@@ -53,6 +61,7 @@ export function toCodeownersPattern(glob) {
   if (/[\s[\]{}?!\\#]/.test(glob) || glob.startsWith("/")) {
     throw new Error(`glob '${glob}': characters CODEOWNERS treats differently`);
   }
+  if (glob.endsWith("/")) throw new Error(`glob '${glob}': CODEOWNERS reads a trailing '/' as a directory; write '${glob}**'`);
   const body = glob.endsWith("/**") ? glob.slice(0, -3) : glob;
   if (body.includes("**")) throw new Error(`glob '${glob}': '**' only as the whole glob or a trailing '/**'`);
   if (!body) throw new Error(`glob '${glob}': empty path`);

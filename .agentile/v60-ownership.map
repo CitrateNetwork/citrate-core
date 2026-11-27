@@ -12,6 +12,10 @@
 #   - '*' matches inside one path segment, '**' only as a whole glob or a trailing '/**'.
 #   - '*' rows are process files any lane may touch; they never change a file's owner.
 #   - 'frozen' paths belong to no lane: no feat/v60-* branch may change them (L0 section 2.3).
+#   - 'create:<lanes> <glob>' rows are seed grants, never owners: those lanes may ADD a matching file
+#     that does not exist at the base. Editing or deleting it afterwards is its owner's alone.
+#     CODEOWNERS ignores them (review still routes to the owner's reviewers).
+#   - A glob never ends in '/' (CODEOWNERS would read a directory, the matcher a literal path).
 #   - A lane that needs a file it does not own asks through an L0 seam PR; only L0 edits this map.
 # Partial-file ownership in the lane files (line ranges, "only the X area") is recorded as whole-file
 # ownership plus a comment; the lane keeps to its part in review.
@@ -33,6 +37,18 @@ l0 .agentile/coverage/**
 l0 scripts/ci/linux-native-acceptance/**
 
 # --- Per-lane registration points (L0 section 2.2): L0 creates them, then only that lane edits. ---
+# Seed grants: the L0 seam WPs (WP03 to WP08) add these files for every lane in one PR each. A file
+# that already exists at the base is the lane's (rows below), so L0 cannot edit or delete it.
+create:l0 src-tauri/src/commands/l*.rs
+create:l0 src-tauri/src/lanes/l*/**
+create:l0 src-tauri/permissions/l*-commands.toml
+create:l0 src/bridge/lanes/l*.ts
+create:l0 src/bridge/tauri/l*.ts
+create:l0 src/bridge/sim/l*.ts
+create:l0 src/shell/state/l*.ts
+create:l0 src/shell/actions/l*/**
+create:l0 src/shell/routes/l*.tsx
+create:l0 ci/characterization.d/l*.json
 l0 src-tauri/src/commands/l0.rs
 l0 src-tauri/src/lanes/l0/**
 l0 src-tauri/permissions/l0-commands.toml
