@@ -94,9 +94,11 @@ export function generate(mapText) {
   if (tail.length) {
     out.push(
       "",
-      "# Owner-pinned paths (map '#! tail'), written last so no lane rule above overrides them. V60",
-      "# MESH-2: the CL-S4 sign-off record, the packet copy and the signer registry need the owner's",
-      "# approval; the security lead's part is their signature in the record, checked against signers.json.",
+      "# Owner-pinned paths (map '#! tail'), written last so no lane rule above overrides them.",
+      "# LQ-WP03: the tripwire registry, its rule, its check and tests, and its workflow; no tripwire",
+      "# weakens without the owner. V60 MESH-2: the CL-S4 sign-off record, the packet copy and the signer",
+      "# registry need the owner's approval; the security lead's part is their signature in the record,",
+      "# checked against signers.json.",
     );
     for (const t of tail) out.push(`${t.pattern} ${t.owners.join(" ")}`);
   }
