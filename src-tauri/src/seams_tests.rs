@@ -3,11 +3,13 @@
 //!
 //! L0-WP03 split the `generate_handler!` list into per-lane lists (`src/commands/l<N>.rs`) and
 //! `permissions/main-window.toml` into per-lane ACLs; the registration and ACL snapshots stayed
-//! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 moves the module
-//! tree and must keep these snapshots byte-identical. A lane PR that drops or re-points a
-//! recorded command fails here by name. A lane adds a command in its own `commands/l<N>.rs` and
-//! `permissions/l<N>-commands.toml` only: those lane-owned files are the reviewed record of the
-//! addition, and the commands fixture stays the a826e441 baseline (`baseline_problems`).
+//! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 added the per-lane
+//! module tree (`src/lanes/`): the module set gained exactly `mod lanes;`, and a lane declares its
+//! new modules in `lanes/l<N>/mod.rs`, so a new lane module leaves this snapshot alone. A lane PR
+//! that drops or re-points a recorded command fails here by name. A lane adds a command in its
+//! own `commands/l<N>.rs` and `permissions/l<N>-commands.toml` only: those lane-owned files are
+//! the reviewed record of the addition, and the commands fixture stays the a826e441 baseline
+//! (`baseline_problems`).
 //! A fixture changes only in an L0-reviewed PR that says why; record it again with
 //! `node scripts/seams-snapshot.mjs` (`SEAMS_SNAPSHOT_WRITE=1`). A missing fixture fails and prints
 //! `SEAMS_SNAPSHOT_MISSING <path> <hex>` with the exact bytes it would record.
@@ -896,4 +898,52 @@ fn lane_tree_has_every_lane() {
             last = at[0];
         }
     }
+}
+
+// The hooks as built, run through tauri's mock runtime: every phase runs l0 to l9, each once.
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
+#[test]
+fn lane_hooks_run_in_lane_order() {
+    let _ = crate::lanes::take_recorded();
+    let _builder = crate::lanes::plugins_all(tauri::test::mock_builder());
+    let app = tauri::test::mock_app();
+    crate::lanes::setup_all(&app).expect("an empty setup hook returns Ok");
+    crate::lanes::on_exit_all(app.handle());
+    let want: Vec<(&str, &str)> = HOOK_PHASES
+        .iter()
+        .flat_map(|phase| LANES.iter().map(move |lane| (*lane, *phase)))
+        .collect();
+    assert_eq!(
+        crate::lanes::take_recorded(),
+        want,
+        "plugins, then setup, then on_exit, each l0 to l9"
+    );
+}
+
+// Mutation case: a failing lane stops start-up with its lane id, and no later lane runs.
+#[cfg(not(windows))]
+#[test]
+fn setup_all_stops_at_the_first_failing_lane() {
+    fn ok<R: tauri::Runtime>(_app: &tauri::App<R>) -> Result<(), crate::lanes::HookError> {
+        Ok(())
+    }
+    fn fails<R: tauri::Runtime>(_app: &tauri::App<R>) -> Result<(), crate::lanes::HookError> {
+        Err("store folder is read-only".into())
+    }
+    let hooks: [(
+        &'static str,
+        crate::lanes::SetupHook<tauri::test::MockRuntime>,
+    ); 3] = [("l0", ok), ("l1", fails), ("l2", ok)];
+    let app = tauri::test::mock_app();
+    let _ = crate::lanes::take_recorded();
+    let err = crate::lanes::run_setup(&app, &hooks).expect_err("l1 fails");
+    assert_eq!(
+        err.to_string(),
+        "lane l1 setup hook failed: store folder is read-only"
+    );
+    assert_eq!(
+        crate::lanes::take_recorded(),
+        vec![("l0", "setup"), ("l1", "setup")],
+        "l2 does not run after l1 fails"
+    );
 }

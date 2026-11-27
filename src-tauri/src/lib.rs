@@ -107,6 +107,9 @@ mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+// L0-WP04 (planset v060): the per-lane module tree and start-up hooks (`lanes/l<N>/`). A lane's
+// new module is declared in its own `lanes/l<N>/mod.rs`, not here.
+mod lanes;
 mod local_data;
 mod mcp_servers;
 mod media;
@@ -372,7 +375,7 @@ pub fn run() {
     // few for the node's SST files. Logs one line; never fails start-up.
     fd_limit::apply_at_startup();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
         // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
@@ -397,7 +400,10 @@ pub fn run() {
         // tauri.conf.json). The JS API drives check/download/install via this plugin.
         .plugin(tauri_plugin_updater::Builder::new().build())
         // W2.4 — relaunch into the freshly-installed version.
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+    // L0-WP04: each lane's plugins (`lanes/l<N>/hooks.rs`), l0 to l9, after every plugin above, so
+    // single-instance stays first. A new plugin goes in a lane's hooks.rs, not here.
+    crate::lanes::plugins_all(builder)
         // HUP-S10.3 — widget documents (`citrate-widget://localhost/<id>`), served from the widget
         // store with a strict CSP, to the main window only. See widgets.rs.
         .register_asynchronous_uri_scheme_protocol(widgets::SCHEME, |ctx, request, responder| {
@@ -641,6 +647,10 @@ pub fn run() {
             // watching (turns from the node MCP server or the CLI), instead of leaving them to the
             // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
             hermes_headless::spawn(app.handle().clone());
+            // L0-WP04: each lane's setup step (`lanes/l<N>/hooks.rs`), l0 to l9, LAST: after the
+            // network and payouts gates above, so no lane hook can sign before the gate. The first
+            // failing hook stops start-up with its lane id in the error.
+            crate::lanes::setup_all(app)?;
             Ok(())
         })
         .invoke_handler(crate::v60_all_commands!())
@@ -657,6 +667,9 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 shutdown_all_sidecars(app_handle);
+                // L0-WP04: each lane's quit step (`lanes/l<N>/hooks.rs`), l0 to l9, after the
+                // teardown. ExitRequested and Exit both reach here, so a quit hook may run twice.
+                crate::lanes::on_exit_all(app_handle);
             }
         });
 }
