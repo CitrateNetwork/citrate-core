@@ -17,6 +17,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..", "..", "..");
 const SCRIPT = path.join(here, "chain-touch.mjs");
 
+// release/consensus-reviewers.json is L0's file (ownership map); the fixture carries the default set.
+const REVIEWERS = JSON.stringify({ version: 1, reviewers: ["SaulBuilds"] });
 const BASE_REV = "68434069de707e8454a1313a1f2e20ba449300f5";
 const NEW_REV = "72c8e029b958c0ffee00000000000000000000aa";
 const AGREEMENT_WF = ".github/workflows/lq-chain-agreement.yml";
@@ -122,7 +124,7 @@ function fixture(baseExtra = {}) {
   git(dir, "init", "-q", "-b", "main");
   write(dir, {
     "release/chain-touch.json": fs.readFileSync(path.join(repo, "release", "chain-touch.json"), "utf8"),
-    "release/consensus-reviewers.json": fs.readFileSync(path.join(repo, "release", "consensus-reviewers.json"), "utf8"),
+    "release/consensus-reviewers.json": REVIEWERS,
     "release/components.json": components(),
     "release/network-cut.json": JSON.stringify({ genesisHash: "0xcf68", chainRev: BASE_REV.slice(0, 8) }),
     "Cargo.lock": lock(),
@@ -688,15 +690,14 @@ describe("glob matcher self-test", () => {
     expect(map.classes.C.scoped.find((x) => x.path === "**/Cargo.toml").comments).toBe("toml");
     for (const p of map.classes.C.rules_paths) expect(map.classes.C.paths, p).toContain(p);
     for (const k of ["citrate-node"]) expect(map.classes.C.scoped.some((s) => s.value === k)).toBe(true);
-    const reviewers = JSON.parse(fs.readFileSync(path.join(repo, "release", "consensus-reviewers.json"), "utf8"));
-    expect(reviewers.reviewers).toEqual(["SaulBuilds"]);
   });
 
-  it("CODEOWNERS gives the owner every whole-file class C path and the guard's own files", () => {
-    const map = JSON.parse(fs.readFileSync(path.join(repo, "release", "chain-touch.json"), "utf8"));
-    const owners = fs.readFileSync(path.join(repo, ".github", "CODEOWNERS"), "utf8").split("\n").map((l) => l.trim());
-    const want = [...map.classes.C.paths, "release/chain-touch.json", "release/consensus-reviewers.json", "scripts/ci/lq/", ".github/workflows/lq-*.yml"];
-    for (const p of want) expect(owners, p).toContain(p.startsWith("**/") ? `${p} @SaulBuilds` : `/${p} @SaulBuilds`);
+  it("a missing consensus reviewer set fails a rules delta closed", async () => {
+    const dir = fixture({ "release/consensus-reviewers.json": null });
+    const head = repin(dir, "rules-2");
+    const r = await check(dir, { branch: "feat/v60-l0-wp03-one-chain-rev", labels: ["chain-touch", "consensus-review"], checkRuns: AGREEMENT_GREEN, headSha: head, reviews: [approve("SaulBuilds", head)] });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join("\n")).toMatch(/consensus-reviewers\.json unreadable \(fail closed\)/);
   });
 });
 

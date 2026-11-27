@@ -1,8 +1,0 @@
-{
-  "$comment": [
-    "LQ-WP04: the consensus reviewer set. A chain-touch PR with a rules delta (the rules source fingerprint changed, or a release/chain-touch.json classes.C.rules_paths file changed) needs the consensus-review label and an APPROVE on its head commit from one of these GitHub logins.",
-    "Owner-owned (CODEOWNERS). Read from the PR's base commit, so a PR cannot add its own approver. Owner decision D-1 (2026-11-26): the owner reviews consensus-adjacent PRs personally; agent reviewer accounts are not listed here."
-  ],
-  "version": 1,
-  "reviewers": ["SaulBuilds"]
-}

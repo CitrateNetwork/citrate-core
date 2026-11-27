@@ -1,11 +1,13 @@
 {
   "$comment": [
     "LQ-WP04 chain-touch map (planset 2026-11-07-v060, lanes/LQ_NON_REGRESSION_GUARD.md sections 3.1, 4.1, 4.3). Schema v1 is frozen.",
-    "Read by scripts/ci/lq/chain-touch.mjs (the lq / chain-touch check). The check reads this file from the PR's BASE commit, so a PR cannot widen or narrow its own guard; change it in its own PR (CODEOWNERS: the owner).",
+    "Read by scripts/ci/lq/chain-touch.mjs (the lq / chain-touch check). The check reads this file from the base branch tip, so a PR cannot widen or narrow its own guard; change it in its own PR. Owner review of this file, the guard and the class C paths is routed by L0's .agentile/v60-ownership.map (which generates .github/CODEOWNERS); release/consensus-reviewers.json is L0's file.",
     "Class A and B are citrate-chain paths (rules, node integrity). LQ never edits chain; LQ-WP06 reads class A for the source fingerprint and component-pins NODE_CONSENSUS_PATHS. Class C is what citrate-core ships that is chain-adjacent; the check fails a PR that changes a class C path unless it is a chain-touch PR (label, evidence, agreement run, and for a rules delta the consensus review).",
     "Path syntax: a trailing '/' matches everything under it; '**/' matches zero or more directories; '*' matches within one path segment; anything else is an exact path.",
     "classes.C.scoped: files where only part of the file is class C. kind 'lines' compares the lines matching 'match' (case-insensitive) at base and head; kind 'json-entry' compares one element of a JSON array; kind 'lock-closure' compares the Cargo.lock packages reachable from the roots (and from every package whose source matches source_match). An unreadable or unparsable scoped file counts as changed (fail closed).",
     "classes.C.rules_paths: core files that set a consensus input the node reads (genesis, activation heights, the network cut). A change to one is a rules delta: it needs the consensus-review label and an approval from release/consensus-reviewers.json, like a changed rules fingerprint.",
+    "classes.C.scoped 'comments': 'toml' compares each line without its TOML comment, so a comment that names a chain crate is not class C (a '#' inside a quoted string is kept). '**/.cargo/config(.toml)' is whole-file class C: a [source] replace-with or [patch] there can swap chain-crate or k256 bytes without moving Cargo.lock.",
+    "agreement_check, agreement_workflow, agreement_app: a check run counts as the agreement run only when it has this name, comes from this GitHub App (github-actions, id 15368) and its check suite is a run of this workflow file on the PR head; the file must be on the base branch and unchanged by the PR. A same-named job in another workflow does not count.",
     "chain_touch_branches: the only branch prefixes a chain-touch PR may come from (policy 2). lane_branch_pattern: product-lane branches, refused outright on any class C change (policy 1)."
   ],
   "version": 1,
@@ -82,10 +84,12 @@
         "scripts/e2e/cold-sync.py",
         "scripts/network-cut.py",
         "scripts/network-profile.py",
-        "scripts/sync-addresses.py"
+        "scripts/sync-addresses.py",
+        "**/.cargo/config",
+        "**/.cargo/config.toml"
       ],
       "scoped": [
-        { "path": "**/Cargo.toml", "kind": "lines", "match": "citrate-chain|citrate-wallet-core|citrate-commd",
+        { "path": "**/Cargo.toml", "kind": "lines", "match": "citrate-chain|citrate-wallet-core|citrate-commd", "comments": "toml",
           "why": "the chain git dependencies (and any [patch] that redirects them)" },
         { "path": "Cargo.lock", "kind": "lock-closure", "roots": ["citrate-wallet-core", "citrate-commd"], "source_match": "citrate-chain",
           "why": "a lockfile move of any crate the chain crates pull (k256, sha3, rlp, bip32, ...) changes tx-signing code" },
@@ -116,5 +120,7 @@
     "required": ["source-fingerprint.json", "agreement-x86_64.json", "agreement-aarch64.json", "bench.md"]
   },
   "agreement_check": "lq / chain-agreement",
+  "agreement_workflow": ".github/workflows/lq-chain-agreement.yml",
+  "agreement_app": { "slug": "github-actions", "id": 15368 },
   "labels": { "chain_touch": "chain-touch", "consensus_review": "consensus-review" }
 }

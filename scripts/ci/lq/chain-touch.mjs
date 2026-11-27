@@ -9,26 +9,31 @@
 //      (feat/v60-chain-*, feat/v60-l0-*), labelled chain-touch, with
 //      release/evidence/chain/<rev12>/{source-fingerprint.json, agreement-x86_64.json,
 //      agreement-aarch64.json, bench.md} for every chain rev it pins, a green `lq / chain-agreement`
-//      run on the head, and for a rules delta (rules fingerprint changed from the base's record, no
+//      run on the head (from the github-actions app, and from the workflow file agreement_workflow
+//      as the base branch carries it: a same-named job in any other workflow does not count), and
+//      for a rules delta (rules fingerprint changed from the base's record, no
 //      base record, or a classes.C.rules_paths file changed) the consensus-review label plus an
 //      APPROVE on the head commit from release/consensus-reviewers.json.
 //   3. A Cargo.lock change that moves any package in the closure of the chain crates is class C.
 //   4. A new or moved citrate-node source.target_revs entry in release/components.json is refused
 //      for 0.6.0 (one node rev on every OS). Removing one is allowed.
 //
-// The map and the reviewer set are read from the BASE commit, so a PR cannot change its own guard
-// (a PR that adds them, when the base has none, is checked with its own copy). The check never
+// The map and the reviewer set are read from the base branch TIP (--base), so a PR cannot change its
+// own guard and a long-lived branch is judged by the current map (a PR that adds them, when the base
+// has none, is checked with its own copy). The diff, and the base node rev a rules delta is measured
+// from, use the merge-base of the tip and the head. The check never
 // writes: it reads git, the event payload and the read-only GitHub API. Anything it cannot read
 // (map, lockfile, components.json, API) fails closed.
 //
 // Data sources (Rule 7): `git diff --name-only <merge-base>..HEAD`; `git show <ref>:<path>`;
-// release/chain-touch.json; release/consensus-reviewers.json; the PR's labels, reviews and the
-// head's check runs (GitHub REST, read-only token). Cargo.lock closures come from the lockfile's own
+// release/chain-touch.json; release/consensus-reviewers.json; the PR's labels, reviews, the head's
+// check runs and the workflow run behind each one's check suite (GitHub REST, read-only token). Cargo.lock closures come from the lockfile's own
 // resolved graph (every [[package]] and its dependency list), which needs no registry or git fetch.
 //
 // Usage:
 //   node scripts/ci/lq/chain-touch.mjs check --base <ref> [--labels a,b] [--branch <name>]
-//        [--head <ref>] [--head-sha <sha>] [--reviews <file.json>] [--checks <file.json>] [--root <dir>]
+//        [--head <ref>] [--head-sha <sha>] [--reviews <file.json>] [--checks <file.json>]
+//        [--workflow-runs <file.json: { "<check suite id>": [workflow runs] }>] [--root <dir>]
 //   node scripts/ci/lq/chain-touch.mjs check --from-event [--base <ref>]   (GitHub Actions)
 //   node scripts/ci/lq/chain-touch.mjs --self-test
 // Exit: 0 pass, 1 refused (or unreadable input: fail closed), 2 usage (bad flag or unknown ref).
@@ -70,6 +75,22 @@ export function matchPath(pattern, file) {
   if (!/[*?]/.test(pattern)) return pattern.endsWith("/") ? file.startsWith(pattern) : file === pattern;
   return globToRegExp(pattern).test(file);
 }
+
+// The part of one TOML line before its comment. A '#' inside a basic ("...") or literal ('...')
+// string is not a comment. Unbalanced quotes keep the whole line (the strict side).
+export function stripTomlComment(line) {
+  let q = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q === '"') { if (ch === "\\") i++; else if (ch === '"') q = null; continue; }
+    if (q === "'") { if (ch === "'") q = null; continue; }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (ch === "#") return line.slice(0, i).trimEnd();
+  }
+  return line;
+}
+
+const scopedLines = (s, text) => (text ?? "").split(/\r?\n/).map((l) => (s.comments === "toml" ? stripTomlComment(l) : l));
 
 // ---- git -------------------------------------------------------------------------------------
 
@@ -178,7 +199,7 @@ function scopedChange(s, baseText, headText) {
   try {
     if (s.kind === "lines") {
       const re = new RegExp(s.match, "i");
-      const pick = (t) => (t ?? "").split(/\r?\n/).filter((l) => re.test(l)).sort();
+      const pick = (t) => scopedLines(s, t).filter((l) => re.test(l)).sort();
       const a = pick(baseText), b = pick(headText);
       if (a.join("\n") === b.join("\n")) return null;
       return `${a.length} matching line(s) at base, ${b.length} at head, contents differ`;
@@ -226,6 +247,9 @@ export function validateMap(m) {
   try { new RegExp(m?.lane_branch_pattern); if (typeof m?.lane_branch_pattern !== "string") throw new Error(); } catch { errs.push("lane_branch_pattern must be a regular expression"); }
   if (typeof m?.evidence?.dir !== "string" || !strs(m?.evidence?.required)) errs.push("evidence.dir and evidence.required are required");
   if (typeof m?.agreement_check !== "string") errs.push("agreement_check is required");
+  if (typeof m?.agreement_workflow !== "string" || !/^\.github\/workflows\/[\w.-]+\.ya?ml$/.test(m.agreement_workflow)) errs.push("agreement_workflow must be a .github/workflows/<file>.yml path");
+  if (typeof m?.agreement_app?.slug !== "string" || !Number.isInteger(m?.agreement_app?.id)) errs.push("agreement_app must be { slug, id } (the GitHub App that runs the agreement workflow)");
+  for (const s of C?.scoped || []) if (s.comments !== undefined && s.comments !== "toml") errs.push(`classes.C.scoped ${s.path}: comments must be "toml"`);
   if (typeof m?.labels?.chain_touch !== "string" || typeof m?.labels?.consensus_review !== "string") errs.push("labels.chain_touch and labels.consensus_review are required");
   if (typeof m?.node_component !== "string") errs.push("node_component is required");
   for (const s of C?.scoped || []) { try { if (s.match) new RegExp(s.match, "i"); if (s.source_match) new RegExp(s.source_match, "i"); } catch { errs.push(`classes.C.scoped ${s.path}: bad regular expression`); } }
@@ -280,13 +304,15 @@ export async function runCheck(opts) {
   const base = git(root, ["merge-base", baseTip, head]).trim();
   const headSha = opts.headSha || head;
   const readBase = (f) => readAt(root, base, f);
+  const readTip = (f) => readAt(root, baseTip, f);
   const readHead = (f) => readAt(root, head, f);
   const errors = [];
   const notes = [];
   const res = (extra) => ({ ok: errors.length === 0, errors, notes, base, head, classC: [], rulesDelta: false, ...extra });
 
-  // The map: base copy; the head's only when the base has none (the PR that introduces it).
-  let mapText = readBase(MAP_PATH);
+  // The map: the base branch tip's copy; the head's only when the base has none (the PR that
+  // introduces it).
+  let mapText = readTip(MAP_PATH);
   if (mapText === null) {
     mapText = readHead(MAP_PATH);
     if (mapText === null) { errors.push(`${MAP_PATH} missing at base and head (fail closed)`); return res(); }
@@ -331,7 +357,7 @@ export async function runCheck(opts) {
     else errors.push(`release/components.json: ${map.node_component} source.rev missing or not a 40-hex rev at head (fail closed)`);
     const depRe = new RegExp((map.classes.C.scoped || []).find((s) => s.path === "**/Cargo.toml")?.match || "citrate-chain", "i");
     for (const c of classC.filter((x) => matchPath("**/Cargo.toml", x.path))) {
-      for (const line of (readHead(c.path) || "").split(/\r?\n/).filter((l) => depRe.test(l))) {
+      for (const line of scopedLines({ comments: "toml" }, readHead(c.path)).filter((l) => depRe.test(l))) {
         const m = line.match(/\brev\s*=\s*"([^"]*)"/);
         if (!m) continue;
         if (HEX40.test(m[1])) revs.add(m[1]);
@@ -378,7 +404,7 @@ export async function runCheck(opts) {
       notes.push(`rules delta: ${reasons.join("; ")}`);
       if (!labels.has(map.labels.consensus_review)) errors.push(`rules delta (${reasons.join("; ")}): label ${map.labels.consensus_review} is required`);
       let reviewers = [];
-      let rText = readBase(REVIEWERS_PATH);
+      let rText = readTip(REVIEWERS_PATH);
       if (rText === null) rText = readHead(REVIEWERS_PATH);
       try { reviewers = JSON.parse(rText ?? "null").reviewers; if (!Array.isArray(reviewers)) throw new Error("reviewers must be a list"); } catch (e) {
         reviewers = [];
@@ -390,12 +416,32 @@ export async function runCheck(opts) {
       else notes.push(`consensus approval: ${approved.join(", ")}`);
     }
 
-    // A green agreement run on the head.
-    const runs = (await asFn(opts.checkRuns)(map.agreement_check)).filter((r) => r && r.name === map.agreement_check);
+    // A green agreement run on the head. Under pull_request a PR can add a workflow of its own with
+    // a job of the same name, so a run counts only when it comes from the agreement app and its
+    // check suite resolves to a run of agreement_workflow on this head, and only when that workflow
+    // file is on the base branch and this PR leaves it as the base has it (the run executes the
+    // head's copy).
+    const wf = map.agreement_workflow;
+    const wfTip = readTip(wf);
+    if (wfTip === null) errors.push(`${wf} is not on the base branch: the agreement run must come from a workflow the base already carries (fail closed)`);
+    else if (readHead(wf) !== wfTip) errors.push(`${wf} differs from the base branch: this PR's run of it would judge itself; land the workflow change in its own PR first`);
+    const workflowRunsFor = typeof opts.workflowRuns === "function" ? opts.workflowRuns : async (id) => (opts.workflowRuns || {})[id] || [];
+    const named = (await asFn(opts.checkRuns)(map.agreement_check)).filter((r) => r && r.name === map.agreement_check);
+    const runs = [];
+    let foreign = 0;
+    for (const r of named) {
+      const suite = r.check_suite?.id;
+      const fromApp = r.app?.slug === map.agreement_app.slug && r.app?.id === map.agreement_app.id;
+      const wrs = fromApp && Number.isInteger(suite) ? await workflowRunsFor(suite) : [];
+      const fromWorkflow = Array.isArray(wrs) && wrs.length > 0 && wrs.every((w) => w && String(w.path ?? "").replace(/@.*$/, "") === wf && w.head_sha === headSha);
+      if (fromWorkflow) runs.push(r);
+      else foreign++;
+    }
+    if (foreign) notes.push(`ignored ${foreign} '${map.agreement_check}' check run(s) not from ${wf} (app ${map.agreement_app.slug}) on this head`);
     const done = runs.filter((r) => r.status === "completed" && r.conclusion !== "cancelled").sort((x, y) => String(x.completed_at).localeCompare(String(y.completed_at)));
     const lastRun = done[done.length - 1];
     if (runs.some((r) => r.status !== "completed")) errors.push(`${map.agreement_check} is still running on head ${headSha.slice(0, 12)}; re-run this check when it is green`);
-    else if (!lastRun || lastRun.conclusion !== "success") errors.push(`needs a green ${map.agreement_check} run on head ${headSha.slice(0, 12)} (${lastRun ? `latest: ${clean(lastRun.conclusion)}` : "none found"})`);
+    else if (!lastRun || lastRun.conclusion !== "success") errors.push(`needs a green ${map.agreement_check} run from ${wf} (app ${map.agreement_app.slug}) on head ${headSha.slice(0, 12)} (${lastRun ? `latest: ${clean(lastRun.conclusion)}` : "none found"})`);
   }
 
   return res({ classC, rulesDelta, files, branch, labels: [...labels].map(clean) });
@@ -447,6 +493,7 @@ async function eventContext(env) {
     headSha: pr.head.sha,
     reviews: () => gh.paged(`/repos/${gh.repo}/pulls/${pr.number}/reviews?per_page=100`),
     checkRuns: (check) => gh.paged(`/repos/${gh.repo}/commits/${pr.head.sha}/check-runs?check_name=${encodeURIComponent(check)}&filter=all&per_page=100`, (b) => b.check_runs || []),
+    workflowRuns: (suiteId) => gh.paged(`/repos/${gh.repo}/actions/runs?check_suite_id=${Number(suiteId)}&per_page=100`, (b) => b.workflow_runs || []),
   };
 }
 
@@ -465,10 +512,16 @@ export function selfTest() {
     ["**/Cargo.toml", "Cargo.toml", true],
     ["**/Cargo.toml", "kit/Cargo.toml", true],
     ["**/Cargo.toml", "Cargo.toml.bak", false],
+    ["**/.cargo/config.toml", "src-tauri/.cargo/config.toml", true],
+    ["**/.cargo/config", "src-tauri/.cargo/config.toml", false],
   ];
   for (const [p, f, want] of cases) {
     const got = matchPath(p, f);
     (got === want ? lines : failures).push(`${p} ~ ${f} -> ${got} (want ${want})`);
+  }
+  for (const [line, want] of [['a = "x#y" # c', 'a = "x#y"'], ["# citrate-chain", ""]]) {
+    const got = stripTomlComment(line);
+    (got === want ? lines : failures).push(`toml comment ${line} -> ${got} (want ${want})`);
   }
   const lock = '[[package]]\nname = "citrate-wallet-core"\nversion = "0.4.0"\nsource = "git+https://github.com/CitrateNetwork/citrate-chain.git#x"\ndependencies = [\n "k256",\n]\n\n[[package]]\nname = "k256"\nversion = "0.13.4"\n\n[[package]]\nname = "serde"\nversion = "1.0.0"\n';
   const cl = lockClosure(lock, ["citrate-wallet-core"], "citrate-chain").map((l) => l.split(" ")[0]);
@@ -486,7 +539,7 @@ export function selfTest() {
 
 function parseArgs(argv) {
   const o = { labels: [] };
-  const flags = new Set(["--base", "--head", "--head-sha", "--labels", "--branch", "--reviews", "--checks", "--root"]);
+  const flags = new Set(["--base", "--head", "--head-sha", "--labels", "--branch", "--reviews", "--checks", "--workflow-runs", "--root"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--from-event") { o.fromEvent = true; continue; }
@@ -514,9 +567,10 @@ async function main(argv) {
   const ctx = { root: o.root, head: o.head, headSha: o.headSha, labels: o.labels, branch: o.branch, base: o.base };
   if (o.reviews) ctx.reviews = readJsonFile(o.reviews);
   if (o.checks) ctx.checkRuns = readJsonFile(o.checks);
+  if (o.workflowRuns) ctx.workflowRuns = readJsonFile(o.workflowRuns);
   if (o.fromEvent) {
     const ev = await eventContext(process.env);
-    Object.assign(ctx, { branch: ev.branch, labels: ev.labels, headSha: ev.headSha, reviews: ev.reviews, checkRuns: ev.checkRuns, base: o.base || ev.base });
+    Object.assign(ctx, { branch: ev.branch, labels: ev.labels, headSha: ev.headSha, reviews: ev.reviews, checkRuns: ev.checkRuns, workflowRuns: ev.workflowRuns, base: o.base || ev.base });
   }
   if (!ctx.base) throw new UsageError("check needs --base <ref> (or --from-event)");
   const r = await runCheck(ctx);

@@ -9,8 +9,12 @@
 #
 # Untrusted input: PR metadata (branch, labels, paths) is read by the script from the event file
 # and the read-only API, never expanded into a shell. No privileged base-branch trigger, no
-# secrets, no write permission. The script that runs is the BASE commit's copy, so a PR cannot
-# edit its own guard.
+# secrets, no write permission. The script that runs is the base branch tip's copy, so a PR cannot
+# edit its own guard; it reads the map from the tip too, and takes the merge-base for the diff.
+#
+# Concurrency: pull_request and pull_request_review runs of one PR share a group without
+# cancel-in-progress, so a review submitted mid-run queues behind the running check instead of
+# cancelling it (a newer queued run still replaces an older queued one).
 name: lq-chain-touch
 
 on:
@@ -25,7 +29,7 @@ permissions: {}
 
 concurrency:
   group: lq-chain-touch-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   chain-touch:
@@ -36,6 +40,7 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -54,12 +59,14 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          # The base branch tip judges the change (the group's parent in the merge queue). The script
+          # takes the merge-base of BASE and HEAD for the diff itself.
           if [ "$EVENT" = merge_group ]; then
             BASE=$(git rev-parse HEAD^1)
           else
-            BASE=$(git merge-base "$PR_BASE" HEAD)
+            BASE="$PR_BASE"
           fi
-          # The base commit's script judges the change; only the PR that introduces it runs its own.
+          # The base tip's script judges the change; only the PR that introduces it runs its own.
           if git cat-file -e "$BASE:scripts/ci/lq/chain-touch.mjs" 2>/dev/null; then
             git show "$BASE:scripts/ci/lq/chain-touch.mjs" > "$RUNNER_TEMP/chain-touch.mjs"
           else
