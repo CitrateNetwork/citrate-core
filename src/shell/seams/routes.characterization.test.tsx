@@ -7,7 +7,7 @@ import { isValidElement, type ReactNode } from "react";
 import { surfaceFor } from "../PlaceView";
 import { CANONICAL_ROUTES, ROUTABLE, resolveRoute } from "../places";
 import { store } from "../store";
-import { SEAMS_BASE, checkSnapshot } from "../../../scripts/seams-snapshot.mjs";
+import { SEAMS_BASE, checkSnapshot, diffFixture } from "../../../scripts/seams-snapshot.mjs";
 
 function typeName(t: unknown): string {
   if (typeof t === "string") return t;
@@ -34,7 +34,11 @@ describe("SEAM-ROUTES: route to surface", () => {
     // An unknown route falls through to the default surface.
     table["<unknown>"] = rendered(surfaceFor("seams/not-a-route", store, s));
     expect(CANONICAL_ROUTES.length).toBeGreaterThan(20);
-    expect(checkSnapshot(`fixtures/seams/routes-surfaces.${SEAMS_BASE}.json`, table)).toEqual([]);
+    const rel = `fixtures/seams/routes-surfaces.${SEAMS_BASE}.json`;
+    expect(checkSnapshot(rel, table)).toEqual([]);
+    // Mutation: a route that renders another component is named.
+    const moved = { ...table, wallet: { component: "Dashboard", props: {} } };
+    expect(diffFixture(rel, moved)).toEqual(['~ wallet.component: "Wallet" -> "Dashboard"']);
   });
 
   it("every_routable_string_resolves_as_before", () => {

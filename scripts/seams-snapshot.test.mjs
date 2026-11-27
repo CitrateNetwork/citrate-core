@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
-import { ROOT, MISSING_MARK, VOLATILE, canonical, checkSnapshot, decodeLog, diffSnapshot, inputFixture, maskVolatile } from "./seams-snapshot.mjs";
+import { ROOT, MISSING_MARK, VOLATILE, canonical, checkSnapshot, decodeLog, diffFixture, diffSnapshot, inputFixture, maskVolatile } from "./seams-snapshot.mjs";
 
 const methods = { methods: { go: "method/1", save: "method/0", sendChat: "method/2" } };
 
@@ -53,6 +53,9 @@ describe("seams snapshot helper", () => {
     const env = { SEAMS_SNAPSHOT_WRITE: "1" };
     expect(checkSnapshot("fixtures/seams/y.json", methods, { root, env })).toEqual([]);
     expect(existsSync(join(root, "fixtures/seams/y.json"))).toBe(true);
+    // diffFixture never writes, even in write mode: a mutation case cannot overwrite a fixture.
+    expect(diffFixture("fixtures/seams/y.json", { methods: {} }, { root })).toEqual(["- methods.go", "- methods.save", "- methods.sendChat"]);
+    expect(checkSnapshot("fixtures/seams/y.json", methods, { root, env: {} })).toEqual([]);
     const save = { persona: "p1", stage: "done" };
     expect(inputFixture("fixtures/seams/save.json", () => save, { root, env })).toEqual({ value: save, recorded: true });
     expect(inputFixture("fixtures/seams/save.json", () => ({}), { root, env: {} })).toEqual({ value: save, recorded: true });
@@ -60,6 +63,14 @@ describe("seams snapshot helper", () => {
     const gone = inputFixture("fixtures/seams/none.json", () => save, { root, env: {}, log: (l) => lines.push(l) });
     expect(gone).toEqual({ value: save, recorded: false });
     expect(decodeLog(lines.join("\n"))).toEqual([["fixtures/seams/none.json", JSON.stringify(save, null, 2) + "\n"]]);
+  });
+
+  it("refuses write mode under CI, so a job can never pass by recording", () => {
+    const root = mkdtempSync(join(tmpdir(), "seams-"));
+    const env = { SEAMS_SNAPSHOT_WRITE: "1", CI: "true" };
+    expect(() => checkSnapshot("fixtures/seams/z.json", methods, { root, env })).toThrow(/refused under CI/);
+    expect(() => inputFixture("fixtures/seams/z.json", () => ({}), { root, env })).toThrow(/refused under CI/);
+    expect(existsSync(join(root, "fixtures/seams/z.json"))).toBe(false);
   });
 
   it("decode refuses a path outside the fixture directories", () => {

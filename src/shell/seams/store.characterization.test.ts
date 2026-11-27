@@ -3,7 +3,7 @@
 // arity here must stay byte-identical. A changed fixture needs an L0 reviewer and a reason in the PR.
 import { describe, expect, it } from "vitest";
 import { Store } from "../store";
-import { SEAMS_BASE, checkSnapshot } from "../../../scripts/seams-snapshot.mjs";
+import { SEAMS_BASE, checkSnapshot, diffFixture } from "../../../scripts/seams-snapshot.mjs";
 
 type Kind = string;
 
@@ -29,11 +29,22 @@ function storeSurface() {
   };
 }
 
+const FIXTURE = `fixtures/seams/store-methods.${SEAMS_BASE}.json`;
+
 describe("SEAM-STORE: Store public methods", () => {
   it("store_public_methods_are_unchanged", () => {
     const surface = storeSurface();
     // A parse that found almost nothing would make the snapshot vacuous.
     expect(Object.keys(surface.prototype).length).toBeGreaterThan(200);
-    expect(checkSnapshot(`fixtures/seams/store-methods.${SEAMS_BASE}.json`, surface)).toEqual([]);
+    expect(checkSnapshot(FIXTURE, surface)).toEqual([]);
+  });
+
+  it("mutation: a dropped method or a changed arity is named", () => {
+    const dropped = storeSurface();
+    delete dropped.prototype.save;
+    expect(diffFixture(FIXTURE, dropped)).toEqual(["- prototype.save"]);
+    const arity = storeSurface();
+    arity.prototype.go = "method/9";
+    expect(diffFixture(FIXTURE, arity)).toEqual([`~ prototype.go: "${storeSurface().prototype.go}" -> "method/9"`]);
   });
 });

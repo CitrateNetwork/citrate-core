@@ -3,7 +3,7 @@
 // per-domain files and adds the lane namespaces; the existing keys and methods must stay identical.
 // The tauri bridge is built with `invoke` replaced by a recorder: building it calls no command.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SEAMS_BASE, checkSnapshot } from "../../../scripts/seams-snapshot.mjs";
+import { SEAMS_BASE, checkSnapshot, diffFixture } from "../../../scripts/seams-snapshot.mjs";
 
 /** Own and inherited member names of an object (not Object.prototype's). */
 function names(o: object): string[] {
@@ -43,7 +43,14 @@ describe("SEAM-BRIDGE: bridge keys and methods", () => {
     expect(bridge.mode).toBe("sim");
     const got = surface(bridge);
     expect(got.domains).toBeGreaterThan(30);
-    expect(checkSnapshot(`fixtures/seams/bridge-sim.${SEAMS_BASE}.json`, got)).toEqual([]);
+    const rel = `fixtures/seams/bridge-sim.${SEAMS_BASE}.json`;
+    expect(checkSnapshot(rel, got)).toEqual([]);
+    // Mutation: a method that disappears from a domain, or a domain that disappears, is named.
+    const config = { ...(got.shape.config as Record<string, unknown>) };
+    delete config.read;
+    expect(diffFixture(rel, { ...got, shape: { ...got.shape, config } })).toEqual(["- shape.config.read"]);
+    const { wallet: _wallet, ...noWallet } = got.shape;
+    expect(diffFixture(rel, { ...got, shape: noWallet })).toEqual(["- shape.wallet"]);
   });
 
   it("tauri_bridge_keys_and_methods_are_unchanged", async () => {

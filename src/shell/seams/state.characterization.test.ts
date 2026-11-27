@@ -22,7 +22,7 @@ import {
 } from "../state";
 import { NET_STAMP_FIELD } from "../netScope";
 import { reconciledGrantPatch, store } from "../store";
-import { ROOT, SEAMS_BASE, canonical, checkSnapshot, inputFixture, maskVolatile } from "../../../scripts/seams-snapshot.mjs";
+import { ROOT, SEAMS_BASE, canonical, checkSnapshot, diffFixture, inputFixture, maskVolatile } from "../../../scripts/seams-snapshot.mjs";
 
 const T1 = "2026-01-15T03:07:11.000Z";
 const T2 = "2026-06-20T15:41:53.000Z";
@@ -138,6 +138,10 @@ describe("SEAM-STATE: AppState, its persisted keys and its saves", () => {
     const masked = stable(() => freshState("p1"));
     expect(Object.keys(masked as object).length).toBeGreaterThan(150);
     expect(checkSnapshot(fixture("fresh-state-p1"), masked)).toEqual([]);
+    // Mutation: a state field that is dropped, or whose default changes, is named.
+    const { route: _route, ...dropped } = masked as Record<string, unknown>;
+    expect(diffFixture(fixture("fresh-state-p1"), dropped)).toEqual(["- route"]);
+    expect(diffFixture(fixture("fresh-state-p1"), { ...(masked as object), nodeIntent: "stop" })).toEqual(['~ nodeIntent: "run" -> "stop"']);
   });
 
   it("persist_keys_are_unchanged", () => {
@@ -151,6 +155,10 @@ describe("SEAM-STATE: AppState, its persisted keys and its saves", () => {
       retiredKeys: [...RETIRED_KEYS],
     };
     expect(checkSnapshot(fixture("persist-keys"), table)).toEqual([]);
+    // Mutation: a key that stops being persisted, or changes scope, is named.
+    const { walletAddr: _w, ...lessScope } = PERSIST_SCOPE;
+    expect(diffFixture(fixture("persist-keys"), { ...table, persistScope: lessScope })).toEqual(["- persistScope.walletAddr"]);
+    expect(diffFixture(fixture("persist-keys"), { ...table, persistScope: { ...PERSIST_SCOPE, pins: "network" } })).toEqual(['~ persistScope.pins: "device" -> "network"']);
   });
 
   it("load_state_reads_a_059_save", () => {

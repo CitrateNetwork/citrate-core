@@ -94,7 +94,12 @@ export function diffSnapshot(want, got, path = "") {
   return same(want, got) ? [] : [`~ ${path || "(root)"}: ${JSON.stringify(want)} -> ${JSON.stringify(got)}`];
 }
 
-const writeMode = (env) => env[WRITE_ENV] === "1";
+/** Write mode records instead of comparing, so a CI job must never run in it: under CI it fails. */
+function writeMode(env) {
+  if (env[WRITE_ENV] !== "1") return false;
+  if (env.CI) throw new Error(`${WRITE_ENV}=1 is refused under CI: fixtures are recorded locally and reviewed`);
+  return true;
+}
 
 function missing(rel, body, log) {
   log(`${MISSING_MARK} ${rel} ${Buffer.from(body, "utf8").toString("hex")}`);
@@ -116,6 +121,12 @@ export function checkSnapshot(rel, actual, { root = ROOT, env = process.env, log
   const diff = diffSnapshot(JSON.parse(raw), JSON.parse(body));
   if (diff.length === 0 && raw !== body) return ["~ (bytes): the same value, written differently"];
   return diff;
+}
+
+/** The differences between the recorded fixture `rel` and `actual`. Never writes, so the suites'
+ *  mutation cases (a dropped or changed member must be named) are safe in write mode too. */
+export function diffFixture(rel, actual, { root = ROOT } = {}) {
+  return diffSnapshot(JSON.parse(readFileSync(join(root, rel), "utf8")), canonical(actual));
 }
 
 /** An input fixture (a saved state): recorded from `make()` in write mode, read otherwise.

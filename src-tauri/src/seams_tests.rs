@@ -125,6 +125,8 @@ fn check_snapshot(name: &str, got: &[String]) {
     let (rel, path) = fixture(name);
     let body = format!("{}\n", got.join("\n"));
     if std::env::var("SEAMS_SNAPSHOT_WRITE").as_deref() == Ok("1") {
+        // A CI job must never pass by recording: fixtures are recorded locally and reviewed.
+        assert!(std::env::var_os("CI").is_none(), "write mode under CI");
         let dir = path.parent().expect("fixture dir");
         fs::create_dir_all(dir).expect("create fixture dir");
         fs::write(&path, &body).expect("write fixture");
