@@ -26,6 +26,14 @@
 # (V60 MESH-2; GitHub accepts any one listed owner, so the security lead's part is their signature
 # in the record, which the build verifies against signers.json).
 #! reviewers * @CitrateNetwork/maintainers
+# LQ-WP03 (#789, seam L0-WP01a): the tripwire registry, its rule, its check, the check's own tests and
+# the workflow decide whether a registered tripwire may go (only for a stricter replacement), so the
+# owner approves every change to them. The lane rows below still name LQ as the lane that edits them.
+#! tail /.agentile/coverage/tripwires.json @SaulBuilds
+#! tail /.agentile/coverage/TRIPWIRES.md @SaulBuilds
+#! tail /scripts/ci/lq/tripwire-inventory.mjs @SaulBuilds
+#! tail /scripts/ci/lq/tripwire-inventory.test.mjs @SaulBuilds
+#! tail /.github/workflows/lq-tripwires.yml @SaulBuilds
 #! tail /release/signoffs/ @SaulBuilds
 
 # --- Fallback: anything no row below claims is L0's (integration; other lanes go through a seam). ---
