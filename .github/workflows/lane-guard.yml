@@ -24,10 +24,9 @@
 # The PR's own selftest and the CODEOWNERS check run in a separate job.
 name: lane-guard
 
+# labeled/unlabeled: adding or removing `seam` re-judges the PR.
 on:
-  pull_request:
-    # labeled/unlabeled: adding or removing `seam` re-judges the PR.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request: { types: [opened, synchronize, reopened, labeled, unlabeled] }
   merge_group:
     types: [checks_requested]
 
@@ -49,7 +48,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      branch: ${{ steps.pr.outputs.branch }}
       labels: ${{ steps.pr.outputs.labels }}
       seam: ${{ steps.pr.outputs.seam }}
     steps:
@@ -82,7 +80,6 @@ jobs:
             seam=true
           fi
           {
-            echo "branch=$branch"
             echo "labels=$labels"
             echo "seam=$seam"
           } >>"$GITHUB_OUTPUT"
@@ -170,8 +167,8 @@ jobs:
   lane-guard:
     name: lane-guard
     needs: [resolve, seam-characterization]
-    # Also when the characterization job was skipped or failed: the guard then judges without the
-    # exemption, so a seam PR touching another lane's file fails here.
+    # Also when resolve or the characterization job was skipped or failed: the guard then judges
+    # without the exemption, so a seam PR touching another lane's file fails here.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -184,15 +181,26 @@ jobs:
       - name: The lane owns every changed file
         env:
           SHA: ${{ github.sha }}
-          RESOLVED: ${{ needs.resolve.result }}
-          BRANCH: ${{ needs.resolve.outputs.branch }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          MQ_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Labels and the characterization result: empty when resolve or the characterization job
+          # did not succeed, which withholds the seam exemption (and nothing else).
           LABELS_JSON: ${{ needs.resolve.outputs.labels }}
           CHAR_RESULT: ${{ needs.seam-characterization.result }}
           CHAR_GREEN: ${{ needs.seam-characterization.outputs.green }}
         run: |
           set -euo pipefail
-          if [ "$RESOLVED" != success ]; then echo "::error::lane-guard resolve did not succeed"; exit 1; fi
-          branch="$BRANCH"
+          if [ "$EVENT" = merge_group ]; then
+            # refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>: judge the queued PR's own branch.
+            pr=$(printf '%s' "$MQ_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p')
+            if [ -z "$pr" ]; then echo "::error::unexpected merge-group ref shape"; exit 1; fi
+            branch=$(gh api "repos/$REPO/pulls/$pr" --jq .head.ref)
+          else
+            branch="$HEAD_REF"
+          fi
           # The judged commit is the event sha (github.sha). pull_request: the PR merge commit, whose
           # first parent is the base it merges into. merge_group: this PR's own queue entry (one
           # squash or merge commit on the entry ahead of it), never the group base sha, which would
@@ -215,10 +223,10 @@ jobs:
           fi
           check="$policy/scripts/cx-ownership-check.sh"
           if grep -q '^# lane-guard-api: 2' "$check"; then
-            char=missing
-            if [ "$CHAR_RESULT" = success ] && [ "$CHAR_GREEN" = true ]; then char=success
-            elif [ -n "$CHAR_RESULT" ]; then char="$CHAR_RESULT"; fi
-            LG_LABELS=$(jq -r '.[]' <<<"$LABELS_JSON") LG_CHARACTERIZATION="$char" \
+            char="${CHAR_RESULT:-missing}"
+            if [ "${CHAR_RESULT:-}" = success ] && [ "${CHAR_GREEN:-}" = true ]; then char=success
+            elif [ "$char" = success ]; then char=no-green-output; fi
+            LG_LABELS=$(jq -r '.[]' <<<"${LABELS_JSON:-[]}") LG_CHARACTERIZATION="$char" \
               CX_DIFF_ROOT="$PWD" CX_DIFF_HEAD="$head" bash "$check" --guard "$branch" "$base"
             exit
           fi
