@@ -1,0 +1,495 @@
+# created: 2026-11-27 | branch: feat/v60-l0-wp01-ownership-map
+# author: Larry Klosowski (L0 lane, L0-WP01; Claude Opus 5.5)
+# status: active
+#
+# 0.6.0 lane ownership map (planset 2026-11-07-v060, lanes/L0_INTEGRATION_SEAMS.md section 2 and
+# each lane file's "File ownership" section). One source for two consumers:
+#   scripts/cx-ownership-check.sh --map v60 <lane> [base]   (lane-guard.yml, every PR + merge group)
+#   scripts/gen-codeowners.mjs                              (writes .github/CODEOWNERS)
+#
+# Row format:  <lanes> <glob>     lanes: l0..l9, lq, frozen, or a comma list (shared file), or '*'
+#   - The LAST matching row owns a file (CODEOWNERS rules). Broad rows first, narrow rows later.
+#   - '*' matches inside one path segment, '**' only as a whole glob or a trailing '/**'.
+#   - '*' rows are process files any lane may touch; they never change a file's owner.
+#   - 'frozen' paths belong to no lane: no feat/v60-* branch may change them (L0 section 2.3).
+#   - 'create:<lanes> <glob>' rows are seed grants, never owners: those lanes may ADD a matching file
+#     that does not exist at the base. Editing or deleting it afterwards is its owner's alone.
+#     CODEOWNERS ignores them (review still routes to the owner's reviewers).
+#   - A glob never ends in '/' (CODEOWNERS would read a directory, the matcher a literal path).
+#   - A lane that needs a file it does not own asks through an L0 seam PR; only L0 edits this map.
+# Partial-file ownership in the lane files (line ranges, "only the X area") is recorded as whole-file
+# ownership plus a comment; the lane keeps to its part in review.
+#
+# CODEOWNERS directives. Reviewers come from the federation repos/citrate-core/owners.md (code
+# review: Saul plus one, the maintainers team). 'tail' rules are written last so they always win:
+# the CL-S4 sign-off record, its packet copy and the signer registry need the owner's approval
+# (V60 MESH-2; GitHub accepts any one listed owner, so the security lead's part is their signature
+# in the record, which the build verifies against signers.json).
+#! reviewers * @CitrateNetwork/maintainers
+#! tail /release/signoffs/ @SaulBuilds
+
+# --- Fallback: anything no row below claims is L0's (integration; other lanes go through a seam). ---
+l0 **
+
+# --- L0 directories (before the lanes, so a lane's narrower row inside them wins). ---
+l0 release/signoffs/**
+l0 .agentile/coverage/**
+l0 scripts/ci/linux-native-acceptance/**
+
+# --- Per-lane registration points (L0 section 2.2): L0 creates them, then only that lane edits. ---
+# Seed grants: the L0 seam WPs (WP03 to WP08) add these files for every lane in one PR each. A file
+# that already exists at the base is the lane's (rows below), so L0 cannot edit or delete it.
+create:l0 src-tauri/src/commands/l*.rs
+create:l0 src-tauri/src/lanes/l*/**
+create:l0 src-tauri/permissions/l*-commands.toml
+create:l0 src/bridge/lanes/l*.ts
+create:l0 src/bridge/tauri/l*.ts
+create:l0 src/bridge/sim/l*.ts
+create:l0 src/shell/state/l*.ts
+create:l0 src/shell/actions/l*/**
+create:l0 src/shell/routes/l*.tsx
+create:l0 ci/characterization.d/l*.json
+l0 src-tauri/src/commands/l0.rs
+l0 src-tauri/src/lanes/l0/**
+l0 src-tauri/permissions/l0-commands.toml
+l0 src/bridge/lanes/l0.ts
+l0 src/bridge/tauri/l0.ts
+l0 src/bridge/sim/l0.ts
+l0 src/shell/state/l0.ts
+l0 src/shell/actions/l0/**
+l0 src/shell/routes/l0.tsx
+l0 ci/characterization.d/l0.json
+l1 src-tauri/src/commands/l1.rs
+l1 src-tauri/src/lanes/l1/**
+l1 src-tauri/permissions/l1-commands.toml
+l1 src/bridge/lanes/l1.ts
+l1 src/bridge/tauri/l1.ts
+l1 src/bridge/sim/l1.ts
+l1 src/shell/state/l1.ts
+l1 src/shell/actions/l1/**
+l1 src/shell/routes/l1.tsx
+l1 ci/characterization.d/l1.json
+l2 src-tauri/src/commands/l2.rs
+l2 src-tauri/src/lanes/l2/**
+l2 src-tauri/permissions/l2-commands.toml
+l2 src/bridge/lanes/l2.ts
+l2 src/bridge/tauri/l2.ts
+l2 src/bridge/sim/l2.ts
+l2 src/shell/state/l2.ts
+l2 src/shell/actions/l2/**
+l2 src/shell/routes/l2.tsx
+l2 ci/characterization.d/l2.json
+l3 src-tauri/src/commands/l3.rs
+l3 src-tauri/src/lanes/l3/**
+l3 src-tauri/permissions/l3-commands.toml
+l3 src/bridge/lanes/l3.ts
+l3 src/bridge/tauri/l3.ts
+l3 src/bridge/sim/l3.ts
+l3 src/shell/state/l3.ts
+l3 src/shell/actions/l3/**
+l3 src/shell/routes/l3.tsx
+l3 ci/characterization.d/l3.json
+l4 src-tauri/src/commands/l4.rs
+l4 src-tauri/src/lanes/l4/**
+l4 src-tauri/permissions/l4-commands.toml
+l4 src/bridge/lanes/l4.ts
+l4 src/bridge/tauri/l4.ts
+l4 src/bridge/sim/l4.ts
+l4 src/shell/state/l4.ts
+l4 src/shell/actions/l4/**
+l4 src/shell/routes/l4.tsx
+l4 ci/characterization.d/l4.json
+l5 src-tauri/src/commands/l5.rs
+l5 src-tauri/src/lanes/l5/**
+l5 src-tauri/permissions/l5-commands.toml
+l5 src/bridge/lanes/l5.ts
+l5 src/bridge/tauri/l5.ts
+l5 src/bridge/sim/l5.ts
+l5 src/shell/state/l5.ts
+l5 src/shell/actions/l5/**
+l5 src/shell/routes/l5.tsx
+l5 ci/characterization.d/l5.json
+l6 src-tauri/src/commands/l6.rs
+l6 src-tauri/src/lanes/l6/**
+l6 src-tauri/permissions/l6-commands.toml
+l6 src/bridge/lanes/l6.ts
+l6 src/bridge/tauri/l6.ts
+l6 src/bridge/sim/l6.ts
+l6 src/shell/state/l6.ts
+l6 src/shell/actions/l6/**
+l6 src/shell/routes/l6.tsx
+l6 ci/characterization.d/l6.json
+l7 src-tauri/src/commands/l7.rs
+l7 src-tauri/src/lanes/l7/**
+l7 src-tauri/permissions/l7-commands.toml
+l7 src/bridge/lanes/l7.ts
+l7 src/bridge/tauri/l7.ts
+l7 src/bridge/sim/l7.ts
+l7 src/shell/state/l7.ts
+l7 src/shell/actions/l7/**
+l7 src/shell/routes/l7.tsx
+l7 ci/characterization.d/l7.json
+l8 src-tauri/src/commands/l8.rs
+l8 src-tauri/src/lanes/l8/**
+l8 src-tauri/permissions/l8-commands.toml
+l8 src/bridge/lanes/l8.ts
+l8 src/bridge/tauri/l8.ts
+l8 src/bridge/sim/l8.ts
+l8 src/shell/state/l8.ts
+l8 src/shell/actions/l8/**
+l8 src/shell/routes/l8.tsx
+l8 ci/characterization.d/l8.json
+l9 src-tauri/src/commands/l9.rs
+l9 src-tauri/src/lanes/l9/**
+l9 src-tauri/permissions/l9-commands.toml
+l9 src/bridge/lanes/l9.ts
+l9 src/bridge/tauri/l9.ts
+l9 src/bridge/sim/l9.ts
+l9 src/shell/state/l9.ts
+l9 src/shell/actions/l9/**
+l9 src/shell/routes/l9.tsx
+l9 ci/characterization.d/l9.json
+
+# --- L1 Agent runtime (L1 section 3.1; cx s6 agent rows). hermes.rs: build_spec env area. ---
+l1 acp-host/**
+l1 src-tauri/src/agent_runtime_ipc*.rs
+l1 src-tauri/src/mcp_gateway*.rs
+l1 src-tauri/src/model_proxy*.rs
+l1 src-tauri/src/model_provider*.rs
+l1 src-tauri/src/provider_*.rs
+l1 src-tauri/src/ai.rs
+l1 src-tauri/src/local_endpoints*.rs
+l1 src-tauri/src/agent_auth*.rs
+l1 src-tauri/src/agent_grants*.rs
+l1 src-tauri/src/git_credential*.rs
+l1 src-tauri/src/workspace_default*.rs
+l1 src-tauri/src/hermes.rs
+l1 src-tauri/src/hermes_tests.rs
+l1 src-tauri/src/hermes_mcp.rs
+l1 src-tauri/src/hermes_mcp_tests.rs
+l1 src-tauri/src/hermes_setup*.rs
+l1 src-tauri/src/node_mcp.rs
+l1 src-tauri/src/node_mcp_tools.rs
+l1 src/agent/acpProvider*
+l1 src/agent/agentProfile*
+l1 src/agent/toolSearch*
+l1 src/agent/compactPrompt*
+l1 src/agent/harness*
+l1 src/agent/modelRouter.ts
+l1 src/agent/modelRouter.test.ts
+l1 src/agent/modelRouterCloud.test.ts
+l1 src/shell/slices/agentRuntime*
+l1 src/shell/slices/agent.ts
+l1 src/bridge/tauri/agent.ts
+l1 src/bridge/sim/agent.ts
+l1 src/bridge/contracts/agent.contract.test.ts
+l1 release/agents.lock.json
+l1 docs/ACP_HOST.md
+l1 docs/MCP_GATEWAY.md
+
+# --- L2 HIC, sandbox and deploy (L2 section 2; D-12: ceremony and wallet-gate code). ---
+# kit/src/ceremony.rs: L2 only, owner sign-off.
+l2 src-tauri/src/hic/**
+l2 src-tauri/src/agent_tools.rs
+l2 src-tauri/src/hermes_shell*.rs
+l2 src-tauri/src/hermes_terminal*.rs
+l2 src-tauri/src/hermes_auto_approve*.rs
+l2 src-tauri/src/hermes_undo*.rs
+l2 src-tauri/src/contract_deploy*.rs
+l2 src-tauri/src/deploy_gate*.rs
+l2 src-tauri/src/fork_dry_run*.rs
+l2 src-tauri/src/forge_toolchain*.rs
+l2 src-tauri/src/faucet*.rs
+l2 src-tauri/src/deploy_records*.rs
+l2 src-tauri/src/postdeploy*.rs
+l2 src-tauri/src/devnet*.rs
+l2 src-tauri/src/contract_compile*.rs
+l2 src-tauri/src/node_mcp_tools_deploy*.rs
+l2 components/**
+l2 kit/src/ceremony.rs
+l2 src/shell/slices/ceremony.ts
+l2 src/agent/hic*
+l2 src/agent/contractForge*
+l2 src/agent/toolchainGuidance*
+l2 src/shell/ContractForgePanel.tsx
+l2 src/shell/DeployGateCard.tsx
+l2 src/shell/ToolchainCard.tsx
+l2 scripts/build-citrate-fork.sh
+l2 docs/adr/ADR-2026-11-27-*.md
+
+# --- L3 Shell, onboarding, nav, notifications (L3 section 2.1; cx s7 cohesion rows). ---
+# src/data/seed.ts: COACH_STEPS lines only. Settings.tsx: shell plus account, keys, privacy, app.
+# places.ts and PlaceView.tsx stay L0 until L0-WP08 lands the route registry (see the L0 rows).
+l3 src/App.tsx
+l3 src/onboarding/**
+l3 src/shell/Chrome.tsx
+l3 src/shell/Sidebar.tsx
+l3 src/shell/sidebarIa.test.tsx
+l3 src/shell/layoutShortcuts*
+l3 src/shell/AuthGate*
+l3 src/shell/session/**
+l3 src/shell/ShellHeader*
+l3 src/shell/highControl*
+l3 src/shell/AccountMenu*
+l3 src/setup/**
+l3 src/notify/**
+l3 src/data/seed.ts
+l3 src/surfaces/Settings.tsx
+l3 src/surfaces/Train.tsx
+l3 src/surfaces/People.tsx
+l3 src/surfaces/Comms.tsx
+l3 docs/nav/FIVE_PLACE_ROUTE_MAP.md
+l3 docs/nav/FOUR_PLACE_ROUTE_MAP.md
+l3 src-tauri/src/notify*.rs
+l3 src-tauri/src/tray*.rs
+l3 src-tauri/src/session_unlock*.rs
+l3 src-tauri/src/sensitive_gc*.rs
+
+# --- L4 Conversations (L4 section 2.1; cx s3 groups rows). comms.rs: MsgView, RosterEntry,
+# groups_messages, groups_roster. ---
+l4 src/surfaces/groups/**
+l4 src/surfaces/Groups.tsx
+l4 src/surfaces/groupControlMessages*
+l4 src/surfaces/groupsHonesty.test.tsx
+l4 src/surfaces/Agent.tsx
+l4 src/surfaces/Dashboard.tsx
+l4 src/shell/slices/groups.ts
+l4 src/bridge/tauri/comms.ts
+l4 src/bridge/sim/comms.ts
+l4 src/bridge/contracts/comms.contract.test.ts
+l4 src/components/AgentChat.tsx
+l4 src/components/agentChat*.test.tsx
+l4 src/components/chatLayout*
+l4 src/components/RunTimeline*
+l4 src/components/Markdown*
+l4 src/components/MessageBoundary*
+l4 src/components/CodeBlock*
+l4 src/components/codeTokens*
+l4 src/components/MediaTray*
+l4 src/components/MediaChip*
+l4 src/components/mediaIntake*
+l4 src/components/mediaFit*
+l4 src/components/chatBubbles.css
+l4 src/agent/voice*
+l4 src-tauri/src/comms.rs
+l4 src-tauri/src/comms_tests.rs
+l4 src-tauri/src/comms_link*.rs
+l4 src-tauri/src/group.rs
+l4 src-tauri/src/seam.rs
+l4 src-tauri/src/media_intake*.rs
+
+# --- L5 Models, multimodal, LoRA (L5 section 2.1; cx s1 model rows). ---
+l5 src-tauri/src/model.rs
+l5 src-tauri/src/model_tests.rs
+l5 src-tauri/src/model_dl_tests.rs
+l5 src-tauri/src/model_live_tests.rs
+l5 src-tauri/src/model_log*.rs
+l5 src-tauri/src/model_catalog*.rs
+l5 src-tauri/src/model_delete*.rs
+l5 src-tauri/src/model_registry*.rs
+l5 src-tauri/src/model_register*.rs
+l5 src-tauri/src/model_caps*.rs
+l5 src-tauri/src/model_license*.rs
+l5 src-tauri/src/model_companion*.rs
+l5 src-tauri/src/hf_auth*.rs
+l5 src-tauri/src/serve.rs
+l5 src-tauri/src/serve_*.rs
+l5 src-tauri/src/media.rs
+l5 src-tauri/src/media_tests.rs
+l5 src-tauri/src/gguf_meta*.rs
+l5 src-tauri/src/image_local*.rs
+l5 src-tauri/src/voice*.rs
+l5 src-tauri/src/adapter_serve*.rs
+l5 src-tauri/src/lora_*.rs
+l5 src-tauri/licenses/gemma-4.LICENSE
+l5 src/shell/localModels*
+l5 src/shell/slices/models*
+l5 src/surfaces/Models.tsx
+l5 src/onboarding/LocalModelControls*
+l5 src/agent/modelRouterSources*
+l5 src/agent/speech*
+l5 src/agent/dictation*
+l5 src/models/**
+l5 src/voice/**
+l5 src/teach/**
+l5 services/lora-trainer/**
+l5 src/bridge/tauri/models.ts
+l5 src/bridge/sim/models.ts
+l5 src/bridge/contracts/models.contract.test.ts
+
+# --- L6 Connections and marketplace (L6 section 2). social.rs is shared with L4 (see below). ---
+l6 src-tauri/src/connections*.rs
+l6 src-tauri/src/mcp_servers*.rs
+l6 src-tauri/src/store_catalog*.rs
+l6 src-tauri/src/google_workspace*.rs
+l6 src-tauri/src/oauth_client/**
+l6 src-tauri/src/mcp_auth/**
+l6 src-tauri/src/mcp_catalog/**
+l6 src-tauri/src/marketplace_tools*.rs
+l6 src-tauri/src/webhooks/**
+l6 src-tauri/src/agent_signin*.rs
+l6 components/src/mcp_subregistry.rs
+l6 components/tests/mcp_subregistry.rs
+l6 src/surfaces/Connections.tsx
+l6 src/surfaces/connections*.test.tsx
+l6 src/surfaces/StoreCatalog.tsx
+l6 src/surfaces/storeCatalog*.test.tsx
+l6 src/surfaces/McpServersPanel.tsx
+l6 src/surfaces/mcpServers*
+l6 src/surfaces/mcpRuntime*
+l6 src/surfaces/marketplace/**
+l6 src/bridge/tauri/social.ts
+l6 src/bridge/tauri/store.ts
+l6 src/shell/slices/l6Marketplace*
+l6 docs/CONNECTIONS_RUNBOOK.md
+l6 docs/OAUTH_SETUP_RUNBOOK.md
+l6 docs/LINKEDIN_RELAY_SPEC.md
+l6 docs/MCP_USER_SERVERS.md
+l6 docs/STORE_CATALOG.md
+l6 docs/MCP_MARKETPLACE.md
+l6 docs/WEBHOOKS.md
+l6 tools/mcp-mirror/**
+
+# --- L7 Networking (L7 section 2; cx s4 cluster rows). device_link*: fields only, ceremony frozen. ---
+l7 src-tauri/src/fleet*.rs
+l7 src-tauri/src/cluster_mesh*.rs
+l7 src-tauri/src/cluster.rs
+l7 src-tauri/src/cluster_tests.rs
+l7 src-tauri/src/device_link*.rs
+l7 src-tauri/src/net/**
+l7 src/surfaces/Cluster.tsx
+l7 src/surfaces/ClusterMap.tsx
+l7 src/surfaces/cluster*
+l7 src/surfaces/AddMachineSheet.tsx
+l7 src/surfaces/addMachineSheet*
+l7 src/surfaces/meshSwitch*
+l7 src/fleet/**
+l7 src/net/**
+l7 src/bridge/tauri/fleet.ts
+l7 src/bridge/tauri/cluster.ts
+l7 src/bridge/sim/cluster.ts
+l7 src/bridge/tauri/net.ts
+l7 src/bridge/sim/net.ts
+l7 src/bridge/contracts/cluster.contract.test.ts
+l7 src/shell/slices/cluster*
+l7 src/agent/groupClusterTools*
+l7 scripts/cx-cluster-soak.sh
+l7 docs/FLEET_MULTI_MACHINE_TEST.md
+l7 docs/FLEET_WIZARD_RUNBOOK.md
+l7 docs/CLUSTER_CROSSMACHINE_SOAK_RUNBOOK.md
+l7 docs/NETWORK_PORTS_AND_FIREWALL.md
+l7 docs/CLOUDFLARE_TUNNEL.md
+l7 release/signoffs/CL-S4_PRIVATE_LINKS_ADDENDUM.md
+
+# --- L8 Train together (L8 section 2.1; cx s5 training rows). training.rs: read paths frozen. ---
+l8 src/fl/**
+l8 src/surfaces/ALF.tsx
+l8 src/surfaces/alfSurfaceHonesty.test.tsx
+l8 src/agent/fl*
+l8 src/agent/workerProposal*
+l8 src/bridge/tauri/flRounds.ts
+l8 src/bridge/tauri/flDatasets.ts
+l8 src/bridge/sim/flRounds.ts
+l8 src/bridge/sim/flDatasets.ts
+l8 src/bridge/tauri/training.ts
+l8 src/bridge/sim/training.ts
+l8 src/bridge/contracts/training.contract.test.ts
+l8 src/shell/slices/training*
+l8 src-tauri/src/fl_*.rs
+l8 src-tauri/src/training*.rs
+l8 src-tauri/fl-collect/**
+l8 src-tauri/formal/FlRoundGate.tla
+l8 src-tauri/formal/FlTogether.tla
+l8 docs/fl/**
+
+# --- L9 Crypto and PQC (L9 section 2; core paths only). ---
+l9 src-tauri/src/pqc_seal*.rs
+l9 src-tauri/src/update_pq_sig*.rs
+l9 src-tauri/src/invite_seal*.rs
+l9 src-tauri/src/tls_provider*.rs
+l9 components/src/pq_key*.rs
+l9 components/tests/pq_key*.rs
+l9 fixtures/pqc/**
+
+# --- LQ Non-regression guard (LQ section 2.1). ---
+lq .agentile/coverage/BASELINE.md
+lq .agentile/coverage/TRIPWIRES.md
+lq .agentile/coverage/tripwires.json
+lq .agentile/coverage/CHARACTERIZATION.md
+lq .agentile/coverage/characterization.json
+lq release/chain-touch.json
+lq release/perf-budgets.json
+lq release/evidence/chain/**
+lq scripts/ci/lq/**
+lq .github/workflows/lq-*.yml
+lq docs/release/060-READINESS.md
+lq docs/release/060-ROLLBACK.md
+
+# --- Shared files: both lanes named in their lane files; they stay in their parts and queue in order. ---
+l4,l6 src-tauri/src/social.rs
+l4,l9 src-tauri/src/groups_history*.rs
+l5,l8 src/fl/Adapters.tsx
+l5,l8 src/fl/adapters.test.tsx
+l0,lq .agentile/coverage/ratchet.json
+
+# --- L0 hotspots (L0 section 2.1). Exact paths, last, so no lane row above can claim them. ---
+l0 src-tauri/src/lib.rs
+l0 src-tauri/src/commands/mod.rs
+l0 src-tauri/src/lanes/mod.rs
+l0 src-tauri/capabilities/default.json
+l0 src-tauri/permissions/main-window.toml
+l0 src-tauri/Cargo.toml
+l0 Cargo.toml
+l0 Cargo.lock
+l0 package.json
+l0 package-lock.json
+l0 src-tauri/tauri.conf.json
+l0 src-tauri/runtime-deps.sha256
+l0 src/bridge/index.ts
+l0 src/bridge/cx.ts
+l0 src/bridge/domains.ts
+l0 src/bridge/lanes/index.ts
+l0 src/shell/state.ts
+l0 src/shell/store.ts
+l0 src/shell/slices/registry.ts
+l0 src/shell/slices/createSlice.ts
+l0 src/shell/routes/registry.ts
+l0 src/shell/places.ts
+l0 src/shell/PlaceView.tsx
+l0 release/flags.json
+l0 release/budgets.json
+l0 release/components.json
+l0 release/network-cut.json
+l0 release/licences.json
+l0 release/notices.json
+l0 scripts/release-local.sh
+l0 scripts/release-local.test.mjs
+l0 scripts/updater-feed.mjs
+l0 scripts/updater-feed.test.mjs
+l0 scripts/size-budget.mjs
+l0 scripts/ci/ratchets.mjs
+l0 scripts/ci/local-ci.sh
+l0 scripts/ci/remote-check.sh
+l0 scripts/ci/linux-native-acceptance.sh
+l0 scripts/cx-ownership-check.sh
+l0 scripts/cx-copy-lint.sh
+l0 scripts/gen-codeowners.mjs
+l0 scripts/codeowners.test.mjs
+l0 .agentile/v60-ownership.map
+l0 .agentile/v60/unfinished.json
+l0 ci/characterization.json
+l0 .github/CODEOWNERS
+l0 .github/workflows/ci.yml
+l0 .github/workflows/merge-gate.yml
+l0 .github/workflows/release.yml
+l0 .github/workflows/release-windows.yml
+l0 .github/workflows/linux-native-acceptance.yml
+l0 .github/workflows/lane-guard.yml
+
+# --- Frozen (L0 section 2.3): no lane branch changes these; changes go through an owner-gated PR. ---
+frozen src-tauri/addresses/40204.json
+frozen src-tauri/addresses/40204.canonical.json
+frozen src-tauri/network/profiles.json
+
+# --- Always allowed (process files, not code). ---
+* .agentile/sprints/active/**
