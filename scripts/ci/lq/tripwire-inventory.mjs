@@ -4,23 +4,28 @@
 // status: active
 //
 // LQ-WP03: the honesty and tripwire registry (.agentile/coverage/tripwires.json) and its check.
-// A registered tripwire stays in the runners' own test lists, or is replaced only by a stricter
-// test: the old entry names `replaced_by`, the replacement exists in the lists and is itself
-// registered, the entry links `replacement_evidence` (the run or commit where the replacement
-// failed against a deliberately weakened copy of the guarded code), and the PR carries the
-// `tripwire-replace` label. Entries are never removed and a replacement is never re-pointed.
+// A registered tripwire stays in the runners' own test lists and runs (a Rust test marked
+// #[ignore] is listed but not run), or is replaced only by a stricter test: the old entry names
+// `replaced_by`, the chain of replacements ends at a registered test that is listed and runs, each
+// new edge links `replacement_evidence` (the run or commit where the replacement failed against a
+// deliberately weakened copy of the guarded code), and the PR carries the `tripwire-replace` label.
+// Entries are never removed and an earlier edge is never re-pointed: a replacement is itself
+// retired by setting `replaced_by` on its own entry (A -> B, then B -> C).
 // Rules and procedure: .agentile/coverage/TRIPWIRES.md.
 //
-// Data source (Rule 7): `cargo test --workspace --locked -- --list` (stdout and stderr together, so
-// cargo's "Running" lines name each test binary) and `vitest list --json=<file>`.
+// Data source (Rule 7): `cargo test --workspace --locked --offline -- --list` (stdout and stderr
+// together, so cargo's "Running" lines name each test binary), the same with `--ignored` (only the
+// #[ignore] tests), and `vitest list --json=<file>` (vitest leaves skipped, todo and only-filtered
+// tests out of that listing itself).
 //
 // usage: tripwire-inventory.mjs <list|generate|check|count> [options]
 //   --cargo-list <file>       cargo test -- --list log
+//   --cargo-ignored <file>    cargo test -- --list --ignored log
 //   --vitest-list <file>      vitest list --json output
 //   --root <dir>              repo root vitest paths are made relative to (default: cwd)
 //   --registry <file>         the registry (check, count; generate keeps its entries)
 //   --base-registry <file>    the registry at the merge base (check)
-//   --labels <a,b>            the PR's labels (check)
+//   --labels-json <json>      the PR's labels as a JSON array of names, matched exactly (check)
 //   --no-labels               labels unavailable (merge_group, push); the PR run enforced them
 //   --strict-unregistered     an unregistered tripwire-named test fails instead of warning
 //   --since <rev>             `since` for entries generate adds
@@ -54,7 +59,14 @@ export class UsageError extends Error {}
 // anything but src/lib.rs gets "@bin", so a crate's lib and bin of the same name stay apart.
 // Doc-tests are skipped (not tripwires, and their names carry line numbers).
 export function parseCargoList(text) {
+  return parseCargoListing(text).ids;
+}
+
+// The ids plus the number of test binaries the log ran ("Running" lines), so an ignored listing
+// with no ignored tests can be told from a list step that never ran.
+export function parseCargoListing(text) {
   const ids = new Set();
+  let binaries = 0;
   let unit = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\x1b\[[0-9;]*m/g, "");
@@ -63,6 +75,7 @@ export function parseCargoList(text) {
       const stem = path.basename(running[3]).replace(/\.exe$/, "").replace(/-[0-9a-f]{16}$/, "");
       const bin = running[1] && running[2] !== "src/lib.rs";
       unit = bin ? `${stem}@bin` : stem;
+      binaries += 1;
       continue;
     }
     if (/^\s*Doc-tests /.test(line)) {
@@ -72,7 +85,7 @@ export function parseCargoList(text) {
     const t = line.match(/^(\S+): test$/);
     if (t && unit) ids.add(`${unit}::${t[1]}`);
   }
-  return ids;
+  return { ids, binaries };
 }
 
 // `vitest list --json`: [{ name: "suite > test", file: "/abs/path" }, ...]. Two tests with the same
@@ -169,7 +182,8 @@ export function validateRegistry(reg) {
   return errs;
 }
 
-export function check({ reg, base, present, labels, strictUnregistered }) {
+// `present` is the set of tests that run; `ignored` the listed tests that do not (#[ignore]).
+export function check({ reg, base, present, ignored = new Set(), labels, strictUnregistered }) {
   const errors = [];
   const warnings = [];
   const notes = [];
@@ -195,14 +209,15 @@ export function check({ reg, base, present, labels, strictUnregistered }) {
   for (const [id, t] of head) {
     if (t.replaced_by === null) {
       active += 1;
-      if (!present.has(id)) {
+      if (ignored.has(id)) {
+        errors.push(`registered tripwire is ignored: ${id} (#[ignore] keeps it listed but ci.yml does not run it; remove the ignore or replace it)`);
+      } else if (!present.has(id)) {
         errors.push(`missing registered tripwire: ${id} (deleted or renamed; a replacement needs replaced_by, label tripwire-replace and evidence)`);
       }
       continue;
     }
     const to = t.replaced_by;
     if (to === id) errors.push(`${id} is replaced by itself`);
-    if (!present.has(to)) errors.push(`replaced_by points to a test that does not exist: ${id} -> ${to}`);
     if (!head.has(to)) errors.push(`replacement is not registered: ${to} (add its own entry)`);
     if (typeof t.replacement_evidence !== "string" || !EVIDENCE.test(t.replacement_evidence)) {
       errors.push(`replacement_evidence must link the run or commit where ${to} failed against a weakened copy of the guarded code (${id})`);
@@ -215,18 +230,30 @@ export function check({ reg, base, present, labels, strictUnregistered }) {
     notes.push(`replaced: ${id} -> ${to}`);
   }
 
-  // Replacement chains end at an active entry.
-  for (const id of head.keys()) {
-    const seen = new Set([id]);
-    let cur = head.get(id);
-    while (cur && cur.replaced_by !== null) {
-      if (seen.has(cur.replaced_by)) {
+  // Every replacement chain ends at a registered, active entry whose test is listed and runs.
+  // Only the end has to run: a middle link (B in A -> B -> C) is retired by its own edge.
+  for (const [id, t] of head) {
+    if (t.replaced_by === null || t.replaced_by === id) continue;
+    const chain = [id];
+    let cur = t;
+    let broken = false;
+    while (cur.replaced_by !== null) {
+      if (chain.includes(cur.replaced_by)) {
         errors.push(`replacement cycle through ${id}`);
+        broken = true;
         break;
       }
-      seen.add(cur.replaced_by);
+      chain.push(cur.replaced_by);
       cur = head.get(cur.replaced_by);
+      if (!cur) {
+        broken = true; // "replacement is not registered" is reported for the edge itself
+        break;
+      }
     }
+    if (broken) continue;
+    const end = chain[chain.length - 1];
+    if (ignored.has(end)) errors.push(`replaced_by points to a test that is ignored: ${chain.join(" -> ")}`);
+    else if (!present.has(end)) errors.push(`replaced_by points to a test that does not exist: ${chain.join(" -> ")}`);
   }
 
   for (const id of [...present].sort()) {
@@ -251,13 +278,13 @@ export function generate({ reg, present, since }) {
 
 // ---- CLI ---------------------------------------------------------------------------------------
 
-const USAGE = "usage: tripwire-inventory.mjs <list|generate|check|count> [--cargo-list f] [--vitest-list f] [--root d] [--registry f] [--base-registry f] [--labels a,b | --no-labels] [--strict-unregistered] [--since rev]";
+const USAGE = "usage: tripwire-inventory.mjs <list|generate|check|count> [--cargo-list f --cargo-ignored f --vitest-list f] [--root d] [--registry f] [--base-registry f] [--labels-json '[\"a\"]' | --no-labels] [--strict-unregistered] [--since rev]";
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (!["list", "generate", "check", "count"].includes(cmd)) throw new UsageError(USAGE);
   const o = { cmd, root: process.cwd(), labels: undefined, strict: false, noLabels: false };
-  const takes = { "--cargo-list": "cargo", "--vitest-list": "vitest", "--root": "root", "--registry": "registry", "--base-registry": "base", "--labels": "labels", "--since": "since" };
+  const takes = { "--cargo-list": "cargo", "--cargo-ignored": "ignored", "--vitest-list": "vitest", "--root": "root", "--registry": "registry", "--base-registry": "base", "--labels-json": "labels", "--since": "since" };
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === "--strict-unregistered") o.strict = true;
@@ -270,28 +297,51 @@ function parseArgs(argv) {
   return o;
 }
 
+// Exact label names from the JSON array GitHub gives (toJSON(...labels.*.name)). Never split a
+// string: a label name may itself contain a comma.
+function parseLabels(text) {
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    v = undefined;
+  }
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
+    throw new UsageError(`--labels-json must be a JSON array of label names\n${USAGE}`);
+  }
+  return new Set(v);
+}
+
 function readLists(o) {
   if (!o.cargo || !o.vitest) throw new UsageError(`--cargo-list and --vitest-list are required\n${USAGE}`);
-  let cargoText, vitestText;
+  if (!o.ignored) throw new UsageError(`--cargo-ignored is required (cargo test -- --list --ignored; an #[ignore]d test is listed but does not run)\n${USAGE}`);
+  let cargoText, ignoredText, vitestText;
   try {
     cargoText = fs.readFileSync(o.cargo, "utf8");
+    ignoredText = fs.readFileSync(o.ignored, "utf8");
     vitestText = fs.readFileSync(o.vitest, "utf8");
   } catch (e) {
     throw new UsageError(`listing not readable: ${e.message}`);
   }
-  const rust = parseCargoList(cargoText);
+  const listed = parseCargoList(cargoText);
+  const ign = parseCargoListing(ignoredText);
   const vitest = parseVitestList(vitestText, o.root);
-  if (!rust.size) throw new UsageError("no tests in the cargo listing (did the list step fail?)");
+  if (!listed.size) throw new UsageError("no tests in the cargo listing (did the list step fail?)");
+  if (!ign.binaries) throw new UsageError("no test binaries in the cargo ignored listing (did the --list --ignored step fail?)");
+  for (const id of ign.ids) {
+    if (!listed.has(id)) throw new UsageError(`the ignored listing names a test the full listing does not have: ${id} (both listings must come from one build)`);
+  }
   if (!vitest.size) throw new UsageError("no tests in the vitest listing (did the list step fail?)");
-  return { rust, vitest, present: new Set([...rust, ...vitest]) };
+  const rust = new Set([...listed].filter((id) => !ign.ids.has(id)));
+  return { rust, ignored: ign.ids, vitest, present: new Set([...rust, ...vitest]) };
 }
 
 export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }) {
   try {
     const o = parseArgs(argv);
     if (o.cmd === "list") {
-      const { rust, vitest } = readLists(o);
-      io.out(`${JSON.stringify({ rust: [...rust].sort(), vitest: [...vitest].sort() }, null, 2)}\n`);
+      const { rust, ignored, vitest } = readLists(o);
+      io.out(`${JSON.stringify({ rust: [...rust].sort(), rust_ignored: [...ignored].sort(), vitest: [...vitest].sort() }, null, 2)}\n`);
       return 0;
     }
     if (o.cmd === "generate") {
@@ -325,8 +375,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       return 0;
     }
     // check
-    if (o.labels === undefined && !o.noLabels) throw new UsageError(`check needs --labels (may be empty) or --no-labels\n${USAGE}`);
-    const { present } = readLists(o);
+    if (o.labels === undefined && !o.noLabels) throw new UsageError(`check needs --labels-json (may be []) or --no-labels\n${USAGE}`);
+    const labels = o.noLabels ? null : parseLabels(o.labels);
+    const { present, ignored } = readLists(o);
     const reg = readRegistry(o.registry, "registry");
     let base = null;
     if (o.base) {
@@ -334,8 +385,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       const bad = validateRegistry(base);
       if (bad.length) throw new UsageError(`base registry is malformed: ${bad[0]}`);
     }
-    const labels = o.noLabels ? null : new Set(o.labels.split(",").map((s) => s.trim()).filter(Boolean));
-    const r = check({ reg, base, present, labels, strictUnregistered: o.strict });
+    const r = check({ reg, base, present, ignored, labels, strictUnregistered: o.strict });
     for (const n of r.notes) io.out(`${n}\n`);
     for (const w of r.warnings) io.out(`warning: ${w}\n`);
     for (const e of r.errors) io.err(`error: ${e}\n`);
