@@ -2756,6 +2756,24 @@
       "replaced_by": null
     },
     {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: a registered tripwire must run > a registered tripwire that is still listed but marked #[ignore] fails",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: a registered tripwire must run > an #[ignore]d test cannot stand in as a replacement",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: a registered tripwire must run > generate does not register an ignored test",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
       "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: registered tripwires are kept > a duplicate registry id is refused",
       "class": "ui-truth",
       "since": "a826e441",
@@ -2846,9 +2864,57 @@
       "replaced_by": null
     },
     {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > labels are matched exactly > a label with surrounding spaces is not the label",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > labels are matched exactly > labels that are not a JSON array of strings are a usage error",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > labels are matched exactly > one label whose name contains a comma and tripwire-replace is not the label",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > labels are matched exactly > the comma-separated --labels form is gone (usage error)",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
       "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > replaced_by pointing to a non-existent test fails",
       "class": "ui-truth",
       "since": "a826e441",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > successive replacements (A -> B, then B -> C) > a chain through an unregistered id fails",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > successive replacements (A -> B, then B -> C) > a chain whose end is not listed fails and names the whole chain",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > successive replacements (A -> B, then B -> C) > retiring B for a stricter C passes with only C listed, and A keeps its pointer to B",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > successive replacements (A -> B, then B -> C) > the new edge B -> C still needs the tripwire-replace label",
+      "class": "ui-truth",
+      "since": "4631cf21",
       "replaced_by": null
     },
     {
@@ -2870,7 +2936,7 @@
       "replaced_by": null
     },
     {
-      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::count and usage > check without --labels or --no-labels is a usage error (CI must say which)",
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::count and usage > check without --labels-json or --no-labels is a usage error (CI must say which)",
       "class": "ui-truth",
       "since": "a826e441",
       "replaced_by": null
@@ -2900,9 +2966,45 @@
       "replaced_by": null
     },
     {
-      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > parses cargo --list per test binary, keeps lib and bin units apart, and skips doc-tests",
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::lq-tripwires.yml > checks for a credential on disk before any PR code runs",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::lq-tripwires.yml > lists Rust tests offline, and lists the #[ignore]d ones separately",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::lq-tripwires.yml > maps the private-repo token into one step only, the one that runs cargo fetch and nothing else",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::lq-tripwires.yml > never writes the token into a git config file",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::lq-tripwires.yml > passes the ignored listing and the label JSON to the check",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > parses cargo --list per test binary, keeps lib and bin units apart, skips doc-tests and counts only tests that run",
       "class": "ui-truth",
       "since": "a826e441",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > refuses a run without the ignored listing (an #[ignore]d tripwire would pass unseen)",
+      "class": "ui-truth",
+      "since": "4631cf21",
       "replaced_by": null
     },
     {
@@ -2915,6 +3017,18 @@
       "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > refuses an empty vitest listing",
       "class": "ui-truth",
       "since": "a826e441",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > refuses an ignored listing that names no test binary (the list step did not run)",
+      "class": "ui-truth",
+      "since": "4631cf21",
+      "replaced_by": null
+    },
+    {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::parsing the runners' own listings > refuses an ignored test that the full listing does not have (listings from different builds)",
+      "class": "ui-truth",
+      "since": "4631cf21",
       "replaced_by": null
     },
     {

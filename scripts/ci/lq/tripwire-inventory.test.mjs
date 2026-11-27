@@ -557,10 +557,10 @@ describe("lq-tripwires.yml", () => {
   });
 
   it("lists Rust tests offline, and lists the #[ignore]d ones separately", () => {
-    const tests = blocks.filter((b) => /cargo test/.test(b));
-    expect(tests.length).toBeGreaterThanOrEqual(2);
-    for (const b of tests) expect(b).toMatch(/cargo test --workspace --locked --offline/);
-    expect(tests.some((b) => /-- --list --ignored/.test(b))).toBe(true);
+    const listingSteps = blocks.filter((b) => /cargo test/.test(b));
+    expect(listingSteps.length).toBeGreaterThanOrEqual(2);
+    for (const b of listingSteps) expect(b).toMatch(/cargo test --workspace --locked --offline/);
+    expect(listingSteps.filter((b) => /-- --list --ignored/.test(b))).toHaveLength(1);
   });
 
   it("passes the ignored listing and the label JSON to the check", () => {
