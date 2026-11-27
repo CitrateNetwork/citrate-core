@@ -61,7 +61,8 @@ jobs:
         run: cargo test --workspace --locked -- --list > cargo-list.txt 2>&1
       - name: Show the listing size
         if: always()
-        run: grep -c ': test$' cargo-list.txt || true
+        run: |
+          grep -c ': test$' cargo-list.txt || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
