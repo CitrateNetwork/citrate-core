@@ -18,3 +18,8 @@ paths = ['''^src-tauri/addresses/40204\.canonical\.json$''', '''^fixtures/networ
 [[allowlists]]
 description = "#681 deploy-claim check cases, shared byte for byte with citrate-agent-runtime (both pin its sha256). Public 40204 contract addresses and model answers only; a label such as Token next to a 40-hex address matches the generic-api-key rule"
 paths = ['''^src/agent/fixtures/deploy_claims_cases\.json$''']
+
+[[allowlists]]
+description = "L0-WP02 characterization snapshots (fixtures/seams, scripts/seams-snapshot.mjs): AppState's netKey is the active network's genesis hash (currentNetKey in netScope.ts), a public value that matches the generic-api-key rule next to the word key. Only a JSON line holding exactly that field; any other key-like line is still scanned. (gitleaks 8.30 with condition AND plus a path allows the whole path, so this entry is regex-only.)"
+regexTarget = "line"
+regexes = ['''^\s*"netKey": "0x[0-9a-f]{64}",?$''']
