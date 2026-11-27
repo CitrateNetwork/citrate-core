@@ -401,7 +401,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if req.path != CHAT_PATH {
+    if req.path != CHAT_PATH && req.path != "/v1/responses" {
         return write_json(
             out,
             404,
@@ -569,4 +569,6 @@ pub fn start(proxy: Arc<ModelProxy>) -> std::io::Result<u16> {
 #[cfg(test)]
 mod tests {
     include!("model_proxy_http_tests.rs");
+    // L1-WP01 CH-6 characterization (LQ registry).
+    include!("lq/proxy_paths_characterize_tests.rs");
 }

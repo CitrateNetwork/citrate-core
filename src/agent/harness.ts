@@ -1414,7 +1414,7 @@ export function selectToolSchemas(
       return { t, i, score };
     })
     .filter((r) => !taken.has(r.t.function.name))
-    .sort((a, b) => b.score - a.score || a.i - b.i);
+    .sort((a, b) => b.score - a.score || b.i - a.i);
   for (const r of ranked) {
     if (out.length >= max) break;
     out.push(r.t);

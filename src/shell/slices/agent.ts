@@ -169,7 +169,7 @@ async function spawnHermes(snapshot: Parameters<typeof confirmRunning>[0]): Prom
   } catch (e) {
     // "already running" is success, not an error — the sidecar is up (double-start guard).
     spawned = false;
-    if (!/already running/i.test(message(e))) {
+    if (!/already started/i.test(message(e))) {
       agentSlice.set({ busy: false, error: message(e) });
       setHermes({ state: "error", error: message(e) });
       return message(e);

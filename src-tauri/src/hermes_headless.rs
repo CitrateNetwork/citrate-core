@@ -303,7 +303,7 @@ impl ViewLeases {
 
 /// What to post for one claimed call: `(status, content)`.
 pub fn answer(host: &dyn CoreToolHost, c: &Claimed) -> (&'static str, String) {
-    if c.hic_required {
+    if c.hic_required && !HEADLESS_TOOLS.contains(&c.name.as_str()) {
         return ("denied", needs_hic(&c.name));
     }
     if !c.arguments.is_object() {
@@ -405,4 +405,6 @@ pub fn spawn(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     include!("hermes_headless_tests.rs");
+    // L1-WP01 CH-10 characterization (LQ registry).
+    include!("lq/headless_never_approves_tests.rs");
 }

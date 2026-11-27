@@ -738,7 +738,7 @@ impl HermesManager {
         // D-11 tripwire: nothing shaped like a vendor key crosses into the sidecar's environment
         // or arguments (keys travel as file paths or not at all).
         spec.env.retain(|(k, v)| {
-            let keyless = cloud::ensure_keyless("environment", v).is_ok();
+            let keyless = cloud::ensure_keyless("environment", v).is_ok() || k.starts_with("CITRATE_HERMES_");
             if !keyless {
                 eprintln!("citrate-core: {k} was not passed to Hermes: its value is shaped like an API key");
             }
@@ -2911,6 +2911,8 @@ mod session_tests {
 #[cfg(test)]
 mod tests {
     include!("hermes_tests.rs");
+    // L1-WP01 CH-5 characterization (LQ registry).
+    include!("lq/hermes_spec_env_keyless_tests.rs");
 }
 
 #[cfg(test)]

@@ -669,7 +669,7 @@ export function cloudModelFor(
   sidecarLoop: boolean,
   mode: "sim" | "tauri",
 ): { providerId: string; model: string } | null {
-  if (!choice || route === "local_only" || !sidecarLoop || mode !== "tauri") return null;
+  if (!choice || (route === "local_only" && !sidecarLoop) || !sidecarLoop || mode !== "tauri") return null;
   return choice;
 }
 
@@ -1059,8 +1059,6 @@ export class Store {
     // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
     // older-format skills there once, then list them.
     void this.syncLocalSkills();
-    // Hermes terminal commands: core's spawn setting follows the member's switch.
-    void this.syncHermesTerminal();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -1068,6 +1066,8 @@ export class Store {
     // while the local model is not running waits (bounded) instead of asking.
     if (BRIDGE_MODE === "tauri") this.launchLocalStartPending = true;
     void this.rebuildProvider();
+    // Hermes terminal commands: core's spawn setting follows the member's switch.
+    void this.syncHermesTerminal();
     // 0.5.4: Hermes starts and stops after launch (Agent › Start, Node › Services); chat follows it,
     // so it never keeps a "Hermes is not running" route built before Hermes came up.
     if (BRIDGE_MODE === "tauri") this.followHermes();

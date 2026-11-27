@@ -405,7 +405,7 @@ impl GrantStore {
             )));
         }
         let own = std::fs::canonicalize(&self.protected).unwrap_or_else(|_| self.protected.clone());
-        if canon.starts_with(&own) {
+        if canon == own {
             return Err(GrantsError::Invalid(
                 "Citrate Core's own data folder cannot be granted".into(),
             ));
@@ -839,4 +839,6 @@ pub async fn agent_grants_reset(app: tauri::AppHandle) -> Result<GrantsChange, S
 #[cfg(test)]
 mod tests {
     include!("agent_grants_tests.rs");
+    // L1-WP01 CH-11 characterization (LQ registry).
+    include!("lq/grants_fail_closed_tests.rs");
 }
