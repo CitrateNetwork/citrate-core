@@ -23,7 +23,15 @@
 # diff does not add back, whatever the counts. An accepted decrease lowers ratchet.json to the
 # measured count in the same PR, so the next PR and the record PR are not refused on that axis.
 # The labels and body are read from the API at
-# run time (so a re-run after labelling sees the label) and reach the script only as files.
+# run time (so a re-run after labelling sees the label) and reach the script only as files (the
+# labels as one JSON array, matched exactly). Base, head and committed floor are schema-checked
+# before any rule reads them: a floor of false, 0, "" or with an axis missing is refused.
+#
+# Known gap (LQ-WP17 follow-up): the head is measured in this job, and measure imports the PR
+# tree's src-tauri/formal/tlc_expect.py, so PR code runs after lq-base.json, lq.diff, the labels
+# file and the base script copy are written and before compare reads them. Moving the TLC count to
+# its own measure job (or a trusted planner) closes it; until then CODEOWNERS review of
+# src-tauri/formal/ and these workflows is the control.
 name: lq
 
 on:
@@ -137,13 +145,16 @@ jobs:
             } | sort -un | tr '\n' ' ')
           fi
           : > lq-body.md
-          : > lq-labels.txt
+          : > lq-labels.jsonl
           for n in $prs; do
             gh api "repos/$REPO/pulls/$n" > lq-pr.json
             jq -r '.body // ""' lq-pr.json >> lq-body.md
             echo >> lq-body.md
-            jq -r '.labels[].name' lq-pr.json >> lq-labels.txt
+            jq -c '[.labels[].name]' lq-pr.json >> lq-labels.jsonl
           done
+          # One JSON array of exact label names; never a comma-joined string, since a label name
+          # may itself contain a comma.
+          jq -cs 'add // []' lq-labels.jsonl > lq-labels.json
           echo "PRs considered: ${prs:-none}"
       - name: measure the head
         env:
@@ -156,7 +167,7 @@ jobs:
       - name: compare with the merge base
         run: |
           node "$LQ_SCRIPT" compare --root . --base "$LQ_BASE_FILE" --head lq-head.json \
-            --diff lq.diff --labels "$(paste -sd, lq-labels.txt)" --pr-body lq-body.md
+            --diff lq.diff --labels-json "$(cat lq-labels.json)" --pr-body lq-body.md
       - name: keep the measurement
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

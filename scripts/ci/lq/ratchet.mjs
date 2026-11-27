@@ -11,7 +11,7 @@
 //   node scripts/ci/lq/ratchet.mjs measure (--cargo-counts <file> | --cargo-log <file> --cargo-exit <code>)
 //        --vitest-json <file> [--root <repo>] [--rev <sha>] [--out <ratchet.json>]
 //   node scripts/ci/lq/ratchet.mjs compare --base <ratchet.json|none> --head <measured.json>
-//        [--root <repo>] [--diff <unified diff>] [--labels a,b] [--pr-body <file>]
+//        [--root <repo>] [--diff <unified diff>] [--labels-json '["a","b"]'] [--pr-body <file>]
 //
 // `cargo-counts` runs in the job that ran the tests and turns its log plus cargo's own exit status
 // into validated counts; that small file, not the raw test output, is what leaves the job. A raw
@@ -313,6 +313,13 @@ export function buildRatchet({ cargo, vitest, tree, rev, measured }) {
 //   on its line or in the comment line above it.
 // - No baseline at the merge base (before LQ-WP01 lands ratchet.json) is said out loud; the
 //   diff and tree rules still apply.
+// - Base, head and floor are schema-checked before any rule reads them (ratchetErrors): each is a
+//   plain object whose every ratcheted axis is a count. One that is not (false, 0, "", [], {}, an
+//   axis missing, not JSON) is refused, label or not; a floor that slipped through would be the
+//   next merge base and refuse every later PR.
+// - Removed and added test names cancel one for one (by name; a file-qualified identity with
+//   explicit move pairing is LQ-WP17).
+// - Labels are exact names from one JSON array (--labels-json); a name is never split on commas.
 export const AXES = [
   "tests.rust.passed", "tests.vitest.passed",
   "specs.tla", "specs.tlc_configs_in_ci",
@@ -488,19 +495,58 @@ const RATCHETED = [
   { axis: "frontmatter", val: (d) => (d?.frontmatter ? d.frontmatter.with - d.frontmatter.docs : undefined), show: (v) => -v },
 ];
 const num = (v) => typeof v === "number" && Number.isFinite(v);
+const count = (v) => Number.isInteger(v) && v >= 0;
 
-// floor: the head's committed ratchet.json (parsed), null when the head has none, or left out
-// (undefined) to skip the floor rules. The CLI always supplies it from --root.
+// A file that exists but is not JSON (compare's CLI passes this for it, so the reason reaches the
+// failure message rather than reading as "absent").
+export class Unreadable {
+  constructor(reason) { this.reason = reason; }
+}
+const shape = (v) => (v === null ? "null" : Array.isArray(v) ? "an array" : typeof v === "string" ? `the string ${JSON.stringify(v)}` : `${typeof v} ${String(v)}`);
+
+// The schema compare relies on, checked before any rule reads a value: a plain object whose every
+// ratcheted axis is a count, and frontmatter { docs, with } with with <= docs. Anything else
+// (false, 0, "", [], {}, an axis missing) is not a ratchet: a truthiness or a missing-axis skip
+// would otherwise pass every rule, and a floor that passed that way is the next merge base.
+export function ratchetErrors(d) {
+  if (d instanceof Unreadable) return [d.reason];
+  if (d === null || typeof d !== "object" || Array.isArray(d)) return [`it is ${shape(d)}, not an object`];
+  const errs = [];
+  for (const k of AXES) {
+    const v = get(d, k);
+    if (!count(v)) errs.push(`${k} is ${v === undefined ? "missing" : shape(v)}, not a count`);
+  }
+  const fm = d.frontmatter;
+  if (fm === null || typeof fm !== "object" || Array.isArray(fm)) errs.push("frontmatter is missing or not an object");
+  else if (!count(fm.docs) || !count(fm.with)) errs.push("frontmatter.docs and frontmatter.with are not both counts");
+  else if (fm.with > fm.docs) errs.push(`frontmatter.with (${fm.with}) is more than frontmatter.docs (${fm.docs})`);
+  return errs;
+}
+
+// base: the merge base's ratchet.json, null when it has none (before LQ-WP01). head: the measured
+// head. floor: the head's committed ratchet.json, null when the head has none, or left out
+// (undefined) to skip the floor rules; the CLI always supplies it from --root. Each one that is
+// given is schema-checked first, and one that is not a ratchet is a refusal, label or not.
 export function compare(base, head, { root = ".", diff = "", labels = [], body = "", floor } = {}) {
   const failures = [], notes = [];
   const scan = scanDiff(diff, { root });
   const decreases = []; // { axis, msg }
-  if (!base) {
+  const bad = (what, d) => {
+    const e = ratchetErrors(d);
+    if (e.length) failures.push(`${what} is not a ratchet (${e.join("; ")}); fails closed`);
+    return e.length > 0;
+  };
+  const baseBad = base !== null && base !== undefined && bad(`the merge base ${FLOOR_FILE.split("/").pop()}`, base);
+  const headBad = bad("the measured head", head);
+  // A floor that is present but malformed is refused whether or not the base has one yet: it is
+  // the next PR's merge base.
+  const floorOk = floor !== undefined && floor !== null && !bad(`${FLOOR_FILE} in the head`, floor);
+  if (base === null || base === undefined) {
     notes.push("no ratchet.json at the merge base (LQ-WP01 not landed yet): axis comparison skipped; diff and tree rules still apply");
-  } else {
+  } else if (!baseBad && !headBad) {
     if (floor === null) failures.push(`${FLOOR_FILE} is missing or unreadable in the head; the floor is never deleted`);
     for (const { axis, val, show } of RATCHETED) {
-      const b = val(base), h = val(head), f = floor ? val(floor) : undefined;
+      const b = val(base), h = val(head), f = floorOk ? val(floor) : undefined;
       if (!num(b)) continue;
       if (!num(h) || h < b) {
         decreases.push({
@@ -510,17 +556,17 @@ export function compare(base, head, { root = ".", diff = "", labels = [], body =
             : `${axis} decreased ${b} -> ${h} (${h - b})`,
         });
       }
-      if (floor && (!num(f) || f < b)) {
-        decreases.push({ axis, msg: `${FLOOR_FILE} lowers ${axis} ${show(b)} -> ${num(f) ? show(f) : f}${num(f) ? ` (${axis === "frontmatter" ? "+" : ""}${show(f) - show(b)})` : ""}` });
+      if (floorOk && f < b) {
+        decreases.push({ axis, msg: `${FLOOR_FILE} lowers ${axis} ${show(b)} -> ${show(f)} (${axis === "frontmatter" ? "+" : ""}${show(f) - show(b)})` });
       }
     }
   }
   // The floor is never above what the head measures, on any axis, label or not: the next PR and
   // the record PR are judged against it, so a floor the tree does not reach refuses all of them.
   // A measured decrease (accepted or not) must lower the floor in the same PR for the same reason.
-  if (floor) {
+  if (floorOk && !headBad) {
     for (const { axis, val, show } of RATCHETED) {
-      const b = base ? val(base) : undefined, h = val(head), f = val(floor);
+      const b = base && !baseBad ? val(base) : undefined, h = val(head), f = val(floor);
       if (!num(f) || !num(h) || f <= h) continue;
       if (num(b) && h < b) {
         const target = axis === "frontmatter" ? `${show(h)} or more docs without frontmatter` : `${h} or less`;
@@ -532,8 +578,15 @@ export function compare(base, head, { root = ".", diff = "", labels = [], body =
       }
     }
   }
-  const added = new Set(scan.addedTests);
-  const gone = [...new Set(scan.removedTests.filter((n) => !added.has(n)))];
+  // One for one: each added test cancels one removal of the same name, so two removals of a name
+  // and one addition leave one removal.
+  const added = new Map();
+  for (const n of scan.addedTests) added.set(n, (added.get(n) ?? 0) + 1);
+  const gone = [];
+  for (const n of scan.removedTests) {
+    if (added.get(n) > 0) added.set(n, added.get(n) - 1);
+    else if (!gone.includes(n)) gone.push(n);
+  }
   const needs = [...decreases.map((d) => d.msg), ...gone.map((n) => `test removed and not added back: ${n}`)];
   if (needs.length) {
     const names = [...new Set(decreases.map((d) => d.axis)), ...gone];
@@ -567,7 +620,7 @@ function usage(msg) {
       "       ratchet.mjs measure (--cargo-counts <file> | --cargo-log <file> --cargo-exit <code>)\n" +
       "                           --vitest-json <file> [--root <repo>] [--rev <sha>] [--out <file>]\n" +
       "       ratchet.mjs compare --base <file|none> --head <file> [--root <repo>] [--diff <file>]\n" +
-      "                           [--labels a,b] [--pr-body <file>]\n",
+      "                           [--labels-json '[\"a\",\"b\"]'] [--pr-body <file>]\n",
   );
   process.exit(2);
 }
@@ -575,7 +628,7 @@ function usage(msg) {
 const OPTIONS = {
   "cargo-counts": ["cargo-log", "cargo-exit", "out"],
   measure: ["cargo-counts", "cargo-log", "cargo-exit", "vitest-json", "root", "rev", "out"],
-  compare: ["base", "head", "root", "diff", "labels", "pr-body"],
+  compare: ["base", "head", "root", "diff", "labels-json", "pr-body"],
 };
 
 function refuse(e) {
@@ -583,29 +636,42 @@ function refuse(e) {
   process.exit(1);
 }
 
+// Exact label names from one JSON array. Never split a string: a label name may itself contain a
+// comma, so "needs review,ratchet-adr" is one label and not ratchet-adr.
+function parseLabels(text) {
+  if (text === undefined) return [];
+  let v;
+  try { v = JSON.parse(text); } catch { v = undefined; }
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) usage("--labels-json must be a JSON array of label names");
+  return v;
+}
+
 function runCompare(opt) {
   if (!opt.base || !opt.head) usage("compare needs --base <file|none> and --head <file>");
+  const labels = parseLabels(opt["labels-json"]);
   const root = opt.root || ".";
-  const json = (p) => {
+  // Absent is null (base: only by `--base none`); present but not JSON is Unreadable. Either way
+  // compare's schema check decides, so false, 0, "" and [] are refusals, never "no file".
+  const json = (p, absent) => {
+    const text = read(p);
+    if (text === null) return absent;
     try {
-      return JSON.parse(fs.readFileSync(p, "utf8"));
-    } catch {
-      return null;
+      const v = JSON.parse(text);
+      return v === null ? new Unreadable(`${p} holds null`) : v;
+    } catch (e) {
+      return new Unreadable(`${p} is not JSON (${e.message})`);
     }
   };
-  const head = json(opt.head);
-  const base = opt.base === "none" ? null : json(opt.base);
-  if (!head || (opt.base !== "none" && !base)) {
-    process.stderr.write("ratchet: refused: base or head file unreadable; fails closed\n");
-    return 1;
-  }
-  // The head's committed floor, from the tree being judged; unreadable counts as missing.
-  const floor = json(path.join(root, FLOOR_FILE));
+  const head = json(opt.head, new Unreadable(`${opt.head} is not readable`));
+  const base = opt.base === "none" ? null : json(opt.base, new Unreadable(`${opt.base} is not readable`));
+  // The head's committed floor, from the tree being judged: absent is null (refused once the base
+  // has a floor), and present but malformed is refused always.
+  const floor = json(path.join(root, FLOOR_FILE), null);
   const r = compare(base, head, {
     root,
     floor,
     diff: opt.diff ? read(opt.diff) || "" : "",
-    labels: (opt.labels || "").split(",").map((s) => s.trim()).filter(Boolean),
+    labels,
     body: opt["pr-body"] ? read(opt["pr-body"]) || "" : "",
   });
   for (const n of r.notes) process.stdout.write(`ratchet: note: ${n}\n`);
