@@ -1,0 +1,314 @@
+{
+  "agent": {
+    "route": "hermes/work"
+  },
+  "alf": {
+    "route": "groups/alf"
+  },
+  "backup": {
+    "route": "node/storage/backup"
+  },
+  "cluster": {
+    "route": "groups/cluster"
+  },
+  "commissary": {
+    "route": "store/apps"
+  },
+  "comms": {
+    "route": "groups/chat/alerts"
+  },
+  "community": {
+    "route": "groups/community"
+  },
+  "connections": {
+    "route": "settings/connections"
+  },
+  "dashboard": {
+    "route": "hermes/chat"
+  },
+  "files": {
+    "route": "node/storage/files"
+  },
+  "groups": {
+    "route": "groups/chat"
+  },
+  "groups/alf": {
+    "route": "groups/alf"
+  },
+  "groups/chat": {
+    "route": "groups/chat"
+  },
+  "groups/chat/alerts": {
+    "route": "groups/chat/alerts"
+  },
+  "groups/cluster": {
+    "route": "groups/cluster"
+  },
+  "groups/community": {
+    "route": "groups/community"
+  },
+  "groups/members": {
+    "route": "groups/members"
+  },
+  "groups/rounds": {
+    "route": "groups/rounds"
+  },
+  "groups/rounds/adapters": {
+    "route": "groups/rounds/adapters"
+  },
+  "groups/rounds/datasets": {
+    "route": "groups/rounds/datasets"
+  },
+  "groups/rounds/live": {
+    "route": "groups/rounds/live"
+  },
+  "groups/rounds/matches": {
+    "route": "groups/rounds"
+  },
+  "groups/rounds/open": {
+    "route": "groups/rounds/open"
+  },
+  "groups/rounds/payouts": {
+    "route": "groups/rounds/payouts"
+  },
+  "hermes": {
+    "route": "hermes/chat"
+  },
+  "hermes/chat": {
+    "route": "hermes/chat"
+  },
+  "hermes/controls": {
+    "route": "hermes/controls"
+  },
+  "hermes/controls/budgets": {
+    "patch": {
+      "sSec": "budgets"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/details": {
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/escalation": {
+    "patch": {
+      "sSec": "escalation"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/mcp": {
+    "patch": {
+      "sSec": "mcp"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/models": {
+    "patch": {
+      "sSec": "models"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/personas": {
+    "patch": {
+      "sSec": "personas"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/providers": {
+    "patch": {
+      "sSec": "ai"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/records": {
+    "route": "hermes/controls/records"
+  },
+  "hermes/controls/terminal": {
+    "patch": {
+      "sSec": "terminal"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/controls/web": {
+    "patch": {
+      "sSec": "web"
+    },
+    "route": "hermes/controls/details"
+  },
+  "hermes/journal": {
+    "route": "hermes/journal"
+  },
+  "hermes/learn": {
+    "route": "hermes/learn"
+  },
+  "hermes/work": {
+    "route": "hermes/work"
+  },
+  "journal": {
+    "route": "hermes/journal"
+  },
+  "models": {
+    "route": "store/models"
+  },
+  "node": {
+    "route": "node/status"
+  },
+  "node/advanced": {
+    "route": "node/advanced"
+  },
+  "node/earnings": {
+    "route": "node/rewards"
+  },
+  "node/rewards": {
+    "route": "node/rewards"
+  },
+  "node/services": {
+    "route": "node/services"
+  },
+  "node/status": {
+    "route": "node/status"
+  },
+  "node/storage": {
+    "route": "node/storage/files"
+  },
+  "node/storage/backup": {
+    "route": "node/storage/backup"
+  },
+  "node/storage/files": {
+    "route": "node/storage/files"
+  },
+  "node/storage/memory": {
+    "route": "node/storage/memory"
+  },
+  "node/storage/pins": {
+    "route": "node/storage/pins"
+  },
+  "people": {
+    "route": "groups/members"
+  },
+  "pins": {
+    "route": "node/storage/pins"
+  },
+  "settings": {
+    "route": "settings"
+  },
+  "settings/account": {
+    "patch": {
+      "sSec": "account"
+    },
+    "route": "settings"
+  },
+  "settings/ai": {
+    "patch": {
+      "sSec": "ai"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/api": {
+    "patch": {
+      "sSec": "api"
+    },
+    "route": "settings"
+  },
+  "settings/app": {
+    "patch": {
+      "sSec": "app"
+    },
+    "route": "settings"
+  },
+  "settings/billing": {
+    "patch": {
+      "sSec": "billing"
+    },
+    "route": "settings"
+  },
+  "settings/budgets": {
+    "patch": {
+      "sSec": "budgets"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/connections": {
+    "route": "settings/connections"
+  },
+  "settings/escalation": {
+    "patch": {
+      "sSec": "escalation"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/hermes": {
+    "patch": {
+      "sSec": "hermes"
+    },
+    "route": "hermes/controls"
+  },
+  "settings/keys": {
+    "patch": {
+      "sSec": "keys"
+    },
+    "route": "settings"
+  },
+  "settings/mcp": {
+    "patch": {
+      "sSec": "mcp"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/models": {
+    "patch": {
+      "sSec": "models"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/node": {
+    "patch": {
+      "sSec": "node"
+    },
+    "route": "node/advanced"
+  },
+  "settings/personas": {
+    "patch": {
+      "sSec": "personas"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/privacy": {
+    "patch": {
+      "sSec": "privacy"
+    },
+    "route": "settings"
+  },
+  "settings/terminal": {
+    "patch": {
+      "sSec": "terminal"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/web": {
+    "patch": {
+      "sSec": "web"
+    },
+    "route": "hermes/controls/details"
+  },
+  "settings/work": {
+    "route": "settings/work"
+  },
+  "storage": {
+    "route": "node/storage/memory"
+  },
+  "store": {
+    "route": "store/apps"
+  },
+  "store/apps": {
+    "route": "store/apps"
+  },
+  "store/models": {
+    "route": "store/models"
+  },
+  "train": {
+    "route": "groups/rounds"
+  },
+  "wallet": {
+    "route": "wallet"
+  }
+}

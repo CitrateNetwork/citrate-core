@@ -242,6 +242,10 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+// L0-WP02 (planset v060): characterization of the command registration, the ACL and this
+// module set; the seam refactors (L0-WP03, WP04) keep it byte-identical.
+#[cfg(test)]
+mod seams_tests;
 // Every in-process vault write targets a slot the kit's invoke-path custody_put cannot address
 // (citrate-core no longer registers custody_put; citrate-quorum, which shares the kit, may).
 #[cfg(test)]

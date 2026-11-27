@@ -1,0 +1,101 @@
+{
+  "persona": "p1",
+  "tier": "member",
+  "org": null,
+  "citrateRole": "member",
+  "entitlement": "active",
+  "stage": "done",
+  "s2": "verified",
+  "s3": "settled",
+  "s5": "settled",
+  "s5n": 32000,
+  "hasGrant": true,
+  "hasSbt": true,
+  "liquid": 0,
+  "bondedStake": 0,
+  "claimable": 0,
+  "activity": [
+    {
+      "id": "a1",
+      "kind": "Send",
+      "amount": "-1",
+      "hash": "0xabababababababababababababababababababababababababababababababab",
+      "ts": 1795000000000
+    }
+  ],
+  "nodeIntent": "run",
+  "rpc": "local",
+  "net": "testnet",
+  "cpuCap": 50,
+  "autolock": 30,
+  "channel": "stable",
+  "telemetry": true,
+  "telemetryConsentVersion": 1,
+  "storageMode": "lexical",
+  "coachDone": true,
+  "dataDir": "~/.citrate/core",
+  "coreMembershipUrl": "https://core-membership.vercel.app",
+  "s5StakeWei": "32000000000000000000000",
+  "s5BondStatus": "Locked until block 2,700,000",
+  "walletAddr": "0x1111111111111111111111111111111111111111",
+  "commsAddr": "0x2222222222222222222222222222222222222222",
+  "socketPath": "~/.citrate/core/memory/dana.sock",
+  "activeModelId": null,
+  "kycOutcome": "verified",
+  "chatBackend": "local",
+  "wTab": "overview",
+  "cTab": "apps",
+  "sSec": "account",
+  "route": "dashboard",
+  "deviceId": "dev-seams-fixture",
+  "pins": [
+    {
+      "cid": "bafybeigdyrztq7v7zv6seamsfixtureseamsfixtureseamsfixture",
+      "bond": 0,
+      "cadH": 24,
+      "nextIn": 3,
+      "last": "ok"
+    }
+  ],
+  "userSkills": [
+    {
+      "id": "sk-1",
+      "name": "Summarise",
+      "description": "",
+      "instruction": "Summarise the page."
+    }
+  ],
+  "jPages": [
+    {
+      "id": "pg-1",
+      "title": "Notes",
+      "kind": "page",
+      "pinned": true,
+      "blocks": [
+        "first block"
+      ]
+    }
+  ],
+  "jSel": "pg-1",
+  "connections": {
+    "github": true
+  },
+  "aiDefault": "gateway",
+  "hermesSidecarLoop": true,
+  "hermesSidecarLoopDefaultApplied": true,
+  "hermesTerminal": false,
+  "hermesTerminalDefaultApplied": true,
+  "hermesBrief": null,
+  "hermesPersona": null,
+  "customPersonas": [],
+  "hermesReadAloud": true,
+  "journalAutoSummary": false,
+  "journalAutoSummaryDay": null,
+  "sidebarCollapsed": true,
+  "hermesRailCollapsed": false,
+  "sponsorUnits": 3,
+  "blocksProposed": 0,
+  "netUnread": [],
+  "networkNotice": null,
+  "netGenesis": "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631"
+}
