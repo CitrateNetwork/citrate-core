@@ -34,8 +34,8 @@ const REGISTRY_PATH = "ci/characterization.d/l3.json";
 const REG = JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as Registry;
 const DIR = "src/shell/actions/l3/characterization/";
 
-/** The L3 surfaces WP00 pins. Removing one means editing this list too, in review. */
-const SURFACES = ["L3-GATES", "L3-STAGES", "L3-LAUNCH", "L3-NAV", "L3-COACH", "L3-NOTIFY", "L3-QUIT", "L3-REGISTRY"];
+/** The L3 surfaces WP00 pins (and L3-WP19 the membership banner). Removing one means editing this list too, in review. */
+const SURFACES = ["L3-GATES", "L3-STAGES", "L3-LAUNCH", "L3-NAV", "L3-COACH", "L3-NOTIFY", "L3-QUIT", "L3-MEMBANNER", "L3-REGISTRY"];
 
 /** Source with block comments and whole-line `//` comments removed. */
 function uncommented(src: string): string {

@@ -107,7 +107,11 @@ describe("entitlement poll after checkout (FIX 1a)", () => {
 
   it("renew (Settings) opens checkout AND starts the poll; the banner flips lapsed → active without a restart", async () => {
     const store = lapsedMember();
+    // L3-WP19: the red lapse is for a member who held a membership (here, the grant); a free
+    // member with no history is told to upgrade instead (actions/l3/membershipBanner.test.tsx).
+    store.setState({ hasGrant: true });
     expect(entitlementBanner(store.state).tone).toBe("danger");
+    expect(entitlementBanner(store.state).text).toMatch(/^Membership lapsed\./);
     await store.renewMembership();
     expect(checkoutMock).toHaveBeenCalledTimes(1);
     expect(store.entitlementPollActive()).toBe(true);
@@ -335,7 +339,8 @@ describe("activating state (FIX 1c)", () => {
   });
 
   it("banner: a plain lapse stays the red lapsed banner with a Renew CTA", () => {
-    const b = entitlementBanner({ entitlement: "lapsed", membershipActivating: false });
+    // L3-WP19: "plain lapse" now names its evidence, a grant from a past membership, and no checkout.
+    const b = entitlementBanner({ ...lapsedMember().state, hasGrant: true, membershipActivating: false });
     expect(b.tone).toBe("danger");
     expect(b.text).toMatch(/Membership lapsed/);
     expect(b.cta).toBe(true);
