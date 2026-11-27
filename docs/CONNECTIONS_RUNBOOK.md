@@ -77,22 +77,26 @@ doxxing. Do not ship self-asserted handles as "verified".
 
 ---
 
-## 2. MCP servers — GitHub, Google Drive, Notion   ·  **WIRED**
+## 2. MCP servers — GitHub, Google Drive, Notion   ·  **CONNECT WIRED, no agent tool**
 
-Already live via `bridge.connections` (loopback PKCE, tokens in the OS keyring) — the same seam
-Settings uses. Connected servers mount as tools the agent proposes with.
+The sign-in is live via `bridge.connections` (loopback PKCE, tokens sealed in the OS keyring), the
+same seam Settings uses. No agent tool reads these tokens yet (L6-WP01, owner finding D8): a
+connected row says "Connected. Not yet available to your agent" until the MCP gateway
+(`mcp_gateway_status`, L1 AR-E1.10) reports a live server with tools for that connector
+(`src/surfaces/marketplace/agentTools.ts`). The agent can use Google Sheets and Google Calendar
+today through its chat tools (`src/agent/everydayTools.ts`).
 
 | Service | Status | Owner must register |
 |---|---|---|
-| **GitHub** | WIRED | GitHub OAuth App (PKCE) → client id in CONFIG; scopes `repo`, `read:org` |
-| **Google Drive** | WIRED | Google Cloud OAuth client (Desktop) → client id; scope `drive.readonly` (+ `drive.file` for writes); **verified-app review** for sensitive scopes |
-| **Notion** | WIRED | Notion public integration → OAuth client id; select workspace pages |
+| **GitHub** | CONNECT WIRED, no agent tool | GitHub OAuth App (PKCE) → client id in CONFIG; scopes `repo`, `read:org` |
+| **Google Drive** | CONNECT WIRED, no agent tool | Google Cloud OAuth client (Desktop) → client id; scope `drive.readonly` (+ `drive.file` for writes); **verified-app review** for sensitive scopes |
+| **Notion** | CONNECT WIRED, no agent tool | Notion public integration → OAuth client id; select workspace pages |
 | **Google Sheets** (HUP-S10.2) | CONNECT WIRED, off until configured; no in-app view or Hermes tool yet (the read/append commands exist) | reuse the Google client above (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`); scope `spreadsheets`; Settings keeps Connect disabled and says why until the client is configured. Reads a range; member-confirmed appends use `valueInputOption=RAW` (no formula ever runs) |
 | **Google Calendar** (HUP-S10.2) | WIRED, off until configured | same Google client; scope `calendar.events`; lists the primary calendar in the Journal > Schedule week view next to Hermes's own schedule; member-created events only |
 | **Custom (stdio / https)** | PARTIAL | none — user-supplied; needs `config.write mcpServers` persistence + a spawn/allowlist path |
 
 **Left to build**: custom-server persistence (write to the MCP config + spawn stdio / mount
-https), and surfacing per-server tool lists. The three named providers work today.
+https), and surfacing per-server tool lists. The three named providers connect today; none is an agent tool yet.
 
 ---
 

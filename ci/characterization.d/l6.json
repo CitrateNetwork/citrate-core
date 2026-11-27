@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "owner": "L6",
+  "base": "a826e441",
+  "about": "L6-WP02 characterization suites for lane L6 (Connections and Marketplace), planset v060 L6 section 4. Each suite pins a guarantee at citrate-core a826e441 before an L6 work package changes the code around it. A later L6 PR that changes a pinned behavior names the suite and test it supersedes and replaces the assertion only with a stricter one, in a commit that says why. LQ is to run every suite here on every merge-queue group (not wired yet; until then the suites run in the ordinary cargo test job); char_suite_is_listed_for_lq fails when this file, docs/MCP_MARKETPLACE.md and the suite files stop naming the same tests, or a filter stops selecting the module test block that includes its suite file.",
+  "suites": [
+    {
+      "id": "L6-CH-1",
+      "lane": "L6",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "connections::tests::l6_char::",
+      "files": [
+        "src-tauri/src/lanes/l6/characterization/connections_char_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/connections.rs",
+        "kit/src/custody.rs"
+      ],
+      "tests": [
+        "char_no_command_returns_a_token",
+        "char_release_without_creds_reports_not_configured",
+        "char_state_mismatch_fails_closed",
+        "char_slot_names_are_connection_prefixed",
+        "char_expired_token_never_sent",
+        "char_suite_is_listed_for_lq"
+      ],
+      "pins": "connections: no command returns a token and no serialized status names or carries one (before connect, after the exchange, all connected, after disconnect, vault locked); with no client credentials connect is NotConfigured before the callback port is bound or a browser opened; a drive-by or forged callback never burns the sign-in and a callback without code fails closed; vault slots are connection-<service> and backend-reserved; an absent, locked, expired or empty token is never handed out; the lane registry, the doc and the suite files name the same tests",
+      "keepsGreen": [
+        "src-tauri/src/connections.rs"
+      ],
+      "supersededBy": [
+        "L6-WP05",
+        "L6-WP06"
+      ]
+    },
+    {
+      "id": "L6-CH-2",
+      "lane": "L6",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "mcp_servers::tests::l6_char::",
+      "files": [
+        "src-tauri/src/lanes/l6/characterization/mcp_servers_char_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/mcp_servers.rs",
+        "src-tauri/src/hermes_mcp.rs"
+      ],
+      "tests": [
+        "char_user_server_saved_disabled_and_needs_probe",
+        "char_probe_claiming_trusted_tool_refused",
+        "char_env_values_only_in_keychain",
+        "char_max_servers_is_16",
+        "char_hermes_node_write_tools_off"
+      ],
+      "pins": "user-added MCP servers: a saved server is disabled and needs a successful probe of the entry as it stands before it is enabled, and an edit after a successful probe or turning the server off needs a new probe; a probe report claiming a trusted tool is refused; env values live in the keychain and never in the saved server list (mcp-servers.json; the private probe file during a check and the spawn-time allowlist at Hermes start do carry them, and this suite does not pin those); at most 16 servers; Hermes is offered the node server's read tools only (HERMES_NODE_WRITE_TOOLS false, the rendered node entry has allow_write_tools false)",
+      "keepsGreen": [
+        "src-tauri/src/mcp_servers_tests.rs",
+        "src-tauri/src/hermes_mcp_tests.rs"
+      ],
+      "supersededBy": [
+        "L6-WP10",
+        "L6-WP12"
+      ]
+    },
+    {
+      "id": "L6-CH-3",
+      "lane": "L6",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "store_catalog::tests::l6_char::",
+      "files": [
+        "src-tauri/src/lanes/l6/characterization/store_char_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/store_catalog.rs",
+        "components/src/catalog.rs"
+      ],
+      "tests": [
+        "char_store_no_key_refuses_before_network",
+        "char_store_first_party_only"
+      ],
+      "pins": "Store: the production catalog key slot is empty and an empty slot refuses (no_key) before any fetch or write, for the view and for stage; a catalog with a third-party listing is refused even with a good signature, the view shows nothing and keeps no copy, and nothing can be staged from it",
+      "keepsGreen": [
+        "src-tauri/src/store_catalog_tests.rs"
+      ],
+      "supersededBy": [
+        "L6-WP08",
+        "L6-WP10",
+        "L6-WP20"
+      ]
+    }
+  ],
+  "supersedesByWp": {
+    "L6-WP05": [
+      "L6-CH-1"
+    ],
+    "L6-WP06": [
+      "L6-CH-1"
+    ],
+    "L6-WP08": [
+      "L6-CH-3"
+    ],
+    "L6-WP10": [
+      "L6-CH-2",
+      "L6-CH-3"
+    ],
+    "L6-WP12": [
+      "L6-CH-2"
+    ],
+    "L6-WP20": [
+      "L6-CH-3"
+    ]
+  },
+  "notes": "char_hermes_node_write_tools_off reads hermes_mcp (L1) through its public API only; turning node write tools on is owner-gated (09 section 10 item 2) and supersedes that one test in an L1 PR. char_store_no_key_refuses_before_network supersedes on the catalog key ceremony (09 section 10 item 1)."
+}

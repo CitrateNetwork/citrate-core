@@ -1,0 +1,190 @@
+# created: 2026-11-27 | branch: feat/v60-lq-wp03-tripwire-inventory
+# author: Claude Opus 5.5 (LQ-WP03 worker) for Larry Klosowski
+# status: active
+#
+# LQ-WP03 (0.6.0 non-regression guard): every registered honesty and tripwire test
+# (.agentile/coverage/tripwires.json) stays in the runners' own test lists, or is replaced only by
+# a stricter test that is itself registered, exists, and links the run where it failed against a
+# deliberately weakened copy of the guarded code (label tripwire-replace, owner review through
+# CODEOWNERS: the '#! tail' pins in .agentile/v60-ownership.map). Rules and the replacement procedure: .agentile/coverage/TRIPWIRES.md.
+#
+# Data source (Rule 7): `cargo test --workspace --locked --offline -- --list`, the same with
+# `--ignored` (a Rust test marked #[ignore] is listed but ci.yml does not run it), and
+# `vitest list --json` (which leaves skipped, todo and only-filtered tests out itself), on
+# ubuntu-latest with the same toolchain and features as ci.yml. Nothing here runs the tests.
+# LQ-WP02's `lq / ratchet` calls the same CLI on the same listings once it lands.
+name: lq-tripwires
+
+on:
+  pull_request:
+    # labeled/unlabeled: adding tripwire-replace re-runs the check.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lq-tripwires-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cargo-list:
+    name: lq / tripwires (cargo test --list)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The private-repo token (citrate-wallet-core is private) is NOT a job env: a job env reaches
+    # every step, including the PR-controlled build scripts and test binaries that `--list` builds
+    # and runs. It is mapped into the one step that fetches the private crates, as an in-process
+    # git config (GIT_CONFIG_*), so it is never written to a git config file. `cargo fetch` runs
+    # no build script and no test. Same pattern as lq-ratchet.yml (LQ-WP01).
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # Same pinned toolchain as ci.yml, so the list is the list ci.yml tests.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.99.1"
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: cargo fetch --locked (private crates; the only step with the token)
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CHAIN_TOKEN}" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${CHAIN_TOKEN}@github.com/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/"
+          fi
+          cargo fetch --locked > /dev/null 2>&1 || { echo "cargo fetch --locked failed (output withheld: it can carry the credential)" >&2; exit 1; }
+      - name: No credential left on disk for the listing steps
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          if grep -rIlq 'x-access-token' "$HOME/.gitconfig" "$cargo_home/git" 2>/dev/null; then
+            echo "a git credential is on disk after cargo fetch; refusing to run PR code next to it" >&2
+            exit 1
+          fi
+      - name: List every Rust test (cargo's Running lines name each test binary)
+        run: cargo test --workspace --locked --offline -- --list > cargo-list.txt 2>&1
+      - name: List the #[ignore]d Rust tests (listed above, but ci.yml does not run them)
+        run: cargo test --workspace --locked --offline -- --list --ignored > cargo-list-ignored.txt 2>&1
+      - name: Show the listing sizes
+        if: always()
+        run: |
+          echo "listed: $(grep -c ': test$' cargo-list.txt || true)"
+          echo "ignored: $(grep -c ': test$' cargo-list-ignored.txt || true)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lq-cargo-list
+          path: |
+            cargo-list.txt
+            cargo-list-ignored.txt
+          retention-days: 14
+
+  vitest-list:
+    name: lq / tripwires (vitest list)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: List every vitest test
+        run: npx vitest list --json=vitest-list.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lq-vitest-list
+          path: vitest-list.json
+          retention-days: 14
+
+  tripwires:
+    name: lq / tripwires
+    needs: [cargo-list, vitest-list]
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so the base commit's registry is readable without a second fetch.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-cargo-list
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-vitest-list
+      # The base registry is what "kept or replaced" is measured against: entries are never
+      # removed and a replacement is never re-pointed.
+      - name: Base registry
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          rm -f base-tripwires.json
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BASE_SHA:.agentile/coverage/tripwires.json" 2>/dev/null; then
+            git show "$BASE_SHA:.agentile/coverage/tripwires.json" > base-tripwires.json
+            echo "base registry from $BASE_SHA"
+          else
+            echo "no base registry (first introduction or no base); base rules skipped"
+          fi
+      - name: Check the registry against the lists
+        env:
+          EVENT: ${{ github.event_name }}
+          # Label names arrive as data through env, never spliced into the script.
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          args=(check --registry .agentile/coverage/tripwires.json
+                --cargo-list cargo-list.txt --cargo-ignored cargo-list-ignored.txt
+                --vitest-list vitest-list.json --root "$PWD")
+          if [ -s base-tripwires.json ]; then args+=(--base-registry base-tripwires.json); fi
+          if [ "$EVENT" = "pull_request" ]; then
+            # The JSON array as GitHub gives it; the CLI matches names exactly (a label name can
+            # itself contain a comma, so it is never joined and split).
+            args+=(--labels-json "$LABELS_JSON")
+          else
+            # merge_group and push carry no PR labels; the PR's own run enforced the label rule.
+            args+=(--no-labels)
+          fi
+          node scripts/ci/lq/tripwire-inventory.mjs "${args[@]}"
+      # A refreshed candidate (existing entries untouched, new matches added) for the LQ lead to
+      # review into the registry. Never committed by CI.
+      - name: Candidate registry refresh
+        if: always()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          reg=()
+          if [ -f .agentile/coverage/tripwires.json ]; then reg=(--registry .agentile/coverage/tripwires.json); fi
+          node scripts/ci/lq/tripwire-inventory.mjs generate "${reg[@]}" \
+            --cargo-list cargo-list.txt --cargo-ignored cargo-list-ignored.txt \
+            --vitest-list vitest-list.json --root "$PWD" \
+            --since "${HEAD_SHA:0:8}" > tripwires.candidate.json || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lq-tripwires-candidate
+          path: tripwires.candidate.json
+          if-no-files-found: ignore
+          retention-days: 14

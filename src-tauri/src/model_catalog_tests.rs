@@ -467,3 +467,6 @@ fn tripwire_the_models_marker_is_written_only_under_the_download_lock() {
     let claim = f.find("on_claimed()").expect("claim");
     assert!(guard < claim && claim < f.find("self.final_path().exists()").expect("check"), "lock, claim, check");
 }
+
+// L5-WP01 L5-CATALOG characterization (registry ci/characterization.d/l5.json).
+include!("lanes/l5/characterization/catalog_today_tests.rs");

@@ -18,3 +18,8 @@ paths = ['''^src-tauri/addresses/40204\.canonical\.json$''', '''^fixtures/networ
 [[allowlists]]
 description = "#681 deploy-claim check cases, shared byte for byte with citrate-agent-runtime (both pin its sha256). Public 40204 contract addresses and model answers only; a label such as Token next to a 40-hex address matches the generic-api-key rule"
 paths = ['''^src/agent/fixtures/deploy_claims_cases\.json$''']
+
+[[allowlists]]
+description = "L0-WP02 characterization snapshots: AppState's netKey is the r1007 genesis hash (currentNetKey in netScope.ts), a public value that matches the generic-api-key rule next to the word key. The entry pins that literal hash and nothing else, so it applies in any file but only to a line whose netKey is exactly the public r1007 genesis; the same line with any other 64-hex value (for example a private key) is still flagged. It is regex-only because gitleaks 8.30 with condition AND plus a path allows the whole path."
+regexTarget = "line"
+regexes = ['''^\s*"netKey": "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631",?$''']
