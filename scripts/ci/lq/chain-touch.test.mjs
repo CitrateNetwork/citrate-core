@@ -606,6 +606,36 @@ describe("lq / chain-touch: fail closed and self-protection", () => {
     expect(r.ok).toBe(false);
   });
 
+  // Review round 2: the base had no reviewer set, and the check fell back to the head's copy, so a
+  // rules-delta PR could name its own reviewer and approve itself.
+  it("a reviewer set only the head carries is refused (no head fallback)", async () => {
+    const dir = fixture({ "release/consensus-reviewers.json": null });
+    const head = change(dir, {
+      "release/components.json": components({ rev: NEW_REV }),
+      "src-tauri/Cargo.toml": tauriToml(NEW_REV),
+      ...evidence(NEW_REV, "rules-2"),
+      "release/consensus-reviewers.json": JSON.stringify({ version: 1, reviewers: ["Mallory"] }),
+    });
+    const r = await check(dir, { branch: "feat/v60-chain-x", labels: ["chain-touch", "consensus-review"], checkRuns: AGREEMENT_GREEN, headSha: head, reviews: [approve("Mallory", head)] });
+    expect(r.rulesDelta).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join("\n")).toMatch(/consensus-reviewers\.json is not on the base branch \(fail closed\)/);
+    expect(r.notes.join("\n")).not.toMatch(/consensus approval/);
+  });
+
+  it("with no reviewer set on the base, even the default reviewer's approval does not pass a rules delta", async () => {
+    const dir = fixture({ "release/consensus-reviewers.json": null });
+    const head = change(dir, {
+      "release/components.json": components({ rev: NEW_REV }),
+      "src-tauri/Cargo.toml": tauriToml(NEW_REV),
+      ...evidence(NEW_REV, "rules-2"),
+      "release/consensus-reviewers.json": REVIEWERS,
+    });
+    const r = await check(dir, { branch: "feat/v60-l0-wp03-one-chain-rev", labels: ["chain-touch", "consensus-review"], checkRuns: AGREEMENT_GREEN, headSha: head, reviews: [approve("SaulBuilds", head)] });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join("\n")).toMatch(/consensus-reviewers\.json is not on the base branch/);
+  });
+
   it("a map missing at base and head fails closed", async () => {
     const dir = fixture({ "release/chain-touch.json": null });
     change(dir, { "docs/notes.md": "x\n" });
@@ -697,9 +727,29 @@ describe("glob matcher self-test", () => {
     const head = repin(dir, "rules-2");
     const r = await check(dir, { branch: "feat/v60-l0-wp03-one-chain-rev", labels: ["chain-touch", "consensus-review"], checkRuns: AGREEMENT_GREEN, headSha: head, reviews: [approve("SaulBuilds", head)] });
     expect(r.ok).toBe(false);
+    expect(r.errors.join("\n")).toMatch(/consensus-reviewers\.json is not on the base branch \(fail closed\)/);
+  });
+
+  it("a reviewer set on the base that does not parse fails a rules delta closed", async () => {
+    const dir = fixture({ "release/consensus-reviewers.json": "{ not json" });
+    const head = repin(dir, "rules-2");
+    const r = await check(dir, { branch: "feat/v60-l0-wp03-one-chain-rev", labels: ["chain-touch", "consensus-review"], checkRuns: AGREEMENT_GREEN, headSha: head, reviews: [approve("SaulBuilds", head)] });
+    expect(r.ok).toBe(false);
     expect(r.errors.join("\n")).toMatch(/consensus-reviewers\.json unreadable \(fail closed\)/);
   });
 });
+
+// The jobs of a workflow file, keyed by job id, each as its indented text.
+function workflowJobs(text) {
+  const out = {};
+  let cur = null;
+  for (const l of (text.split(/^jobs:\s*$/m)[1] || "").split("\n")) {
+    const m = l.match(/^ {2}([\w-]+):\s*$/);
+    if (m) { cur = m[1]; out[cur] = ""; continue; }
+    if (cur) out[cur] += `${l}\n`;
+  }
+  return out;
+}
 
 describe("lq-chain-touch.yml (agentic-actions-auditor: untrusted PR metadata)", () => {
   const wf = fs.readFileSync(path.join(repo, ".github", "workflows", "lq-chain-touch.yml"), "utf8");
@@ -729,6 +779,24 @@ describe("lq-chain-touch.yml (agentic-actions-auditor: untrusted PR metadata)", 
   });
   it("can resolve a check run to its workflow run, read-only", () => {
     expect(wf).toMatch(/^\s+actions: read$/m);
+  });
+  // Review round 2: head code run on the enforcement runner first (the --self-test) could poison
+  // $GITHUB_PATH or the checkout's .git before the base copy judged the change.
+  it("the enforcement job runs no code from the PR head; the self-test runs in its own job", () => {
+    const jobs = workflowJobs(wf);
+    const enforce = Object.entries(jobs).filter(([, b]) => /^\s+name: lq \/ chain-touch\s*$/m.test(b));
+    expect(enforce.length).toBe(1);
+    const [enforceId, eb] = enforce[0];
+    expect(eb).not.toMatch(/--self-test/);
+    expect([...eb.matchAll(/\bnode\s+(\S+)/g)].map((m) => m[1])).toEqual(['"$RUNNER_TEMP/chain-touch.mjs"']);
+    const self = Object.entries(jobs).filter(([id, b]) => id !== enforceId && /node scripts\/ci\/lq\/chain-touch\.mjs --self-test/.test(b));
+    expect(self.length).toBe(1);
+    const [selfId, sb] = self[0];
+    expect(sb).not.toMatch(/GH_TOKEN|github\.token/);
+    expect(sb).toMatch(/persist-credentials: false/);
+    expect(sb).toMatch(/permissions:\n\s+contents: read\n(?!\s+\w+: )/);
+    // A required job that `needs` a failed job is skipped, and a skipped check reads as passing.
+    expect(eb).not.toMatch(new RegExp(`needs:.*\\b${selfId}\\b`));
   });
   it("a review event queues behind an in-flight run instead of cancelling it", () => {
     expect(wf).toMatch(/cancel-in-progress: false/);
