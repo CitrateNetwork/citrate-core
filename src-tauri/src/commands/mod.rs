@@ -8,8 +8,11 @@
 //! day edit two different files and never conflict.
 //!
 //! A new command goes in its lane's list and in that lane's ACL, `permissions/l<N>-commands.toml`.
-//! Only `capabilities/default.json` (the main window) holds the ten lane permissions; together they
-//! allow exactly the commands the single HUP-S5.4 `main-window-commands` permission did.
+//! Those two lane-owned files are the reviewed record of the addition: the L0 commands fixture
+//! (`tests/fixtures/seams/commands.a826e441.txt`) is not edited, and `seams_tests` still names any
+//! recorded command that is dropped or re-pointed. Only `capabilities/default.json` (the main
+//! window) holds the ten lane permissions; at the split they allowed exactly the commands the
+//! single HUP-S5.4 `main-window-commands` permission did.
 //!
 //! Macro notes:
 //! - The paths travel as `tt`, never as `$x:path`: a `path` fragment reaches a proc macro as one
@@ -139,6 +142,12 @@ pub(crate) fn lane_acls() -> Vec<(String, &'static str)> {
         .zip(LANE_ACLS)
         .map(|(lane, toml)| (format!("{lane}-commands"), toml))
         .collect()
+}
+
+/// `(lane, list file text)` per lane, in chain order.
+#[cfg(test)]
+pub(crate) fn lane_sources() -> Vec<(&'static str, &'static str)> {
+    LANES.into_iter().zip(LANE_SOURCES).collect()
 }
 
 /// The command paths one lane file appends, in file order (comments dropped).

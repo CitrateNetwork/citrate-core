@@ -4,8 +4,10 @@
 //! L0-WP03 split the `generate_handler!` list into per-lane lists (`src/commands/l<N>.rs`) and
 //! `permissions/main-window.toml` into per-lane ACLs; the registration and ACL snapshots stayed
 //! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 moves the module
-//! tree and must keep these snapshots byte-identical. A lane PR that drops a command fails here
-//! by name.
+//! tree and must keep these snapshots byte-identical. A lane PR that drops or re-points a
+//! recorded command fails here by name. A lane adds a command in its own `commands/l<N>.rs` and
+//! `permissions/l<N>-commands.toml` only: those lane-owned files are the reviewed record of the
+//! addition, and the commands fixture stays the a826e441 baseline (`baseline_problems`).
 //! A fixture changes only in an L0-reviewed PR that says why; record it again with
 //! `node scripts/seams-snapshot.mjs` (`SEAMS_SNAPSHOT_WRITE=1`). A missing fixture fails and prints
 //! `SEAMS_SNAPSHOT_MISSING <path> <hex>` with the exact bytes it would record.
@@ -187,7 +189,32 @@ fn registered_commands_are_unchanged() {
     let mut from_helper = crate::commands::registered_paths();
     from_helper.sort();
     assert_eq!(paths, from_helper);
-    check_snapshot("commands", &paths);
+    let (_, fixture_path) = fixture("commands");
+    if std::env::var("SEAMS_SNAPSHOT_WRITE").as_deref() == Ok("1") || !fixture_path.exists() {
+        // Record the whole registry, or print the bytes a missing fixture would hold.
+        check_snapshot("commands", &paths);
+        return;
+    }
+    // Every recorded command is still registered at its path; an addition sits in one lane's
+    // list and that lane's ACL. What is left is the baseline, byte for byte.
+    let (problems, added) = baseline_problems(&fixture_lines("commands"), &live_lanes());
+    assert!(
+        problems.is_empty(),
+        "the registry left the a826e441 baseline: {problems:?}"
+    );
+    for line in &added {
+        println!("SEAMS_COMMAND_ADDED {line}");
+    }
+    let added: BTreeSet<&str> = added
+        .iter()
+        .filter_map(|line| line.split_once(' ').map(|(_, path)| path))
+        .collect();
+    let kept: Vec<String> = paths
+        .iter()
+        .filter(|p| !added.contains(p.as_str()))
+        .cloned()
+        .collect();
+    check_snapshot("commands", &kept);
 }
 
 #[test]
@@ -283,11 +310,14 @@ struct LaneReg {
 }
 
 /// The registry against the recorded a826e441 baseline, as `(problems, additions)`, each
-/// addition written `<lane> <path>`. Every path not in the baseline is a problem.
+/// addition written `<lane> <path>`. Every baseline path must still be registered at that path, so
+/// a drop or a re-point is named. A path added since is allowed when the same lane's ACL allows
+/// it: the lane's own list and ACL record the addition, so a lane never edits the L0 fixture.
 fn baseline_problems(baseline: &[String], lanes: &[LaneReg]) -> (Vec<String>, Vec<String>) {
     let base: BTreeSet<&str> = baseline.iter().map(String::as_str).collect();
     let mut now: BTreeSet<&str> = BTreeSet::new();
     let mut problems = Vec::new();
+    let mut added = Vec::new();
     for lane in lanes {
         for path in &lane.paths {
             if !now.insert(path.as_str()) {
@@ -298,7 +328,7 @@ fn baseline_problems(baseline: &[String], lanes: &[LaneReg]) -> (Vec<String>, Ve
             }
             let name = path.rsplit("::").next().unwrap_or_default();
             if lane.allowed.contains(name) {
-                problems.push(format!("{path} is not in the a826e441 baseline"));
+                added.push(format!("{} {path}", lane.id));
             } else {
                 problems.push(format!(
                     "{path} is added by {id} without its {id}-commands ACL entry",
@@ -312,7 +342,23 @@ fn baseline_problems(baseline: &[String], lanes: &[LaneReg]) -> (Vec<String>, Ve
             "{path} is no longer registered (dropped or re-pointed)"
         ));
     }
-    (problems, Vec::new())
+    (problems, added)
+}
+
+/// The lanes as built: each lane's list and ACL, exactly as `commands` includes them.
+fn live_lanes() -> Vec<LaneReg> {
+    crate::commands::lane_sources()
+        .into_iter()
+        .zip(crate::commands::lane_acls())
+        .map(|((lane, src), (_, toml))| LaneReg {
+            id: lane.to_string(),
+            paths: crate::commands::lane_paths(src)
+                .iter()
+                .map(|p| p.trim_start_matches("crate::").to_string())
+                .collect(),
+            allowed: acl_commands(toml).into_iter().collect(),
+        })
+        .collect()
 }
 
 fn lane_reg(id: &str, paths: &[&str], allowed: &[&str]) -> LaneReg {
@@ -460,7 +506,10 @@ fn lane_lists_partition_the_registry() {
         }
     }
     all.sort();
-    let (missing, added) = line_diff(&fixture_lines("commands"), &all);
+    // The lane files on disk are the whole built registry (the a826e441 baseline is checked once,
+    // by registered_commands_are_unchanged, so recording it never races this test).
+    let built = lane_list_paths(&crate::commands::registry_source());
+    let (missing, added) = line_diff(&built, &all);
     assert!(
         missing.is_empty() && added.is_empty(),
         "the lane lists are not the registry: missing {missing:?}, added {added:?}"
@@ -512,17 +561,23 @@ fn lane_acl_matches_lane_list() {
         );
         union.extend(allowed);
     }
-    // The union is exactly the old main-window-commands set (the recorded registry's names).
-    let old = command_names(&fixture_lines("commands"));
-    let missing: Vec<_> = old.difference(&union).collect();
-    let extra: Vec<_> = union.difference(&old).collect();
+    // The union allows exactly the registered commands (at the split, the old
+    // main-window-commands set; registered_commands_are_unchanged holds the baseline).
+    let registered = crate::commands::registered_names();
+    let missing: Vec<_> = registered.difference(&union).collect();
+    let extra: Vec<_> = union.difference(&registered).collect();
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "the lane ACLs differ from main-window-commands: missing {missing:?}, extra {extra:?}"
+        "the lane ACLs differ from the registry: missing {missing:?}, extra {extra:?}"
     );
     // The main window holds every lane's permission and no longer the single one.
     let cap: serde_json::Value =
         serde_json::from_str(&read_rel("capabilities/default.json")).expect("default.json is JSON");
+    assert_eq!(
+        cap["windows"],
+        serde_json::json!(["main"]),
+        "the lane permissions are granted to the main window only"
+    );
     let perms: Vec<&str> = cap["permissions"]
         .as_array()
         .expect("permissions")
