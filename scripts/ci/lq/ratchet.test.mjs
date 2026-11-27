@@ -1036,3 +1036,130 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/gh pr create/);
   });
 });
+
+// Review of #790 (round 5), reproduced: (1) a committed floor of false, 0 or "" passed the
+// `floor === null` check and the truthiness guards then skipped every floor rule; once merged it
+// is the next merge base, so every later PR is refused and main wedges. A base or head of the
+// wrong shape slipped through the same way ({} or a missing axis skipped every axis). Base, head
+// and floor are now schema-checked first. (2) Labels were joined with commas and split again, so
+// one label named "x,ratchet-adr" counted as ratchet-adr; they now arrive as a JSON array and
+// match exactly. (3) Removed and added tests cancelled as a set, so two removals of one name were
+// cancelled by one addition; they now cancel one for one.
+const NOT_RATCHETS = () => {
+  const noAxis = doc();
+  delete noAxis.specs.tlc_configs_in_ci;
+  const noFm = doc();
+  delete noFm.frontmatter;
+  return [
+    ["false", false], ["0", 0], ['""', ""], ["[]", []], ["{}", {}], ["a string", "ratchet"],
+    ["an axis missing", noAxis], ["frontmatter missing", noFm],
+    ["an axis that is a string", doc({ "tests.rust.passed": "3218" })],
+    ["an axis that is negative", doc({ "tests.vitest.passed": -1 })],
+    ["an axis that is not finite", doc({ "specs.tla": Number.POSITIVE_INFINITY })],
+    ["more docs with frontmatter than docs", doc({ "frontmatter.with": 262 })],
+  ];
+};
+
+describe("compare: a base, head or floor that is not a ratchet is refused (round 5)", () => {
+  it("ratchetErrors accepts the committed baseline and a measured head, and names what is wrong otherwise", () => {
+    const base = JSON.parse(fs.readFileSync(path.join(repo, ".agentile/coverage/ratchet.json"), "utf8"));
+    expect(R.ratchetErrors(base)).toEqual([]);
+    expect(R.ratchetErrors(doc())).toEqual([]);
+    for (const [what, v] of NOT_RATCHETS()) expect(R.ratchetErrors(v).length, what).toBeGreaterThan(0);
+    expect(R.ratchetErrors(null).length).toBeGreaterThan(0);
+  });
+
+  it("a floor of false, 0, \"\", [], {} or with an axis missing is refused, label and ADR or not", () => {
+    const adr = tree({ "docs/adr/ADR-x.md": "tests.rust.passed tests.vitest.passed specs.tla specs.tlc_configs_in_ci tripwires.registered tripwires.ci_steps frontmatter\n" });
+    for (const [what, floor] of NOT_RATCHETS()) {
+      for (const labels of [[], ["ratchet-adr"]]) {
+        const r = R.compare(doc(), doc(), { root: adr, floor, labels, body: "docs/adr/ADR-x.md" });
+        expect(r.ok, `${what} ${labels}`).toBe(false);
+        expect(r.failures.join("\n"), what).toMatch(/ratchet\.json in the head is not a ratchet/);
+      }
+      // With no baseline at the merge base yet, a malformed floor is still refused: it becomes
+      // the next merge base.
+      expect(R.compare(null, doc(), { root: tree({}), floor }).ok, `no base, ${what}`).toBe(false);
+    }
+  });
+
+  it("a merge base of the wrong shape is refused, never read as no baseline or as nothing to compare", () => {
+    for (const [what, base] of NOT_RATCHETS()) {
+      const r = R.compare(base, doc(), { root: tree({}), floor: doc() });
+      expect(r.ok, what).toBe(false);
+      expect(r.failures.join("\n"), what).toMatch(/merge base ratchet\.json is not a ratchet/);
+    }
+  });
+
+  it("a measured head of the wrong shape is refused", () => {
+    for (const [what, head] of NOT_RATCHETS()) {
+      const r = R.compare(doc(), head, { root: tree({}), floor: doc() });
+      expect(r.ok, what).toBe(false);
+      expect(r.failures.join("\n"), what).toMatch(/measured head is not a ratchet/);
+    }
+  });
+
+  const run = (args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
+  const FILES = () => [...NOT_RATCHETS().map(([what, v]) => [what, JSON.stringify(v)]), ["null", "null"], ["not JSON", "{ tests:"]];
+  it("CLI: a committed floor of false, 0, \"\", [], {}, null, not JSON or with an axis missing exits 1", () => {
+    for (const [what, text] of FILES()) {
+      const d = tree({ "base.json": JSON.stringify(doc()), "head.json": JSON.stringify(doc()), ".agentile/coverage/ratchet.json": text });
+      const res = run(["compare", "--base", path.join(d, "base.json"), "--head", path.join(d, "head.json"), "--root", d, "--labels-json", "[]"]);
+      expect(res.status, what).toBe(1);
+      expect(res.stdout, what).not.toMatch(/ratchet: pass/);
+      expect(res.stdout, what).toMatch(/ratchet\.json (in the head is not a ratchet|is missing or unreadable in the head)/);
+    }
+  });
+  it("CLI: a merge base or a head of the wrong shape exits 1", () => {
+    for (const [what, text] of FILES()) {
+      const d = tree({ "bad.json": text, "good.json": JSON.stringify(doc()), ".agentile/coverage/ratchet.json": JSON.stringify(doc()) });
+      const p = (f) => path.join(d, f);
+      const base = run(["compare", "--base", p("bad.json"), "--head", p("good.json"), "--root", d, "--labels-json", "[]"]);
+      expect(base.status, `base ${what}`).toBe(1);
+      expect(base.stdout, `base ${what}`).not.toMatch(/ratchet: pass/);
+      const head = run(["compare", "--base", p("good.json"), "--head", p("bad.json"), "--root", d, "--labels-json", "[]"]);
+      expect(head.status, `head ${what}`).toBe(1);
+      expect(head.stdout, `head ${what}`).not.toMatch(/ratchet: pass/);
+    }
+  });
+
+  it("CLI: labels arrive as a JSON array and match exactly; a label named 'x,ratchet-adr' is not ratchet-adr", () => {
+    const d = tree({ "base.json": JSON.stringify(doc()), "head.json": JSON.stringify(doc({ "tests.rust.passed": 3217 })),
+      ".agentile/coverage/ratchet.json": JSON.stringify(doc({ "tests.rust.passed": 3217 })),
+      "body.md": "docs/adr/ADR-drop.md", "docs/adr/ADR-drop.md": "Drops one test: tests.rust.passed.\n" });
+    const p = (f) => path.join(d, f);
+    const args = (labels) => ["compare", "--base", p("base.json"), "--head", p("head.json"), "--root", d, "--pr-body", p("body.md"), "--labels-json", labels];
+    const joined = run(args(JSON.stringify(["needs review,ratchet-adr"])));
+    expect(joined.status).toBe(1);
+    expect(joined.stdout).toMatch(/needs label ratchet-adr/);
+    expect(run(args(JSON.stringify([" ratchet-adr"]))).status).toBe(1);
+    expect(run(args(JSON.stringify(["needs review", "ratchet-adr"]))).status).toBe(0);
+    // Not a JSON array of names, or the old comma form: a usage error, never a guess.
+    for (const bad of ["ratchet-adr", "needs review,ratchet-adr", '"ratchet-adr"', "[1]", "{}"]) expect(run(args(bad)).status, bad).toBe(2);
+    expect(run(["compare", "--base", p("base.json"), "--head", p("head.json"), "--root", d, "--labels", "ratchet-adr"]).status).toBe(2);
+  });
+  it("lq-compare.yml hands the labels over as one JSON array, never a comma-joined string", () => {
+    const wf = fs.readFileSync(path.join(repo, ".github/workflows/lq-compare.yml"), "utf8");
+    const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
+    expect(job).not.toMatch(/paste -sd/);
+    expect(job).not.toMatch(/--labels "/);
+    expect(job).toMatch(/jq -c '\[\.labels\[\]\.name\]' lq-pr\.json >> lq-labels\.jsonl/);
+    expect(job).toMatch(/jq -cs 'add \/\/ \[\]' lq-labels\.jsonl > lq-labels\.json/);
+    expect(job).toMatch(/--labels-json "\$\(cat lq-labels\.json\)"/);
+  });
+
+  it("removed and added tests cancel one for one: two removals of one name are not cancelled by one addition", () => {
+    const rs = (file, lines) => [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`,
+      `@@ -1,${lines.filter((l) => l[0] !== "+").length} +1,${lines.filter((l) => l[0] !== "-").length} @@`, ...lines];
+    const removeIn = (file) => rs(file, ["-#[test]", "-fn roundtrip() {}", " fn keep() {}"]);
+    const addIn = (file) => rs(file, [" fn keep() {}", "+#[test]", "+fn roundtrip() {}"]);
+    const diff = [removeIn("src-tauri/src/a.rs"), removeIn("src-tauri/src/b.rs"), addIn("src-tauri/src/c.rs")].flat().join("\n");
+    expect(R.scanDiff(diff).removedTests).toEqual(["roundtrip", "roundtrip"]);
+    const r = R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/test removed and not added back: roundtrip/);
+    // One removal and one addition still cancel (a move).
+    const moved = [removeIn("src-tauri/src/a.rs"), addIn("src-tauri/src/c.rs")].flat().join("\n");
+    expect(R.compare(doc(), doc(), { root: tree({}), diff: moved, floor: doc() })).toMatchObject({ ok: true, failures: [] });
+  });
+});
