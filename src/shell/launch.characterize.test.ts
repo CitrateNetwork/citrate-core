@@ -1,0 +1,87 @@
+// 0.6.0 L3-WP00 characterization: what a Tauri launch does today (store.start() on citrate-core
+// a826e441), pinned before L3-WP01/WP02 (background node, persistent session) change it. The launch
+// path runs only in a Tauri build, so it is pinned from the source of `start()`, plus the state
+// defaults it reads. A failure here means the launch changed: update the expectation only together
+// with that reviewed change.
+//
+//   1. The node autostarts on every launch while the member's intent is "run", at any stage.
+//   2. The signed-in session is resumed only after the custody vault unlock settles.
+//   3. A launch that lands on S3 asks the chain whether the grant already landed.
+//   4. The signed-in identity fields are never persisted.
+import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { PERSIST_KEYS, STORAGE_KEY, freshState } from "./state";
+
+const STORE = readFileSync(resolve(__dirname, "store.ts"), "utf8");
+
+/** The body of `start()` in store.ts, from its signature to its closing brace. */
+function startBody(): string {
+  const open = STORE.indexOf("\n  start(): void {\n");
+  expect(open, "store.ts defines start()").toBeGreaterThan(0);
+  const close = STORE.indexOf("\n  }\n", open + 1);
+  expect(close).toBeGreaterThan(open);
+  return STORE.slice(open, close);
+}
+const flat = (s: string) => s.replace(/\s+/g, " ");
+
+/** The tauri-only part of start(): from the first `if (BRIDGE_MODE === "tauri") {` block that polls the node. */
+function tauriBlock(): string {
+  const body = startBody();
+  const at = body.indexOf('if (BRIDGE_MODE === "tauri") {\n      // CORE-D3');
+  expect(at, "the tauri launch block").toBeGreaterThan(0);
+  return body.slice(at);
+}
+
+const SIGNED_IN_FIELDS = ["signedIn", "authSub", "authEmail", "authName", "authInitials", "authExpiresAt"];
+
+describe("L3-WP00 characterization: launch (store.start)", () => {
+  beforeEach(() => {
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom */
+    }
+  });
+
+  it("node_autostarts_regardless_of_stage_when_intent_run", () => {
+    expect(freshState("p1").nodeIntent).toBe("run");
+    const block = tauriBlock();
+    const auto = /setTimeout\(\(\) => \{([^}]*)\}, 1500\);/.exec(block);
+    expect(auto, "the deferred autostart").not.toBeNull();
+    expect(flat(auto![1]).trim()).toBe(
+      'if (this.state.nodeIntent !== "run") return; if (this.state.node !== "off" && this.state.node !== "error") return; this.startNode();',
+    );
+    // Nothing about the onboarding stage gates the autostart.
+    expect(auto![1]).not.toContain("stage");
+    // It is the only place the launch starts the node.
+    expect(block.split("this.startNode()").length - 1).toBe(1);
+  });
+
+  it("resume_session_runs_after_custody_unlock", () => {
+    const body = flat(startBody());
+    const unlock = body.indexOf("void this.custodyEnsureUnlocked().finally(() => {");
+    expect(unlock).toBeGreaterThan(0);
+    const resume = body.indexOf("void this.resumeSession();");
+    expect(resume).toBeGreaterThan(unlock);
+    // Called once, inside the unlock's finally (before the wallet reads that follow it).
+    expect(body.split("this.resumeSession()").length - 1).toBe(1);
+    expect(body.slice(unlock, resume)).not.toContain("});");
+    expect(body.indexOf("void this.refreshWallet();", unlock)).toBeGreaterThan(resume);
+  });
+
+  it("s3_resume_from_chain_on_launch", () => {
+    expect(tauriBlock()).toContain('if (this.state.stage === "s3") void this.settleS3IfAlreadyGranted();');
+  });
+
+  it("signed_in_fields_not_persisted", () => {
+    for (const k of SIGNED_IN_FIELDS) expect(PERSIST_KEYS as string[], k).not.toContain(k);
+    // The save writes only PERSIST_KEYS (plus the network stamp), so no identity field reaches disk.
+    const from = STORE.indexOf("private writePersisted(): void {");
+    expect(from).toBeGreaterThan(0);
+    const write = flat(STORE.slice(from, STORE.indexOf("\n  }\n", from)));
+    expect(write).toContain("for (const k of PERSIST_KEYS) keep[k] = s[k];");
+    expect(write).toContain("localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));");
+    expect(typeof STORAGE_KEY).toBe("string");
+  });
+});
