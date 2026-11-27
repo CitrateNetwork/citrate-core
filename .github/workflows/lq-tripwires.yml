@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: never
       # Same read-only federation token as ci.yml's rust job (citrate-wallet-core is private).
       CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:

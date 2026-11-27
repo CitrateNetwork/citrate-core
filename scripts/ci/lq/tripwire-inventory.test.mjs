@@ -26,7 +26,8 @@ afterEach(() => {
 const CARGO_LIST = [
   "   Compiling citrate-core-kit v0.5.9 (/home/runner/work/citrate-core/citrate-core/kit)",
   "    Finished `test` profile [unoptimized + debuginfo] target(s) in 9m 01s",
-  "     Running unittests src/lib.rs (target/debug/deps/citrate_core_kit-0a1b2c3d4e5f6a7b)",
+  // cargo colours its status words on CI; the parser strips the escapes.
+  "\x1b[1m\x1b[92m     Running\x1b[0m unittests src/lib.rs (target/debug/deps/citrate_core_kit-0a1b2c3d4e5f6a7b)",
   "ceremony_tests::rule3_tripwire_no_config_can_skip_the_ceremony: test",
   "ceremony_tests::join8_tripwire_catches_evasions: test",
   "ceremony_tests::a_plain_test: test",
@@ -132,14 +133,27 @@ describe("parsing the runners' own listings", () => {
     expect(ids.vitest).toHaveLength(4);
   });
 
+  it("tells apart two vitest tests with the same title in one file, so deleting one shows", () => {
+    const twice = { name: "every reader is wired", file: `${ROOT}/src/shell/syncProgress.tripwire.test.tsx` };
+    const r = run("list", { vitest: [...VITEST_LIST, twice] });
+    expect(r.status).toBe(0);
+    const ids = JSON.parse(r.stdout);
+    expect(ids.vitest).toContain(V_SYNC);
+    expect(ids.vitest).toContain(`${V_SYNC} #2`);
+    const reg = registry([...FULL.tripwires, entry(`${V_SYNC} #2`)]);
+    const gone = run("check", { reg, base: reg, labels: "" });
+    expect(gone.status).toBe(1);
+    expect(gone.text).toContain(`missing registered tripwire: ${V_SYNC} #2`);
+  });
+
   it("refuses an empty cargo listing instead of reporting every tripwire missing", () => {
-    const r = run("check", { reg: FULL, cargo: "    Finished `test` profile\n" });
+    const r = run("check", { reg: FULL, cargo: "    Finished `test` profile\n", labels: "" });
     expect(r.status).toBe(2);
     expect(r.text).toMatch(/no tests in the cargo listing/);
   });
 
   it("refuses an empty vitest listing", () => {
-    const r = run("check", { reg: FULL, vitest: [] });
+    const r = run("check", { reg: FULL, vitest: [], labels: "" });
     expect(r.status).toBe(2);
     expect(r.text).toMatch(/no tests in the vitest listing/);
   });
@@ -335,6 +349,12 @@ describe("count and usage", () => {
     const r = spawnSync(process.execPath, [SCRIPT, "frobnicate"], { encoding: "utf8" });
     expect(r.status).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/usage: tripwire-inventory\.mjs/);
+  });
+
+  it("check without --labels or --no-labels is a usage error (CI must say which)", () => {
+    const r = run("check", { reg: FULL });
+    expect(r.status).toBe(2);
+    expect(r.text).toMatch(/check needs --labels/);
   });
 
   it("check without a registry is a usage error", () => {

@@ -8,3 +8,11 @@
 # second name here would not require both people; the security lead's part is their signature in
 # the record itself, which the build verifies against signers.json.
 /release/signoffs/ @SaulBuilds
+
+# LQ-WP03 (0.6.0 non-regression guard): the honesty and tripwire registry, its check and its
+# workflow. A registered tripwire goes only for a stricter, registered replacement with evidence
+# (.agentile/coverage/TRIPWIRES.md); the owner approves any change to these files.
+/.agentile/coverage/tripwires.json @SaulBuilds
+/.agentile/coverage/TRIPWIRES.md @SaulBuilds
+/scripts/ci/lq/tripwire-inventory.mjs @SaulBuilds
+/.github/workflows/lq-tripwires.yml @SaulBuilds
