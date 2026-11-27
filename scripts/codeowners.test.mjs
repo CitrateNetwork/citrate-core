@@ -106,4 +106,48 @@ describe("lane-guard workflow", () => {
     // The head ref reaches the shell only as an env value.
     expect(wf).toContain("HEAD_REF: ${{ github.head_ref }}");
   });
+
+  it("a queued PR is judged on its own queue entry, not on the PRs queued ahead of it", () => {
+    // In a merge group each queued PR is one commit (squash) or one merge commit on top of the
+    // entry ahead of it, so HEAD^1...HEAD is exactly that PR. merge_group.base_sha is the tip of
+    // main under the WHOLE group: diffing against it blames an l5 PR for an l4 PR ahead of it.
+    const wf = read(".github/workflows/lane-guard.yml");
+    expect(wf).not.toContain("merge_group.base_sha");
+    expect(wf).toMatch(/^ {10}base="HEAD\^1"$/m);
+    expect(wf.match(/base=/g)).toHaveLength(1);
+
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "lane-guard-mq-"));
+    try {
+      mkdirSync(path.join(tmp, "scripts"));
+      mkdirSync(path.join(tmp, ".agentile"));
+      copyFileSync(path.join(repo, "scripts/cx-ownership-check.sh"), path.join(tmp, "scripts/cx-ownership-check.sh"));
+      copyFileSync(path.join(repo, ".agentile/v60-ownership.map"), path.join(tmp, ".agentile/v60-ownership.map"));
+      const git = (...a) =>
+        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], { cwd: tmp, encoding: "utf8" });
+      const commitFile = (rel, msg) => {
+        mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true });
+        writeFileSync(path.join(tmp, rel), `${msg}\n`);
+        git("add", "-A");
+        git("commit", "-q", "-m", msg);
+      };
+      git("init", "-q");
+      git("add", "-A");
+      git("commit", "-q", "-m", "main");
+      const groupBase = git("rev-parse", "HEAD").trim();
+      commitFile("src/shell/actions/l4/pins.ts", "queue entry 1: an l4 PR");
+      commitFile("src/shell/actions/l5/caps.ts", "queue entry 2: an l5 PR");
+      const run = (base) => {
+        try {
+          execFileSync("bash", ["scripts/cx-ownership-check.sh", "--map", "v60", "l5", base], { cwd: tmp, encoding: "utf8", stdio: "pipe" });
+          return "pass";
+        } catch {
+          return "fail";
+        }
+      };
+      expect(run("HEAD^1")).toBe("pass");
+      expect(run(groupBase)).toBe("fail");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
