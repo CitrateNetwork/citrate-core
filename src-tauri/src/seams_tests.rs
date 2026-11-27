@@ -8,6 +8,7 @@
 //! `SEAMS_SNAPSHOT_MISSING <path> <hex>` with the exact bytes it would record.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::PathBuf;
 
 const BASE: &str = "a826e441";
@@ -125,11 +126,11 @@ fn check_snapshot(name: &str, got: &[String]) {
     let body = format!("{}\n", got.join("\n"));
     if std::env::var("SEAMS_SNAPSHOT_WRITE").as_deref() == Ok("1") {
         let dir = path.parent().expect("fixture dir");
-        std::fs::create_dir_all(dir).expect("create fixture dir");
-        std::fs::write(&path, &body).expect("write fixture");
+        fs::create_dir_all(dir).expect("create fixture dir");
+        fs::write(&path, &body).expect("write fixture");
         return;
     }
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Ok(raw) = fs::read_to_string(&path) else {
         let hex: String = body.bytes().map(|b| format!("{b:02x}")).collect();
         println!("SEAMS_SNAPSHOT_MISSING {rel} {hex}");
         panic!("fixture {rel} is missing; record it with node scripts/seams-snapshot.mjs");
