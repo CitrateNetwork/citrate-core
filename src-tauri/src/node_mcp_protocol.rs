@@ -525,7 +525,7 @@ impl McpCore {
             self.log_call(ctx, "tools/call", Some(name), false);
             return rpc_error(id, INVALID_PARAMS, &format!("unknown tool: {name}"));
         };
-        if ctx.read_only && def.kind != ToolKind::Read && def.kind != ToolKind::Budgeted {
+        if ctx.read_only && def.kind != ToolKind::Read {
             self.log_call(ctx, "tools/call", Some(name), false);
             return rpc_result(
                 id,

@@ -181,7 +181,7 @@ impl ApprovalInbox {
         let mut close = Vec::new();
         for r in inner.requests.iter_mut() {
             if r.state == RequestState::Pending
-                && now_ms.saturating_sub(r.created_ms) > REQUEST_TTL_MS
+                && now_ms.saturating_sub(r.created_ms) >= REQUEST_TTL_MS
             {
                 r.state = RequestState::Expired;
                 r.decided_ms = Some(now_ms);

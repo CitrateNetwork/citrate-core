@@ -303,7 +303,7 @@ impl ViewLeases {
 
 /// What to post for one claimed call: `(status, content)`.
 pub fn answer(host: &dyn CoreToolHost, c: &Claimed) -> (&'static str, String) {
-    if c.hic_required && !HEADLESS_TOOLS.contains(&c.name.as_str()) {
+    if c.hic_required {
         return ("denied", needs_hic(&c.name));
     }
     if !c.arguments.is_object() {

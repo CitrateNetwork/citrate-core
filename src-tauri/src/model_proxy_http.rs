@@ -401,7 +401,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if req.path != CHAT_PATH && req.path != "/v1/responses" {
+    if req.path != CHAT_PATH {
         return write_json(
             out,
             404,

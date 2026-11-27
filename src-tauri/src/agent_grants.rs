@@ -405,7 +405,7 @@ impl GrantStore {
             )));
         }
         let own = std::fs::canonicalize(&self.protected).unwrap_or_else(|_| self.protected.clone());
-        if canon == own {
+        if canon.starts_with(&own) {
             return Err(GrantsError::Invalid(
                 "Citrate Core's own data folder cannot be granted".into(),
             ));
