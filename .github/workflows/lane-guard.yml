@@ -103,5 +103,8 @@ jobs:
       - name: Matcher selftest (cx and v60 maps, branch parsing)
         run: bash scripts/cx-ownership-check.sh --selftest
 
+      - name: Guard decision tests (characterization and the L0 seam exemption)
+        run: bash scripts/cx-ownership-check.test.sh
+
       - name: CODEOWNERS matches the ownership map
         run: node scripts/gen-codeowners.mjs --check

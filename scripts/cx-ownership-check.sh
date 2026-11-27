@@ -8,12 +8,14 @@
 #     scripts/cx-ownership-check.sh <lane> [base-ref]      # default base = origin/main
 #     scripts/cx-ownership-check.sh --map v60 <lane> [base-ref]
 #     scripts/cx-ownership-check.sh --lane-of <branch>     # feat/v60-l<N>-wpNN-<slug> -> l<N>
+#     scripts/cx-ownership-check.sh --guard <branch> <base-ref>  # lane-guard.yml's whole decision
 #     scripts/cx-ownership-check.sh --selftest             # unit-checks the matcher, no git
 #
 # Maps: cx (default; lanes s0..s7, s0 = scaffold, owns the spine; see the map header) and v60
 # (.agentile/v60-ownership.map, lanes l0..l9 and lq; read by lane-guard.yml, written into
 # .github/CODEOWNERS by scripts/gen-codeowners.mjs).
 set -euo pipefail
+# lane-guard-api: 2 (lane-guard.yml calls --guard when the base's copy of this script carries this line)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The checkout whose diff is judged. lane-guard runs the base's copy of this script and map from a
@@ -236,12 +238,42 @@ selftest() {
   if [[ $fails -eq 0 ]]; then echo "SELFTEST: PASS"; else echo "SELFTEST: FAIL"; return 1; fi
 }
 
+# lane-guard.yml's decision for one PR (moved here from the workflow so it is tested end to end by
+# scripts/cx-ownership-check.test.sh). <branch> is the PR's head ref, <base> the commit it merges
+# into; the judged commit is CX_DIFF_HEAD in CX_DIFF_ROOT. Exit 0 pass, non-zero fail.
+guard() {
+  local branch="${1:?--guard needs a branch}" base="${2:?--guard needs a base ref}" lane rc=0
+  lane="$(lane_of "$branch")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) echo "Not a v60 lane branch: lane-guard does not apply."; return 0 ;;
+    *) echo "::error::v60 branch name must be feat/v60-l<N>-wpNN-<slug> (L0_INTEGRATION_SEAMS 3.6)"; return 1 ;;
+  esac
+  echo "lane: $lane"
+  use_map v60
+  # Changed paths are PR-controlled text: pause workflow commands while they print.
+  local pause="" out=0
+  if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+    pause="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    echo "::stop-commands::$pause"
+  fi
+  check_diff "$lane" "$base" || out=$?
+  [[ -n "$pause" ]] && echo "::$pause::"
+  return "$out"
+}
+
 main() {
   if [[ "${1:-}" == "--selftest" ]]; then selftest; return; fi
   if [[ "${1:-}" == "--lane-of" ]]; then lane_of "${2:?--lane-of needs a branch name}"; return; fi
+  if [[ "${1:-}" == "--guard" ]]; then guard "${2:-}" "${3:-}"; return; fi
   if [[ "${1:-}" == "--map" ]]; then use_map "${2:?--map needs cx or v60}"; shift 2; fi
-  local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --selftest}"
-  local base="${2:-origin/main}"
+  local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --guard <branch> <base> | --selftest}"
+  check_diff "$lane" "${2:-origin/main}"
+}
+
+# The diff between <base> and CX_DIFF_HEAD must stay inside <lane>'s owned set (current map).
+check_diff() {
+  local lane="$1" base="$2"
   local f st i list offenders=() changed=() statuses=()
   # -z: paths arrive raw and NUL-delimited (no C-quoting of non-ASCII names, no newline splitting).
   # --no-renames: a rename lists both paths (D old, A new), so moving another lane's file out still
