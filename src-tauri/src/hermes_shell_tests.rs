@@ -190,7 +190,7 @@ fn a_decision_is_bounded_before_it_leaves_the_app() {
 
 #[test]
 fn the_new_commands_are_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"hermes_shell_pending\""));
     assert!(acl.contains("\"hermes_shell_decide\""));
 }

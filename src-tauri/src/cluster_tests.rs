@@ -534,8 +534,8 @@ fn seed_requests_and_responses_match_the_daemon_wire() {
 
 #[test]
 fn the_seed_commands_are_registered_and_allowed_for_the_main_window_only() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for cmd in ["cluster_group_seed", "cluster_add_seed"] {
         assert!(lib.contains(&format!("cluster::{cmd},")), "{cmd} in lib.rs");
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
