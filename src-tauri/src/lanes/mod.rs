@@ -12,6 +12,8 @@
 //!   hook runs after `network_profile::install_network_gate` and `install_payouts_gate`, and
 //!   cannot sign before the gate), and [`on_exit_all`] after `shutdown_all_sidecars`. The existing
 //!   start-up and quit order is unchanged.
+//! - A plugin hook adds plugins only. A plugin's own init runs while the app is built, before the
+//!   setup closure and the network gate, so signing or key work goes in a setup hook.
 //! - Every phase runs the lanes in the fixed order l0 to l9. A failing setup hook stops start-up
 //!   with the first error, prefixed with its lane id; later lanes' setup hooks do not run.
 //!
