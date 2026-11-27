@@ -144,6 +144,17 @@ describe("SEAM-STATE: AppState, its persisted keys and its saves", () => {
     expect(diffFixture(fixture("fresh-state-p1"), { ...(masked as object), nodeIntent: "stop" })).toEqual(['~ nodeIntent: "run" -> "stop"']);
   });
 
+  it("fresh_state_is_unchanged_for_every_persona", () => {
+    // L0-WP06 moves the persona-dependent defaults (tier, stage, wallet address, socket path) into
+    // the lane parts; the P1 snapshot alone would not show a P2 to P4 default that moved wrong.
+    // An unknown id falls back to P1's persona under that id.
+    for (const pid of ["p2", "p3", "p4", "zz"]) {
+      const masked = stable(() => freshState(pid));
+      expect(checkSnapshot(fixture(`fresh-state-${pid}`), masked), pid).toEqual([]);
+    }
+    expect(diffFixture(fixture("fresh-state-p4"), { ...(stable(() => freshState("p4")) as object), org: null })).toEqual(['~ org: "BA-7" -> null']);
+  });
+
   it("persist_keys_are_unchanged", () => {
     const table = {
       storageKey: STORAGE_KEY,
