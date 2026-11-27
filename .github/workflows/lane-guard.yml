@@ -143,10 +143,14 @@ jobs:
               .filter((f) => f.endsWith(".json")).sort().map((f) => "ci/characterization.d/" + f)];
             const vitest = new Set(), cargo = {};
             for (const f of files) for (const s of JSON.parse(fs.readFileSync(f, "utf8")).suites) {
-              if (s.runner === "vitest") (s.files || []).forEach((x) => vitest.add(x));
-              else if (s.runner === "cargo") (cargo[s.package] ||= new Set()).add(s.filter);
-              else throw new Error(`${f}: suite ${s.id} has unknown runner ${s.runner}`);
+              // A suite with nothing to select would widen (vitest with no files runs everything)
+              // or vanish into the others (cargo with no filter): refuse it.
+              if (s.runner === "vitest" && Array.isArray(s.files) && s.files.length) s.files.forEach((x) => vitest.add(x));
+              else if (s.runner === "cargo" && s.package && s.filter) (cargo[s.package] ||= new Set()).add(s.filter);
+              else throw new Error(`${f}: suite ${s.id} needs runner vitest with files, or cargo with package and filter`);
             }
+            for (const x of vitest) if (!fs.existsSync(x)) throw new Error(`registered vitest file ${x} does not exist`);
+            if (!vitest.size || !Object.keys(cargo).length) throw new Error("the manifests register no vitest or no cargo suite");
             fs.writeFileSync(process.env.RUNNER_TEMP + "/vitest.txt", [...vitest].join("\n") + "\n");
             fs.writeFileSync(process.env.RUNNER_TEMP + "/cargo.txt",
               Object.entries(cargo).map(([p, fs_]) => [p, ...fs_].join(" ")).join("\n") + "\n");
@@ -226,7 +230,8 @@ jobs:
             char="${CHAR_RESULT:-missing}"
             if [ "${CHAR_RESULT:-}" = success ] && [ "${CHAR_GREEN:-}" = true ]; then char=success
             elif [ "$char" = success ]; then char=no-green-output; fi
-            LG_LABELS=$(jq -r '.[]' <<<"${LABELS_JSON:-[]}") LG_CHARACTERIZATION="$char" \
+            labels=$(jq -r '.[]' <<<"${LABELS_JSON:-[]}")
+            LG_LABELS="$labels" LG_CHARACTERIZATION="$char" \
               CX_DIFF_ROOT="$PWD" CX_DIFF_HEAD="$head" bash "$check" --guard "$branch" "$base"
             exit
           fi

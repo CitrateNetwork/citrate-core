@@ -325,23 +325,26 @@ guard() {
   echo "lane: $lane"
   use_map v60
   # (a) branch, (b) label, (d) characterization green; (c) is the allowlist, applied per file.
+  local seam=0
   if [[ -n "$wp" ]]; then
     if [[ $labelled -eq 0 ]]; then
       echo "seam: $wp has no 'seam' label, so other lanes' files are not exempt"
     elif [[ "${LG_CHARACTERIZATION:-}" != success ]]; then
       echo "::warning::seam: exemption withheld for $wp: the seam characterization job is not green (${LG_CHARACTERIZATION:-no result})"
     else
-      load_seam_allow "$wp" || return 2
-      SEAM_WP="$wp"
+      seam=1
     fi
   fi
-  # Changed paths are PR-controlled text: pause workflow commands while they print.
+  # Changed paths and allowlist rows are PR-controlled text: pause workflow commands while they print.
   local pause="" out=0
   if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
     pause="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     echo "::stop-commands::$pause"
   fi
-  check_diff "$lane" "$base" || out=$?
+  if [[ $seam -eq 1 ]]; then
+    if load_seam_allow "$wp"; then SEAM_WP="$wp"; else out=2; fi
+  fi
+  [[ $out -eq 0 ]] && { check_diff "$lane" "$base" || out=$?; }
   [[ -n "$pause" ]] && echo "::$pause::"
   return "$out"
 }
