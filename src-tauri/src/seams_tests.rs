@@ -790,24 +790,87 @@ fn lane_plugins_follow_existing_plugins() {
     );
 }
 
+/// The gate installs, in lib.rs code. `run()` installs both before it creates the builder.
+const GATES: [&str; 2] = [
+    "network_profile::install_network_gate();",
+    "network_profile::install_payouts_gate();",
+];
+
+/// Problems with where lib.rs installs the network and payouts gates (empty when right): each
+/// gate is installed once, in `run()`, before `tauri::Builder::default()`, so before any plugin
+/// initializes (a plugin's init runs while the app is built), before `lanes::plugins_all` and
+/// before the setup closure and `lanes::setup_all`.
+fn gate_problems(code: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let run = run_body(code);
+    let Some(builder) = run.find("tauri::Builder::default()") else {
+        return vec!["run() has no tauri::Builder::default()".into()];
+    };
+    for gate in GATES {
+        let at = offsets(code, gate);
+        if at.len() != 1 {
+            problems.push(format!("lib.rs runs {gate} {} times, want 1", at.len()));
+            continue;
+        }
+        match run.find(gate) {
+            Some(at) if at < builder => {}
+            Some(_) => problems.push(format!("{gate} runs after the builder is created")),
+            None => problems.push(format!("{gate} is not in run()")),
+        }
+    }
+    problems
+}
+
+#[test]
+fn lane_plugins_run_after_network_gate() {
+    let code = lib_code();
+    assert_eq!(gate_problems(&code), Vec::<String>::new());
+    let run = run_body(&code);
+    let plugins = run
+        .find("crate::lanes::plugins_all(builder)")
+        .expect("run() calls lanes::plugins_all");
+    for gate in GATES {
+        assert!(
+            run.find(gate).expect("gate in run()") < plugins,
+            "lane plugins are added after {gate}"
+        );
+    }
+    // Mutation proofs: each regression below is caught.
+    let gate_in_setup = code.replacen(GATES[0], "", 1).replacen(
+        ".setup(|app| {",
+        &format!(".setup(|app| {{ {}", GATES[0]),
+        1,
+    );
+    let gate_twice = code.replacen(GATES[1], &format!("{} {}", GATES[1], GATES[1]), 1);
+    let gate_lost = code.replacen(GATES[1], "", 1);
+    for (name, mutant) in [
+        ("network gate moved into setup", gate_in_setup),
+        ("payouts gate installed twice", gate_twice),
+        ("payouts gate lost", gate_lost),
+    ] {
+        assert_ne!(mutant, code, "{name}: the mutation applies");
+        assert!(!gate_problems(&mutant).is_empty(), "{name} is caught");
+    }
+}
+
 #[test]
 fn lane_setup_runs_after_network_gate() {
     let code = lib_code();
-    let setup = setup_body(run_body(&code));
+    assert_eq!(gate_problems(&code), Vec::<String>::new());
+    let run = run_body(&code);
+    let setup = setup_body(run);
     let calls = offsets(setup, "crate::lanes::setup_all(app)?;");
     assert_eq!(
         calls.len(),
         1,
         "the setup closure calls lanes::setup_all(app)? once"
     );
-    for gate in [
-        "network_profile::install_network_gate();",
-        "network_profile::install_payouts_gate();",
-    ] {
-        let at = setup
-            .find(gate)
-            .unwrap_or_else(|| panic!("the setup closure runs {gate}"));
-        assert!(at < calls[0], "lane setup hooks run after {gate}");
+    let setup_at = run.find(".setup(|app| {").expect("setup closure");
+    for gate in GATES {
+        assert!(
+            run.find(gate).expect("gate in run()") < setup_at,
+            "lane setup hooks run after {gate}"
+        );
     }
     // Last: the existing setup body runs in full, then the lanes, then the closure returns.
     let after = &setup[calls[0] + "crate::lanes::setup_all(app)?;".len()..];
@@ -817,27 +880,122 @@ fn lane_setup_runs_after_network_gate() {
     );
 }
 
+/// The span of the block that starts at the `{` at `open` (inclusive of both braces).
+fn block_at(code: &str, open: usize) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in code[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&code[open..=open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Problems with the quit path's lane hooks (empty when right): the run-event handler has one
+/// exit branch, `if matches!(event, ExitRequested { .. } | Exit) { .. }`, and inside it, and only
+/// there, `shutdown_all_sidecars(app_handle);` then `crate::lanes::on_exit_all(app_handle);`,
+/// each once. A call after the branch's closing brace would run on every run event.
+fn exit_problems(code: &str) -> Vec<String> {
+    const OPEN: &str = ".run(|app_handle, event| {";
+    const TEARDOWN: &str = "shutdown_all_sidecars(app_handle);";
+    const LANES_EXIT: &str = "crate::lanes::on_exit_all(app_handle);";
+    let Some(handler_at) = code.find(OPEN) else {
+        return vec!["lib.rs has no run-event handler".into()];
+    };
+    let Some(handler) = block_at(code, handler_at + OPEN.len() - 1) else {
+        return vec!["the run-event handler is not closed".into()];
+    };
+    let mut problems = Vec::new();
+    if offsets(code, "on_exit_all(").len() != 1 {
+        problems.push("lib.rs must call lanes::on_exit_all exactly once".into());
+    }
+    let Some(cond_at) = handler.find("if matches!(") else {
+        return [problems, vec!["the handler has no exit branch".into()]].concat();
+    };
+    // The branch condition is the macro call's parentheses; its body is the next block.
+    let mut depth = 0usize;
+    let mut cond_end = None;
+    for (i, c) in handler[cond_at..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    cond_end = Some(cond_at + i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(cond_end) = cond_end else {
+        return [problems, vec!["the exit branch condition is not closed".into()]].concat();
+    };
+    let cond: String = handler[cond_at..cond_end].split_whitespace().collect();
+    if cond != "ifmatches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit)" {
+        problems.push(format!("exit branch condition changed: {cond}"));
+    }
+    let rest = &handler[cond_end..];
+    let open = cond_end + (rest.len() - rest.trim_start().len());
+    let body = match handler[open..].starts_with('{') {
+        true => block_at(handler, open),
+        false => None,
+    };
+    let Some(body) = body else {
+        return [problems, vec!["the exit branch has no body".into()]].concat();
+    };
+    let inner: Vec<&str> = body[1..body.len() - 1].split_whitespace().collect();
+    if inner != [TEARDOWN, LANES_EXIT] {
+        problems.push(format!(
+            "the exit branch must run {TEARDOWN} then {LANES_EXIT}, got {}",
+            inner.join(" ")
+        ));
+    }
+    let outside = handler.replacen(body, "", 1);
+    for call in [TEARDOWN, LANES_EXIT] {
+        if outside.contains(call) {
+            problems.push(format!("{call} runs outside the exit branch"));
+        }
+    }
+    problems
+}
+
 #[test]
 fn lane_exit_hooks_run_after_sidecar_teardown() {
     let code = lib_code();
-    let run = run_body(&code);
-    let handler = run
-        .find(".run(|app_handle, event| {")
-        .expect("run() has the run-event handler");
-    let events = &run[handler..];
-    let calls = offsets(events, "crate::lanes::on_exit_all(app_handle);");
-    assert_eq!(
-        calls.len(),
+    assert_eq!(exit_problems(&code), Vec::<String>::new());
+    let teardown = "                shutdown_all_sidecars(app_handle);\n";
+    let lanes_exit = "crate::lanes::on_exit_all(app_handle);";
+    let branch_end = format!("{lanes_exit}\n            }}");
+    // Mutation proofs (review findings on 92bb72ea and 637b9200): each regression below is caught.
+    let after_branch = code.replacen(&branch_end, &format!("}}\n            {lanes_exit}"), 1);
+    let before_teardown = code
+        .replacen(&format!("{lanes_exit}\n"), "\n", 1)
+        .replacen(teardown, &format!("                {lanes_exit}\n{teardown}"), 1);
+    let exit_only = code.replacen(
+        "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
+        "tauri::RunEvent::Exit",
         1,
-        "the run-event handler calls lanes::on_exit_all once"
     );
-    let teardown = events
-        .find("shutdown_all_sidecars(app_handle);")
-        .expect("the run-event handler stops the sidecars");
-    assert!(
-        teardown < calls[0],
-        "lane quit hooks run after the existing sidecar teardown"
-    );
+    let twice = code.replacen(lanes_exit, &format!("{lanes_exit} {lanes_exit}"), 1);
+    let lost = code.replacen(lanes_exit, "", 1);
+    for (name, mutant) in [
+        ("quit hooks after the exit branch (every run event)", after_branch),
+        ("quit hooks before the sidecar teardown", before_teardown),
+        ("ExitRequested no longer handled", exit_only),
+        ("quit hooks called twice", twice),
+        ("quit hooks lost", lost),
+    ] {
+        assert_ne!(mutant, code, "{name}: the mutation applies");
+        assert!(!exit_problems(&mutant).is_empty(), "{name} is caught");
+    }
 }
 
 #[test]
