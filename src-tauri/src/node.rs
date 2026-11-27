@@ -2113,3 +2113,5 @@ pub fn node_last_crash_sync<R: Runtime>(app: AppHandle<R>) -> Option<LastCrash> 
         at_unix_ms: v.get("at_unix_ms").and_then(|x| x.as_u64()).unwrap_or(0),
     })
 }
+
+// LQ-WP04 acceptance probe: throwaway, never merged.
