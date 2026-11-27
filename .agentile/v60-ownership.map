@@ -172,7 +172,7 @@ l1 docs/ACP_HOST.md
 l1 docs/MCP_GATEWAY.md
 
 # --- L2 HIC, sandbox and deploy (L2 section 2; D-12: ceremony and wallet-gate code). ---
-# kit/src/ceremony.rs: only L2-WP06b (private, owner sign-off), additive request_tx_budgeted path.
+# kit/src/ceremony.rs: L2 only, owner sign-off.
 l2 src-tauri/src/hic/**
 l2 src-tauri/src/agent_tools.rs
 l2 src-tauri/src/hermes_shell*.rs

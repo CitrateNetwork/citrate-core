@@ -175,7 +175,7 @@ selftest() {
   lane_case l5 feat/v60-l5-wp02-hf-caps
   lane_case lq feat/v60-lq-wp04-chain-touch
   lane_case l0 feat/v60-l0-wp24-release-0.6.0
-  lane_case l2 feat/v60-l2-wp06b-ceremony-budget
+  lane_case l2 feat/v60-l2-wp99b-split-example
   lane_case none fix/055-sidecar-flake
   lane_case none feat/v60-chain-r1008-pin        # chain lane: LQ's chain-touch guard
   lane_case bad feat/v60-l5-hf-caps              # no wp number
