@@ -2828,6 +2828,12 @@
       "replaced_by": null
     },
     {
+      "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > a tripwire replaced by itself fails",
+      "class": "ui-truth",
+      "since": "ed347c57",
+      "replaced_by": null
+    },
+    {
       "id": "vitest:scripts/ci/lq/tripwire-inventory.test.mjs::check: stricter-only replacement > changing an earlier replacement fails",
       "class": "ui-truth",
       "since": "a826e441",

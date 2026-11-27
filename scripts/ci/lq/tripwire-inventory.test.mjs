@@ -286,6 +286,13 @@ describe("check: stricter-only replacement", () => {
     expect(r.text).toContain(`replacement is not registered: ${NEW}`);
   });
 
+  it("a tripwire replaced by itself fails", () => {
+    const reg = registry([entry(R_CEREMONY, { replaced_by: R_CEREMONY, replacement_evidence: EVIDENCE })]);
+    const r = run("check", { reg, labels: "tripwire-replace" });
+    expect(r.status).toBe(1);
+    expect(r.text).toContain(`${R_CEREMONY} is replaced by itself`);
+  });
+
   it("a replacement cycle fails", () => {
     const reg = registry([
       entry(R_CEREMONY, { replaced_by: R_EVASIONS, replacement_evidence: EVIDENCE }),
