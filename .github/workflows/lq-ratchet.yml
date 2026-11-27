@@ -6,7 +6,9 @@ name: lq ratchet
 # LQ-WP01: measure the coverage baseline from the test runners' own output on ubuntu-latest and
 # publish it as the `ratchet-json` artifact (.agentile/coverage/ratchet.json, schema v1). The
 # numbers committed in .agentile/coverage/ come from this artifact, never from a Mac build or a
-# grep. A run with any failed test writes no ratchet.json (scripts/ci/lq/ratchet.mjs refuses it).
+# grep. A run with any failed test, a non-zero cargo exit or a test target with no summary line
+# writes no ratchet.json (scripts/ci/lq/ratchet.mjs refuses it). The cargo job publishes only
+# validated counts (`cargo-counts`), never the raw test output.
 #
 # LQ-WP02 adds the compare step (`lq / ratchet`, required on main and in the merge queue). Until
 # then this workflow only measures, on the paths that change what it measures with.
@@ -37,11 +39,13 @@ jobs:
     name: lq measure (cargo test)
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # Same toolchain, deps and private-crate access as ci.yml's rust job, so the count is the
-    # count of the job that gates merges.
+    # Same toolchain and deps as ci.yml's rust job, so the count is the count of the job that
+    # gates merges. The private-repo token is NOT a job env: a job env reaches every step,
+    # including the PR-controlled build scripts and tests. It is mapped into the one step that
+    # fetches the private crates, as an in-process git config (GIT_CONFIG_*), so it is never
+    # written to a git config file. `cargo fetch` runs no build script and no test.
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,46 +53,52 @@ jobs:
           # commit on the branch.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ env.CHAIN_TOKEN != '' }}
-        run: |
-          git config --global \
-            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
-            "https://github.com/"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: "1.99.1"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
       - name: Install Tauri Linux system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The test log becomes an artifact, and GitHub masks secrets only in the live log, not in
-      # artifacts. So the private crates are fetched first (log not kept), the credential is
-      # dropped, and the tests run offline: no git URL carrying the token can reach the log.
-      - name: cargo fetch --locked (private crates; log not kept)
-        run: cargo fetch --locked
-      - name: Drop the private-repo credential before the tests
-        if: ${{ env.CHAIN_TOKEN != '' }}
-        run: git config --global --unset-all url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf
-      - name: cargo test --workspace --locked --no-fail-fast
+      - name: cargo fetch --locked (private crates; the only step with the token)
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
         run: |
-          set -o pipefail
-          cargo test --workspace --locked --offline --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/cargo-test.log"
-      - name: Refuse to upload a log that carries a credential
-        if: ${{ !cancelled() }}
+          set -euo pipefail
+          if [ -n "${CHAIN_TOKEN}" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${CHAIN_TOKEN}@github.com/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/"
+          fi
+          cargo fetch --locked > /dev/null 2>&1 || { echo "cargo fetch --locked failed (output withheld: it can carry the credential)" >&2; exit 1; }
+      - name: No credential left on disk for the test step
         run: |
-          if grep -q 'x-access-token' "$RUNNER_TEMP/cargo-test.log"; then
-            echo "cargo-test.log mentions x-access-token; not uploading it" >&2
-            rm -f "$RUNNER_TEMP/cargo-test.log"
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          if grep -rIlq 'x-access-token' "$HOME/.gitconfig" "$cargo_home/git" 2>/dev/null; then
+            echo "a git credential is on disk after cargo fetch; refusing to run PR code next to it" >&2
             exit 1
           fi
-      - name: Upload the cargo test log
-        if: ${{ !cancelled() }}
+      - name: cargo test --workspace --locked --no-fail-fast, then validated counts
+        run: |
+          # GitHub's default shell is `bash -e`: turn -e off so cargo's own exit status is kept.
+          set +e -uo pipefail
+          cargo test --workspace --locked --offline --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/cargo-test.log"
+          code=${PIPESTATUS[0]}
+          # The raw log stays in this job's log, which GitHub masks; only the counts leave the
+          # job. A red, partial or truncated run writes no counts file (ratchet.mjs refuses it).
+          node scripts/ci/lq/ratchet.mjs cargo-counts --cargo-log "$RUNNER_TEMP/cargo-test.log" \
+            --cargo-exit "$code" --out "$RUNNER_TEMP/cargo-counts.json" || exit 1
+          exit "$code"
+      - name: Upload the validated cargo counts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: cargo-test-log
-          path: ${{ runner.temp }}/cargo-test.log
+          name: cargo-counts
+          path: ${{ runner.temp }}/cargo-counts.json
           if-no-files-found: error
 
   vitest-json:
@@ -130,7 +140,7 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: cargo-test-log
+          name: cargo-counts
           path: ${{ runner.temp }}/in
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -141,7 +151,7 @@ jobs:
           REV: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           node scripts/ci/lq/ratchet.mjs measure \
-            --cargo-log "$RUNNER_TEMP/in/cargo-test.log" \
+            --cargo-counts "$RUNNER_TEMP/in/cargo-counts.json" \
             --vitest-json "$RUNNER_TEMP/in/vitest.json" \
             --root . --rev "$REV" --out "$RUNNER_TEMP/ratchet.json"
           {
