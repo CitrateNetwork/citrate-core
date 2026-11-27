@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "owner": "L3",
+  "base": "a826e441",
+  "about": "L3-WP00 characterization suites for lane L3 (shell, onboarding, nav, notifications), planset v060 L3 section 4. Each suite pins one surface as it is at citrate-core a826e441 before an L3 work package changes it; the L3 PR that changes a pinned behavior updates the expectation in a separate commit that says why, and names the suite id here. LQ runs every suite here on every merge-queue group (npm run test:characterization also selects them). Every listed test must be declared in its file and every test in a file must be listed (registry.characterization.test.ts).",
+  "suites": [
+    {
+      "id": "L3-GATES",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/gateOrder.characterization.test.tsx"],
+      "covers": ["src/App.tsx", "src/shell/UpdateBanner.tsx"],
+      "pins": "launch gate order: a required update renders only the update gate and Root renders nothing beside it; NetworkCompatGate mounts after the body; the Tauri auth gate covers a signed-out session past s0/s1 only; AccessPassGate wraps onboarding only",
+      "tests": [
+        "update_gate_renders_nothing_else_when_required",
+        "outside_gate_check_catches_content_beside_the_gate",
+        "network_compat_gate_mounts_after_body",
+        "auth_gate_for_signed_out_past_s1_in_tauri",
+        "no_auth_gate_on_s0_s1",
+        "access_pass_gate_wraps_onboarding_only"
+      ],
+      "supersededBy": ["L3-WP01", "L3-WP02"]
+    },
+    {
+      "id": "L3-STAGES",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/stages.characterization.test.tsx"],
+      "covers": ["src/onboarding/Onboarding.tsx", "src/shell/store.ts"],
+      "pins": "seven-stage spine s1..s7 and its labels; the S6 model step is hidden until the node pulls the chain with a peer; S6 Continue goes to S7 with a grant, else into the app; Explore sets done and coachDone; Enter starts the coach unless done",
+      "tests": [
+        "seven_stage_spine_labels",
+        "s6_model_step_hidden_until_peers_gt_0",
+        "s6_continue_goes_s7_with_grant_else_done",
+        "on_explore_sets_done_and_coachDone",
+        "on_enter_starts_coach_when_not_done"
+      ],
+      "supersededBy": ["L3-WP01"]
+    },
+    {
+      "id": "L3-LAUNCH",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/launch.characterization.test.ts"],
+      "covers": ["src/shell/store.ts", "src/shell/state.ts"],
+      "pins": "store.start(): the node autostarts while nodeIntent is run at any stage; the session resumes inside the custody unlock's finally; an S3 launch asks the chain for the grant; Store.save() never writes the six signed-in identity fields",
+      "tests": [
+        "node_autostarts_regardless_of_stage_when_intent_run",
+        "resume_session_runs_after_custody_unlock",
+        "s3_resume_from_chain_on_launch",
+        "signed_in_fields_not_persisted"
+      ],
+      "supersededBy": ["L3-WP01", "L3-WP02"]
+    },
+    {
+      "id": "L3-NAV",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/places.characterization.test.ts"],
+      "covers": ["src/shell/places.ts"],
+      "pins": "six places in order; the 33 canonical leaves; all 47 legacy routes resolve, train, people and comms included; an unknown route falls back to hermes/chat",
+      "tests": [
+        "six_places_in_order",
+        "canonical_route_count",
+        "every_legacy_route_resolves",
+        "unknown_route_falls_back_to_hermes_chat"
+      ],
+      "supersededBy": ["L3-WP09", "L3-WP12"]
+    },
+    {
+      "id": "L3-COACH",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/coach.characterization.test.tsx"],
+      "covers": ["src/shell/Chrome.tsx", "src/data/seed.ts"],
+      "pins": "the coach's Groups step claims a running model whatever the model state (false copy pinned on purpose); the coach shows only after onboarding with no ceremony queued; the toast renders its plain text only when set",
+      "tests": [
+        "coach_groups_step_claims_model_running",
+        "coach_shows_only_after_onboarding_with_no_ceremony_queued",
+        "toast_renders_its_text_only_when_set"
+      ],
+      "supersededBy": ["L3-WP04", "L3-WP07"]
+    },
+    {
+      "id": "L3-NOTIFY",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/notify.characterization.test.ts"],
+      "covers": ["src-tauri/Cargo.toml", "src-tauri/capabilities/default.json", "package.json", "src/surfaces/Comms.tsx", "src/surfaces/groups/GroupChat.tsx"],
+      "pins": "no notification plugin, permission, tray or Notification API anywhere; the unmounted Comms surface claims an OS notification (pinned on purpose); the comms route opens the Alerts board, whose copy says notifications point there",
+      "tests": [
+        "no_notification_plugin_in_cargo_or_capabilities",
+        "comms_copy_claims_os_notification",
+        "comms_route_opens_alerts_whose_copy_names_notifications"
+      ],
+      "supersededBy": ["L3-WP12", "L3-WP13"]
+    },
+    {
+      "id": "L3-QUIT",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/lifecycle.characterization.test.ts"],
+      "covers": ["src-tauri/src/lib.rs", "src-tauri/src/popout.rs"],
+      "pins": "the run loop calls shutdown_all_sidecars on ExitRequested and Exit and nothing else; each managed sidecar block stops its own supervisor, in today's order; nothing intercepts a close or a quit",
+      "tests": [
+        "exit_requested_stops_all_sidecars",
+        "quit_path_check_catches_a_lost_stop_or_a_moved_call",
+        "no_window_close_or_exit_is_intercepted"
+      ],
+      "supersededBy": ["L3-WP16"]
+    },
+    {
+      "id": "L3-REGISTRY",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/registry.characterization.test.ts"],
+      "covers": ["ci/characterization.d/l3.json"],
+      "pins": "this registry lists exactly the L3 surfaces, and each suite file declares exactly the tests listed for it",
+      "tests": [
+        "registry_lists_every_l3_surface_once",
+        "every_listed_test_is_declared_and_every_declared_test_is_listed",
+        "declaration_check_ignores_commented_out_tests"
+      ]
+    }
+  ]
+}
