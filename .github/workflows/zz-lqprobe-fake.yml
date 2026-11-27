@@ -1,0 +1,12 @@
+# created: 2026-11-27 | branch: feat/v60-l0-lqprobe-fakeagree
+# author: Claude Opus 5.5 (LQ-WP04 worker) for Larry Klosowski
+# status: throwaway probe (never merged): a same-named job that lq / chain-touch must ignore
+name: zz-lqprobe-fake
+on: pull_request
+permissions: {}
+jobs:
+  fake:
+    name: lq / chain-agreement
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "throwaway probe for PR 788"
