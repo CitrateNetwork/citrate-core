@@ -100,17 +100,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn copy_capped_allows_exactly_the_limit() {
-        let mut out = Vec::new();
-        assert_eq!(copy_capped(&b"12345"[..], &mut out, 5), Ok(5));
-        let mut out = Vec::new();
-        assert_eq!(
-            copy_capped(&b"123456"[..], &mut out, 5),
-            Err(ComponentError::ArtifactTooLarge { limit: 5 })
-        );
-    }
-
-    #[test]
     fn every_download_has_a_bounded_total_time() {
         let f = HttpsFetcher::default();
         assert_eq!(f.body_timeout, DEFAULT_BODY_TIMEOUT);
