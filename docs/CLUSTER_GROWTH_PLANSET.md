@@ -253,3 +253,5 @@ comment, and re-derive all sybil/reward/admission claims from that single source
 - **Before any flagship 2k push:** F8 scale gate (200 → 2,000) passed.
 - **GROW-S0/S1 (invite plumbing + web page) may proceed** — they carry no reward logic; keep copy
   contribution-framed, not recruit-to-earn (F2), and ship the signed-installer/verified-name work with S1 (F3/F6).
+
+<!-- LQ-WP04 acceptance probe: throwaway, never merged. -->
