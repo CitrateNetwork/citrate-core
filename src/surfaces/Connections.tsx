@@ -10,6 +10,8 @@
 //     It is NOT a friend/follower import (X/Discord OAuth doesn't expose that) and the copy says so.
 //   • MCP servers — WIRED via bridge.connections (GitHub / Google Drive / Notion over OAuth PKCE;
 //     tokens sealed in the OS keyring), the same seam Settings uses. Real connect/disconnect state.
+//     L6-WP01: a connected row is an agent tool only when the MCP gateway report says so
+//     (marketplace/agentTools.ts); this build has no gateway, so no row claims one.
 //     The member's own servers are added in the one editor, Hermes › Controls › MCP.
 //   • Foundational models — routes to the real Models + Settings surfaces (no duplicate wiring).
 //   • SaaS tools — NOT WIRED; disabled rows that say so (no connector in this build).
@@ -22,6 +24,7 @@ import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { ConnectionInfo, LinkedIdentity, SocialNetwork, SocialVisibility } from "../bridge/domains";
+import { agentToolsFor, connectedLabel, gatewayReport } from "./marketplace/agentTools";
 
 // CONNECT-S3 — subcopy states the REAL payoff of linking a network: it becomes your face to people
 // you share a group with, and the channel people use to invite you by @handle. Not a friend import.
@@ -32,9 +35,9 @@ const SOCIALS: { id: SocialNetwork; name: string; glyph: string; sub: string }[]
 ];
 
 const MCP_LABEL: Record<string, { name: string; scope: string }> = {
-  github: { name: "GitHub", scope: "repos, issues, actions — read + propose" },
-  gdrive: { name: "Google Drive", scope: "files your agent can read + summarize" },
-  notion: { name: "Notion", scope: "pages + databases — read + write" },
+  github: { name: "GitHub", scope: "repos, issues and actions" },
+  gdrive: { name: "Google Drive", scope: "files in your Drive" },
+  notion: { name: "Notion", scope: "pages and databases" },
 };
 
 const SAAS: { id: string; name: string; scope: string }[] = [
@@ -42,6 +45,16 @@ const SAAS: { id: string; name: string; scope: string }[] = [
   { id: "linear", name: "Linear", scope: "issues + cycles — read + create" },
   { id: "gmail", name: "Gmail", scope: "read + draft (never send without approval)" },
 ];
+
+// L6-WP01: the honest agent-tool state of a connected row, from the MCP gateway report.
+function AgentToolNote({ service }: { service: string }) {
+  const state = agentToolsFor(gatewayReport(), service);
+  return (
+    <span className="mono" title={state.reason ?? undefined} style={{ fontSize: 9.5, color: state.live ? "var(--ok)" : "var(--tx-3)" }}>
+      {connectedLabel(state)}
+    </span>
+  );
+}
 
 export function Connections({ store }: SurfaceProps) {
   const [mcp, setMcp] = useState<ConnectionInfo[]>([]);
@@ -234,7 +247,7 @@ export function Connections({ store }: SurfaceProps) {
                 <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{mc.name}</span>
                 <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>{mc.scope}</span>
               </span>
-              {mc.connected && <span className="mono" style={{ fontSize: 9.5, color: "var(--ok)" }}>mounted as agent tool</span>}
+              {mc.connected && <AgentToolNote service={mc.id} />}
               <button className="btn btn-ghost btn-sm" disabled={mcpBusy === mc.id} onClick={() => void toggleMcp(mc.id, mc.connected)}>
                 {mcpBusy === mc.id ? "…" : mc.connected ? "Disconnect" : "Connect"}
               </button>
@@ -246,7 +259,7 @@ export function Connections({ store }: SurfaceProps) {
                 <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{c.service}</span>
                 <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>{c.scope ?? "connected service"}</span>
               </span>
-              {c.connected && <span className="mono" style={{ fontSize: 9.5, color: "var(--ok)" }}>mounted as agent tool</span>}
+              {c.connected && <AgentToolNote service={c.service} />}
               <button className="btn btn-ghost btn-sm" disabled={mcpBusy === c.service} onClick={() => void toggleMcp(c.service, c.connected)}>{c.connected ? "Disconnect" : "Connect"}</button>
             </div>
           ))}
@@ -263,7 +276,7 @@ export function Connections({ store }: SurfaceProps) {
           </div>
         </div>
         <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-          OAuth runs on a loopback PKCE flow · tokens seal in your OS keyring, never in the app · connected servers mount as tools your agent proposes with (and you approve)
+          OAuth runs on a loopback PKCE flow · tokens are sealed on this computer in your OS keyring, never in the app · these connections are not agent tools yet; your agent can use Google Sheets and Google Calendar today, through its chat tools
         </p>
       </Section>
 
