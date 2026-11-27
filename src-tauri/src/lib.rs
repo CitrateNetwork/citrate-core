@@ -31,8 +31,6 @@ pub use citrate_core_kit::{
 };
 
 mod activity;
-// L0-WP03 (planset v060): the command registration, one list per lane (`commands/l<N>.rs`).
-mod commands;
 mod addresses;
 mod agent;
 mod agent_grants;
@@ -215,6 +213,8 @@ mod widgets;
 // bodies (never this file). See .agentile/cx-ownership.map.
 mod cluster;
 mod cluster_mesh;
+// L0-WP03 (planset v060): the command registration, one list per lane (`commands/l<N>.rs`).
+mod commands;
 mod comms;
 mod embed_serve;
 mod hermes;
