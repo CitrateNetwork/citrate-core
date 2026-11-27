@@ -192,7 +192,7 @@ describe("compare: focused, ignored and skipped tests", () => {
     for (const line of [`+${IGNORE}]`, `+${IGNORE} = ""]`, `+${IGNORE} = "slow"]`]) {
       const r = R.compare(doc(), doc(), { root: tree({}), diff: rustDiff([" #[test]", line, " fn slow() {}"]) });
       expect(r.ok, line).toBe(false);
-      expect(r.failures.join("\n")).toMatch(/src-tauri\/src\/x_tests\.rs:1[01].*reason and an issue link/);
+      expect(r.failures.join("\n")).toMatch(/reason and an issue link: src-tauri\/src\/x_tests\.rs:11: /);
     }
   });
 
@@ -209,7 +209,7 @@ describe("compare: focused, ignored and skipped tests", () => {
   it("a new it.skip, todo or skipIf needs a reason comment and an issue link", () => {
     const bare = R.compare(doc(), doc(), { root: tree({}), diff: tsDiff([`+${SKIP}("later", () => {});`]) });
     expect(bare.ok).toBe(false);
-    expect(bare.failures.join("\n")).toMatch(/src\/a\.test\.ts:1.*reason and an issue link/);
+    expect(bare.failures.join("\n")).toMatch(/reason and an issue link: src\/a\.test\.ts:1: /);
     const todo = R.compare(doc(), doc(), { root: tree({}), diff: tsDiff([`+${"it" + ".todo"}("x");`]) });
     expect(todo.ok).toBe(false);
     const reasoned = tsDiff(["+// skipped until the relay fixture lands (#801)", `+${SKIP}("later", () => {});`]);
@@ -257,6 +257,9 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/permissions:\n\s+contents: read\n\s+pull-requests: read/);
     expect(wf).not.toMatch(/\$\{\{[^}]*(body|title|head_ref|labels)[^}]*\}\}/);
     expect(job).toMatch(/fails closed/);
+    // A PR cannot loosen the rules that judge it: the merge base's script runs once it exists there.
+    expect(job).toMatch(/git show "\$base:scripts\/ci\/lq\/ratchet\.mjs" > "\$RUNNER_TEMP\/ratchet\.mjs"/);
+    expect(job).toMatch(/node "\$LQ_SCRIPT" compare/);
   });
   it("the record job runs only on a push to main and opens a PR rather than pushing to main", () => {
     const job = wf.slice(wf.indexOf("\n  record:"));

@@ -58,8 +58,20 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # LQ-WP02: --no-fail-fast so every crate reports, and the log is kept for lq / ratchet (the
+      # runner's own count). `shell: bash` adds pipefail, so a failing test still fails this step.
       - name: test
-        run: cargo test --workspace --locked
+        shell: bash
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee cargo-test.log
+      - name: keep the test log for lq / ratchet
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lq-cargo-test-log
+          path: cargo-test.log
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
       - name: audit
         run: |
           cargo install cargo-audit --locked
@@ -139,7 +151,29 @@ jobs:
         run: python3 -I scripts/network-cut.py check
       - name: typecheck
         run: npm run typecheck
+      # LQ-WP02: the vitest json report is the runner's own count for lq / ratchet.
       - name: test
-        run: npm run test
+        run: npm run test -- --reporter=default --reporter=json --outputFile.json=vitest.json
+      - name: keep the vitest report for lq / ratchet
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lq-vitest-json
+          path: vitest.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
       - name: build
         run: npm run build
+
+  # LQ-WP02 (0.6.0, lane LQ): the test-count ratchet, check `lq / ratchet` (Rule 2). It runs after
+  # rust and node even when they fail, because a skipped required check counts as passed; it then
+  # fails closed on the missing or red runner output. The write permissions are for its `record`
+  # job only, which runs on a push to main; the `ratchet` job drops to read.
+  lq:
+    needs: [rust, node]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/lq-ratchet.yml
