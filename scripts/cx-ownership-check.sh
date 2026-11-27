@@ -192,7 +192,8 @@ main() {
   local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --selftest}"
   local base="${2:-origin/main}"
   local changed offenders=()
-  changed="$(cd "$REPO_ROOT" && git diff --name-only "${base}...HEAD" 2>/dev/null || git diff --name-only "$base" 2>/dev/null)"
+  # --no-renames: a rename lists both paths, so moving another lane's file out still names it.
+  changed="$(cd "$REPO_ROOT" && git diff --no-renames --name-only "${base}...HEAD" 2>/dev/null || git diff --no-renames --name-only "$base" 2>/dev/null)"
   [[ -z "$changed" ]] && { echo "no changes vs $base — nothing to check"; return 0; }
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
