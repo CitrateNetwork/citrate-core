@@ -1,49 +1,64 @@
 # created: 2026-11-27 | branch: feat/v60-l0-wp01-ownership-map
-# author: Larry Klosowski (L0 lane, L0-WP01; Claude Opus 5.5)
+# author: Larry Klosowski (L0 lane, L0-WP01, L0-WP01b; Claude Opus 5.5)
 # status: active
 #
 # lane-guard (planset v060, L0-WP01): a feat/v60-l<N>-wpNN-<slug> branch may change only the files
 # its lane owns in .agentile/v60-ownership.map. A feat/v60-chain-<slug> branch may change any file
 # that is not frozen (LQ's chain-touch guard judges the rest). Other branches pass with a notice; a
-# feat/v60-* branch with any other shape fails. merge-gate's `ci` waits on both jobs like every check.
+# feat/v60-* branch with any other shape fails. merge-gate's `ci` waits on every job like every check.
 #
-# Untrusted input: the branch name, the changed paths, and the PR's own copy of the map and checker.
-# Refs reach the shell only through env and are validated by `--lane-of` before use; workflow
-# commands are paused while paths print; the map and checker that decide are read from the base.
-# The guard job runs no PR-controlled code before it decides (checkout, then the guard), and it
-# judges the event commit by sha, not whatever HEAD points at. The PR's own selftest and the
-# CODEOWNERS check run in a separate job.
+# L0 seam exemption (L0-WP01b, swarm lead decision 2026-11-27): a seam PR may change another lane's
+# file only when (a) its branch is feat/v60-l0-wp(01..10)[a-z]-<slug>, (b) it carries the label
+# `seam`, (c) that exact path is listed for its WP in .agentile/v60-seams.allow, and (d) the
+# `lane-guard seam characterization` job (every suite in ci/characterization.json and
+# ci/characterization.d/*.json) is green on the same commit. The label on any other branch fails.
+# The decision is `cx-ownership-check.sh --guard`, tested by scripts/cx-ownership-check.test.sh.
+#
+# Untrusted input: the branch name, the labels, the changed paths, and the PR's own copy of the map
+# and checker. Refs and labels reach the shell only through env; the branch is validated by the
+# checker before use; workflow commands are paused while paths print; the map and checker that
+# decide are read from the base. The guard job runs no PR-controlled code before it decides
+# (checkout, then the guard), and it judges the event commit by sha, not whatever HEAD points at.
+# The characterization job does run PR code (the tests), in its own job with no write token, and
+# the private-crate token reaches only `cargo fetch`, never a build script or test (as lq-ratchet).
+# The PR's own selftest and the CODEOWNERS check run in a separate job.
 name: lane-guard
 
 on:
-  pull_request: {}
+  pull_request:
+    # labeled/unlabeled: adding or removing `seam` re-judges the PR.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   merge_group:
     types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
+  # The PR's labels come from the issues API (condition (b) of the seam exemption).
+  issues: read
 
 concurrency:
   group: lane-guard-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lane-guard:
-    name: lane-guard
+  # The PR this run judges, its branch and its labels (read at run time, so a label added after the
+  # last push counts). Also in the merge queue, where the event carries neither.
+  resolve:
+    name: lane-guard resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      branch: ${{ steps.pr.outputs.branch }}
+      labels: ${{ steps.pr.outputs.labels }}
+      seam: ${{ steps.pr.outputs.seam }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: The lane owns every changed file
+      - name: Branch and labels of the judged PR
+        id: pr
         env:
-          SHA: ${{ github.sha }}
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           MQ_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -55,8 +70,129 @@ jobs:
             if [ -z "$pr" ]; then echo "::error::unexpected merge-group ref shape"; exit 1; fi
             branch=$(gh api "repos/$REPO/pulls/$pr" --jq .head.ref)
           else
+            pr="$PR_NUMBER"
             branch="$HEAD_REF"
           fi
+          # A JSON array of names: one line, so it cannot break the output file's format.
+          labels=$(gh api --paginate "repos/$REPO/issues/$pr/labels?per_page=100" --jq '.[].name' | jq -Rsc 'split("\n") | map(select(length > 0))')
+          # Only decides whether the characterization job runs; the guard re-checks (a) and (b).
+          seam=false
+          if printf '%s' "$branch" | grep -Eq '^feat/v60-l0-wp(0[1-9]|10)[a-z]?-[a-z0-9][a-z0-9.-]*$' &&
+            jq -e 'index("seam") != null' >/dev/null <<<"$labels"; then
+            seam=true
+          fi
+          {
+            echo "branch=$branch"
+            echo "labels=$labels"
+            echo "seam=$seam"
+          } >>"$GITHUB_OUTPUT"
+          echo "seam candidate: $seam"
+
+  # Condition (d): every registered characterization suite, on the judged commit, for labelled seam
+  # PRs only. Skipped otherwise, which grants nothing.
+  seam-characterization:
+    name: lane-guard seam characterization
+    needs: resolve
+    if: ${{ needs.resolve.outputs.seam == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      green: ${{ steps.done.outputs.green }}
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.99.1"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: cargo fetch --locked (private crates; the only step with the token)
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CHAIN_TOKEN}" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${CHAIN_TOKEN}@github.com/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/"
+          fi
+          cargo fetch --locked > /dev/null 2>&1 || { echo "cargo fetch --locked failed (output withheld: it can carry the credential)" >&2; exit 1; }
+      - name: No credential left on disk for the test steps
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          if grep -rIlq 'x-access-token' "$HOME/.gitconfig" "$cargo_home/git" 2>/dev/null; then
+            echo "a git credential is on disk after cargo fetch; refusing to run PR code next to it" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - name: Every suite in ci/characterization.json and ci/characterization.d/*.json
+        run: |
+          set -euo pipefail
+          # The manifests list vitest files and cargo (package, filter) pairs; run each runner once.
+          node -e '
+            const fs = require("fs");
+            const files = ["ci/characterization.json", ...fs.readdirSync("ci/characterization.d")
+              .filter((f) => f.endsWith(".json")).sort().map((f) => "ci/characterization.d/" + f)];
+            const vitest = new Set(), cargo = {};
+            for (const f of files) for (const s of JSON.parse(fs.readFileSync(f, "utf8")).suites) {
+              if (s.runner === "vitest") (s.files || []).forEach((x) => vitest.add(x));
+              else if (s.runner === "cargo") (cargo[s.package] ||= new Set()).add(s.filter);
+              else throw new Error(`${f}: suite ${s.id} has unknown runner ${s.runner}`);
+            }
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/vitest.txt", [...vitest].join("\n") + "\n");
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/cargo.txt",
+              Object.entries(cargo).map(([p, fs_]) => [p, ...fs_].join(" ")).join("\n") + "\n");
+          '
+          mapfile -t vfiles < <(grep -v '^$' "$RUNNER_TEMP/vitest.txt")
+          echo "vitest: ${#vfiles[@]} file(s)"
+          npx vitest run "${vfiles[@]}"
+          while read -r pkg filters; do
+            [ -n "$pkg" ] || continue
+            echo "cargo: $pkg -- $filters"
+            # shellcheck disable=SC2086 # one argument per filter
+            cargo test -p "$pkg" --locked --offline -- $filters
+          done <"$RUNNER_TEMP/cargo.txt"
+      - name: Green
+        id: done
+        run: echo "green=true" >>"$GITHUB_OUTPUT"
+
+  lane-guard:
+    name: lane-guard
+    needs: [resolve, seam-characterization]
+    # Also when the characterization job was skipped or failed: the guard then judges without the
+    # exemption, so a seam PR touching another lane's file fails here.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The lane owns every changed file
+        env:
+          SHA: ${{ github.sha }}
+          RESOLVED: ${{ needs.resolve.result }}
+          BRANCH: ${{ needs.resolve.outputs.branch }}
+          LABELS_JSON: ${{ needs.resolve.outputs.labels }}
+          CHAR_RESULT: ${{ needs.seam-characterization.result }}
+          CHAR_GREEN: ${{ needs.seam-characterization.outputs.green }}
+        run: |
+          set -euo pipefail
+          if [ "$RESOLVED" != success ]; then echo "::error::lane-guard resolve did not succeed"; exit 1; fi
+          branch="$BRANCH"
           # The judged commit is the event sha (github.sha). pull_request: the PR merge commit, whose
           # first parent is the base it merges into. merge_group: this PR's own queue entry (one
           # squash or merge commit on the entry ahead of it), never the group base sha, which would
@@ -78,6 +214,15 @@ jobs:
             echo "::notice::bootstrap: the base has no v60 policy yet, so this PR's own map and checker apply"
           fi
           check="$policy/scripts/cx-ownership-check.sh"
+          if grep -q '^# lane-guard-api: 2' "$check"; then
+            char=missing
+            if [ "$CHAR_RESULT" = success ] && [ "$CHAR_GREEN" = true ]; then char=success
+            elif [ -n "$CHAR_RESULT" ]; then char="$CHAR_RESULT"; fi
+            LG_LABELS=$(jq -r '.[]' <<<"$LABELS_JSON") LG_CHARACTERIZATION="$char" \
+              CX_DIFF_ROOT="$PWD" CX_DIFF_HEAD="$head" bash "$check" --guard "$branch" "$base"
+            exit
+          fi
+          # A base from before L0-WP01b: its checker has no --guard, so judge as it did (no seam).
           rc=0
           lane=$(bash "$check" --lane-of "$branch") || rc=$?
           case "$rc" in

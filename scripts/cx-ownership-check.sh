@@ -9,6 +9,7 @@
 #     scripts/cx-ownership-check.sh --map v60 <lane> [base-ref]
 #     scripts/cx-ownership-check.sh --lane-of <branch>     # feat/v60-l<N>-wpNN-<slug> -> l<N>
 #     scripts/cx-ownership-check.sh --guard <branch> <base-ref>  # lane-guard.yml's whole decision
+#     scripts/cx-ownership-check.sh --seam-of <branch>     # feat/v60-l0-wp03-<slug> -> l0-wp03
 #     scripts/cx-ownership-check.sh --selftest             # unit-checks the matcher, no git
 #
 # Maps: cx (default; lanes s0..s7, s0 = scaffold, owns the spine; see the map header) and v60
@@ -29,6 +30,12 @@ V60_LANES=()
 V60_RES=()
 V60_CREATE_LANES=()
 V60_CREATE_RES=()
+# L0 seam exemption (swarm lead decision 2026-11-27, 09_SWARM_EXECUTION 1-2). Set by --guard only
+# when every condition holds; SEAM_PATHS are this WP's exact paths from the allowlist.
+SEAM_ALLOW=.agentile/v60-seams.allow
+SEAM_WP=""
+SEAM_PATHS=()
+ALLOWED_BY=""
 
 use_map() { # cx | v60
   case "$1" in
@@ -119,7 +126,8 @@ lane_of() {
 # row also allows an added file; frozen files are allowed to no lane; 'chain' may touch any file
 # that is not frozen.
 file_allowed() {
-  local lane="$1" file="$2" status="${3:-M}" l pat owner
+  local lane="$1" file="$2" status="${3:-M}" l pat owner p
+  ALLOWED_BY=""
   if [[ "$MAP_NAME" == v60 ]]; then
     v60_always_allowed "$file" && return 0
     owner="$(v60_owner "$file")"
@@ -127,6 +135,12 @@ file_allowed() {
     [[ "$lane" == chain ]] && return 0
     [[ ",$owner," == *",$lane,"* ]] && return 0
     [[ "$status" == A ]] && v60_may_create "$lane" "$file" && return 0
+    # The seam exemption: only an L0 branch, only exact listed paths, never a frozen one (above).
+    if [[ -n "$SEAM_WP" && "$lane" == l0 ]]; then
+      for p in ${SEAM_PATHS[@]+"${SEAM_PATHS[@]}"}; do
+        [[ "$file" == "$p" ]] && { ALLOWED_BY=seam; return 0; }
+      done
+    fi
     return 1
   fi
   while read -r l pat || [[ -n "${l:-}" ]]; do
@@ -137,6 +151,39 @@ file_allowed() {
     fi
   done < "$MAP"
   return 1
+}
+
+# Branch -> seam WP id. Prints l0-wpNN[a-z] and returns 0 for an L0 seam branch (WP01 to WP10 and
+# their lettered follow-ups); returns 1 for any other branch.
+seam_of() {
+  [[ "$1" =~ ^feat/v60-l0-wp(0[1-9]|10)([a-z]?)-[a-z0-9][a-z0-9.-]*$ ]] || return 1
+  printf 'l0-wp%s%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+# Reads $SEAM_ALLOW from the judged commit (never the work tree) into SEAM_PATHS, keeping the rows
+# of WP $1. Row format: '<wp> <path>', wp = l0-wpNN[a-z], path exact (no globs, no '.' or '..'
+# segments, no leading or trailing '/'). Any malformed row fails the whole file (exit 2).
+load_seam_allow() {
+  local wp="$1" text row_wp row_path extra n=0
+  SEAM_PATHS=()
+  if ! text="$(cd "$DIFF_ROOT" && git show "$DIFF_HEAD:$SEAM_ALLOW" 2>/dev/null)"; then
+    echo "seam: $SEAM_ALLOW is not in the judged commit, so no other lane's file is listed"
+    return 0
+  fi
+  while read -r row_wp row_path extra || [[ -n "${row_wp:-}" ]]; do
+    n=$((n + 1))
+    [[ -z "${row_wp:-}" || "${row_wp:0:1}" == "#" ]] && continue
+    if [[ ! "$row_wp" =~ ^l0-wp(0[1-9]|10)[a-z]?$ || -z "${row_path:-}" || -n "${extra:-}" ]]; then
+      echo "$SEAM_ALLOW:$n: allowlist row must be '<l0-wpNN[a-z]> <path>'" >&2; return 2
+    fi
+    if [[ "$row_path" == *[\*\?\[]* || "$row_path" == /* || "$row_path" == */ ||
+      "/$row_path/" == */./* || "/$row_path/" == */../* || "$row_path" == *//* ]]; then
+      echo "$SEAM_ALLOW:$n: '$row_path' must be an exact path (no globs, no '.' or '..', no leading or trailing '/')" >&2
+      return 2
+    fi
+    [[ "$row_wp" == "$wp" ]] && SEAM_PATHS+=("$row_path")
+  done <<<"$text"
+  echo "seam: $SEAM_ALLOW lists ${#SEAM_PATHS[@]} path(s) for $wp"
 }
 
 selftest() {
@@ -194,6 +241,8 @@ selftest() {
   check fail l3 src/shell/places.ts              # L0 until WP08 lands the route registry
   check fail l0 src-tauri/addresses/40204.json   # frozen: no lane branch may touch it
   check fail l1 .agentile/v60-ownership.map      # only L0 edits the map
+  check pass l0 .agentile/v60-seams.allow        # the seam allowlist is L0's (fallback row)
+  check fail l3 .agentile/v60-seams.allow
   check pass l4 .agentile/sprints/active/v60/SPRINT.md # always allowed
   check pass l0 src/surfaces/Unclaimed.tsx       # unclaimed paths fall back to L0
   check fail l9 src/surfaces/Unclaimed.tsx
@@ -235,6 +284,22 @@ selftest() {
   lane_case bad feat/v60-L5-wp02-hf-caps
   lane_case bad feat/v60-l10-wp01-x
   lane_case bad 'feat/v60-l5-wp02-$(id)'
+
+  # Branch -> seam WP (the exemption's condition (a)): L0 WP01 to WP10 and lettered follow-ups.
+  seam_case() { # <want wp|none> <branch>
+    local got
+    got="$(seam_of "$2")" || got=none
+    if [[ "$got" != "$1" ]]; then echo "  SELFTEST FAIL: seam branch=$2 want=$1 got=$got"; fails=1
+    else echo "  ok: seam branch=$2 -> $got"; fi
+  }
+  seam_case l0-wp03 feat/v60-l0-wp03-command-registry
+  seam_case l0-wp01b feat/v60-l0-wp01b-seam-exemption
+  seam_case l0-wp10 feat/v60-l0-wp10-deps
+  seam_case none feat/v60-l0-wp11-ratchets
+  seam_case none feat/v60-l0-wp00-x
+  seam_case none feat/v60-l5-wp03-x
+  seam_case none feat/v60-l0-wp03ab-x
+  seam_case none 'feat/v60-l0-wp03-$(id)'
   if [[ $fails -eq 0 ]]; then echo "SELFTEST: PASS"; else echo "SELFTEST: FAIL"; return 1; fi
 }
 
@@ -242,7 +307,15 @@ selftest() {
 # scripts/cx-ownership-check.test.sh). <branch> is the PR's head ref, <base> the commit it merges
 # into; the judged commit is CX_DIFF_HEAD in CX_DIFF_ROOT. Exit 0 pass, non-zero fail.
 guard() {
-  local branch="${1:?--guard needs a branch}" base="${2:?--guard needs a base ref}" lane rc=0
+  local branch="${1:?--guard needs a branch}" base="${2:?--guard needs a base ref}" lane rc=0 wp=""
+  local labelled=0
+  # LG_LABELS: the PR's labels, one per line (lane-guard.yml reads them from the API at run time).
+  if printf '%s\n' "${LG_LABELS:-}" | grep -Fxq seam; then labelled=1; fi
+  wp="$(seam_of "$branch")" || wp=""
+  if [[ $labelled -eq 1 && -z "$wp" ]]; then
+    echo "::error::label 'seam' is reserved for L0 seam branches feat/v60-l0-wp01..wp10[a-z]-<slug>; remove it"
+    return 1
+  fi
   lane="$(lane_of "$branch")" || rc=$?
   case "$rc" in
     0) ;;
@@ -251,6 +324,17 @@ guard() {
   esac
   echo "lane: $lane"
   use_map v60
+  # (a) branch, (b) label, (d) characterization green; (c) is the allowlist, applied per file.
+  if [[ -n "$wp" ]]; then
+    if [[ $labelled -eq 0 ]]; then
+      echo "seam: $wp has no 'seam' label, so other lanes' files are not exempt"
+    elif [[ "${LG_CHARACTERIZATION:-}" != success ]]; then
+      echo "::warning::seam: exemption withheld for $wp: the seam characterization job is not green (${LG_CHARACTERIZATION:-no result})"
+    else
+      load_seam_allow "$wp" || return 2
+      SEAM_WP="$wp"
+    fi
+  fi
   # Changed paths are PR-controlled text: pause workflow commands while they print.
   local pause="" out=0
   if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
@@ -265,6 +349,7 @@ guard() {
 main() {
   if [[ "${1:-}" == "--selftest" ]]; then selftest; return; fi
   if [[ "${1:-}" == "--lane-of" ]]; then lane_of "${2:?--lane-of needs a branch name}"; return; fi
+  if [[ "${1:-}" == "--seam-of" ]]; then seam_of "${2:?--seam-of needs a branch name}"; return; fi
   if [[ "${1:-}" == "--guard" ]]; then guard "${2:-}" "${3:-}"; return; fi
   if [[ "${1:-}" == "--map" ]]; then use_map "${2:?--map needs cx or v60}"; shift 2; fi
   local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --guard <branch> <base> | --selftest}"
@@ -274,7 +359,7 @@ main() {
 # The diff between <base> and CX_DIFF_HEAD must stay inside <lane>'s owned set (current map).
 check_diff() {
   local lane="$1" base="$2"
-  local f st i list offenders=() changed=() statuses=()
+  local f st i list offenders=() changed=() statuses=() seamed=()
   # -z: paths arrive raw and NUL-delimited (no C-quoting of non-ASCII names, no newline splitting).
   # --no-renames: a rename lists both paths (D old, A new), so moving another lane's file out still
   # names it. --name-status: an added file (A) is absent at the base, which a 'create:' row needs.
@@ -292,8 +377,14 @@ check_diff() {
     f="${changed[i]}"
     if ! file_allowed "$lane" "$f" "${statuses[i]}"; then
       if [[ "$MAP_NAME" == v60 ]]; then offenders+=("$f (owner: $(v60_owner "$f"))"); else offenders+=("$f"); fi
+    elif [[ "$ALLOWED_BY" == seam ]]; then
+      seamed+=("$f (owner: $(v60_owner "$f"))")
     fi
   done
+  if [[ ${#seamed[@]} -gt 0 ]]; then
+    echo "seam exemption ($SEAM_WP): other lanes' files listed in $SEAM_ALLOW:"
+    printf '  %s\n' "${seamed[@]}"
+  fi
   if [[ ${#offenders[@]} -gt 0 ]]; then
     echo "OWNERSHIP VIOLATION — lane '$lane' touched files it does not own (race risk):" >&2
     printf '  %s\n' "${offenders[@]}" >&2
