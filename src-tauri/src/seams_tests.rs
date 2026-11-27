@@ -936,7 +936,11 @@ fn exit_problems(code: &str) -> Vec<String> {
         }
     }
     let Some(cond_end) = cond_end else {
-        return [problems, vec!["the exit branch condition is not closed".into()]].concat();
+        return [
+            problems,
+            vec!["the exit branch condition is not closed".into()],
+        ]
+        .concat();
     };
     let cond: String = handler[cond_at..cond_end].split_whitespace().collect();
     if cond != "ifmatches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit)" {
@@ -976,9 +980,11 @@ fn lane_exit_hooks_run_after_sidecar_teardown() {
     let branch_end = format!("{lanes_exit}\n            }}");
     // Mutation proofs (review findings on 92bb72ea and 637b9200): each regression below is caught.
     let after_branch = code.replacen(&branch_end, &format!("}}\n            {lanes_exit}"), 1);
-    let before_teardown = code
-        .replacen(&format!("{lanes_exit}\n"), "\n", 1)
-        .replacen(teardown, &format!("                {lanes_exit}\n{teardown}"), 1);
+    let before_teardown = code.replacen(&format!("{lanes_exit}\n"), "\n", 1).replacen(
+        teardown,
+        &format!("                {lanes_exit}\n{teardown}"),
+        1,
+    );
     let exit_only = code.replacen(
         "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
         "tauri::RunEvent::Exit",
@@ -987,7 +993,10 @@ fn lane_exit_hooks_run_after_sidecar_teardown() {
     let twice = code.replacen(lanes_exit, &format!("{lanes_exit} {lanes_exit}"), 1);
     let lost = code.replacen(lanes_exit, "", 1);
     for (name, mutant) in [
-        ("quit hooks after the exit branch (every run event)", after_branch),
+        (
+            "quit hooks after the exit branch (every run event)",
+            after_branch,
+        ),
         ("quit hooks before the sidecar teardown", before_teardown),
         ("ExitRequested no longer handled", exit_only),
         ("quit hooks called twice", twice),
