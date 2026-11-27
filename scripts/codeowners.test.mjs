@@ -28,6 +28,29 @@ describe("CODEOWNERS is generated from the v60 ownership map", () => {
     expect(rules.at(-1)).toBe("/release/signoffs/ @SaulBuilds");
   });
 
+  it("owner-pins the LQ tripwire registry, its check, its test and its workflow after every lane rule", () => {
+    // LQ-WP03: a registered tripwire goes only for a stricter replacement. Whoever can edit the
+    // registry, the check, the check's own tests or the workflow can weaken that, so the owner
+    // approves every change to them (GitHub accepts any one listed owner: only @SaulBuilds here).
+    const pinned = [
+      "/.agentile/coverage/tripwires.json",
+      "/.agentile/coverage/TRIPWIRES.md",
+      "/scripts/ci/lq/tripwire-inventory.mjs",
+      "/scripts/ci/lq/tripwire-inventory.test.mjs",
+      "/.github/workflows/lq-tripwires.yml",
+    ];
+    const rules = read(".github/CODEOWNERS").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+    const lastLaneRule = rules.findLastIndex((l) => l.endsWith(" @CitrateNetwork/maintainers"));
+    for (const p of pinned) {
+      const at = rules.indexOf(`${p} @SaulBuilds`);
+      expect(at, p).toBeGreaterThan(lastLaneRule);
+      // No later rule for the same path can take it back from the owner.
+      expect(rules.slice(at + 1).some((l) => l.split(/\s+/)[0] === p), p).toBe(false);
+    }
+    const { tail } = parseMap(read(".agentile/v60-ownership.map"));
+    for (const p of pinned) expect(tail, p).toContainEqual({ pattern: p, owners: ["@SaulBuilds"] });
+  });
+
   it("every map row names known lanes and a glob CODEOWNERS can express exactly", () => {
     const { rows } = parseMap(read(".agentile/v60-ownership.map"));
     expect(rows.length).toBeGreaterThan(100);
