@@ -149,6 +149,50 @@ describe("readLiveClaim", () => {
     expect(auth.userinfo).toHaveBeenCalledTimes(1);
   });
 
+  it("a refresh that fails after a sign-out still wipes the session again", async () => {
+    let fail: (e: unknown) => void = () => {};
+    const gate = new Promise<never>((_r, j) => (fail = j));
+    const auth = {
+      userinfo: vi.fn(async (): Promise<AuthStatus> => { throw "auth: session expired or not authorized — sign in again"; }),
+      refresh: vi.fn(async (): Promise<AuthStatus> => gate),
+      logout: vi.fn(async () => {}),
+    };
+    const session = newClaimSession();
+    const read = readLiveClaim(auth, session);
+    await vi.waitFor(() => expect(auth.refresh).toHaveBeenCalledTimes(1));
+    session.epoch++; // authLogout
+    fail(new Error("auth: network error"));
+    await expect(read).rejects.toThrow(SIGNED_OUT_DURING_READ);
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refresh from before a sign-out is never joined by a read after it", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let expired = true;
+    const auth = {
+      userinfo: vi.fn(async (): Promise<AuthStatus> => {
+        if (expired) throw "auth: session expired or not authorized — sign in again";
+        return CLAIM;
+      }),
+      refresh: vi.fn(async () => {
+        await gate;
+        expired = false;
+        return CLAIM;
+      }),
+      logout: vi.fn(async () => {}),
+    };
+    const session = newClaimSession();
+    const stale = readLiveClaim(auth, session).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(auth.refresh).toHaveBeenCalledTimes(1));
+    session.epoch++; // sign-out, then a new session
+    const fresh = readLiveClaim(auth, session);
+    await vi.waitFor(() => expect(auth.refresh).toHaveBeenCalledTimes(2));
+    release();
+    await expect(fresh).resolves.toEqual(CLAIM);
+    expect(await stale).toBeInstanceOf(Error);
+  });
+
   it("a sign-out during a plain read rejects it too", async () => {
     const session = newClaimSession();
     const auth = {

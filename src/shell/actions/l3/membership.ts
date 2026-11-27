@@ -104,11 +104,13 @@ export function isSessionExpiredError(err: unknown): boolean {
  */
 export interface ClaimSession {
   refreshing: Promise<AuthStatus> | null;
+  /** The epoch the refresh in flight started in: a refresh from before a sign-out is never joined. */
+  refreshingEpoch: number;
   epoch: number;
 }
 
 export function newClaimSession(): ClaimSession {
-  return { refreshing: null, epoch: 0 };
+  return { refreshing: null, refreshingEpoch: 0, epoch: 0 };
 }
 
 /** The read was overtaken by a sign-out: nothing it returned may be folded. */
@@ -136,15 +138,22 @@ export async function readLiveClaim(
     claim = await auth.userinfo();
   } catch (err) {
     if (!isSessionExpiredError(err)) throw err;
-    if (!session.refreshing) {
-      session.refreshing = auth.refresh().finally(() => {
-        session.refreshing = null;
+    if (!session.refreshing || session.refreshingEpoch !== epoch) {
+      const refreshing: Promise<AuthStatus> = auth.refresh().finally(() => {
+        if (session.refreshing === refreshing) session.refreshing = null;
       });
+      session.refreshing = refreshing;
+      session.refreshingEpoch = epoch;
     }
-    await session.refreshing;
-    if (session.epoch !== epoch) {
-      await auth.logout().catch(() => {});
-      throw new Error(SIGNED_OUT_DURING_READ);
+    try {
+      await session.refreshing;
+    } finally {
+      // Whether the refresh resolved or failed, it may have stored a rotated token after the
+      // sign-out wiped the vault: wipe again, and report the sign-out rather than the result.
+      if (session.epoch !== epoch) {
+        await auth.logout().catch(() => {});
+        throw new Error(SIGNED_OUT_DURING_READ);
+      }
     }
     claim = await auth.userinfo();
   }
