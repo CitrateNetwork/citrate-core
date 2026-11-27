@@ -750,9 +750,9 @@ impl ConnectionManager {
         vault: &CustodyVault,
         open: impl Fn(&str) -> std::result::Result<(), ConnError>,
     ) -> std::result::Result<ConnectionStatus, ConnError> {
-        // Fail fast before opening a browser / binding a socket if unconfigured.
-        let creds = self.creds(service)?;
+        // L6-WP02 RED MUTANT (reverted in the next commit): bind before checking credentials.
         let listener = ConnectionListener::bind()?;
+        let creds = self.creds(service)?;
         let state = random_state();
         let pkce = Pkce::new();
         let auth_url = authorize_url(service, &creds.client_id, &state, &pkce.challenge);
@@ -1536,4 +1536,7 @@ mod tests {
         vault.put(&slot(Service::HuggingFace), &mut bytes).unwrap();
         assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
     }
+
+    // 0.6.0 L6-WP02: the lane's characterization suite (test-only; see the file).
+    include!("lanes/l6/characterization/connections_char_tests.rs");
 }

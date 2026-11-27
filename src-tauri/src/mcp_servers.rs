@@ -64,7 +64,8 @@ pub const ENV_ACCOUNT_PREFIX: &str = "mcp-server-env:";
 /// What the webview sees in place of an env value.
 pub const MASK: &str = "•••••••• (in the system keychain)";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).
-pub const MAX_SERVERS: usize = 16;
+// L6-WP02 RED MUTANT (reverted in the next commit): one more server than the runtime allows.
+pub const MAX_SERVERS: usize = 17;
 
 const KEYCHAIN_UNAVAILABLE: &str = "the system keychain is not available";
 const KEYCHAIN_SAVE_FAILED: &str =
@@ -1670,4 +1671,6 @@ pub async fn mcp_servers_runtime(app: tauri::AppHandle) -> Result<serde_json::Va
 #[cfg(test)]
 mod tests {
     include!("mcp_servers_tests.rs");
+    // 0.6.0 L6-WP02: the lane's characterization suite (test-only; see the file).
+    include!("lanes/l6/characterization/mcp_servers_char_tests.rs");
 }
