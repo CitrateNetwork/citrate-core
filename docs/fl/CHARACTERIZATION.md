@@ -43,8 +43,13 @@ File: `src-tauri/src/fl_characterization_tests.rs`, compiled into `fl_payouts::t
 | `today_training_status_reads_patronage_only` | `training_status` and `training_reward` read the book's PatronageLedger only (`roundMergedHash`, `units`, `pendingDividendOf`, pinned selectors), and no training write command exists (`training.rs:1-7`, commands `:182`, `:211`). The blocking bodies (`training_status_sync` `:191`, `training_reward_sync` `:222`) build `RpcClient::citrate()` themselves, so their source is pinned: the ledger only from `patronage_ledger()?` (the one `crate::addresses` read), `RpcClient::citrate()` twice, the three pinned selectors only, and no call beyond `scan_rounds(&rpc, ledger, &gid)`, `read_patronage(&rpc, ledger, &member)` and the round lookup | L8-WP12 | the live round view adds FRL and coordinator reads beside these, which stay byte for byte |
 | `payouts_gate_refuses_workmarket_writes_while_dark` | kit `check_intent` under the shipped r1007 profile: every distinctive WorkMarket selector to an unpinned address is refused as not this network's WorkMarket; with a WorkMarket pinned and payouts dark, every WorkMarket write (each money selector, an unknown selector, a plain transfer) is refused, and no code is read | L8-WP17 | the same refusals, plus the flip test: a profile with `payoutsOpen` and matching pins signs, from the same code |
 | `payouts_gate_passes_frl_commit_and_finalize` | FRL `commitRound` and `finalize` are not money classes: the gate passes them with the flag off or on, and reads no code; an FRL challenge is still refused while dark | L8-WP17 | (lane invariant: coordinator rounds commit to FRL while payouts are dark) |
-| `collector_safety_tests_stay_declared` | the eight collector safety tests below stay declared and live in `src-tauri/src/fl_collect_tests.rs`: under `#[test]`, with no `#[ignore]`, `cfg_attr` or `cfg` other than `cfg(test)` anywhere in the attribute block, and that file stays compiled in | (lane invariant) | none: the collector rules 1-8 (`fl_collect.rs` header) do not change in 0.6.0 |
+| `collector_safety_tests_stay_declared` | the eight collector safety tests below stay declared and live in `src-tauri/src/fl_collect_tests.rs`: under `#[test]`, with no `#[ignore]`, `cfg_attr` or `cfg` other than `cfg(test)` anywhere in the attribute block, and that file stays compiled in: `fl_collect.rs` includes it, once and uncommented, in its column-0 `#[cfg(test)] mod tests { ... }` with no other attribute on that module and no inner `#![cfg...]`, and `lib.rs` declares `mod fl_collect;` at column 0 with no attribute | (lane invariant) | none: the collector rules 1-8 (`fl_collect.rs` header) do not change in 0.6.0 |
 | `collector_check_rejects_an_ignored_or_cfgd_out_test` | the check above fails a safety test that is `#[ignore]`d above or below `#[test]`, on the same line, behind a trailing comment, cfg'd out or behind a `cfg_attr`, and passes `#[should_panic]` and `cfg(test)` | (lane invariant) | none |
+| `host_check_rejects_a_cfgd_out_test_module` | the host check above fails a test module under `cfg(any())` or `cfg(not(test))`, an attribute stacked above or below `#[cfg(test)]`, a commented or cfg'd include, an inner `#![cfg(...)]`, a block comment, a missing or doubled include; and the `lib.rs` check fails a cfg'd, commented, nested or missing `mod` line and a crate-level `#![cfg(...)]` | (lane invariant) | none |
+
+This suite cannot report its own host chain cfg'd out (`fl_payouts.rs`'s test module, or `mod
+fl_payouts` in `lib.rs`), since it would then not run; the registry check below covers that chain
+and every other protected Rust file's.
 
 ### `L8-REGISTRY`: the registry check (vitest)
 
@@ -52,11 +57,29 @@ File: `src/fl/flRegistry.characterization.test.ts`. Tests: `registry_lists_every
 `every_listed_test_is_declared_and_every_declared_test_is_listed`,
 `cargo_suite_is_compiled_in_where_the_registry_says`,
 `protected_suites_keep_their_counts_and_named_tests`,
+`protected_cargo_files_are_compiled_in`, `no_protected_or_l8_vitest_suite_is_skipped`,
 `no_pinned_or_protected_cargo_test_is_disabled`,
 `characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`,
-`cargo_checks_reject_an_ignored_or_cfgd_out_test`. A Rust test under `#[ignore]`, a `cfg_attr` or a
-`cfg` other than `cfg(test)` is not declared and does not count, so a protected or pinned file whose
-test is turned off fails the same way as one that lost the test (vitest's `it.skip` already did).
+`cargo_checks_reject_an_ignored_or_cfgd_out_test`, `host_checks_reject_a_cfgd_out_test_module`,
+`vitest_checks_reject_a_skipped_or_focused_describe`.
+
+A test that no longer runs counts as lost, at every level it can be turned off:
+
+- **A Rust test.** One under `#[ignore]`, a `cfg_attr` or a `cfg` other than `cfg(test)` is not
+  declared and does not count, so a protected or pinned file whose test is turned off fails the
+  same way as one that lost the test.
+- **A Rust file.** Each protected Rust file names its `host` in the registry. The host must include
+  it, once and uncommented, in its column-0 `#[cfg(test)] mod tests { ... }` (include lines only),
+  with no other attribute on that module and no inner `#![cfg...]`; and `lib.rs` must declare the
+  host module as a plain column-0 `mod <host>;` with no attribute. The L8-RUST file must be a
+  top-level include of a protected file (after a closed item, no attribute) and open with its
+  `mod lq_l8_fl {`. So cfg'ing out `fl_collect.rs`'s test module (all 27 collector tests) or
+  `fl_payouts.rs`'s (this lane's own Rust suite) fails here.
+- **A vitest test or describe block.** A protected or L8 vitest file carries, outside comments, no
+  `.skip`, `.only`, `.todo`, `.skipIf`, `.runIf` or `.fails` on any call (`describe`, `it`, `test`
+  or a context), no bracketed form of them, no `{ skip: true }`-style option and no x-prefixed
+  `describe`, `it` or `test`. A `describe.skip` keeps every name and the count while nothing runs,
+  so the count and name checks alone would not see it.
 
 ## Protected honesty list (handed to LQ)
 

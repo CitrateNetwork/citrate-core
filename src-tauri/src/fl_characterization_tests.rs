@@ -13,7 +13,10 @@
 //    own RpcClient::citrate(), so no test transport reaches them; their source is pinned instead:
 //    the ledger only from patronage_ledger()?, and no chain read beyond the helpers tested here;
 //  - the eight collector safety tests in fl_collect_tests.rs stay declared by name, live: under
-//    #[test], never #[ignore]d, cfg'd out or behind a cfg_attr.
+//    #[test], never #[ignore]d, cfg'd out or behind a cfg_attr; and the file stays compiled in:
+//    fl_collect.rs includes it in its column-0 #[cfg(test)] mod tests with no other attribute,
+//    and lib.rs declares mod fl_collect with no cfg. (This suite cannot see its own host chain
+//    cfg'd out, since it would not run; flRegistry.characterization.test.ts checks that one.)
 // A failure here means one of those changed. Change an expectation only in the L8 WP the
 // registry names for this suite, with a stricter test, in a commit that says why.
 
@@ -541,6 +544,30 @@ mod lq_l8_fl {
         Ok(())
     }
 
+    /// A block comment's opener, built so that this file carries none for the registry check's
+    /// comment stripper to misread.
+    const BLOCK_OPEN: &str = concat!("/", "*");
+
+    /// RED: the host check as it stood, the include text present.
+    fn compiled_in(host: &str, file: &str) -> Result<(), String> {
+        let named = format!("include!(\"{file}\");");
+        if host.contains(named.as_str()) {
+            Ok(())
+        } else {
+            Err(format!("{file} is not included"))
+        }
+    }
+
+    /// RED: the lib.rs check as it stood, the declaration text present.
+    fn declared_in_lib(lib: &str, module: &str) -> Result<(), String> {
+        let decl = format!("mod {module};");
+        if lib.contains(decl.as_str()) {
+            Ok(())
+        } else {
+            Err(format!("mod {module} is not declared"))
+        }
+    }
+
     #[test]
     fn collector_safety_tests_stay_declared() {
         let src = include_str!("fl_collect_tests.rs");
@@ -549,9 +576,14 @@ mod lq_l8_fl {
                 panic!("fl_collect_tests.rs: {why}");
             }
         }
-        // And the file is compiled in: fl_collect.rs pulls it into its test module.
-        let host = include_str!("fl_collect.rs");
-        assert!(host.contains("include!(\"fl_collect_tests.rs\");"));
+        // And the file is compiled in: fl_collect.rs pulls it into a test module nothing cfgs
+        // out, and lib.rs declares fl_collect with no cfg.
+        if let Err(why) = compiled_in(include_str!("fl_collect.rs"), "fl_collect_tests.rs") {
+            panic!("fl_collect.rs: {why}");
+        }
+        if let Err(why) = declared_in_lib(include_str!("lib.rs"), "fl_collect") {
+            panic!("lib.rs: {why}");
+        }
     }
 
     #[test]
@@ -581,6 +613,55 @@ mod lq_l8_fl {
         ];
         for case in live {
             assert_eq!(live_test(case, "t"), Ok(()), "{case}");
+        }
+    }
+
+    #[test]
+    fn host_check_rejects_a_cfgd_out_test_module() {
+        // A cfg'd-out host test module, or lib.rs line, drops every test the file declares while
+        // each name stays in place.
+        let inc = "    include!(\"g_tests.rs\");";
+        let good = format!("fn x() {{\n}}\n\n#[cfg(test)]\nmod tests {{\n{inc}\n}}\n");
+        let live = [
+            good.clone(),
+            good.replace(
+                "mod tests {\n",
+                "mod tests {\n    include!(\"other_tests.rs\");\n",
+            ),
+            good.replace("#[cfg(test)]", "// The tests.\n#[cfg(test)]"),
+        ];
+        for case in &live {
+            assert_eq!(compiled_in(case, "g_tests.rs"), Ok(()), "{case}");
+        }
+        let lost = [
+            good.replace("#[cfg(test)]", "#[cfg(any())]"),
+            good.replace("#[cfg(test)]", "#[cfg(not(test))]"),
+            good.replace("#[cfg(test)]", "#[cfg(any())]\n#[cfg(test)]"),
+            good.replace("#[cfg(test)]", "#[cfg(test)]\n#[cfg(any())]"),
+            good.replace(inc, "    // include!(\"g_tests.rs\");"),
+            good.replace(inc, &format!("    #[cfg(any())]\n{inc}")),
+            good.replace("mod tests {\n", "mod tests {\n    #![cfg(any())]\n"),
+            format!("#![cfg(any())]\n{good}"),
+            format!("{BLOCK_OPEN}\n{good}*/\n"),
+            good.replace(inc, ""),
+            format!("{good}\n#[cfg(test)]\nmod more {{\n{inc}\n}}\n"),
+        ];
+        for case in &lost {
+            assert!(compiled_in(case, "g_tests.rs").is_err(), "{case}");
+        }
+        let lib = "mod a;\n// The guard.\nmod guard;\nmod b;\n";
+        assert_eq!(declared_in_lib(lib, "guard"), Ok(()));
+        let lost_lib = [
+            lib.replace("mod guard;", "#[cfg(any())]\nmod guard;"),
+            lib.replace("mod guard;", "#[cfg(test)] mod guard;"),
+            lib.replace("mod guard;", "// mod guard;"),
+            lib.replace("mod guard;", &format!("{BLOCK_OPEN}\nmod guard;\n*/")),
+            lib.replace("mod guard;", "mod off {\n    mod guard;\n}"),
+            lib.replace("mod guard;\n", ""),
+            format!("#![cfg(any())]\n{lib}"),
+        ];
+        for case in &lost_lib {
+            assert!(declared_in_lib(case, "guard").is_err(), "{case}");
         }
     }
 }

@@ -9,8 +9,10 @@
 // a test goes missing, when a file declares a test the registry does not list, when a listed test
 // survives only inside a comment, when the Rust suite is not compiled in where the registry says,
 // when a protected (honesty) suite loses tests, when a pinned or protected Rust test is turned off
-// (#[ignore], cfg_attr, or a cfg other than cfg(test)), or when the characterization doc stops
-// naming a pinned test. That a declared test also runs is shown by the runners' own counts (LQ ratchet).
+// (#[ignore], cfg_attr, or a cfg other than cfg(test)), when a protected Rust file's host test
+// module or its lib.rs `mod` is cfg'd out, when a protected or L8 vitest file skips, focuses or
+// inverts a test or a whole describe block, or when the characterization doc stops naming a
+// pinned test. That a declared test also runs is shown by the runners' own counts (LQ ratchet).
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -32,6 +34,7 @@ interface Suite {
 interface Protected {
   runner: Runner;
   file: string;
+  host?: string;
   count: number;
   tests: string[];
   supersededBy?: string[];
@@ -45,6 +48,7 @@ interface Registry {
 }
 
 const REGISTRY_PATH = "ci/characterization.d/l8.json";
+const LIB_RS = "src-tauri/src/lib.rs";
 const DOC_PATH = "docs/fl/CHARACTERIZATION.md";
 const REG = JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as Registry;
 const TS_DIR = "src/fl/";
@@ -126,6 +130,39 @@ function disabledCargo(src: string): string[] {
   return [...off, ...lines];
 }
 
+/** RED: the host check as it stood, the include text present. */
+function hostCompileError(host: string, file: string): string | undefined {
+  return uncommented(host).includes(`include!("${basename(file)}");`) ? undefined : `${file} is not included`;
+}
+
+/** RED: the lib.rs check as it stood, the declaration text present. */
+function libDeclareError(lib: string, name: string): string | undefined {
+  return uncommented(lib).includes(`mod ${name};`) ? undefined : `mod ${name} is not declared`;
+}
+
+/** RED: the include check as it stood, the include text present. */
+function topLevelIncludeError(src: string, file: string): string | undefined {
+  return uncommented(src).includes(`include!("${basename(file)}");`) ? undefined : `${file} is not included`;
+}
+
+/** RED: the mod check as it stood, a `mod <name> {` line. */
+function suiteModError(src: string, name: string): string | undefined {
+  return new RegExp(`^mod ${name} \\{`, "m").test(uncommented(src)) ? undefined : `no mod ${name}`;
+}
+
+/** vitest modifiers that skip, focus or invert a test or a whole describe block. */
+const MODIFIER = "skip|only|todo|skipIf|runIf|fails";
+/** RED: only a test-level skip, as the count check saw it. */
+const SKIPPING = [/^(?:it|test)\.skip\(/];
+
+/** The lines, outside comments, that skip, focus or invert a test or a describe block. Empty when all run. */
+function skippingLines(src: string): string[] {
+  return uncommented(src)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => SKIPPING.some((r) => r.test(l)));
+}
+
 /** Every test a protected file declares, counted the way its runner sees a test start (a Rust test only if it runs). */
 function countTests(runner: Runner, src: string): number {
   if (runner === "cargo") return declaredCargo(src).length;
@@ -191,14 +228,17 @@ describe("L8 characterization registry (L8-WP01)", () => {
       expect(s.includedBy, s.id).toMatch(/^src-tauri\/src\/fl_[a-z0-9_]+_tests\.rs$/);
       const host = s.includedBy ?? "";
       expect(existsSync(host), `${s.id}: ${host}`).toBe(true);
-      const hostSrc = existsSync(host) ? uncommented(readFileSync(host, "utf8")) : "";
+      // The including file is itself protected, so its own host and lib.rs line are checked too.
+      const protectedHost = REG.protected.some((p) => p.runner === "cargo" && p.file === host);
+      expect(protectedHost, `${s.id}: ${host} is a protected cargo file`).toBe(true);
+      const hostSrc = existsSync(host) ? readFileSync(host, "utf8") : "";
       const mod = (s.filter ?? "").replace(/::$/, "");
       for (const f of s.files) {
-        // The host test file pulls the suite into its `mod tests`, so `cargo test` builds it.
-        expect(hostSrc, `${host} includes ${f}`).toContain(`include!("${basename(f)}");`);
-        // The filter LQ runs names the module the file declares.
-        const src = existsSync(f) ? uncommented(readFileSync(f, "utf8")) : "";
-        expect(src, `${f} declares mod ${mod}`).toMatch(new RegExp(`^mod ${mod} \\{`, "m"));
+        // The host test file pulls the suite in as a top-level item, so `cargo test` builds it.
+        expect(topLevelIncludeError(hostSrc, f), `${host} includes ${f}`).toBeUndefined();
+        // The filter LQ runs names the module the file opens with, and nothing cfgs that module out.
+        const src = existsSync(f) ? readFileSync(f, "utf8") : "";
+        expect(suiteModError(src, mod), `${f} declares mod ${mod}`).toBeUndefined();
       }
     }
   });
@@ -213,6 +253,38 @@ describe("L8 characterization registry (L8-WP01)", () => {
       const src = existsSync(p.file) ? readFileSync(p.file, "utf8") : "";
       expect(countTests(p.runner, src), p.file).toBeGreaterThanOrEqual(p.count);
       for (const id of p.tests) expect(protectedDeclares(p.runner, src, id), `${p.file} declares ${id}`).toBe(true);
+    }
+  });
+
+  it("protected_cargo_files_are_compiled_in", () => {
+    // A protected Rust file runs only while its host's `#[cfg(test)] mod tests` includes it and
+    // lib.rs declares the host module with no cfg. Either one cfg'd out drops every test in the
+    // file (the 27 collector tests, or this lane's own L8-RUST suite) with no name or count change.
+    const lib = existsSync(LIB_RS) ? readFileSync(LIB_RS, "utf8") : "";
+    const cargo = REG.protected.filter((p) => p.runner === "cargo");
+    expect(cargo.map((p) => p.file)).toContain("src-tauri/src/fl_collect_tests.rs");
+    for (const p of cargo) {
+      expect(p.host, p.file).toMatch(/^src-tauri\/src\/[a-z0-9_]+\.rs$/);
+      const host = p.host ?? "";
+      expect(existsSync(host), `${p.file}: ${host}`).toBe(true);
+      const hostSrc = existsSync(host) ? readFileSync(host, "utf8") : "";
+      expect(hostCompileError(hostSrc, p.file), `${host} compiles ${p.file}`).toBeUndefined();
+      expect(libDeclareError(lib, basename(host, ".rs")), `lib.rs declares ${host}`).toBeUndefined();
+    }
+  });
+
+  it("no_protected_or_l8_vitest_suite_is_skipped", () => {
+    // A describe.skip (or .only, .todo, .skipIf, an x-prefix, a { skip: true }) keeps every
+    // test's name and count while none of them runs, so no protected or L8 vitest file has one.
+    const files = [
+      ...REG.suites.filter((s) => s.runner === "vitest").flatMap((s) => s.files),
+      ...REG.protected.filter((p) => p.runner === "vitest").map((p) => p.file),
+    ];
+    expect(files).toContain("src/fl/fl.characterization.test.tsx");
+    expect(files).toContain("src/surfaces/alfSurfaceHonesty.test.tsx");
+    for (const f of files) {
+      const src = existsSync(f) ? readFileSync(f, "utf8") : "";
+      expect(skippingLines(src), f).toEqual([]);
     }
   });
 
@@ -347,5 +419,93 @@ describe("L8 characterization registry (L8-WP01)", () => {
     expect(protectedDeclares("cargo", before, "guard")).toBe(true);
     expect(countTests("cargo", after)).toBe(1);
     expect(protectedDeclares("cargo", after, "guard")).toBe(false);
+  });
+  it("host_checks_reject_a_cfgd_out_test_module", () => {
+    // A cfg'd-out host module or lib.rs line drops every test the file declares, names intact.
+    const inc = 'include!("g_tests.rs");';
+    const good = `fn x() {\n}\n\n#[cfg(test)]\nmod tests {\n    ${inc}\n}\n`;
+    for (const ok of [
+      good,
+      good.replace("mod tests {\n", 'mod tests {\n    include!("other_tests.rs");\n'),
+      good.replace("#[cfg(test)]", "// The tests.\n#[cfg(test)]"),
+    ])
+      expect(hostCompileError(ok, "src-tauri/src/g_tests.rs"), ok).toBeUndefined();
+    const lostHost = [
+      good.replace("#[cfg(test)]", "#[cfg(any())]"),
+      good.replace("#[cfg(test)]", "#[cfg(not(test))]"),
+      good.replace("#[cfg(test)]", "#[cfg(any())]\n#[cfg(test)]"),
+      good.replace("#[cfg(test)]", "#[cfg(test)]\n#[cfg(any())]"),
+      good.replace("#[cfg(test)]", "#[cfg(any())] // for now\n#[cfg(test)]"),
+      good.replace(`    ${inc}`, `    // ${inc}`),
+      good.replace(`    ${inc}`, `    #[cfg(any())]\n    ${inc}`),
+      good.replace("mod tests {\n", "mod tests {\n    #![cfg(any())]\n"),
+      `#![cfg(any())]\n${good}`,
+      `/*\n${good}*/\n`,
+      good.replace(`    ${inc}\n`, ""),
+      `${good}\n#[cfg(test)]\nmod more {\n    ${inc}\n}\n`,
+    ];
+    for (const lost of lostHost) expect(hostCompileError(lost, "g_tests.rs"), lost).toBeDefined();
+
+    const lib = "mod a;\n// The guard.\nmod guard;\nmod b;\n";
+    expect(libDeclareError(lib, "guard")).toBeUndefined();
+    const lostLib = [
+      lib.replace("mod guard;", "#[cfg(any())]\nmod guard;"),
+      lib.replace("mod guard;", "#[cfg(test)] mod guard;"),
+      lib.replace("mod guard;", "// mod guard;"),
+      lib.replace("mod guard;", "/*\nmod guard;\n*/"),
+      lib.replace("mod guard;", "mod off {\n    mod guard;\n}"),
+      lib.replace("mod guard;\n", ""),
+      `#![cfg(any())]\n${lib}`,
+    ];
+    for (const lost of lostLib) expect(libDeclareError(lost, "guard"), lost).toBeDefined();
+
+    const tail = `#[test]\nfn t() {\n}\n\n// The suite.\n${inc}\n`;
+    expect(topLevelIncludeError(tail, "g_tests.rs")).toBeUndefined();
+    const lostTail = [
+      tail.replace(inc, `#[cfg(any())]\n${inc}`),
+      tail.replace(inc, `#[cfg(any())] ${inc}`),
+      tail.replace(inc, `// ${inc}`),
+      tail.replace(inc, `mod off {\n    ${inc}\n}`),
+      `#![cfg(any())]\n${tail}`,
+      `${tail}${inc}\n`,
+    ];
+    for (const lost of lostTail) expect(topLevelIncludeError(lost, "g_tests.rs"), lost).toBeDefined();
+
+    const suite = "// The suite.\nmod lq_g {\n}\n";
+    expect(suiteModError(suite, "lq_g")).toBeUndefined();
+    expect(suiteModError(suite.replace("mod lq_g", "#[cfg(any())]\nmod lq_g"), "lq_g")).toBeDefined();
+    expect(suiteModError(suite.replace("mod lq_g", "// mod lq_g"), "lq_g")).toBeDefined();
+  });
+
+  it("vitest_checks_reject_a_skipped_or_focused_describe", () => {
+    // Built from MODIFIER so this file itself carries none of the patterns it rejects.
+    const mods = MODIFIER.split("|");
+    const lost = [
+      ...mods.map((m) => `describe.${m}("suite", () => {`),
+      ...mods.map((m) => `  it.${m}("t", () => {});`),
+      ...mods.map((m) => `  test.${m}("t", () => {});`),
+      ...mods.map((m) => `describe("suite", { ${m}: true }, () => {`),
+      ...mods.map((m) => `describe["${m}"]("suite", () => {`),
+      ...["describe", "it", "test"].map((f) => `x${f}("t", () => {});`),
+      `describe\n  .${mods[0]}("suite", () => {`,
+      `  it("t", (ctx) => { ctx.${mods[0]}(); });`,
+    ];
+    for (const l of lost) expect(skippingLines(l), l).not.toEqual([]);
+    const live = [
+      'describe("suite", () => {',
+      '  it("kept", () => {});',
+      '  it.each([1, 2])("each %i", () => {});',
+      '  test("only_once", { timeout: 5000 }, () => {});',
+      "  const skipped = 0;",
+      `  // describe.${mods[0]} in a line comment`,
+      `/* x${"it"} in a block comment */`,
+      "});",
+    ].join("\n");
+    expect(skippingLines(live)).toEqual([]);
+    // The hole this closes: a describe-level skip keeps the count and the names.
+    const file = [`describe.${mods[0]}("suite", () => {`, '  it("guard", () => {});', "});"].join("\n");
+    expect(countTests("vitest", file)).toBe(1);
+    expect(protectedDeclares("vitest", file, "guard")).toBe(true);
+    expect(skippingLines(file)).toEqual([`describe.${mods[0]}("suite", () => {`]);
   });
 });
