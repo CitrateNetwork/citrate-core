@@ -695,3 +695,6 @@ fn media_commands_check_local_model_only_before_anything_remote() {
     let permit = send.find("chat_consent::authorize_once(").expect("permit");
     assert!(permit < send.find("post_to_provider(").expect("post"), "permit before the post");
 }
+
+// L5-WP01 L5-MEDIA characterization (registry ci/characterization.d/l5.json).
+include!("lanes/l5/characterization/media_routes_tests.rs");

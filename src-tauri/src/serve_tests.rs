@@ -577,3 +577,6 @@ fn llama_server_file_name_carries_the_platform_exe_suffix() {
         assert_eq!(here, "llama-server");
     }
 }
+
+// L5-WP01 L5-ARGV characterization (registry ci/characterization.d/l5.json).
+include!("lanes/l5/characterization/serve_argv_tests.rs");
