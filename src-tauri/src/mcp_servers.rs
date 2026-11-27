@@ -1670,4 +1670,6 @@ pub async fn mcp_servers_runtime(app: tauri::AppHandle) -> Result<serde_json::Va
 #[cfg(test)]
 mod tests {
     include!("mcp_servers_tests.rs");
+    // 0.6.0 L6-WP02: the lane's characterization suite (test-only; see the file).
+    include!("lanes/l6/characterization/mcp_servers_char_tests.rs");
 }

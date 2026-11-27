@@ -1601,4 +1601,6 @@ pub async fn store_remove(
 #[cfg(test)]
 mod tests {
     include!("store_catalog_tests.rs");
+    // 0.6.0 L6-WP02: the lane's characterization suite (test-only; see the file).
+    include!("lanes/l6/characterization/store_char_tests.rs");
 }

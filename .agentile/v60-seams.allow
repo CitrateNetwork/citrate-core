@@ -1,0 +1,16 @@
+# created: 2026-11-27 | branch: feat/v60-l0-wp01b-seam-exemption
+# author: Larry Klosowski (L0 lane, L0-WP01b; Claude Opus 5.5)
+# status: active
+#
+# L0 seam allowlist: condition (c) of the lane-guard seam exemption (swarm lead decision
+# 2026-11-27, 09_SWARM_EXECUTION 1-2). A labelled L0 seam PR (feat/v60-l0-wp01..wp10[a-z]-<slug>,
+# label `seam`, `lane-guard seam characterization` green) may change another lane's file only
+# when that exact path is listed here for its WP, in the same PR, so the list is reviewed with the
+# change. Read from the judged commit by `cx-ownership-check.sh --guard`. Only L0 edits this file.
+#
+# Row format:  <wp> <path>     wp: l0-wp01 .. l0-wp10, with an optional letter (l0-wp01b)
+#   - path is exact: no globs, no '.' or '..' segments, no leading or trailing '/'.
+#   - rows apply to their own WP only; a follow-up (l0-wp03a) lists its own paths.
+#   - frozen paths stay frozen whatever is listed.
+#   - one malformed row fails the guard for every seam PR, so keep the file clean.
+# Each WP's block names the lane-file section it comes from (lanes/L0_INTEGRATION_SEAMS.md 5).

@@ -1,5 +1,5 @@
 // created: 2026-11-27 | branch: feat/v60-l0-wp01-ownership-map
-// author: Larry Klosowski (L0 lane, L0-WP01; Claude Opus 5.5)
+// author: Larry Klosowski (L0 lane, L0-WP01, L0-WP01b; Claude Opus 5.5)
 // status: active
 //
 // L0-WP01: .github/CODEOWNERS is generated from .agentile/v60-ownership.map, so review routing and
@@ -26,6 +26,29 @@ describe("CODEOWNERS is generated from the v60 ownership map", () => {
     const rules = read(".github/CODEOWNERS").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
     expect(rules[0]).toBe("* @CitrateNetwork/maintainers");
     expect(rules.at(-1)).toBe("/release/signoffs/ @SaulBuilds");
+  });
+
+  it("owner-pins the LQ tripwire registry, its check, its test and its workflow after every lane rule", () => {
+    // LQ-WP03: a registered tripwire goes only for a stricter replacement. Whoever can edit the
+    // registry, the check, the check's own tests or the workflow can weaken that, so the owner
+    // approves every change to them (GitHub accepts any one listed owner: only @SaulBuilds here).
+    const pinned = [
+      "/.agentile/coverage/tripwires.json",
+      "/.agentile/coverage/TRIPWIRES.md",
+      "/scripts/ci/lq/tripwire-inventory.mjs",
+      "/scripts/ci/lq/tripwire-inventory.test.mjs",
+      "/.github/workflows/lq-tripwires.yml",
+    ];
+    const rules = read(".github/CODEOWNERS").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+    const lastLaneRule = rules.findLastIndex((l) => l.endsWith(" @CitrateNetwork/maintainers"));
+    for (const p of pinned) {
+      const at = rules.indexOf(`${p} @SaulBuilds`);
+      expect(at, p).toBeGreaterThan(lastLaneRule);
+      // No later rule for the same path can take it back from the owner.
+      expect(rules.slice(at + 1).some((l) => l.split(/\s+/)[0] === p), p).toBe(false);
+    }
+    const { tail } = parseMap(read(".agentile/v60-ownership.map"));
+    for (const p of pinned) expect(tail, p).toContainEqual({ pattern: p, owners: ["@SaulBuilds"] });
   });
 
   it("every map row names known lanes and a glob CODEOWNERS can express exactly", () => {
@@ -202,7 +225,9 @@ describe("lane-guard workflow", () => {
     return { tmp, git, put, policy };
   };
   // sha: the event commit (github.sha); defaults to the scratch repo's HEAD, the PR merge commit.
-  const runGuard = (tmp, branch, sha) => {
+  // extra: more step env (LABELS_JSON, CHAR_RESULT, CHAR_GREEN: the resolve and seam
+  // characterization job outputs).
+  const runGuard = (tmp, branch, sha, extra = {}) => {
     const runnerTemp = mkdtempSync(path.join(os.tmpdir(), "lane-guard-runner-"));
     try {
       const SHA = sha ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
@@ -210,7 +235,7 @@ describe("lane-guard workflow", () => {
         cwd: tmp,
         encoding: "utf8",
         stdio: "pipe",
-        env: { ...process.env, EVENT: "pull_request", HEAD_REF: branch, MQ_REF: "", REPO: "o/r", SHA, RUNNER_TEMP: runnerTemp },
+        env: { ...process.env, EVENT: "pull_request", HEAD_REF: branch, MQ_REF: "", REPO: "o/r", SHA, RUNNER_TEMP: runnerTemp, ...extra },
       });
       return { ok: true, out };
     } catch (e) {
@@ -349,6 +374,63 @@ describe("lane-guard workflow", () => {
       const r = runGuard(tmp, "feat/v60-chain-r1008-pin");
       expect(r.ok, r.out).toBe(false);
       expect(r.out).toContain("src-tauri/addresses/40204.json (owner: frozen)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // L0-WP01b: the seam exemption through the real step (labels and the characterization result
+  // arrive as job outputs; the decision itself is tested in scripts/cx-ownership-check.test.sh).
+  it("a labelled L0 seam PR may change a listed foreign file only with the characterization job green", () => {
+    const { tmp, git, put } = scratchPr("lane-guard-seam-", { baseHasPolicy: true, baseFiles: { "src-tauri/src/cluster_tests.rs": "// l7\n" } });
+    try {
+      put("src-tauri/src/cluster_tests.rs", "// the handler list moved\n");
+      put(".agentile/v60-seams.allow", "l0-wp03 src-tauri/src/cluster_tests.rs\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "L0-WP03 migrates a structural test");
+      mergeIntoMain(git);
+      const branch = "feat/v60-l0-wp03-command-registry";
+      const green = { LABELS_JSON: '["lane:l0","seam"]', CHAR_RESULT: "success", CHAR_GREEN: "true" };
+      const ok = runGuard(tmp, branch, undefined, green);
+      expect(ok.ok, ok.out).toBe(true);
+      expect(ok.out).toContain("seam exemption (l0-wp03)");
+      for (const extra of [
+        { ...green, LABELS_JSON: '["lane:l0"]' },
+        { ...green, CHAR_RESULT: "failure", CHAR_GREEN: "" },
+        { ...green, CHAR_RESULT: "skipped", CHAR_GREEN: "" },
+        { ...green, CHAR_GREEN: "" },
+        {},
+      ]) {
+        const r = runGuard(tmp, branch, undefined, extra);
+        expect(r.ok, `${JSON.stringify(extra)}\n${r.out}`).toBe(false);
+        expect(r.out).toContain("src-tauri/src/cluster_tests.rs (owner: l7)");
+      }
+      const label = runGuard(tmp, "feat/v60-l0-wp11-ratchets", undefined, green);
+      expect(label.ok, label.out).toBe(false);
+      expect(label.out).toContain("label 'seam'");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("a base checker from before the seam exemption still judges as it did", () => {
+    const { tmp, git, put } = scratchPr("lane-guard-legacy-", { baseHasPolicy: false });
+    try {
+      // The base carries a checker without the lane-guard-api marker (as main did before L0-WP01b).
+      put("scripts/cx-ownership-check.sh", read("scripts/cx-ownership-check.sh").replace(/^# lane-guard-api: 2.*\n/m, ""));
+      put(".agentile/v60-ownership.map", read(".agentile/v60-ownership.map"));
+      git("add", "-A");
+      git("commit", "-q", "--amend", "-m", "base");
+      git("branch", "-f", "main", "HEAD");
+      put("src/shell/store.ts", "export const store = 2;\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "l5 edits the L0 hotspot");
+      mergeIntoMain(git);
+      const green = { LABELS_JSON: '["seam"]', CHAR_RESULT: "success", CHAR_GREEN: "true" };
+      const bad = runGuard(tmp, "feat/v60-l5-wp02-hf-caps", undefined, green);
+      expect(bad.ok, bad.out).toBe(false);
+      expect(bad.out).toContain("src/shell/store.ts (owner: l0)");
+      expect(runGuard(tmp, "fix/055-sidecar-flake").ok).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

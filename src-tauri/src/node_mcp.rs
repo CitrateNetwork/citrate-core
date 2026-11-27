@@ -515,4 +515,8 @@ pub async fn node_mcp_decide(
 #[cfg(test)]
 mod tests {
     include!("node_mcp_tests.rs");
+    // L1-WP01 CH-8 characterization (LQ registry).
+    include!("lanes/l1/characterization/node_mcp_scope_characterize_tests.rs");
+    // L1-WP01 CH-9 characterization (LQ registry): the approval inbox, through its public API.
+    include!("lanes/l1/characterization/approvals_once_ttl_tests.rs");
 }

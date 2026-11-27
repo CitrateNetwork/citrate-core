@@ -839,4 +839,6 @@ pub async fn agent_grants_reset(app: tauri::AppHandle) -> Result<GrantsChange, S
 #[cfg(test)]
 mod tests {
     include!("agent_grants_tests.rs");
+    // L1-WP01 CH-11 characterization (LQ registry).
+    include!("lanes/l1/characterization/grants_fail_closed_tests.rs");
 }
