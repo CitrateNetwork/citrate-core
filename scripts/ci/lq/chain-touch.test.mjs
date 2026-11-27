@@ -794,7 +794,7 @@ describe("lq-chain-touch.yml (agentic-actions-auditor: untrusted PR metadata)", 
     const [selfId, sb] = self[0];
     expect(sb).not.toMatch(/GH_TOKEN|github\.token/);
     expect(sb).toMatch(/persist-credentials: false/);
-    expect(sb).toMatch(/permissions:\n\s+contents: read\n(?!\s+\w+: )/);
+    expect(sb).toMatch(/permissions:\n\s+contents: read\n(?!\s+[\w-]+: )/);
     // A required job that `needs` a failed job is skipped, and a skipped check reads as passing.
     expect(eb).not.toMatch(new RegExp(`needs:.*\\b${selfId}\\b`));
   });

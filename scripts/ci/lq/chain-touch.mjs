@@ -19,8 +19,9 @@
 //      for 0.6.0 (one node rev on every OS). Removing one is allowed.
 //
 // The map and the reviewer set are read from the base branch TIP (--base), so a PR cannot change its
-// own guard and a long-lived branch is judged by the current map (a PR that adds them, when the base
-// has none, is checked with its own copy). The diff, and the base node rev a rules delta is measured
+// own guard and a long-lived branch is judged by the current map (a PR that adds the map, when the
+// base has none, is checked with its own copy; the reviewer set never falls back to the head, so a
+// rules delta fails closed until the base carries it). The diff, and the base node rev a rules delta is measured
 // from, use the merge-base of the tip and the head. The check never
 // writes: it reads git, the event payload and the read-only GitHub API. Anything it cannot read
 // (map, lockfile, components.json, API) fails closed.
@@ -403,12 +404,16 @@ export async function runCheck(opts) {
     if (rulesDelta) {
       notes.push(`rules delta: ${reasons.join("; ")}`);
       if (!labels.has(map.labels.consensus_review)) errors.push(`rules delta (${reasons.join("; ")}): label ${map.labels.consensus_review} is required`);
+      // The base tip's set only, never the head's: a PR that adds the file would name its own
+      // approver. Until L0 lands the file on the base, every rules delta fails closed.
       let reviewers = [];
-      let rText = readTip(REVIEWERS_PATH);
-      if (rText === null) rText = readHead(REVIEWERS_PATH);
-      try { reviewers = JSON.parse(rText ?? "null").reviewers; if (!Array.isArray(reviewers)) throw new Error("reviewers must be a list"); } catch (e) {
-        reviewers = [];
-        errors.push(`${REVIEWERS_PATH} unreadable (fail closed): ${clean(e.message)}`);
+      const rText = readTip(REVIEWERS_PATH);
+      if (rText === null) errors.push(`${REVIEWERS_PATH} is not on the base branch (fail closed): a rules delta needs the consensus reviewer set the base already carries; a PR cannot supply its own`);
+      else {
+        try { reviewers = JSON.parse(rText).reviewers; if (!Array.isArray(reviewers)) throw new Error("reviewers must be a list"); } catch (e) {
+          reviewers = [];
+          errors.push(`${REVIEWERS_PATH} unreadable (fail closed): ${clean(e.message)}`);
+        }
       }
       const set = new Set(reviewers.map((r) => String(r).toLowerCase()));
       const approved = [...latestApprovals(await asFn(opts.reviews)(), headSha)].filter((l) => set.has(l));

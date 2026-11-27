@@ -12,6 +12,11 @@
 # secrets, no write permission. The script that runs is the base branch tip's copy, so a PR cannot
 # edit its own guard; it reads the map from the tip too, and takes the merge-base for the diff.
 #
+# The enforcement job runs no code from the PR head: the head's --self-test runs in its own job on
+# its own runner, with no token, so head code cannot poison $GITHUB_PATH, $GITHUB_ENV or the
+# checkout's .git before the base copy judges the change. The enforcement job does not `needs` the
+# self-test (a required job skipped by a failed dependency reads as passing).
+#
 # Concurrency: pull_request and pull_request_review runs of one PR share a group without
 # cancel-in-progress, so a review submitted mid-run queues behind the running check instead of
 # cancelling it (a newer queued run still replaces an older queued one).
@@ -32,6 +37,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  self-test:
+    name: lq / chain-touch self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Self-test (matcher, lock closure, map)
+        run: node scripts/ci/lq/chain-touch.mjs --self-test
+
   chain-touch:
     name: lq / chain-touch
     runs-on: ubuntu-latest
@@ -50,8 +72,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: Self-test (matcher, lock closure, map)
-        run: node scripts/ci/lq/chain-touch.mjs --self-test
       - name: Check the change
         env:
           GH_TOKEN: ${{ github.token }}
