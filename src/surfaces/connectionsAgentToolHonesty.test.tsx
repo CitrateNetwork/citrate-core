@@ -2,12 +2,15 @@
 // agent tool uses it yet. The surfaces said "mounted as agent tool" and suffixed every Settings row
 // with " · MCP tool". Until an MCP gateway reports a connector's tools as live, the row says the
 // connection is not yet available to the agent, and no copy claims otherwise.
+//
+// The Settings half of the WP (drop " · MCP tool" and "mount as MCP tools" from Settings ›
+// Connections) lives in src/surfaces/Settings.tsx, which the v60 ownership map gives to L3. It goes
+// through the L3 seam with its own red test there; this file covers only what L6 owns.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Connections } from "./Connections";
-import { Settings } from "./Settings";
 import { bridge } from "../bridge";
 import { store } from "../shell/store";
 import { freshState } from "../shell/state";
@@ -42,10 +45,6 @@ async function mountConnected() {
   });
 }
 
-const settingsStore = {
-  identity: () => ({ name: "Member", initials: "M", email: "m@example.com", sub: "sub-1", wallet: "0x", tier: "pilot", role: "member", org: null, real: true }),
-} as unknown as Store;
-
 describe("L6-WP01 Connections never claims an agent tool it does not have", () => {
   it("never_renders_mounted_as_agent_tool_without_gateway_report", async () => {
     await mountConnected();
@@ -60,20 +59,19 @@ describe("L6-WP01 Connections never claims an agent tool it does not have", () =
     expect(text).not.toMatch(/Connected\. Available to your agent/);
   });
 
-  it("settings_rows_do_not_claim_mcp_tool", () => {
-    const s = freshState("p1");
-    s.sSec = "connections";
-    const html = renderToStaticMarkup(<Settings store={settingsStore} s={s} />);
-    expect(html).toContain("GitHub");
-    expect(html).not.toContain(" · MCP tool");
-    expect(html).not.toMatch(/mount as MCP tools/i);
-  });
-
   it("mcp_footer_does_not_claim_tools_mount", () => {
     const html = renderToStaticMarkup(<Connections store={{} as unknown as Store} s={freshState("p1")} />);
     expect(html).not.toMatch(/connected servers mount as tools/i);
     // It says where tokens live and which connectors the agent can use today.
     expect(html).toMatch(/sealed on this computer/i);
     expect(html).toMatch(/your agent can use Google Sheets and Google Calendar today/i);
+  });
+
+  it("connection_scopes_do_not_promise_agent_access", () => {
+    // The scope line under GitHub, Drive and Notion describes what the sign-in covers, not what the
+    // agent can do with it (it can do nothing with it until the gateway reports it live).
+    const html = renderToStaticMarkup(<Connections store={{} as unknown as Store} s={freshState("p1")} />);
+    expect(html).not.toMatch(/your agent can read/i);
+    expect(html).not.toMatch(/read \+ propose|read \+ write/i);
   });
 });
