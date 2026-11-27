@@ -4,7 +4,7 @@
 // changed: update the expectation only together with that reviewed change, and keep every old
 // route resolving (places.ts compatibility rule).
 import { describe, it, expect } from "vitest";
-import { CANONICAL_ROUTES, HIDDEN_ROUTES, LEGACY_ROUTES, PLACES, ROUTABLE, locate, resolveRoute } from "./places";
+import { CANONICAL_ROUTES, HIDDEN_ROUTES, LEGACY_ROUTES, PLACES, ROUTABLE, locate, resolveRoute } from "../../../places";
 
 /** Today's canonical leaves, in table order. The 0.6.0 brief counted 34; the table has 33. */
 const CANONICAL_TODAY = [

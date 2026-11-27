@@ -9,10 +9,10 @@
 import { describe, it, expect } from "vitest";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Coach, Toast } from "./Chrome";
-import { COACH_STEPS } from "../data/seed";
-import { freshState, type AppState } from "./state";
-import type { Store } from "./store";
+import { Coach, Toast } from "../../../Chrome";
+import { COACH_STEPS } from "../../../../data/seed";
+import { freshState, type AppState } from "../../../state";
+import type { Store } from "../../../store";
 
 // Coach and Toast render from `s`; `store` is touched only in onClick handlers.
 const noopStore = {} as unknown as Store;

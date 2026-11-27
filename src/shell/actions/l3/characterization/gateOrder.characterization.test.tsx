@@ -9,20 +9,40 @@
 //   4. AccessPassGate wraps onboarding only, never the Shell.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-vi.mock("../bridge", () => ({ bridge: { mode: "tauri", shell: { openExternal: async () => {} } } }));
+vi.mock("../../../../bridge", () => ({ bridge: { mode: "tauri", shell: { openExternal: async () => {} } } }));
 
-import { GateOrApp, type AppUpdate } from "./UpdateBanner";
-import { INITIAL_UPDATE_STATE, withVerdict, type UpdateState } from "./updater";
+import { GateOrApp, type AppUpdate } from "../../../UpdateBanner";
+import { INITIAL_UPDATE_STATE, withVerdict, type UpdateState } from "../../../updater";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const APP = readFileSync(resolve(__dirname, "..", "App.tsx"), "utf8");
+const APP = readFileSync("src/App.tsx", "utf8");
 /** App.tsx with every run of whitespace collapsed to one space, so the pins ignore line wrapping. */
 const FLAT = APP.replace(/\s+/g, " ");
+
+/**
+ * What App.tsx's Root renders outside GateOrApp, as a list of problems (empty when nothing does).
+ * JSX comments are dropped first; whitespace is collapsed so line wrapping does not matter.
+ */
+function outsideGate(app: string): string[] {
+  const flat = app.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ").replace(/\s+/g, " ");
+  const problems: string[] = [];
+  if (flat.split("function Root()").length !== 2) return ["App.tsx must define Root once"];
+  if (flat.split("<GateOrApp ").length !== 2 || flat.split("</GateOrApp>").length !== 2) problems.push("GateOrApp must appear once");
+  const root = flat.slice(flat.indexOf("function Root()"), flat.indexOf("function App()"));
+  const open = root.indexOf("<GateOrApp update={update}>");
+  const close = root.indexOf("</GateOrApp>");
+  const ret = root.lastIndexOf("return (", open);
+  if (open < 0 || close < open || ret < 0) return [...problems, "Root returns GateOrApp"];
+  const before = root.slice(ret + "return (".length, open).trim();
+  if (!/^<div style=\{\{[^{}]*\}\} data-register="charter">$/.test(before)) problems.push("before the gate: " + before);
+  const after = root.slice(close + "</GateOrApp>".length).trim();
+  if (after !== "</div> ); }") problems.push("after the gate: " + after);
+  return problems;
+}
 
 /** The JSX between `<GateOrApp update={update}>` and `</GateOrApp>`. */
 function insideGate(): string {
@@ -90,13 +110,24 @@ describe("L3-WP00 characterization: launch gate order (App.tsx)", () => {
     expect(el.querySelector("[data-app]")).not.toBeNull();
     expect(el.querySelector("[data-update-gate]")).toBeNull();
 
-    // App wraps its whole tree in the gate: nothing it renders sits outside GateOrApp.
-    const ret = FLAT.slice(FLAT.indexOf("function Root()"));
-    const gateOpen = ret.indexOf("<GateOrApp update={update}>");
-    const before = ret.slice(ret.lastIndexOf("return (", gateOpen), gateOpen);
-    expect(before.match(/<[A-Z]\w*/g) ?? []).toEqual([]);
-    const after = ret.slice(ret.indexOf("</GateOrApp>") + "</GateOrApp>".length, ret.indexOf("function App()"));
-    expect(after.match(/<[A-Z]\w*/g) ?? []).toEqual([]);
+    // Root wraps its whole tree in the gate: its return is the styled outer div holding only
+    // GateOrApp, so nothing (no element, no native button, no {expression}) sits beside the gate.
+    expect(outsideGate(APP)).toEqual([]);
+  });
+
+  it("outside_gate_check_catches_content_beside_the_gate", () => {
+    // The pin above is a source check, so it is shown failing on the shapes it must catch.
+    const gate = "<GateOrApp update={update}>";
+    const mutants = [
+      APP.replace(gate, "<button>Wallet</button>\n      " + gate),
+      APP.replace(gate, "{body}\n      " + gate),
+      APP.replace("</GateOrApp>", "</GateOrApp>\n      <Toast s={s} />"),
+      APP.replace("</GateOrApp>", "</GateOrApp>\n      {s.toast}"),
+    ];
+    for (const m of mutants) {
+      expect(m).not.toBe(APP);
+      expect(outsideGate(m).length, m.slice(m.indexOf("function Root()"), m.indexOf("function App()"))).toBeGreaterThan(0);
+    }
   });
 
   it("network_compat_gate_mounts_after_body", () => {

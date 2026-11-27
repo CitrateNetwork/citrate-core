@@ -10,11 +10,10 @@
 //   5. Entering the app starts the coach unless it was already done.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Onboarding } from "./Onboarding";
-import { freshState, type AppState } from "../shell/state";
-import { store as realStore, type Store } from "../shell/store";
+import { Onboarding } from "../../../../onboarding/Onboarding";
+import { freshState, type AppState } from "../../../state";
+import { store as realStore, type Store } from "../../../store";
 
 // Onboarding renders from `s`; `store` is read during render only by the calls below.
 const noopStore = {
@@ -39,7 +38,7 @@ const SPINE = ["Sign in", "Verify identity", "Free node or membership", "Wallet 
 
 describe("L3-WP00 characterization: onboarding stages", () => {
   it("seven_stage_spine_labels", () => {
-    const src = readFileSync(resolve(__dirname, "Onboarding.tsx"), "utf8").replace(/\s+/g, " ");
+    const src = readFileSync("src/onboarding/Onboarding.tsx", "utf8").replace(/\s+/g, " ");
     expect(src).toContain('const stageOrder = ["s1", "s2", "s3", "s4", "s5", "s6", "s7"];');
     expect(src).toContain(
       'const stages: [string, string][] = [ ["s1", "Sign in"], ["s2", "Verify identity"], ["s3", "Free node or membership"], ["s4", "Wallet ready"], ["s5", "Membership grant"], ["s6", "Node ignition"], ["s7", "Activate validator"], ];',

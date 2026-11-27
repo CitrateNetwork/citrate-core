@@ -5,9 +5,12 @@
 //
 // The Comms surface says "New mentions fire an OS notification", which nothing in the app does.
 // That false copy is pinned ON PURPOSE, so WP12 or WP13 has to flip this expectation deliberately.
+// Comms is not mounted anywhere today: its old route opens the Groups Alerts board, whose own copy
+// about notifications is pinned too, since that is the copy a member actually sees.
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { resolveRoute } from "../../../places";
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -53,5 +56,17 @@ describe("L3-WP00 characterization: no OS notifications", () => {
     const comms = read("src/surfaces/Comms.tsx").replace(/\s+/g, " ");
     expect(comms).toContain("New mentions fire an OS notification.");
     expect(comms).toContain("this center polls every 20 seconds, honestly.");
+    // Only the surfaces barrel exports it; no production file renders it.
+    const renders = sources("src", /\.(ts|tsx)$/).filter((p) => /<Comms[\s/>]/.test(read(p)));
+    expect(renders).toEqual([]);
+  });
+
+  it("comms_route_opens_alerts_whose_copy_names_notifications", () => {
+    expect(resolveRoute("comms")).toEqual({ route: "groups/chat/alerts" });
+    const view = read("src/shell/PlaceView.tsx").replace(/\s+/g, " ");
+    expect(view).toMatch(/case "groups\/chat\/alerts": (\/\/[^\n]*? )?return <GroupChat store=\{store\} s=\{s\} view="alerts" \/>;/);
+    const chat = read("src/surfaces/groups/GroupChat.tsx").replace(/\s+/g, " ");
+    expect(chat).toContain("Notifications point here. They never carry an approve button.");
+    expect(chat).toContain("Nothing needs you right now.");
   });
 });

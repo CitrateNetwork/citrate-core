@@ -7,13 +7,13 @@
 //   1. The node autostarts on every launch while the member's intent is "run", at any stage.
 //   2. The signed-in session is resumed only after the custody vault unlock settles.
 //   3. A launch that lands on S3 asks the chain whether the grant already landed.
-//   4. The signed-in identity fields are never persisted.
-import { describe, it, expect, beforeEach } from "vitest";
+//   4. The signed-in identity fields are never persisted (the real Store.save(), sentinel values).
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { PERSIST_KEYS, STORAGE_KEY, freshState } from "./state";
+import { PERSIST_KEYS, STORAGE_KEY, freshState, type AppState } from "../../../state";
+import { store } from "../../../store";
 
-const STORE = readFileSync(resolve(__dirname, "store.ts"), "utf8");
+const STORE = readFileSync("src/shell/store.ts", "utf8");
 
 /** The body of `start()` in store.ts, from its signature to its closing brace. */
 function startBody(): string {
@@ -76,12 +76,37 @@ describe("L3-WP00 characterization: launch (store.start)", () => {
 
   it("signed_in_fields_not_persisted", () => {
     for (const k of SIGNED_IN_FIELDS) expect(PERSIST_KEYS as string[], k).not.toContain(k);
-    // The save writes only PERSIST_KEYS (plus the network stamp), so no identity field reaches disk.
-    const from = STORE.indexOf("private writePersisted(): void {");
-    expect(from).toBeGreaterThan(0);
-    const write = flat(STORE.slice(from, STORE.indexOf("\n  }\n", from)));
-    expect(write).toContain("for (const k of PERSIST_KEYS) keep[k] = s[k];");
-    expect(write).toContain("localStorage.setItem(STORAGE_KEY, JSON.stringify(keep));");
-    expect(typeof STORAGE_KEY).toBe("string");
+    // The real save, run on a signed-in session whose identity fields hold sentinel values: the
+    // stored entry carries none of the six fields and none of the values, under any key.
+    const sentinels = {
+      signedIn: true,
+      authSub: "l3wp00-sentinel-sub",
+      authEmail: "l3wp00-sentinel@example.invalid",
+      authName: "L3WP00 Sentinel Name",
+      authInitials: "Q9Z7X",
+      authExpiresAt: "2099-01-02T03:04:05.000Z",
+    };
+    const prev = store.state;
+    vi.useFakeTimers();
+    try {
+      localStorage.clear();
+      store.state = { ...freshState("p1"), stage: "done", ...sentinels } as AppState;
+      store.save();
+      vi.advanceTimersByTime(1000);
+      const raw = localStorage.getItem(STORAGE_KEY);
+      expect(raw, "Store.save() wrote the entry").not.toBeNull();
+      const saved = JSON.parse(raw as string) as Record<string, unknown>;
+      for (const k of SIGNED_IN_FIELDS) expect(Object.keys(saved), k).not.toContain(k);
+      for (const v of Object.values(sentinels)) if (typeof v === "string") expect(raw, v).not.toContain(v);
+      // Nothing else in storage carries them either.
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i) as string;
+        for (const v of Object.values(sentinels)) if (typeof v === "string") expect(localStorage.getItem(k), k).not.toContain(v);
+      }
+    } finally {
+      vi.useRealTimers();
+      store.state = prev;
+      localStorage.clear();
+    }
   });
 });
