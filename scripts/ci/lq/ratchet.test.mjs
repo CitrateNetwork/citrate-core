@@ -251,10 +251,100 @@ describe("compare: focused, ignored and skipped tests", () => {
   });
 });
 
+// Review of #790: the committed floor (.agentile/coverage/ratchet.json in the head) is ratcheted
+// like a measured axis, an accepted decrease lowers it in the same PR, and a removed test needs
+// the ADR whatever the counts say (the floor only advances when the record PR lands, so it can
+// lag the tree).
+describe("compare: the committed floor and removed tests", () => {
+  it("a PR that lowers ratchet.json fails without ratchet-adr, even when the measured counts held", () => {
+    const r = R.compare(doc(), doc(), { root: tree({}), floor: doc({ "tests.rust.passed": 3000 }) });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/ratchet\.json lowers tests\.rust\.passed 3218 -> 3000 \(-218\)/);
+    const fm = R.compare(doc(), doc(), { root: tree({}), floor: doc({ "frontmatter.docs": 262 }) });
+    expect(fm.ok).toBe(false);
+    expect(fm.failures.join("\n")).toMatch(/ratchet\.json lowers frontmatter/);
+    const adr = tree({ "docs/adr/ADR-floor.md": "Lowers the tests.rust.passed floor.\n" });
+    const accepted = R.compare(doc(), doc(), {
+      root: adr, floor: doc({ "tests.rust.passed": 3000 }), labels: ["ratchet-adr"], body: "docs/adr/ADR-floor.md",
+    });
+    expect(accepted).toMatchObject({ ok: true, failures: [] });
+    // A floor that rises with the tree, or stays, passes.
+    const up = doc({ "tests.rust.passed": 3300 });
+    expect(R.compare(doc(), up, { root: tree({}), floor: up })).toMatchObject({ ok: true, failures: [] });
+    expect(R.compare(doc(), doc(), { root: tree({}), floor: doc() })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("a head that deletes ratchet.json is refused, label or not", () => {
+    const adr = tree({ "docs/adr/ADR-x.md": "tests.rust.passed\n" });
+    for (const labels of [[], ["ratchet-adr"]]) {
+      const r = R.compare(doc(), doc(), { root: adr, floor: null, labels, body: "docs/adr/ADR-x.md" });
+      expect(r.ok).toBe(false);
+      expect(r.failures.join("\n")).toMatch(/ratchet\.json is missing or unreadable in the head/);
+    }
+  });
+
+  it("an accepted decrease must lower ratchet.json to the measured count in the same PR, so the next PR is not refused", () => {
+    const diff = rustDiff(["-#[test]", "-fn drops_the_old_probe() {", "-}"]);
+    const root = tree({ "docs/adr/ADR-drop.md": "Removes drops_the_old_probe; tests.rust.passed goes down by one.\n" });
+    const opts = { root, diff, labels: ["ratchet-adr"], body: "docs/adr/ADR-drop.md" };
+    const stale = R.compare(doc(), doc({ "tests.rust.passed": 3217 }), { ...opts, floor: doc() });
+    expect(stale.ok).toBe(false);
+    expect(stale.failures.join("\n")).toMatch(/tests\.rust\.passed: an accepted decrease must lower \.agentile\/coverage\/ratchet\.json to 3217 or less in the same PR/);
+    const lowered = R.compare(doc(), doc({ "tests.rust.passed": 3217 }), { ...opts, floor: doc({ "tests.rust.passed": 3217 }) });
+    expect(lowered).toMatchObject({ ok: true, failures: [] });
+    // The next PR is judged against the lowered floor and passes.
+    const next = doc({ "tests.rust.passed": 3217 });
+    expect(R.compare(next, next, { root: tree({}), floor: next })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("a test the diff removes and does not add back needs ratchet-adr even when the counts grew", () => {
+    const grown = doc({ "tests.rust.passed": 3300, "tests.vitest.passed": 5300 });
+    const rust = rustDiff(["-#[test]", "-fn guards_the_bridge() {", "-}"]);
+    const r = R.compare(doc(), grown, { root: tree({}), diff: rust, floor: doc() });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/test removed and not added back: guards_the_bridge/);
+    const ts = R.compare(doc(), grown, { root: tree({}), diff: tsDiff(['-  it("keeps the probe", () => {', "-  });"]), floor: doc() });
+    expect(ts.ok).toBe(false);
+    expect(ts.failures.join("\n")).toMatch(/keeps the probe/);
+    const adr = tree({ "docs/adr/ADR-bridge.md": "Removes guards_the_bridge, replaced by the fleet suite.\n" });
+    expect(R.compare(doc(), grown, { root: adr, diff: rust, floor: doc(), labels: ["ratchet-adr"], body: "docs/adr/ADR-bridge.md" }))
+      .toMatchObject({ ok: true, failures: [] });
+    // Moved to another file, or re-signed in place (sync to async): added back, so not a removal.
+    const moved = [rust, "diff --git a/src-tauri/src/y_tests.rs b/src-tauri/src/y_tests.rs",
+      "--- a/src-tauri/src/y_tests.rs", "+++ b/src-tauri/src/y_tests.rs", "@@ -1,2 +1,5 @@",
+      "+#[tokio::test]", "+async fn guards_the_bridge() {", "+}"].join("\n");
+    expect(R.compare(doc(), grown, { root: tree({}), diff: moved, floor: doc() })).toMatchObject({ ok: true, failures: [] });
+    const resigned = tsDiff(['-  it("keeps the probe", () => {', '+  it("keeps the probe", async () => {']);
+    expect(R.compare(doc(), grown, { root: tree({}), diff: resigned, floor: doc() })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("a rust test renamed under an unchanged #[test] line counts as removed (old name) and added (new name)", () => {
+    const s = R.scanDiff(rustDiff([" #[test]", "-fn old_name() {", "+fn new_name() {", " }"]));
+    expect(s.removedTests).toEqual(["old_name"]);
+    expect(s.addedTests).toEqual(["new_name"]);
+  });
+});
+
 describe("CLI", () => {
   const run = (args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
+  it("compare reads the head's floor from --root and refuses when it is missing or lowered", () => {
+    const d = tree({ "base.json": JSON.stringify(doc()), "same.json": JSON.stringify(doc()) });
+    const p = (f) => path.join(d, f);
+    const args = ["compare", "--base", p("base.json"), "--head", p("same.json"), "--root", d];
+    const missing = run(args);
+    expect(missing.status).toBe(1);
+    expect(missing.stdout).toMatch(/ratchet\.json is missing or unreadable in the head/);
+    write(d, ".agentile/coverage/ratchet.json", JSON.stringify(doc({ "tests.rust.passed": 3000 })));
+    const lowered = run(args);
+    expect(lowered.status).toBe(1);
+    expect(lowered.stdout).toMatch(/ratchet\.json lowers tests\.rust\.passed/);
+    write(d, ".agentile/coverage/ratchet.json", JSON.stringify(doc()));
+    expect(run(args).status).toBe(0);
+  });
+
   it("compare exits 0 on pass, 1 on refusal and 2 on usage", () => {
-    const d = tree({ "base.json": JSON.stringify(doc()), "head.json": JSON.stringify(doc({ "tests.rust.passed": 3217 })), "same.json": JSON.stringify(doc()) });
+    const d = tree({ "base.json": JSON.stringify(doc()), "head.json": JSON.stringify(doc({ "tests.rust.passed": 3217 })), "same.json": JSON.stringify(doc()),
+      ".agentile/coverage/ratchet.json": JSON.stringify(doc()) });
     const p = (f) => path.join(d, f);
     expect(run(["compare", "--base", p("base.json"), "--head", p("same.json"), "--root", d]).status).toBe(0);
     const refused = run(["compare", "--base", p("base.json"), "--head", p("head.json"), "--root", d]);
@@ -291,6 +381,14 @@ describe("workflow wiring (tripwires)", () => {
     const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
     expect(job).toMatch(/git show "\$base:scripts\/ci\/lq\/ratchet\.mjs" 2>\/dev\/null \| grep -q '\^export function compare\('/);
     expect(fs.readFileSync(SCRIPT, "utf8")).toMatch(/^export function compare\(/m);
+  });
+  it("merge_group and push runs find the PRs by the queue branch and by squash or merge-commit subjects", () => {
+    const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
+    // The queue branch GitHub builds for a group: gh-readonly-queue/<base>/pr-<N>-<sha>, read from
+    // the runner's GITHUB_REF, never from an expression.
+    expect(job).toMatch(/"\$GITHUB_REF" \| sed -nE 's#\^refs\/heads\/gh-readonly-queue\/\.\+\/pr-\(\[0-9\]\+\)-\[0-9a-f\]\+\$#\\1#p'/);
+    expect(job).toMatch(/s\/\.\*\\\(#\(\[0-9\]\+\)\\\)\$\/\\1\/p/);
+    expect(job).toMatch(/s\/\^Merge pull request #\(\[0-9\]\+\) \.\*\/\\1\/p/);
   });
   it("the uploaded cargo test log can never carry the private-repo credential", () => {
     const rust = ci.slice(ci.indexOf("\n  rust:"), ci.indexOf("\n  node:"));
