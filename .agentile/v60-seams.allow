@@ -14,3 +14,18 @@
 #   - frozen paths stay frozen whatever is listed.
 #   - one malformed row fails the guard for every seam PR, so keep the file clean.
 # Each WP's block names the lane-file section it comes from (lanes/L0_INTEGRATION_SEAMS.md 5).
+
+# L0-WP03 per-lane Rust command registration (lanes/L0_INTEGRATION_SEAMS.md 5, L0-WP03 step 3):
+# structural tests in other lanes' files that read the generate_handler! list from lib.rs move to
+# commands::registry_source(). Test-only edits; each migrated test keeps its mutation proof.
+l0-wp03 src-tauri/src/cluster_tests.rs
+l0-wp03 src-tauri/src/deploy_records_tests.rs
+l0-wp03 src-tauri/src/device_link_tests.rs
+l0-wp03 src-tauri/src/faucet_tests.rs
+l0-wp03 src-tauri/src/fl_trajectories_tests.rs
+l0-wp03 src-tauri/src/hermes_setup_tests.rs
+l0-wp03 src-tauri/src/hermes_shell_tests.rs
+l0-wp03 src-tauri/src/hermes_terminal_tests.rs
+l0-wp03 src-tauri/src/model_delete_tests.rs
+l0-wp03 src-tauri/src/store_catalog_tests.rs
+l0-wp03 src/fl/datasetBridge.test.ts
