@@ -1,0 +1,69 @@
+# created: 2026-11-27 | branch: feat/v60-lq-wp04-chain-touch-guard
+# author: Claude Opus 5.5 (LQ-WP04 worker) for Larry Klosowski
+# status: active
+#
+# lq / chain-touch (LQ-WP04, planset 2026-11-07-v060 lanes/LQ_NON_REGRESSION_GUARD.md): fails a PR
+# that changes a chain-adjacent (class C) path unless it is a chain-touch PR with evidence, an
+# agreement run and, for a rules delta, the consensus review. Policy and map:
+# scripts/ci/lq/chain-touch.mjs and release/chain-touch.json.
+#
+# Untrusted input: PR metadata (branch, labels, paths) is read by the script from the event file
+# and the read-only API, never expanded into a shell. No privileged base-branch trigger, no
+# secrets, no write permission. The script that runs is the BASE commit's copy, so a PR cannot
+# edit its own guard.
+name: lq-chain-touch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+concurrency:
+  group: lq-chain-touch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chain-touch:
+    name: lq / chain-touch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Self-test (matcher, lock closure, map)
+        run: node scripts/ci/lq/chain-touch.mjs --self-test
+      - name: Check the change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = merge_group ]; then
+            BASE=$(git rev-parse HEAD^1)
+          else
+            BASE=$(git merge-base "$PR_BASE" HEAD)
+          fi
+          # The base commit's script judges the change; only the PR that introduces it runs its own.
+          if git cat-file -e "$BASE:scripts/ci/lq/chain-touch.mjs" 2>/dev/null; then
+            git show "$BASE:scripts/ci/lq/chain-touch.mjs" > "$RUNNER_TEMP/chain-touch.mjs"
+          else
+            echo "chain-touch.mjs is new in this change; running the head copy"
+            cp scripts/ci/lq/chain-touch.mjs "$RUNNER_TEMP/chain-touch.mjs"
+          fi
+          node "$RUNNER_TEMP/chain-touch.mjs" check --from-event --base "$BASE" --root "$GITHUB_WORKSPACE"

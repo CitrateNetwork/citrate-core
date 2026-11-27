@@ -524,6 +524,13 @@ describe("glob matcher self-test", () => {
     const reviewers = JSON.parse(fs.readFileSync(path.join(repo, "release", "consensus-reviewers.json"), "utf8"));
     expect(reviewers.reviewers).toEqual(["SaulBuilds"]);
   });
+
+  it("CODEOWNERS gives the owner every whole-file class C path and the guard's own files", () => {
+    const map = JSON.parse(fs.readFileSync(path.join(repo, "release", "chain-touch.json"), "utf8"));
+    const owners = fs.readFileSync(path.join(repo, ".github", "CODEOWNERS"), "utf8").split("\n").map((l) => l.trim());
+    const want = [...map.classes.C.paths, "release/chain-touch.json", "release/consensus-reviewers.json", "scripts/ci/lq/", ".github/workflows/lq-*.yml"];
+    for (const p of want) expect(owners, p).toContain(`/${p} @SaulBuilds`);
+  });
 });
 
 describe("lq-chain-touch.yml (agentic-actions-auditor: untrusted PR metadata)", () => {
@@ -542,6 +549,7 @@ describe("lq-chain-touch.yml (agentic-actions-auditor: untrusted PR metadata)", 
   });
   it("never expands PR-controlled text inside a run script", () => {
     const runs = [...wf.matchAll(/run: \|\n((?:\s{10,}.*\n)+)/g)].map((m) => m[1]).join("\n");
+    expect(runs).toMatch(/chain-touch\.mjs/);
     expect(runs).not.toMatch(/\$\{\{/);
   });
   it("runs the base commit's copy of the check script", () => {

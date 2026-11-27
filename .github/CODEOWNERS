@@ -8,3 +8,33 @@
 # second name here would not require both people; the security lead's part is their signature in
 # the record itself, which the build verifies against signers.json.
 /release/signoffs/ @SaulBuilds
+
+# LQ-WP04 chain-touch guard (planset 2026-11-07-v060, lanes/LQ_NON_REGRESSION_GUARD.md). The class
+# map, the consensus reviewer set, the guard script and its workflow are owner-owned, so a PR cannot
+# loosen the guard without the owner's review (the check also reads the map and reviewer set from
+# the PR's base commit). Whole-file class C paths of release/chain-touch.json are listed too. The
+# partly-class-C files (Cargo.toml chain lines, the Cargo.lock closure, the citrate-node entry of
+# release/components.json, the node lines of runtime-deps.sha256) are not, because most changes to
+# them are not chain-adjacent; lq / chain-touch decides those per change.
+/release/chain-touch.json @SaulBuilds
+/release/consensus-reviewers.json @SaulBuilds
+/release/evidence/chain/ @SaulBuilds
+/scripts/ci/lq/ @SaulBuilds
+/.github/workflows/lq-*.yml @SaulBuilds
+/release/network-cut.json @SaulBuilds
+/scripts/build-sidecar.sh @SaulBuilds
+/src-tauri/network/profiles.json @SaulBuilds
+/src-tauri/addresses/40204.json @SaulBuilds
+/src-tauri/addresses/40204.canonical.json @SaulBuilds
+/src-tauri/abis/40204.system-abis.json @SaulBuilds
+/src-tauri/config/member-node.toml @SaulBuilds
+/src-tauri/src/node.rs @SaulBuilds
+/src-tauri/src/node_genesis.rs @SaulBuilds
+/src-tauri/src/network_profile.rs @SaulBuilds
+/src-tauri/src/validator.rs @SaulBuilds
+/src-tauri/src/addresses.rs @SaulBuilds
+/scripts/ci/consensus-fingerprint.py @SaulBuilds
+/scripts/e2e/cold-sync.py @SaulBuilds
+/scripts/network-cut.py @SaulBuilds
+/scripts/network-profile.py @SaulBuilds
+/scripts/sync-addresses.py @SaulBuilds
