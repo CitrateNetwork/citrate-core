@@ -274,6 +274,109 @@ fn a_module_losing_its_cfg_is_named() {
     assert_eq!(added, vec!["mod t;".to_string()]);
 }
 
+/// One lane as the baseline check sees it: its id, its list's paths (file order) and the command
+/// names its ACL allows.
+struct LaneReg {
+    id: String,
+    paths: Vec<String>,
+    allowed: BTreeSet<String>,
+}
+
+/// The registry against the recorded a826e441 baseline, as `(problems, additions)`, each
+/// addition written `<lane> <path>`. Every path not in the baseline is a problem.
+fn baseline_problems(baseline: &[String], lanes: &[LaneReg]) -> (Vec<String>, Vec<String>) {
+    let base: BTreeSet<&str> = baseline.iter().map(String::as_str).collect();
+    let mut now: BTreeSet<&str> = BTreeSet::new();
+    let mut problems = Vec::new();
+    for lane in lanes {
+        for path in &lane.paths {
+            if !now.insert(path.as_str()) {
+                problems.push(format!("{path} is registered twice"));
+            }
+            if base.contains(path.as_str()) {
+                continue;
+            }
+            let name = path.rsplit("::").next().unwrap_or_default();
+            if lane.allowed.contains(name) {
+                problems.push(format!("{path} is not in the a826e441 baseline"));
+            } else {
+                problems.push(format!(
+                    "{path} is added by {id} without its {id}-commands ACL entry",
+                    id = lane.id
+                ));
+            }
+        }
+    }
+    for path in base.difference(&now) {
+        problems.push(format!(
+            "{path} is no longer registered (dropped or re-pointed)"
+        ));
+    }
+    (problems, Vec::new())
+}
+
+fn lane_reg(id: &str, paths: &[&str], allowed: &[&str]) -> LaneReg {
+    LaneReg {
+        id: id.to_string(),
+        paths: paths.iter().map(|p| p.to_string()).collect(),
+        allowed: allowed.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+fn two_command_baseline() -> Vec<String> {
+    vec![
+        "comms::comms_send".to_string(),
+        "config::config_read".to_string(),
+    ]
+}
+
+// L0-WP03 Gherkin "two lanes add commands the same day": each lane edits only its own list and
+// its own ACL; neither touches the L0 fixture, and both commands are registered and allowed.
+#[test]
+fn two_lanes_add_commands_without_touching_the_fixture() {
+    let lanes = [
+        lane_reg("l0", &["config::config_read"], &["config_read"]),
+        lane_reg("l1", &["acp::acp_session_new"], &["acp_session_new"]),
+        lane_reg("l3", &["shell::notify_permission"], &["notify_permission"]),
+        lane_reg("l4", &["comms::comms_send"], &["comms_send"]),
+    ];
+    let (problems, added) = baseline_problems(&two_command_baseline(), &lanes);
+    assert!(problems.is_empty(), "{problems:?}");
+    let want = ["l1 acp::acp_session_new", "l3 shell::notify_permission"];
+    assert_eq!(added, want);
+}
+
+// Another lane's ACL entry does not count: the addition is named against its own lane.
+#[test]
+fn an_added_command_without_its_lane_acl_is_named() {
+    let lanes = [
+        lane_reg("l0", &["config::config_read"], &["config_read"]),
+        lane_reg("l3", &["shell::notify_permission"], &[]),
+        lane_reg(
+            "l4",
+            &["comms::comms_send"],
+            &["comms_send", "notify_permission"],
+        ),
+    ];
+    let (problems, added) = baseline_problems(&two_command_baseline(), &lanes);
+    let want = "shell::notify_permission is added by l3 without its l3-commands ACL entry";
+    assert_eq!(problems, [want]);
+    assert!(added.is_empty());
+}
+
+// A re-point is a drop plus an addition: the addition is allowed, the drop is still named.
+#[test]
+fn a_dropped_command_is_named_while_a_lane_adds_one() {
+    let lanes = [
+        lane_reg("l0", &["config::config_read"], &["config_read"]),
+        lane_reg("l4", &["comms_v2::comms_send"], &["comms_send"]),
+    ];
+    let (problems, added) = baseline_problems(&two_command_baseline(), &lanes);
+    let want = "comms::comms_send is no longer registered (dropped or re-pointed)";
+    assert_eq!(problems, [want]);
+    assert_eq!(added, ["l4 comms_v2::comms_send"]);
+}
+
 // ---------------------------------------------------------------------------------------------
 // L0-WP03: per-lane command registration (`src/commands/l<N>.rs`) and per-lane ACL
 // (`permissions/l<N>-commands.toml`), L0_INTEGRATION_SEAMS section 3.1. These read the files from
