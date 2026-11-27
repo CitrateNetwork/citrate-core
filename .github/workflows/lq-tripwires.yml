@@ -6,7 +6,7 @@
 # (.agentile/coverage/tripwires.json) stays in the runners' own test lists, or is replaced only by
 # a stricter test that is itself registered, exists, and links the run where it failed against a
 # deliberately weakened copy of the guarded code (label tripwire-replace, owner review through
-# CODEOWNERS). Rules and the replacement procedure: .agentile/coverage/TRIPWIRES.md.
+# CODEOWNERS: the '#! tail' pins in .agentile/v60-ownership.map). Rules and the replacement procedure: .agentile/coverage/TRIPWIRES.md.
 #
 # Data source (Rule 7): `cargo test --workspace --locked --offline -- --list`, the same with
 # `--ignored` (a Rust test marked #[ignore] is listed but ci.yml does not run it), and

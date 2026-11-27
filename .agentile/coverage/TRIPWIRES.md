@@ -61,8 +61,10 @@ A tripwire-named test that is not registered is a warning today, and becomes a f
    that run or commit link; add the new test's own entry; add the `tripwire-replace` label. To
    retire a replacement later, set `replaced_by` on the replacement's own entry (B -> C); the
    earlier edge (A -> B) is never changed.
-3. The owner reviews: `tripwires.json` is code-owned by @SaulBuilds (CODEOWNERS), so no weakening
-   merges without the owner.
+3. The owner reviews: `tripwires.json`, this file, `scripts/ci/lq/tripwire-inventory.mjs`, its
+   test file and `.github/workflows/lq-tripwires.yml` are owner-pinned to @SaulBuilds through the
+   `#! tail` rows in `.agentile/v60-ownership.map` (L0 seam #804; `.github/CODEOWNERS` is generated
+   from the map), so no weakening of the registry, the check or its tests merges without the owner.
 
 ## Refreshing the registry
 
