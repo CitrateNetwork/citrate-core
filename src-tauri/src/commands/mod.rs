@@ -200,17 +200,22 @@ mod tests {
         let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
         for lane in &LANES[1..] {
             let arm = format!(
-                "(v60_commands_{lane} $($rest:ident)* [$($a:tt)*]) => {{ \
-                 $crate::v60_commands_{lane}!($($rest)* [$($a)*]) }};"
+                "(v60_commands_{lane} $($rest:ident)* [$($a:tt)*]) {arrow} {{ \
+                 $crate::v60_commands_{lane}!($($rest)* [$($a)*]) }};",
+                arrow = "=>"
             );
             assert_eq!(flat.matches(&arm).count(), 1, "{arm}");
         }
-        let fin =
-            "(v60_commands_finish [$($a:tt)*]) => { $crate::v60_commands_finish!([$($a)*]) };";
-        assert_eq!(flat.matches(fin).count(), 1);
+        // The needles below are assembled from parts so this test's own text does not match.
+        let fin = format!(
+            "(v60_commands_{} [$($a:tt)*]) => {{ $crate::v60_commands_{}!([$($a)*]) }};",
+            "finish", "finish"
+        );
+        assert_eq!(flat.matches(&fin).count(), 1, "{fin}");
         // l0 is the entry, never a hand-off target: nine lane arms, then the finish arm.
-        assert!(!flat.contains("(v60_commands_l0 "));
-        assert_eq!(flat.matches("$($rest:ident)* [$($a:tt)*]) =>").count(), 9);
+        assert!(!flat.contains(&format!("(v60_commands_{} ", "l0")));
+        let lane_arm = format!("$($rest:ident)* [$($a:tt)*]) {}", "=>");
+        assert_eq!(flat.matches(&lane_arm).count(), 9);
     }
 
     #[test]
