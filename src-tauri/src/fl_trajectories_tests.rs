@@ -211,7 +211,7 @@ fn the_hermes_manager_passes_the_variable_only_when_the_switch_is_on() {
 
 #[test]
 fn the_commands_are_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     for cmd in [
         "trajectories_settings_get",
         "trajectories_settings_set",

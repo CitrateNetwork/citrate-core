@@ -38,7 +38,7 @@ pub(crate) const WIDGET_QUERIES: [&str; 4] = [
     "daemons.summary",
 ];
 
-/// The commands this module registers (kept in step with lib.rs and main-window.toml by a test).
+/// The commands this module registers (kept in step with its lane list and ACL by a test).
 #[cfg(test)]
 pub(crate) const COMMANDS: [&str; 4] = [
     "widgets_list",

@@ -273,8 +273,8 @@ fn the_chat_server_selection_falls_back_when_its_model_is_deleted() {
 
 #[test]
 fn delete_is_member_only_never_an_agent_tool() {
-    let acl = include_str!("../permissions/main-window.toml");
-    let lib = include_str!("lib.rs");
+    let acl = crate::commands::acl_source();
+    let lib = crate::commands::registry_source();
     for cmd in ["model_delete", "model_delete_states"] {
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
         assert!(lib.contains(&format!("model_delete::{cmd}")), "{cmd} registered");

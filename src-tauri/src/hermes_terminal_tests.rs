@@ -218,8 +218,8 @@ fn the_hermes_spawn_env_follows_the_switch() {
 
 #[test]
 fn the_commands_are_registered_and_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
-    let lib = include_str!("lib.rs");
+    let acl = crate::commands::acl_source();
+    let lib = crate::commands::registry_source();
     for cmd in ["hermes_terminal_get", "hermes_terminal_set"] {
         assert!(
             acl.contains(&format!("\"{cmd}\"")),

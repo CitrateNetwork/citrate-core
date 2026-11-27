@@ -175,8 +175,8 @@ fn a_dropped_consent_sends_nothing() {
 
 #[test]
 fn chat_consent_drop_is_registered_for_the_main_window() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     assert!(lib.contains("chat_consent::chat_consent_drop,"), "registered in lib.rs");
     assert!(acl.contains("\"chat_consent_drop\""), "allowed for the main window");
 }

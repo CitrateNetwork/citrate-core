@@ -42,6 +42,7 @@ mod chat_consent;
 mod chat_route;
 mod cluster;
 mod cluster_mesh;
+mod commands;
 mod comms;
 mod components;
 mod connections;

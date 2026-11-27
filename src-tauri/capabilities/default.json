@@ -10,6 +10,15 @@
     "updater:default",
     "process:default",
     "deep-link:default",
-    "main-window-commands"
+    "l0-commands",
+    "l1-commands",
+    "l2-commands",
+    "l3-commands",
+    "l4-commands",
+    "l5-commands",
+    "l6-commands",
+    "l7-commands",
+    "l8-commands",
+    "l9-commands"
   ]
 }

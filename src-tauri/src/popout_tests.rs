@@ -302,7 +302,7 @@ fn monitor_facts_report_the_real_local_context_window() {
 
 #[test]
 fn both_commands_are_registered_in_the_invoke_handler() {
-    let src = include_str!("lib.rs");
+    let src = crate::commands::registry_source();
     for cmd in ["popout::popout_open,", "popout::popout_monitor_facts,"] {
         assert!(src.contains(cmd), "not registered: {cmd}");
     }
@@ -374,7 +374,10 @@ fn the_popout_capability_grants_only_the_bridge_events() {
 fn the_main_capability_stays_on_the_main_window_and_holds_the_app_commands() {
     let cap = capability("default.json");
     assert_eq!(strings(&cap["windows"]), ["main"]);
-    assert!(strings(&cap["permissions"]).contains(&MAIN_WINDOW_COMMANDS.to_string()));
+    let perms = strings(&cap["permissions"]);
+    for (id, _) in crate::commands::lane_acls() {
+        assert!(perms.contains(&id), "the main window holds {id}");
+    }
 }
 
 #[test]
@@ -398,38 +401,30 @@ fn no_other_capability_grants_the_app_commands_or_names_a_popout() {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("read");
-        assert!(
-            !text.contains(MAIN_WINDOW_COMMANDS),
-            "{name} must not grant the app commands"
-        );
+        for (id, _) in crate::commands::lane_acls() {
+            assert!(
+                !text.contains(&id),
+                "{name} must not grant the app commands ({id})"
+            );
+        }
         assert!(
             !text.contains(LABEL_PREFIX),
             "{name} must not cover a pop-out window"
         );
     }
     let popout = std::fs::read_to_string(dir.join("popout.json")).expect("popout.json");
-    assert!(!popout.contains(MAIN_WINDOW_COMMANDS));
+    for (id, _) in crate::commands::lane_acls() {
+        assert!(!popout.contains(&id), "popout.json must not hold {id}");
+    }
 }
 
-/// The command names inside `generate_handler![…]` in lib.rs.
+/// The registered command names (every lane's list, `commands/l<N>.rs`).
 fn registered_commands() -> BTreeSet<String> {
-    let src = include_str!("lib.rs");
-    let start =
-        src.find("generate_handler![").expect("generate_handler!") + "generate_handler![".len();
-    let end = start + src[start..].find("])").expect("end of generate_handler!");
-    src[start..end]
-        .lines()
-        .map(|l| l.split("//").next().unwrap_or_default())
-        .flat_map(|l| l.split(','))
-        .map(str::trim)
-        .filter(|s| s.contains("::"))
-        .filter_map(|s| s.rsplit("::").next().map(str::to_string))
-        .collect()
+    crate::commands::registered_names()
 }
 
-/// The commands the main-window permission allows (`commands.allow = [...]`).
-fn main_window_permission_commands() -> BTreeSet<String> {
-    let toml = include_str!("../permissions/main-window.toml");
+/// The commands one permission file allows (`commands.allow = [...]`).
+fn permission_commands(toml: &str) -> BTreeSet<String> {
     let start =
         toml.find("commands.allow = [").expect("commands.allow") + "commands.allow = [".len();
     let end = start + toml[start..].find(']').expect("end of commands.allow");
@@ -446,6 +441,14 @@ fn main_window_permission_commands() -> BTreeSet<String> {
         .collect()
 }
 
+/// The commands the main window's permissions allow: the union of the ten lane ACLs.
+fn main_window_permission_commands() -> BTreeSet<String> {
+    crate::commands::lane_acls()
+        .into_iter()
+        .flat_map(|(_, toml)| permission_commands(toml))
+        .collect()
+}
+
 #[test]
 fn every_registered_command_is_allowed_for_the_main_window_and_nothing_more() {
     let registered = registered_commands();
@@ -459,23 +462,24 @@ fn every_registered_command_is_allowed_for_the_main_window_and_nothing_more() {
     let extra: Vec<_> = allowed.difference(&registered).collect();
     assert!(
         missing.is_empty(),
-        "commands registered in lib.rs but not allowed for the main window (the main window \
-         could not call them): {missing:?}. Add them to src-tauri/permissions/main-window.toml"
+        "commands registered but not allowed for the main window (the main window could not \
+         call them): {missing:?}. Add them to the lane's src-tauri/permissions/l<N>-commands.toml"
     );
     assert!(
         extra.is_empty(),
-        "main-window.toml allows commands that are not registered: {extra:?}"
+        "the lane ACLs allow commands that are not registered: {extra:?}"
     );
 }
 
 #[test]
 fn the_main_window_permission_is_named_as_the_code_expects() {
-    let toml = include_str!("../permissions/main-window.toml");
-    assert!(toml.contains(&format!("identifier = \"{MAIN_WINDOW_COMMANDS}\"")));
-    assert!(
-        !toml.contains("commands.deny"),
-        "the main window keeps every command it had"
-    );
+    for (id, toml) in crate::commands::lane_acls() {
+        assert!(toml.contains(&format!("identifier = \"{id}\"")), "{id}");
+        assert!(
+            !toml.contains("commands.deny"),
+            "the main window keeps every command it had ({id})"
+        );
+    }
 }
 
 /// Resolve the app-command ACL with Tauri's own resolver (plugin permissions are Tauri's and are
@@ -483,14 +487,17 @@ fn the_main_window_permission_is_named_as_the_code_expects() {
 fn resolved_app_acl() -> tauri_utils::acl::resolved::Resolved {
     use tauri_utils::acl::capability::Capability;
     use tauri_utils::acl::manifest::{Manifest, PermissionFile};
-    let file: PermissionFile =
-        toml::from_str(include_str!("../permissions/main-window.toml")).expect("main-window.toml");
+    let mut files: Vec<PermissionFile> = crate::commands::lane_acls()
+        .into_iter()
+        .map(|(id, text)| toml::from_str(text).unwrap_or_else(|e| panic!("{id}: {e}")))
+        .collect();
     let relay: PermissionFile = toml::from_str(include_str!("../permissions/contract-reader.toml"))
         .expect("contract-reader.toml");
+    files.push(relay);
     let mut acl = BTreeMap::new();
     acl.insert(
         tauri_utils::acl::APP_ACL_KEY.to_string(),
-        Manifest::new(vec![file, relay], None),
+        Manifest::new(files, None),
     );
     let mut caps = BTreeMap::new();
     for name in ["default.json", "popout.json", "popout-contract.json"] {

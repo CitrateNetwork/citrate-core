@@ -151,8 +151,8 @@ fn the_drain_commands_name_their_data_sources_and_are_registered() {
         let at = src.find(&format!("pub async fn {cmd}(")).unwrap_or_else(|| panic!("{cmd}"));
         let doc = &src[src[..at].rfind(&format!("/// **{cmd}**")).unwrap_or_else(|| panic!("{cmd} doc"))..at];
         assert!(doc.contains("Data source"), "{cmd} names its data source (Rule 7)");
-        assert!(include_str!("lib.rs").contains(&format!("update_drain::{cmd},")), "{cmd} registered");
-        assert!(include_str!("../permissions/main-window.toml").contains(&format!("\"{cmd}\"")), "{cmd} in the ACL");
+        assert!(crate::commands::registry_source().contains(&format!("update_drain::{cmd},")), "{cmd} registered");
+        assert!(crate::commands::acl_source().contains(&format!("\"{cmd}\"")), "{cmd} in the ACL");
     }
 }
 

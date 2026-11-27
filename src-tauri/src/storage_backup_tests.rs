@@ -727,8 +727,8 @@ fn backup_error_text_names_the_problem_without_paths_outside_the_backup() {
 
 #[test]
 fn backup_commands_are_registered_and_allowed_for_the_main_window() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for cmd in [
         "storage_backup_export",
         "storage_backup_verify",
@@ -778,17 +778,12 @@ fn storage_daemons_run_under_the_supervisor_and_stop_on_quit() {
 /// and no command in storage.rs builds a bond transaction.
 #[test]
 fn the_bonded_storage_pin_command_is_not_invocable() {
-    let lib = include_str!("lib.rs");
-    let handler = lib
-        .split("generate_handler![")
-        .nth(1)
-        .and_then(|s| s.split("])").next())
-        .expect("generate_handler! exists");
+    let handler = crate::commands::registry_source();
     assert!(
         !handler.contains("storage::storage_pin,"),
         "storage_pin must not be registered"
     );
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(!acl.contains("\"storage_pin\""), "storage_pin must not be allowed");
     for cap in [
         include_str!("../capabilities/default.json"),

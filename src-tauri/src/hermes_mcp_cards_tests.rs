@@ -169,7 +169,7 @@ fn addresses_with_credentials_or_without_a_host_are_never_openable() {
 
 #[test]
 fn the_new_commands_are_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"hermes_mcp_pending\""));
     assert!(acl.contains("\"hermes_mcp_decide\""));
 }

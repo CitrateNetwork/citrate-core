@@ -49,8 +49,9 @@ describe("tauriFlDatasets", () => {
   });
 
   it("every command the bridge calls is in the main window's ACL and registered in lib.rs", () => {
-    const acl = readFileSync("src-tauri/permissions/main-window.toml", "utf8");
-    const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
+    // L0-WP03: one ACL and one command list per lane.
+    const acl = Array.from({ length: 10 }, (_, n) => readFileSync(`src-tauri/permissions/l${n}-commands.toml`, "utf8")).join("\n");
+    const lib = Array.from({ length: 10 }, (_, n) => readFileSync(`src-tauri/src/commands/l${n}.rs`, "utf8")).join("\n");
     const src = readFileSync("src/bridge/tauri/flDatasets.ts", "utf8");
     const cmds = [...src.matchAll(/invoke(?:<[^>]+>)?\("(fl_dataset_[a-z_]+)"/g)].map((m) => m[1]);
     expect(cmds.length).toBe(12);

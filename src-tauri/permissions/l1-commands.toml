@@ -1,0 +1,58 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L1, agent runtime.
+#
+# Only L1 edits this file. It lists exactly the commands `src/commands/l1.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l1-commands"
+description = "Lane L1 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "hermes_start",
+  "hermes_status",
+  "hermes_skills",
+  "hermes_run_skill",
+  "hermes_pending_approvals",
+  "hermes_stop",
+  "hermes_session_open",
+  "hermes_session_open_cloud",
+  "hermes_session_send",
+  "hermes_session_events",
+  "hermes_node_mcp_trusted",
+  "hermes_session_tool_result",
+  "hermes_session_stop",
+  "hermes_session_open_unattended",
+  "hermes_session_close",
+  "hermes_tracks",
+  "hermes_brief_create",
+  "hermes_brief_check",
+  "hermes_bridge_pending",
+  "hermes_resolve",
+  "hermes_resolve_outcome_unknown",
+  "hermes_mcp_settings",
+  "hermes_setup_check",
+  "hermes_setup_repair",
+  "hermes_setup_enable_node_tools",
+  "hermes_mcp_set",
+  "ai_set_provider",
+  "ai_provider_status",
+  "ai_clear_provider",
+  "ai_chat",
+  "ai_chat_tools",
+  "ai_chat_local",
+  "ai_chat_local_tools",
+  "agent_grants_view",
+  "agent_grants_add_folder",
+  "agent_grants_revoke",
+  "agent_grants_full_access_prepare",
+  "agent_grants_full_access_confirm",
+  "agent_grants_reset",
+  "node_mcp_status",
+  "node_mcp_set_enabled",
+  "node_mcp_token_create",
+  "node_mcp_token_revoke",
+  "node_mcp_requests",
+  "node_mcp_decide",
+]

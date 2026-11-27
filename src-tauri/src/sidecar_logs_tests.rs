@@ -402,8 +402,8 @@ fn the_export_command_names_its_data_sources_and_is_registered() {
     let doc = &src[src[..at].rfind("/// **diagnostics_logs_export**").expect("documented")..at];
     assert!(doc.contains("Data sources"), "Rule 7");
     assert!(doc.contains("nothing is sent"));
-    assert!(include_str!("lib.rs").contains("sidecar_logs::diagnostics_logs_export,"));
-    assert!(include_str!("../permissions/main-window.toml").contains("\"diagnostics_logs_export\""));
+    assert!(crate::commands::registry_source().contains("sidecar_logs::diagnostics_logs_export,"));
+    assert!(crate::commands::acl_source().contains("\"diagnostics_logs_export\""));
 }
 
 // ---------------------------------------------------------------------------

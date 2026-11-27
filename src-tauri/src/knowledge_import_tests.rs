@@ -872,9 +872,9 @@ fn import_command_is_async_off_main_and_in_the_main_window_acl() {
     let src = include_str!("knowledge_import.rs");
     assert!(src.contains("pub async fn memory_import_knowledge"));
     assert!(src.contains("crate::blocking::off_main"));
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"memory_import_knowledge\""));
-    let lib = include_str!("lib.rs");
+    let lib = crate::commands::registry_source();
     assert!(lib.contains("knowledge_import::memory_import_knowledge"));
     let popout = include_str!("../capabilities/popout.json");
     assert!(

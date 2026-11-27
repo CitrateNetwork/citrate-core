@@ -89,7 +89,10 @@ describe("tauri providers invokes the registered commands", () => {
   });
 
   it("every providers_* command is allowed for the main window, and no other", async () => {
-    const toml = readFileSync(join(__dirname, "../../../src-tauri/permissions/main-window.toml"), "utf8");
+    // L0-WP03: the main window's ACL is the ten lane files, permissions/l<N>-commands.toml.
+    const toml = Array.from({ length: 10 }, (_, n) =>
+      readFileSync(join(__dirname, `../../../src-tauri/permissions/l${n}-commands.toml`), "utf8"),
+    ).join("\n");
     const allowed = [...toml.matchAll(/"(providers_[a-z_]+)"/g)].map((m) => m[1]).sort();
     const used = (await invokedCommands()).map(([c]) => c).sort();
     expect(allowed).toEqual(used);

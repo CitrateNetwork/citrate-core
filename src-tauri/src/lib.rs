@@ -14,7 +14,7 @@
 // wallet, rpc, txdecode, config) now lives in `citrate-core-kit`, shared with
 // citrate-quorum so there is ONE signing path in the federation, not a fork.
 // Re-exported here so every in-crate reference (`crate::custody::…`,
-// `crate::ceremony::…`, and the `generate_handler!` command paths below) keeps
+// `crate::ceremony::…`, and the command paths in `commands/l<N>.rs`) keeps
 // resolving unchanged — the extraction is invisible above this line.
 /// The keyring namespace citrate-core custody owns.
 ///
@@ -209,10 +209,12 @@ mod validator_activation;
 mod verified_source;
 mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
-// command names once here + in generate_handler! below; each lane fills in its own module's
+// command names once (now in `commands/l<N>.rs`, L0-WP03); each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
 mod cluster;
 mod cluster_mesh;
+// L0-WP03 (planset v060): the command registration, one list per lane (`commands/l<N>.rs`).
+mod commands;
 mod comms;
 mod embed_serve;
 mod hermes;
@@ -641,691 +643,7 @@ pub fn run() {
             hermes_headless::spawn(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            // config — the one genuinely-live domain (A1.4)
-            config::config_read,
-            config::config_write,
-            config::config_keyring_status,
-            // custody — the OS-keyring vault (A2). NOTE: custody_get is NOT here;
-            // it is an in-process pub fn — no invoke command returns secret bytes.
-            custody::custody_status,
-            custody::custody_init,
-            custody::custody_unlock,
-            // Seamless device-bound re-unlock (passphrase-less model): re-provisions
-            // + unlocks from the keyring device passphrase, for the Settings "Unlock"
-            // control and app launch/resume. Without it an auto-locked vault (and the
-            // wallet reads gated on it) stay stuck — no user passphrase exists to enter.
-            custody::custody_ensure_unlocked,
-            custody::custody_lock,
-            custody::custody_list,
-            // auth — real OIDC loopback-PKCE (A3). Replaces the A1 auth seam
-            // stubs. Every command returns claim-derived AuthStatus or (); NO
-            // command returns a token (ADV-8 boundary; see oidc::tests).
-            oidc::auth_status,
-            oidc::auth_login,
-            // FIX 2 (rc.5): abort the in-flight system-browser sign-in (Cancel button).
-            oidc::auth_login_cancel,
-            oidc::auth_userinfo,
-            oidc::auth_refresh,
-            oidc::auth_logout,
-            oidc::kyc_start,
-            // W4 — MCP connections (OAuth). connection_start runs the loopback-PKCE
-            // flow in the system browser and seals the token in the vault;
-            // connection_status/disconnect read/forget it. NO command returns a
-            // token or client secret (I-2 barrier; see connections::tests).
-            connections::connection_start,
-            connections::connection_status,
-            connections::connection_disconnect,
-            // Social identity (Connections · social discovery, ADR-2026-08-30). Public-client PKCE
-            // link; token seals in the keyring, device-local binding store; NO command returns a
-            // token. `verified` (the wallet-signed IdentityBinding) is a follow-up.
-            social::social_status,
-            social::social_start,
-            social::social_set_visibility,
-            social::social_disconnect,
-            // Social verify (D3) — the wallet signs the IdentityBinding at the ceremony (Rule 3);
-            // request opens it, approve records the binding + flips verified, forget drops a reject.
-            social::social_verify_request,
-            social::social_verify_approve,
-            social::social_verify_forget,
-            // Resolver: verified + group-visible addresses → faces.
-            social::social_resolve,
-            // D1 server-blind share: export a verified binding to ride the group relay; ingest a
-            // peer's (recover-verified before trusting) so cross-member faces resolve.
-            social::social_export_binding,
-            social::social_ingest_binding,
-            // #61 — self-published bindings directory (find-via-X): opt-in publish/revoke go through
-            // the SignatureCeremony (request → approve); lookup/search are Bearer-gated authority reads.
-            social::directory_publish_request,
-            social::directory_publish_approve,
-            social::directory_unpublish_request,
-            social::directory_unpublish_approve,
-            social::directory_forget,
-            social::directory_lookup,
-            social::directory_search,
-            // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
-            invites::group_invite_create,
-            invites::group_invites,
-            invites::group_invite_revoke,
-            invites::group_invite_requests,
-            invites::group_invite_approve,
-            invites::group_invite_check,
-            invites::group_invite_decline,
-            invites::group_invite_preview,
-            invites::group_invite_request,
-            invites::group_invite_my_requests,
-            invites::group_invite_dismiss,
-            // Download gate: first-run access check for invited installs (off unless built with a gate URL).
-            access_pass::access_pass_status,
-            access_pass::access_pass_verify,
-            // membership — the D3.C checkout popup (@rule8 money seam). Opens the
-            // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
-            // in-app popup with the SAME isolation as the auth popup (a remote
-            // HTTPS page, NO capability/IPC). It NEVER signs or reports a settled
-            // membership — the money + grant are server-side; the store polls
-            // /userinfo and only advances S3 when the REAL entitlement lands.
-            membership::membership_checkout,
-            membership::membership_enterprise_lead,
-            // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
-            // the REAL on-chain grant: MembershipStakeVault.attributedStake +
-            // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
-            // eth_call on 40204. The S5 membership grant ceremony settles ONLY from these
-            // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
-            // nothing and returns only decoded public chain data (@rule8 / Rule 3).
-            grant_status::membership_grant_status,
-            membership_price::membership_price,
-            // The grant signer's readiness from core-membership's public /api/health (a pure
-            // read; S3 uses it only to say a grant is delayed, never to settle one).
-            membership_health::membership_signer_health,
-            // SBT emblem — BC-5.3 (T1 identity READ). Reads the AUTHORITATIVE
-            // wholly-on-chain member emblem: isSubBound(keccak256(sub)) ->
-            // tokenIdForSub -> tokenURI on CitrateMemberSBT (40204), decoded to the
-            // `data:image/svg+xml;base64,...` the UI renders — or None honestly when
-            // the member has no SBT (Rule 1 — no fabricated art). A PURE READ: it
-            // signs nothing and touches no key material (@rule8 / Rule 3).
-            sbt_art::sbt_token_uri,
-            // signing — the B1.2 SignatureCeremony (the ONE HITL signing path).
-            // sign_request returns a CeremonyId + decoded intent (NO signature);
-            // sign_approve returns the signature hex ONLY (never key/seed/entropy
-            // — I-2 compile barrier holds); sign_reject consumes with no sig. The
-            // gated wallet::sign_message is reachable ONLY via approve (@rule8).
-            ceremony::sign_request,
-            ceremony::sign_approve,
-            ceremony::sign_and_broadcast,
-            // Join-8 — sign without sending (returns the tx hash), then send.
-            ceremony::sign_prepare,
-            ceremony::sign_send_prepared,
-            ceremony::sign_reject,
-            wallet_link::wallet_link_request,
-            wallet_link::wallet_link_approve,
-            wallet_link::wallet_link_reject,
-            // ── CX (planset citrate-core-social) — command names FROZEN in S0.3. Each is a
-            // NotWired stub until its lane wires the body (in its own module, never here). ──
-            model_catalog::model_catalog_local,
-            model_catalog::model_catalog_partials,
-            model_catalog::model_catalog_search,
-            model_catalog::model_catalog_download,
-            model_catalog::model_catalog_select,
-            // HUP-S1.6 — hardware tier recommendation + persisted override (local only).
-            tier::tier_recommend,
-            tier::tier_set_override,
-            // HUP-S8.2/S8.3 — fleet wizard: probe, opt-in mDNS, link/QR pairing, Tailscale (read-only).
-            fleet::fleet_probe,
-            fleet::fleet_set_label,
-            fleet::fleet_roster,
-            fleet::fleet_discovery_set,
-            fleet::fleet_discovery_browse,
-            fleet::fleet_pair_create,
-            fleet::fleet_pair_inspect,
-            fleet::fleet_pair_join,
-            fleet::fleet_forget,
-            fleet::fleet_tailscale,
-            model_registry::models_registry_list,
-            model_register::models_registry_register,
-            contract_deploy::contract_deploy,
-            // HUP-S4.3 — get_verified_source (read-only CitrateScan lookup).
-            verified_source::contract_verified_source,
-            // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
-            deploy_gate::deploy_gate_submit,
-            deploy_gate::deploy_gate_lookup,
-            // HUP-S6.3 → S6.4 — a Hermes session's toolchain reports into the gate (A27).
-            deploy_gate_toolchain::deploy_gate_submit_toolchain,
-            // HUP-S6.2 / US-6.4 — contract templates (render into a granted folder).
-            template_forge::template_list,
-            template_forge::template_render,
-            fork_dry_run::deploy_gate_fork_dry_run,
-            // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
-            fl_market::fl_market_offers,
-            fl_rounds::fl_overview,
-            fl_rounds::fl_coordinator_set,
-            fl_rounds::fl_round_plan,
-            fl_rounds::fl_round_plan_lookup,
-            fl_rounds::fl_round_start,
-            fl_rounds::fl_round_consent_revoke,
-            fl_rounds::fl_adapter_gate,
-            fl_rounds::fl_adapter_load,
-            fl_rounds::fl_adapter_unload,
-            // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
-            fl_trajectories::trajectories_settings_get,
-            fl_trajectories::trajectories_settings_set,
-            fl_trajectories::trajectories_consent_revoke,
-            fl_trajectories::trajectories_dataset_build,
-            // 0.5.4 WP-H6 — the local dataset store (create, versions, sample, clean, consent).
-            fl_datasets::fl_dataset_list,
-            fl_datasets::fl_dataset_manifest,
-            fl_datasets::fl_dataset_create,
-            fl_datasets::fl_dataset_sample,
-            fl_datasets::fl_dataset_clean_preview,
-            fl_datasets::fl_dataset_clean_apply,
-            fl_datasets::fl_dataset_consent_list,
-            fl_datasets::fl_dataset_consent_withdraw,
-            fl_datasets::fl_dataset_delete,
-            fl_datasets::fl_dataset_publish_preview,
-            fl_datasets::fl_dataset_publish,
-            fl_datasets::fl_dataset_published,
-            fl_trajectories::trajectories_datasets_list,
-            // HUP-S6.6 — post-deploy steps for a hello-mint project.
-            postdeploy::postdeploy_status,
-            postdeploy::postdeploy_receipt,
-            postdeploy::postdeploy_verify,
-            postdeploy::postdeploy_switch_site,
-            postdeploy::postdeploy_pin_site,
-            postdeploy::postdeploy_vercel_export,
-            // CORE-A3: durable, encrypted deploy records per project.
-            deploy_records::deploy_record_save,
-            deploy_records::deploy_records_list,
-            deploy_records::deploy_record_get,
-            // 0.5.4: the Hermes chat history, sealed on this device (P-11).
-            hermes_history::hermes_history_list,
-            hermes_history::hermes_history_save,
-            hermes_history::hermes_history_delete,
-            hermes_history::hermes_history_delete_all,
-            hermes_history::hermes_history_set_retention,
-            // 0.5.4 FL design board 11: Settings › Work, sealed on this device.
-            fl_work::fl_work_terms_get,
-            fl_work::fl_work_terms_save,
-            fl_work::fl_work_envelope_get,
-            fl_work::fl_work_envelope_approve,
-            fl_work::fl_work_envelope_off,
-            fl_publish::fl_requirements_publish,
-            fl_envelope::fl_envelope_status,
-            fl_envelope::fl_envelope_check,
-            // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
-            contract_reader::contract_source,
-            contract_reader::contract_code_size,
-            contract_reader::contract_view_call,
-            contract_reader::contract_view_call_at,
-            contract_reader::contract_write_propose,
-            // G-SEC PAY-14 — whether FL payouts are open, as the signer decides it.
-            fl_payouts::fl_payouts_status,
-            // CORE-A1 / CORE-A2 — find, identify and decode contracts (read-only).
-            contract_intel::contract_address_book_lookup,
-            contract_intel::contract_get_code,
-            contract_intel::contract_identify,
-            contract_intel::contract_abi_resolve,
-            contract_intel::abi_signature_lookup,
-            contract_intel::chain_tx_fetch,
-            // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
-            // spend budget, quote-then-run, and the registry route's (disabled) status.
-            // D-11 — cloud providers: status, usage (signed log), caps, halt/resume, one-way keys,
-            // gated custom endpoints. No command returns a key.
-            providers_ipc::providers_status,
-            providers_ipc::providers_usage_summary,
-            providers_ipc::providers_caps_set,
-            providers_ipc::providers_price_set,
-            providers_ipc::providers_halt,
-            providers_ipc::providers_resume,
-            providers_ipc::providers_key_set,
-            providers_ipc::providers_key_test,
-            providers_ipc::providers_key_remove,
-            providers_ipc::providers_custom_add,
-            providers_ipc::providers_custom_confirm,
-            providers_ipc::providers_custom_remove,
-            providers_ipc::providers_usage_log_reset,
-            providers_ipc::providers_preferred_get,
-            providers_ipc::providers_preferred_set,
-            // D-11 (P-8) — the Cognition delegate: per-task approval of the exact scope.
-            cognition::delegation_prepare,
-            cognition::delegation_decline,
-            cognition::delegation_approve,
-            cognition::delegation_status,
-            escalation::escalation_endpoints,
-            escalation::escalation_endpoint_add,
-            escalation::escalation_endpoint_remove,
-            escalation::escalation_budget,
-            escalation::escalation_budget_set,
-            escalation::escalation_quote,
-            escalation::escalation_confirm_prepare,
-            escalation::escalation_run,
-            hic_records::hic_record_decision,
-            // The decision records read back, newest first (Hermes › Controls › Records).
-            hic_records::hic_records_list,
-            escalation::escalation_registry_status,
-            inference_router::escalation_registry_quote,
-            inference_router::escalation_registry_request,
-            inference_router::escalation_registry_result,
-            inference_router::escalation_registry_mine,
-            inference_router::escalation_registry_claim_refund,
-            inference_router::escalation_registry_expire,
-            web_budgets::web_budget_status,
-            web_budgets::web_budget_grant,
-            web_budgets::web_budget_revoke,
-            web_budgets::web_budget_revoke_all,
-            web_budgets::web_budget_reset,
-            web_budgets::web_signing_request,
-            web_budgets::web_signing_approve,
-            web_budgets::web_signing_reject,
-            faucet::faucet_status,
-            faucet::faucet_grant,
-            faucet::faucet_revoke,
-            faucet::faucet_request,
-            faucet::faucet_open_challenge,
-            telemetry::diagnostics_bundle,
-            telemetry::telemetry_send,
-            skill_registry::skills_registry_list,
-            storage::storage_add,
-            storage::storage_list,
-            storage::storage_retrieve,
-            storage::storage_unpin,
-            // K4: local pins (no bond), the IPFSIncentivesV3 parameters, and verified backup.
-            storage::storage_pin_local,
-            storage::storage_pin_params,
-            storage_backup::storage_backup_export,
-            storage_backup::storage_backup_verify,
-            storage_backup::storage_backup_restore,
-            comms::groups_create,
-            comms::comms_relay_status,
-            comms::groups_list,
-            comms::groups_self_address,
-            comms::groups_join,
-            comms::groups_add_member,
-            comms::groups_roster,
-            comms::groups_assign_role,
-            comms::groups_offboard,
-            comms::groups_send,
-            comms::groups_messages,
-            cluster::cluster_status,
-            cluster::cluster_join,
-            cluster::cluster_peers,
-            cluster::cluster_share_file,
-            cluster::cluster_leave,
-            cluster::cluster_devices,
-            cluster::cluster_group_seed,
-            cluster::cluster_add_seed,
-            device_link::device_link_request,
-            device_link::device_link_approve,
-            device_link::device_link_reject,
-            device_link::device_links,
-            device_link::device_link_revoke_prepare,
-            device_link::device_link_revoke,
-            device_link::device_link_export,
-            device_link::device_link_import,
-            device_link_share::device_links_share_offer,
-            device_link_share::device_links_mark_shared,
-            device_link_share::device_links_ingest,
-            cluster_mesh::cluster_mesh_status,
-            cluster_mesh::cluster_mesh_set_enabled,
-            training::training_status,
-            training::training_reward,
-            hermes::hermes_start,
-            hermes::hermes_status,
-            // 0.5.4: the Hermes setup self-check.
-            hermes_setup::hermes_setup_check,
-            hermes_setup::hermes_setup_repair,
-            hermes_setup::hermes_setup_enable_node_tools,
-            hermes::hermes_skills,
-            hermes::hermes_run_skill,
-            hermes::hermes_pending_approvals,
-            hermes::hermes_stop,
-            hermes::hermes_session_open,
-            // D-11 (P-5, P-6) — the agent loop on a cloud model through the core proxy.
-            hermes::hermes_session_open_cloud,
-            hermes::hermes_session_send,
-            hermes::hermes_session_events,
-            hermes::hermes_session_tool_result,
-            hermes::hermes_session_stop,
-            // HUP-S10.3 — daemon runs: unattended sessions, closed when the run ends.
-            hermes::hermes_session_open_unattended,
-            hermes::hermes_session_close,
-            hermes::undo::hermes_checkpoints,
-            hermes::undo::hermes_undo_step,
-            hermes::undo::hermes_undo_session,
-            // HUP-S5.4 — one step's diff for the Code and diff pop-out (read-only).
-            hermes::undo::hermes_checkpoint_diff,
-            hermes::hermes_tracks,
-            hermes::hermes_brief_create,
-            hermes::hermes_brief_check,
-            hermes::personas::hermes_personas,
-            hermes::personas::hermes_workflows,
-            hermes::personas::hermes_persona_check,
-            hermes::personas::hermes_track_workflow_run,
-            // HUP-S2.2: the member decides each shell_run command the sidecar holds.
-            hermes::shell::hermes_shell_pending,
-            hermes::mcp_cards::hermes_mcp_pending,
-            hermes::mcp_cards::hermes_mcp_decide,
-            hermes::shell::hermes_shell_decide,
-            hermes::hermes_bridge_pending,
-            hermes::hermes_resolve,
-            hermes::hermes_resolve_outcome_unknown,
-            // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
-            hermes_mcp::hermes_mcp_settings,
-            hermes_mcp::hermes_mcp_set,
-            hermes_mcp::hermes_node_mcp_trusted,
-            hermes::workers::hermes_workers,
-            hermes::decide::hermes_decide_stats,
-            hermes_learn::hermes_workflow_run,
-            hermes_learn::hermes_workflow_status,
-            hermes_learn::hermes_learn_status,
-            hermes_learn::hermes_learn_proposals,
-            hermes_learn::hermes_learn_propose,
-            hermes_learn::hermes_learn_accept,
-            hermes_learn::hermes_learn_reject,
-            hermes_learn::hermes_learn_memories,
-            hermes_learn::hermes_learn_store_pending,
-            hermes_learn::hermes_learn_resolve,
-            hermes_learn::hermes_learn_publish,
-            hermes_web::hermes_web_settings_get,
-            hermes_web::hermes_web_settings_set,
-            chat_consent::chat_consent_prepare,
-            chat_consent::chat_consent_drop,
-            chat_consent::media_consent_prepare,
-            chat_route::chat_route_get,
-            chat_route::chat_route_set,
-            hermes_terminal::hermes_terminal_get,
-            hermes_terminal::hermes_terminal_set,
-            // V1 (0.5.4): per-project opt-ins for node, npm run and git commit.
-            hermes_auto_approve::hermes_auto_approve_get,
-            hermes_auto_approve::hermes_auto_approve_set,
-            hermes_auto_approve::hermes_auto_approve_rules,
-            // WP-H7 / V6 (0.5.4): the on-device private-information scanner.
-            pii_scan::pii_scan_text,
-            // WP-H7 (0.5.4): the dataset PII scan, license check and publish gate.
-            fl_dataset_gate::fl_dataset_pii_scan,
-            fl_dataset_gate::fl_dataset_license_check,
-            fl_dataset_gate::fl_dataset_publish_check,
-            // WP-H8 (0.5.4): the compliant collector.
-            fl_collect::fl_collect_policy,
-            fl_collect::fl_collect_source_check,
-            fl_collect::fl_collect_plan,
-            fl_collect::fl_collect_plan_decide,
-            fl_collect::fl_collect_run,
-            model_delete::model_delete_states,
-            model_delete::model_delete,
-            // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
-            forge_toolchain::toolchain_settings_get,
-            forge_toolchain::toolchain_settings_set,
-            // node — the real citrate-node under the SidecarSupervisor (C1.1).
-            // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
-            // from the node's local RPC; node_start spawns the node with an
-            // encrypted data dir (@rule8 keyring storage key); node_stop releases
-            // the supervisor (SIGTERM→grace→SIGKILL, no orphan).
-            node::node_status,
-            node::node_start,
-            node::node_stop,
-            // W1.3 — activate the member's validator bond (bond-clone model): the
-            // ceremony sends MemberBond.activate to the funded clone; the clone (=
-            // staker) forwards its principal to registerValidator.
-            node::node_register_validator,
-            // Join-8 — the Activate-validator onboarding step's one read (pure, no signing).
-            validator_activation::validator_activation_status,
-            // Join-8 — Forget an unseen activation send in the durable submitted-tx record.
-            validator_activation::validator_activation_forget,
-            // W1.x — arm the producer once synced (consensus-gated); the respawn
-            // mints proposer.key, the validator identity the bond activation needs.
-            node::node_arm_mining,
-            // W1.4 — the REAL validator earnings: rewardsOf(proposerPubkey) on the
-            // ValidatorRegistry (the correct block-subsidy source, not the old
-            // ContributionAccounting.claimable read).
-            node::node_validator_earnings,
-            // Watchdog: why did the supervised node stop? (crash-records.jsonl tail)
-            node::node_last_crash,
-            // Real device fingerprint (hash of the device-bound custody pubkey).
-            provisioning::device_id,
-            // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
-            // supervised node's bounded ring buffer. Fills the Node LOG panel in
-            // a packaged build (was permanently empty: stdout was inherited then
-            // dropped in the GUI process). Honest empty when the node is off; no
-            // fabricated template ever crosses this boundary (Rule 1).
-            node::node_logs,
-            // CORE-N3 follow-up: Remove old network data (chain.<profile>.bak in the node dir).
-            node::node_old_network_data,
-            node::node_remove_old_network_data,
-            // node-agent — the node-agent under the SidecarSupervisor (C1.2).
-            // agent_status returns the supervisor state + whether a bearer
-            // session exists (NEVER the token); agent_start spawns the daemon
-            // with a minted 0600 bearer file (@rule8); agent_stop releases the
-            // supervisor + wipes the session bearer. Signature requests bridge
-            // through the ceremony only (no direct-sign path — ADV-7).
-            agent::agent_status,
-            agent::agent_start,
-            agent::agent_stop,
-            // user_claim (C2-F-1, @rule8) — the USER Claim button. Reads the REAL
-            // claimable (eth_call), and either returns an HONEST "nothing to claim"
-            // for 0, or bridges the real claimRewards() intent into a PENDING
-            // ceremony the human approves via sign_and_broadcast (B1.4). NEVER a sim
-            // balance mutation presented as a settled chain claim (Rule 1).
-            agent::user_claim,
-            // memory — the real citrate-memories mcp_serve daemon under the
-            // SidecarSupervisor (C3). Replaces the A1.3 memory_recall seam stub:
-            // memory_status returns the supervisor state + socket path (never the
-            // store key); memory_start spawns the daemon (a keyring wrapping key is
-            // minted for forward-compat, but the store is NOT encrypted at rest
-            // today — plaintext on a fresh store; see memory.rs honest residual);
-            // recall/search/neighbors speak JSON-RPC over the daemon's Unix
-            // socket; constellation feeds the Storage graph with REAL nodes.
-            memory::memory_status,
-            memory::memory_start,
-            memory::memory_stop,
-            memory::memory_recall,
-            memory::memory_search,
-            memory::memory_neighbors,
-            // W3.2 — first-run docs preload into the citrate-docs tenant (gated +
-            // idempotent; no-op until the corpus is curated + BGE is wired).
-            memory::memory_ingest_docs,
-            // Seed the constellation tenants (chain-state + personal) with real network/node/stake
-            // facts on daemon-connect, so the graph has content on open (gated + idempotent).
-            memory::memory_seed_context,
-            // HUP-S3.1 — first-run import of the bundled knowledge corpus (verified by the
-            // importer against its manifest; idempotent; progress on memory://knowledge-import-progress).
-            knowledge_import::memory_import_knowledge,
-            memory::memory_constellation,
-            // Hermes "remember this fact": the approved memory_assert card writes one
-            // fact into the personal tenant (a local mem-dag write, not a signature).
-            memory::memory_assert,
-            // earnings — the REAL on-chain claimable read (C2). agent_earnings
-            // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
-            // 40204 (Rule 1: the single real value; no sim per-source breakdown).
-            // A claim is a SIGNED value-bearing write that routes through the
-            // SignatureCeremony (agent bridge → B1.4), never signed here (@rule8).
-            earnings::agent_earnings,
-            // wallet provisioning (@rule8) — seamless device-bound init+unlock of
-            // the custody vault (auto passphrase in the OS keyring, no user
-            // passphrase) + silent first-run wallet mint. Returns ONLY the public
-            // address (never key/seed). Idempotent; the onboarding link calls it
-            // after sign-in and before the membership grant so the REAL device
-            // wallet is what gets linked + paid. Signs nothing (Rule 3 untouched).
-            provisioning::wallet_ensure_ready,
-            // wallet balances — REAL liquid (eth_getBalance) + claimable read.
-            earnings::wallet_balances,
-            // wallet send — a native SALT transfer bridged into a PENDING ceremony
-            // (@rule8; signs nothing — the human approves via sign_and_broadcast).
-            transfer::wallet_send,
-            // ai — real OpenAI-compatible inference (AI1, @rule8). The provider key
-            // is sealed in the OS keyring, BOUND to its https baseURL at set-time;
-            // ai_provider_status returns only {id,baseURL,model,configured} (never
-            // the key); ai_chat reads the STORED baseURL for the given provider id
-            // and POSTs /v1/chat/completions with the sealed Bearer — the webview
-            // picks WHICH provider, never the URL (exfil-binding). Errors are coarse
-            // + secret-free.
-            ai::ai_set_provider,
-            ai::ai_provider_status,
-            ai::ai_clear_provider,
-            ai::ai_chat,
-            // W3.3 — one agentic turn: gateway completion WITH tools; returns the
-            // assistant message (content and/or tool_calls). The webview loops.
-            ai::ai_chat_tools,
-            // BC-3.2 — LOCAL inference against the bundled llama-server on the
-            // loopback endpoint (NO key). Fails closed on any non-loopback URL.
-            ai::ai_chat_local,
-            ai::ai_chat_local_tools,
-            skills_local::skills_local_list,
-            skills_local::skills_local_write,
-            skills_local::skills_local_read,
-            skills_local::skills_local_delete,
-            skills_local::skills_local_migrate,
-            // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
-            journal_export::journal_export_encrypted,
-            journal_export::journal_import_encrypted,
-            // HUP-S10.3 — daemons: scheduled Hermes tasks inside a budget.
-            daemons::daemons_list,
-            daemons::daemon_save,
-            daemons::daemon_set_paused,
-            daemons::daemons_set_all_paused,
-            daemons::daemon_delete,
-            daemons::daemons_claim_due,
-            daemons::daemons_finish_run,
-            daemons::daemon_runs_between,
-            // HUP-S10.3 — widgets: sandboxed tiles with a read-only bridge.
-            widgets::widgets_list,
-            widgets::widget_save,
-            widgets::widget_delete,
-            widgets::widget_source,
-            // HUP-S2.1 — Hermes folder grants (store in app data; sent to agent sessions on change).
-            agent_grants::agent_grants_view,
-            agent_grants::agent_grants_add_folder,
-            agent_grants::agent_grants_revoke,
-            agent_grants::agent_grants_full_access_prepare,
-            agent_grants::agent_grants_full_access_confirm,
-            agent_grants::agent_grants_reset,
-            // HUP-S10.2 — Hermes's own schedule (local), shown as a calendar.
-            hermes_schedule::hermes_schedule_list,
-            hermes_schedule::hermes_schedule_add,
-            hermes_schedule::hermes_schedule_remove,
-            hermes_schedule::hermes_schedule_set_enabled,
-            hermes_schedule::hermes_schedule_reset,
-            hermes_schedule::hermes_schedule_due,
-            // HUP-S10.2 — Google Sheets + Calendar through Connections (disabled until configured).
-            google_workspace::google_workspace_status,
-            google_workspace::gsheets_read,
-            google_workspace::gsheets_append,
-            google_workspace::gcal_list,
-            google_workspace::gcal_create,
-            // HUP-S10.1 — media generation tiers, gallery, and the Media pop-out's data.
-            media::media_options,
-            media::media_set_settings,
-            media::media_generate_image,
-            media::media_gallery,
-            media::media_read,
-            media::media_save_copy,
-            // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
-            components::components_status,
-            components::components_update,
-            components::components_rollback,
-            // K1a-2 — the services registry snapshot Node › Services reads (read-only).
-            services::services_snapshot,
-            // CORE-D4 — every sidecar's health: state, counters, last crash, slow retry, log tail.
-            services::sidecars_health,
-            // CORE-D6: the pre-update drain (hold starts, stop every sidecar) and its cancel.
-            update_drain::update_prepare,
-            update_drain::update_prepare_cancel,
-            update_drain::update_install_begin,
-            // 0.5.4: the signed minimum version the update gate reads.
-            update_policy::update_policy_apply,
-            update_policy::update_policy_status,
-            update_policy::update_policy_refresh,
-            // CORE-D5: the scrubbed diagnostics bundle, written to a file the member chose.
-            sidecar_logs::diagnostics_logs_export,
-            // One service's log file, read back for Node › Advanced (scrubbed again).
-            sidecar_logs::sidecar_logs_tail,
-            // K5a — Store v1: signed catalog, staged installs that arrive paused, one-call
-            // removal. Every catalog command refuses until the catalog key is issued.
-            store_catalog::store_catalog,
-            store_catalog::store_stage,
-            store_catalog::store_install,
-            store_catalog::store_installed,
-            store_catalog::store_remove,
-            // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
-            // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
-            mcp_servers::mcp_servers_list,
-            mcp_servers::mcp_server_save,
-            mcp_servers::mcp_server_remove,
-            mcp_servers::mcp_server_disable,
-            mcp_servers::mcp_server_review,
-            mcp_servers::mcp_server_enable,
-            mcp_servers::mcp_servers_runtime,
-            // HUP-S10.5 — device-key recovery kit + "delete my local data".
-            recovery_kit::recovery_kit_status,
-            recovery_kit::recovery_kit_save_phrase,
-            recovery_kit::recovery_kit_save_file,
-            recovery_kit::recovery_kit_restore_phrase,
-            recovery_kit::recovery_kit_restore_file,
-            local_data::local_data_plan,
-            local_data::local_data_delete,
-            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
-            // SignatureCeremony; signs nothing here).
-            agent_sbt::agent_sbt_status,
-            agent_sbt::agent_sbt_mint,
-            // model — BC-3.1 local Gemma download + verify. model_status is the
-            // honest file-derived state (Ready ONLY after a real SHA-256 verify —
-            // never mere presence, Rule 1); model_download is STREAMED + resumable
-            // (HTTP Range) with a GGUF-magic gate + pinned-length finalize;
-            // model_verify quarantines any checksum/size mismatch (never Ready).
-            // No secrets, no key material cross this surface.
-            model::model_status,
-            model::model_download,
-            model::model_download_pause,
-            model::model_local_options,
-            model::model_verify,
-            // model-serve — BC-3.2 the bundled llama-server sidecar under the
-            // SidecarSupervisor. model_serve_start fails CLOSED unless the model is
-            // verified-Ready AND the binary is bundled; model_inference_state
-            // returns the HONEST route (ready/local-fallback/downloading/
-            // gateway-only/no-model/demo). No secret crosses this surface.
-            serve::model_serve_start,
-            serve::model_serve_stop,
-            serve::model_inference_state,
-            // IPFS — the bundled kubo daemon (artifact/model pin/add on 127.0.0.1:5001). Started
-            // here; it stops with the app.
-            ipfs::ipfs_start,
-            // open an external federation link (https only) in the system browser.
-            shell::open_external,
-            // wallet activity — REAL indexed 40204 tx history from the CitrateScan
-            // `txlist` endpoint (public, no-auth read; source: citrate-explorer
-            // /api/v1?module=account&action=txlist). Honest empty on a fresh /
-            // not-provisioned index; never fabricated (Rule 1). NOT @rule8.
-            activity::wallet_activity,
-            popout::popout_open,
-            popout_contract::popout_contract_send,
-            popout_contract::popout_contract_take,
-            popout::popout_monitor_facts,
-            browser::hermes_browser_status,
-            browser::hermes_browser_frame,
-            browser::hermes_browser_stop,
-            browser::hermes_browser_resume,
-            browser::hermes_browser_attach,
-            browser::hermes_browser_detach,
-            browser::hermes_browser_origin,
-            browser::hermes_browser_decide,
-            // HUP-S7.3 + S7.5 — nightly anchor (off until AnchorRegistry is deployed; the anchor
-            // key signs only inside the anchor ceremony) + the daily metering report.
-            chain_agent::hermes_chain_status,
-            chain_agent::hermes_chain_settings_set,
-            chain_agent::hermes_metering_daily,
-            chain_agent::hermes_anchor_approve,
-            chain_agent::hermes_anchor_reject,
-            // HUP-S7.3 + S7.5 (rest): prove a past decision (core checks the proof and reads
-            // AnchorRegistry itself) and opt-in benchmark sharing (one wallet card per metric).
-            anchor_proof::hermes_anchor_records,
-            anchor_proof::hermes_anchor_proof,
-            benchmark_share::hermes_benchmark_share,
-            // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
-            node_mcp::node_mcp_status,
-            node_mcp::node_mcp_set_enabled,
-            node_mcp::node_mcp_token_create,
-            node_mcp::node_mcp_token_revoke,
-            node_mcp::node_mcp_requests,
-            node_mcp::node_mcp_decide,
-        ])
+        .invoke_handler(crate::v60_all_commands!())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -1421,17 +739,11 @@ mod tests {
     /// the kit ADV-8 test pins), and NEVER `custody_get` (the in-process secret-reading pub fn).
     #[test]
     fn no_custody_invoke_command_returns_secret_bytes() {
-        let src = include_str!("lib.rs");
-        let handler_start = src
-            .find("tauri::generate_handler![")
-            .expect("the invoke handler list");
-        let handler = &src[handler_start..];
-        let handler = &handler[..handler.find("])").expect("end of the handler list")];
-        let registered: std::collections::BTreeSet<String> = handler
-            .lines()
-            .map(str::trim)
-            .filter_map(|l| l.strip_prefix("custody::"))
-            .map(|l| l.trim_end_matches(',').to_string())
+        let src = crate::commands::registry_source();
+        let registered: std::collections::BTreeSet<String> = crate::commands::registered_paths()
+            .iter()
+            .filter_map(|p| p.strip_prefix("custody::"))
+            .map(str::to_string)
             .collect();
         let kit = include_str!("../../kit/src/custody.rs");
         let mut defined = std::collections::BTreeSet::new();
@@ -1466,8 +778,8 @@ mod tests {
             "the registered custody commands differ from those defined in kit custody.rs"
         );
         // The secret-reading API must NEVER be registered as an invoke command.
-        // Registration would take the form `<mod>::<fn>,` inside the
-        // generate_handler![...] list. The needle is assembled from parts so
+        // Registration would take the form `<mod>::<fn>,` inside a lane's
+        // command list. The needle is assembled from parts so
         // this test's own prose (which names the fn) cannot trip the check; the
         // only way it matches is a genuine handler-registration line.
         let getter = "custody_g".to_string() + "et";
@@ -1570,17 +882,17 @@ mod tests {
 
     /// B1.1-ADV-2, relocated here in the WP-S1.2 kit extraction (was in the
     /// kit's `wallet_tests.rs`, which after the split could only see the kit's
-    /// lib.rs — the real `generate_handler!` registry lives in THIS file). The
+    /// lib.rs; the real command registry lives in THIS crate, `commands/l<N>.rs`). The
     /// wallet secret-touching fns (create / import / address / sign_message) are
     /// plain library fns and must NEVER be registered as invoke commands.
     /// NEGATIVE CONTROL: registering any of those fns as a handler entry (a
-    /// `wallet::<fn>` line ending in a comma, in the generate_handler! list)
+    /// `wallet::<fn>` line ending in a comma, in a lane's command list)
     /// fails this test. Needles are assembled from parts so this test's own
-    /// prose cannot self-match `include_str!("lib.rs")` — do not write a literal
-    /// `wallet` + `::` + fn-name + comma anywhere in this file's prose.
+    /// prose cannot self-match `registry_source()`: do not write a literal
+    /// `wallet` + `::` + fn-name + comma in the prose of lib.rs or any `commands/` file.
     #[test]
     fn no_wallet_secret_path_fn_is_an_invoke_command() {
-        let src = include_str!("lib.rs");
+        let src = crate::commands::registry_source();
         let w = "wallet::".to_string();
         for suffix in [
             "create",
@@ -1599,14 +911,14 @@ mod tests {
     }
 
     /// Command-registration checks relocated here in the WP-S1.2 kit extraction:
-    /// the `generate_handler!` registry lives in THIS crate's lib.rs, so the
+    /// the command registry lives in THIS crate (`commands/l<N>.rs`), so the
     /// "these commands are wired" assertions (formerly in the kit's oidc/ceremony
     /// tests, which after the split could only see the kit lib.rs) belong here.
     /// The kit-side tests retain their kit-SOURCE structural assertions
     /// (AuthStatus carries no token field, return types, Signature is secret-free).
     #[test]
     fn auth_commands_are_registered() {
-        let src = include_str!("lib.rs");
+        let src = crate::commands::registry_source();
         for cmd in [
             "auth_status",
             "auth_login",
@@ -1625,7 +937,7 @@ mod tests {
 
     #[test]
     fn signing_commands_are_registered() {
-        let src = include_str!("lib.rs");
+        let src = crate::commands::registry_source();
         for cmd in [
             "sign_request",
             "sign_approve",

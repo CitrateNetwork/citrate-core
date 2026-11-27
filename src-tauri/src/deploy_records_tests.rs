@@ -464,9 +464,9 @@ fn every_deploy_record_command_names_its_data_source() {
         let at = src.find(&format!("pub async fn {cmd}(")).unwrap_or_else(|| panic!("{cmd} defined"));
         let doc_start = src[..at].rfind(&format!("/// **{cmd}**")).unwrap_or_else(|| panic!("{cmd} documented"));
         assert!(src[doc_start..at].contains("Data source"), "{cmd} names its data source (Rule 7)");
-        let lib = include_str!("lib.rs");
+        let lib = crate::commands::registry_source();
         assert!(lib.contains(&format!("deploy_records::{cmd},")), "{cmd} is registered");
-        let acl = include_str!("../permissions/main-window.toml");
+        let acl = crate::commands::acl_source();
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} is allowed for the main window");
     }
 }

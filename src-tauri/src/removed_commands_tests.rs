@@ -17,8 +17,8 @@ const REMOVED: [&str; 10] = [
 
 #[test]
 fn removed_commands_are_not_registered_or_allowed() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for c in REMOVED {
         assert!(
             !lib.contains(&format!("::{c},")),
@@ -33,7 +33,7 @@ fn removed_commands_are_not_registered_or_allowed() {
 
 #[test]
 fn the_seam_module_is_gone() {
-    let lib = include_str!("lib.rs");
+    let lib = crate::commands::registry_source();
     assert!(
         !lib.contains("mod seam;"),
         "the seam stub module is not rebuilt"

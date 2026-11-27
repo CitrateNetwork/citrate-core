@@ -445,7 +445,6 @@ l0 src-tauri/src/lib.rs
 l0 src-tauri/src/commands/mod.rs
 l0 src-tauri/src/lanes/mod.rs
 l0 src-tauri/capabilities/default.json
-l0 src-tauri/permissions/main-window.toml
 l0 src-tauri/Cargo.toml
 l0 Cargo.toml
 l0 Cargo.lock

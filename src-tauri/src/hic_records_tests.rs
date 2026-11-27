@@ -280,9 +280,9 @@ fn the_record_command_is_async_off_main_and_only_in_the_main_window_acl() {
     let src = include_str!("hic_records.rs");
     assert!(src.contains("pub async fn hic_record_decision"));
     assert!(src.contains("crate::blocking::off_main"));
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"hic_record_decision\""));
-    let lib = include_str!("lib.rs");
+    let lib = crate::commands::registry_source();
     assert!(lib.contains("hic_records::hic_record_decision"));
     let popout = include_str!("../capabilities/popout.json");
     assert!(

@@ -323,8 +323,8 @@ fn the_store_has_a_cap_and_skips_nothing_silently() {
 
 #[test]
 fn every_widget_command_is_async_registered_and_allowed_for_the_main_window_only() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     let src = include_str!("widgets.rs");
     for cmd in COMMANDS {
         assert!(

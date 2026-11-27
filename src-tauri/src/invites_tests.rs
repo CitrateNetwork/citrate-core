@@ -1039,10 +1039,8 @@ fn tripwire_the_lenient_read_scan_sees_each_shape() {
 #[test]
 fn tripwire_there_is_one_invite_flow() {
     let lib = read_src("src/lib.rs");
-    let handler = &lib[lib.find("generate_handler![").expect("handler")..];
-    let handler = &handler[..handler.find("])").expect("end")];
-    for line in handler.lines().map(str::trim) {
-        let cmd = line.trim_end_matches(',').rsplit("::").next().unwrap_or("");
+    for line in crate::commands::registered_paths() {
+        let cmd = line.rsplit("::").next().unwrap_or("");
         assert!(
             !(cmd.starts_with("join_")
                 || cmd.starts_with("pending_join_")

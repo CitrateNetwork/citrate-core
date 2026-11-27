@@ -499,9 +499,8 @@ fn post_json_refuses_plain_http_and_never_connects() {
 
 #[test]
 fn the_commands_are_registered_and_allowed_for_the_main_window() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let lib = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
-    let acl = std::fs::read_to_string(root.join("permissions/main-window.toml")).unwrap();
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     for cmd in ["access_pass_status", "access_pass_verify"] {
         assert!(
             lib.contains(&format!("access_pass::{cmd}")),

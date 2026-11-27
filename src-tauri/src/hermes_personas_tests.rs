@@ -306,6 +306,6 @@ fn a_run_id_the_sidecar_answers_must_be_well_formed() {
 
 #[test]
 fn the_new_commands_are_in_the_main_window_acl() {
-    let acl = include_str!("../permissions/main-window.toml");
+    let acl = crate::commands::acl_source();
     assert!(acl.contains("\"hermes_track_workflow_run\""));
 }
