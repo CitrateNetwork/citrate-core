@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "owner": "L4",
+  "base": "a826e441",
+  "about": "L4-WP01 characterization suites for lane L4 (Conversations), planset v060 L4 section 4. Each suite pins today's behaviour at citrate-core a826e441 before an L4 work package changes it; a later L4 PR that changes a pinned behaviour names the suite and test it supersedes and replaces the assertion only with a stricter one, in a commit that says why. LQ runs every suite here on every merge-queue group.",
+  "suites": [
+    {
+      "id": "L4-CH-1",
+      "lane": "L4",
+      "runner": "vitest",
+      "files": [
+        "src/surfaces/groups/groupCharacterize.test.tsx"
+      ],
+      "covers": [
+        "src/surfaces/groups/GroupChat.tsx",
+        "src/surfaces/groups/groupEnvelope.ts",
+        "src/surfaces/groups/groupHermes.ts",
+        "src/shell/slices/groups.ts",
+        "src/bridge/tauri/comms.ts"
+      ],
+      "tests": [
+        "char_thread_renders_oldest_first",
+        "char_composer_below_thread",
+        "char_replies_oldest_first_in_fold",
+        "char_name_is_handle_else_short_address",
+        "char_short_address_format",
+        "char_poll_every_4s",
+        "char_history_persisted_to_localstorage_key_v1",
+        "char_history_cap_500",
+        "char_ts_is_receipt_time",
+        "char_control_messages_hidden",
+        "char_hermes_disclosure_line_present",
+        "char_send_card_before_post",
+        "char_role_grant_request_shape"
+      ],
+      "pins": "group chat: thread oldest first with the composer below it, replies folded oldest first, verified handle else short address, a 4 s drain poll, history as plain JSON under citrate.groups.history.v1 capped at 500, ts is receipt time, control and U+0001 bodies never shown or given to Hermes, the Hermes disclosure line and send card before any post, the role-grant request shape",
+      "keepsGreen": [
+        "src/surfaces/groups/groupChat.test.tsx",
+        "src/surfaces/groups/groupChatModel.test.ts",
+        "src/surfaces/groupsHonesty.test.tsx"
+      ],
+      "supersededBy": [
+        "L4-WP02",
+        "L4-WP03",
+        "L4-WP04",
+        "L4-WP06",
+        "L4-WP07",
+        "L4-WP10",
+        "L4-WP11",
+        "L4-WP20"
+      ]
+    },
+    {
+      "id": "L4-CH-2",
+      "lane": "L4",
+      "runner": "vitest",
+      "files": [
+        "src/components/agentChatCharacterize.test.tsx"
+      ],
+      "covers": [
+        "src/components/AgentChat.tsx",
+        "src/components/chatLayout.ts",
+        "src/components/RunTimeline.tsx",
+        "src/components/Markdown.tsx",
+        "src/styles/tokens.css"
+      ],
+      "tests": [
+        "char_follow_within_40px",
+        "char_follow_effect_sets_scrolltop_bottom",
+        "char_actions_always_visible_for_finished_reply",
+        "char_actions_hidden_while_streaming",
+        "char_run_timeline_open_by_default_after_end",
+        "char_markdown_no_bare_url_link",
+        "char_fence_renders_plain_pre",
+        "char_reduced_motion_kills_animations"
+      ],
+      "pins": "agent chat pane: follow within 40 px of the bottom, the follow effect sets scrollTop to the bottom, finished-reply actions always shown and absent while streaming, run steps open after the run ends, no bare-URL links, fences as plain pre with no copy button, reduced motion stops animations",
+      "keepsGreen": [
+        "src/components/hermesChatBoard.test.tsx",
+        "src/components/Markdown.test.tsx"
+      ],
+      "supersededBy": [
+        "L4-WP12",
+        "L4-WP13",
+        "L4-WP14",
+        "L4-WP15",
+        "L4-WP16"
+      ]
+    },
+    {
+      "id": "L4-CH-3",
+      "lane": "L4",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "social::char_tests::",
+      "files": [
+        "src-tauri/src/lanes/l4/characterization/social_char_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/social.rs"
+      ],
+      "tests": [
+        "char_ingest_refuses_sender_not_equal_binding_address",
+        "char_resolve_matches_wallet_addresses_only"
+      ],
+      "pins": "social faces: ingest refuses a binding unless the relay sender equals the binding (wallet) address, before the signature check and before storing; resolve matches binding addresses only, with no comms or roster mapping",
+      "supersededBy": [
+        "L4-WP08"
+      ]
+    }
+  ],
+  "supersedesByWp": {
+    "L4-WP02": [
+      "L4-CH-1"
+    ],
+    "L4-WP03": [
+      "L4-CH-1"
+    ],
+    "L4-WP04": [
+      "L4-CH-1"
+    ],
+    "L4-WP06": [
+      "L4-CH-1"
+    ],
+    "L4-WP07": [
+      "L4-CH-1"
+    ],
+    "L4-WP08": [
+      "L4-CH-3"
+    ],
+    "L4-WP10": [
+      "L4-CH-1"
+    ],
+    "L4-WP11": [
+      "L4-CH-1"
+    ],
+    "L4-WP12": [
+      "L4-CH-2"
+    ],
+    "L4-WP13": [
+      "L4-CH-2"
+    ],
+    "L4-WP14": [
+      "L4-CH-2"
+    ],
+    "L4-WP15": [
+      "L4-CH-2"
+    ],
+    "L4-WP16": [
+      "L4-CH-2"
+    ],
+    "L4-WP20": [
+      "L4-CH-1"
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 ---
 created: 2026-09-11
+branch: feat/hermes-p4-voice (PR #40; backfilled by LQ-WP01 2026-11-26)
 author: Claude Fable 5
 status: active
 sprint: sprint-hermes-p4-ux

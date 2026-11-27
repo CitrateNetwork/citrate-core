@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "owner": "L0",
+  "base": "a826e441",
+  "about": "L0-WP02 characterization suites for the hotspots (L0 section 3.6). LQ runs every suite here and in ci/characterization.d/l<N>.json on every merge-queue group. Fixtures change only in an L0-reviewed PR that says why (node scripts/seams-snapshot.mjs).",
+  "suites": [
+    {
+      "id": "SEAM-CMDS",
+      "lane": "L0",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "seams_tests::",
+      "covers": ["src-tauri/src/lib.rs", "src-tauri/permissions/main-window.toml"],
+      "fixtures": ["src-tauri/tests/fixtures/seams/commands.a826e441.txt", "src-tauri/tests/fixtures/seams/lib-mods.a826e441.txt"]
+    },
+    {
+      "id": "SEAM-STORE",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/seams/store.characterization.test.ts"],
+      "covers": ["src/shell/store.ts"],
+      "fixtures": ["fixtures/seams/store-methods.a826e441.json"]
+    },
+    {
+      "id": "SEAM-STATE",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/seams/state.characterization.test.ts"],
+      "covers": ["src/shell/state.ts", "src/shell/netScope.ts"],
+      "fixtures": [
+        "fixtures/seams/fresh-state-p1.a826e441.json",
+        "fixtures/seams/persist-keys.a826e441.json",
+        "fixtures/seams/save-0.5.9.member.a826e441.json",
+        "fixtures/seams/load-0.5.9-save.a826e441.json",
+        "fixtures/seams/load-0.5.1-save.a826e441.json"
+      ]
+    },
+    {
+      "id": "SEAM-BRIDGE",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/bridge/seams/bridge.characterization.test.ts"],
+      "covers": ["src/bridge/index.ts", "src/bridge/cx.ts", "src/bridge/domains.ts", "src/bridge/tauri/**", "src/bridge/sim/**"],
+      "fixtures": ["fixtures/seams/bridge-sim.a826e441.json", "fixtures/seams/bridge-tauri.a826e441.json"]
+    },
+    {
+      "id": "SEAM-ROUTES",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/seams/routes.characterization.test.tsx"],
+      "covers": ["src/shell/PlaceView.tsx", "src/shell/places.ts"],
+      "fixtures": ["fixtures/seams/routes-surfaces.a826e441.json", "fixtures/seams/routes-resolve.a826e441.json"]
+    },
+    {
+      "id": "SEAM-SNAPSHOT-LIB",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["scripts/seams-snapshot.test.mjs"],
+      "covers": ["scripts/seams-snapshot.mjs", "ci/characterization.json"]
+    }
+  ]
+}
