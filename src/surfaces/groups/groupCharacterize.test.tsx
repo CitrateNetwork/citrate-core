@@ -21,7 +21,7 @@ import { freshState, type AppState } from "../../shell/state";
 import { groupsSlice, reloadMessages } from "../../shell/slices/groups";
 import type { Store } from "../../shell/store";
 import type { Group, GroupMember, GroupMessage } from "../../bridge/domains";
-import type { DisclosureScan } from "./groupHermes";
+import { buildRequest, type DisclosureScan } from "./groupHermes";
 
 // The on-device private-information check is Rust (`pii_scan_text`); as in groupChat.test.tsx its
 // result is driven through this seam.
@@ -274,6 +274,10 @@ describe("L4 characterization: what is never shown, and Hermes", () => {
     const messages = [msg("1", DANA, bindingBody, 1), msg("2", DANA, linkBody, 2), msg("3", DANA, marked, 3), msg("4", DANA, "hello", 4)];
     expect(threadModel(messages).map((t) => t.text)).toEqual(["hello"]);
     expect(lastLine(messages.slice(0, 3))).toBe("");
+    // Nor do they reach the on-device model: the Hermes transcript is built from the same thread.
+    const req = buildRequest({ groupName: GROUP.name, roster: ROSTER, cluster: null, rounds: "not live", messages, asker: ME });
+    expect(req.messagesJson).toContain("hello");
+    for (const hidden of ["cbind1", "cdlink1", "newer app", "\\u0001"]) expect(req.messagesJson).not.toContain(hidden);
     seed(messages);
     await render();
     expect(shownTexts()).toEqual(["hello"]);

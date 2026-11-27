@@ -1335,5 +1335,5 @@ mod tests {
 
 // 0.6.0 L4-WP01: characterization of resolve and ingest (test-only; see the file).
 #[cfg(test)]
-#[path = "social_char_tests.rs"]
+#[path = "lanes/l4/characterization/social_char_tests.rs"]
 mod char_tests;

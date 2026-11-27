@@ -8,7 +8,7 @@
 // mock runtime is a different type), so these read the shipped source of each blocking body, the
 // same way `comms_tests.rs` checks a command's body. Included into `social::char_tests`.
 
-const SOURCE: &str = include_str!("social.rs");
+const SOURCE: &str = include_str!("../../../social.rs");
 
 /// The source of one `pub fn <name>(` in social.rs, up to its closing brace.
 fn fn_body(name: &str) -> &'static str {
