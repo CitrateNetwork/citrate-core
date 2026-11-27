@@ -130,30 +130,66 @@ function disabledCargo(src: string): string[] {
   return [...off, ...lines];
 }
 
-/** RED: the host check as it stood, the include text present. */
+/** The column-0 test module of a host file: `#[cfg(test)]`, `mod tests {`, include lines only, `}`. */
+const TEST_MODULE = /^#\[cfg\(test\)\]\nmod tests \{\n((?:    include!\("[a-z0-9_]+\.rs"\);\n)+)\}$/gm;
+
+/** How many times `needle` occurs in `hay`. */
+const occurrences = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+/**
+ * Why `host` does not compile `file` into its tests, or undefined when it does: the include occurs
+ * once outside comments, inside the column-0 `#[cfg(test)] mod tests { ... }` block, with no
+ * attribute stacked on that block and no inner `#![cfg...]` in the host.
+ */
 function hostCompileError(host: string, file: string): string | undefined {
-  return uncommented(host).includes(`include!("${basename(file)}");`) ? undefined : `${file} is not included`;
+  const src = cargoSource(host);
+  const inc = `include!("${basename(file)}");`;
+  const n = occurrences(src, inc);
+  if (n !== 1) return `${inc} occurs ${n} times outside comments`;
+  if (/^[ \t]*#!\[\s*cfg/m.test(src)) return "an inner #![cfg...] in the host";
+  const blocks = [...src.matchAll(TEST_MODULE)].filter((m) => m[1].includes(`    ${inc}\n`));
+  if (blocks.length !== 1) return `${inc} is not in a column-0 #[cfg(test)] mod tests { ... }`;
+  if (src.slice(0, blocks[0].index ?? 0).trimEnd().endsWith("]")) return "an attribute on the test module";
+  return undefined;
 }
 
-/** RED: the lib.rs check as it stood, the declaration text present. */
+/** Why lib.rs does not compile `mod <name>;` in, or undefined: once, at column 0, no attribute, no crate #![cfg(...)]. */
 function libDeclareError(lib: string, name: string): string | undefined {
-  return uncommented(lib).includes(`mod ${name};`) ? undefined : `mod ${name} is not declared`;
+  const src = cargoSource(lib);
+  if (/^[ \t]*#!\[\s*cfg\s*\(/m.test(src)) return "a crate-level #![cfg(...)]";
+  const lines = src.match(new RegExp(`^.*\\bmod ${name}\\b.*$`, "gm")) ?? [];
+  if (lines.length !== 1 || lines[0] !== `mod ${name};`) return `mod ${name}: ${JSON.stringify(lines)}`;
+  const at = src.search(new RegExp(`^mod ${name};$`, "m"));
+  if (src.slice(0, at).trimEnd().endsWith("]")) return `an attribute on mod ${name}`;
+  return undefined;
 }
 
-/** RED: the include check as it stood, the include text present. */
+/** Why `src` does not include `file` as a top-level item, or undefined: once, at column 0, right after a closed item. */
 function topLevelIncludeError(src: string, file: string): string | undefined {
-  return uncommented(src).includes(`include!("${basename(file)}");`) ? undefined : `${file} is not included`;
+  const code = cargoSource(src);
+  const inc = `include!("${basename(file)}");`;
+  const n = occurrences(code, inc);
+  if (n !== 1) return `${inc} occurs ${n} times outside comments`;
+  if (/^[ \t]*#!\[/m.test(code)) return "an inner attribute";
+  const at = code.split("\n").indexOf(inc);
+  if (at < 0) return `${inc} is not a column-0 line of its own`;
+  if (!code.split("\n").slice(0, at).join("\n").trimEnd().endsWith("}")) return `${inc} does not follow a closed item`;
+  return undefined;
 }
 
-/** RED: the mod check as it stood, a `mod <name> {` line. */
+/** Why the suite file does not open with its `mod <name> {` (nothing but comments above it), or undefined. */
 function suiteModError(src: string, name: string): string | undefined {
-  return new RegExp(`^mod ${name} \\{`, "m").test(uncommented(src)) ? undefined : `no mod ${name}`;
+  return uncommented(src).trimStart().startsWith(`mod ${name} {`) ? undefined : `mod ${name} is not the first item`;
 }
 
 /** vitest modifiers that skip, focus or invert a test or a whole describe block. */
 const MODIFIER = "skip|only|todo|skipIf|runIf|fails";
-/** RED: only a test-level skip, as the count check saw it. */
-const SKIPPING = [/^(?:it|test)\.skip\(/];
+const SKIPPING = [
+  new RegExp(`\\.\\s*(?:${MODIFIER})\\b`), // describe.<m>, it.<m>, test.<m>, ctx.<m>()
+  new RegExp(`\\[\\s*["'\`](?:${MODIFIER})["'\`]\\s*\\]`), // describe["<m>"]
+  new RegExp(`\\b(?:${MODIFIER})["'\`]?\\s*:`), // { <m>: true } test or describe options
+  /\bx(?:describe|it|test)\b/, // the x-prefixed skips
+];
 
 /** The lines, outside comments, that skip, focus or invert a test or a describe block. Empty when all run. */
 function skippingLines(src: string): string[] {

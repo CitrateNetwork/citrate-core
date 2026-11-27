@@ -544,28 +544,114 @@ mod lq_l8_fl {
         Ok(())
     }
 
+    /// A whole-line `//` comment (a doc comment too) blanked, indentation kept otherwise.
+    fn blank_comment(line: &str) -> &str {
+        if line.trim_start().starts_with("//") {
+            ""
+        } else {
+            line
+        }
+    }
+
     /// A block comment's opener, built so that this file carries none for the registry check's
     /// comment stripper to misread.
     const BLOCK_OPEN: &str = concat!("/", "*");
 
-    /// RED: the host check as it stood, the include text present.
-    fn compiled_in(host: &str, file: &str) -> Result<(), String> {
-        let named = format!("include!(\"{file}\");");
-        if host.contains(named.as_str()) {
-            Ok(())
-        } else {
-            Err(format!("{file} is not included"))
+    /// The lines of `src` with whole-line comments blanked. A block comment fails the host
+    /// checks closed, since it can hide a declaration.
+    fn host_lines(src: &str) -> Result<Vec<&str>, String> {
+        if src.contains(BLOCK_OPEN) {
+            return Err("a block comment: the host checks read line comments only".to_string());
         }
+        Ok(src.lines().map(blank_comment).collect())
     }
 
-    /// RED: the lib.rs check as it stood, the declaration text present.
-    fn declared_in_lib(lib: &str, module: &str) -> Result<(), String> {
-        let decl = format!("mod {module};");
-        if lib.contains(decl.as_str()) {
-            Ok(())
-        } else {
-            Err(format!("mod {module} is not declared"))
+    /// The nearest non-blank line above line `i`, or "" at the top.
+    fn line_above<'a>(lines: &[&'a str], i: usize) -> &'a str {
+        let mut above = lines[..i].iter().rev().copied();
+        above.find(|l| !l.trim().is_empty()).unwrap_or("")
+    }
+
+    /// The indexes of the lines that contain `needle`.
+    fn lines_with(lines: &[&str], needle: &str) -> Vec<usize> {
+        let mut at = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains(needle) {
+                at.push(i);
+            }
         }
+        at
+    }
+
+    fn is_include(line: &str) -> bool {
+        line.starts_with("    include!(\"") && line.ends_with("\");")
+    }
+
+    /// Ok when `host` compiles `file` into its tests: `include!("<file>");` once, inside the
+    /// column-0 block `#[cfg(test)]`, `mod tests {`, include lines only, `}`, with no attribute
+    /// stacked on that block and no inner `#![cfg...]` anywhere in the host.
+    fn compiled_in(host: &str, file: &str) -> Result<(), String> {
+        let lines = host_lines(host)?;
+        for line in &lines {
+            let squashed: String = line.split_whitespace().collect();
+            if squashed.starts_with("#![cfg") {
+                return Err(format!("an inner attribute in the host: {line}"));
+            }
+        }
+        let named = format!("include!(\"{file}\")");
+        let at = lines_with(&lines, &named);
+        let [i] = at.as_slice() else {
+            return Err(format!("{file} is included {} times", at.len()));
+        };
+        let i = *i;
+        if lines[i] != format!("    {named};").as_str() {
+            return Err(format!("not a plain include line: {:?}", lines[i]));
+        }
+        let mut top = i;
+        while top > 0 && is_include(lines[top - 1]) {
+            top -= 1;
+        }
+        let mut end = i + 1;
+        while end < lines.len() && is_include(lines[end]) {
+            end += 1;
+        }
+        if lines.get(end).copied() != Some("}") {
+            return Err("the test module holds more than its includes".to_string());
+        }
+        if top < 2 || lines[top - 1] != "mod tests {" || lines[top - 2] != "#[cfg(test)]" {
+            return Err(format!("{file} is not in a column-0 #[cfg(test)] mod tests"));
+        }
+        if line_above(&lines, top - 2).trim_end().ends_with(']') {
+            return Err("an attribute stacked on the test module".to_string());
+        }
+        Ok(())
+    }
+
+    /// Ok when `lib` declares `mod <module>;` once, at column 0, with no attribute on it, and
+    /// carries no crate-level `#![cfg(...)]`.
+    fn declared_in_lib(lib: &str, module: &str) -> Result<(), String> {
+        let lines = host_lines(lib)?;
+        for line in &lines {
+            let squashed: String = line.split_whitespace().collect();
+            if squashed.starts_with("#![cfg(") {
+                return Err(format!("a crate-level cfg: {line}"));
+            }
+        }
+        let decl = format!("mod {module};");
+        let inline = format!("mod {module} {{");
+        let mut at = lines_with(&lines, &decl);
+        at.extend(lines_with(&lines, &inline));
+        let [i] = at.as_slice() else {
+            return Err(format!("mod {module} is declared {} times", at.len()));
+        };
+        let i = *i;
+        if lines[i] != decl.as_str() {
+            return Err(format!("not a plain column-0 declaration: {:?}", lines[i]));
+        }
+        if line_above(&lines, i).trim_end().ends_with(']') {
+            return Err(format!("an attribute on mod {module}"));
+        }
+        Ok(())
     }
 
     #[test]
