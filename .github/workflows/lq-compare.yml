@@ -4,13 +4,18 @@
 #
 # LQ-WP02 (0.6.0 planset, lane LQ): the test-count ratchet, Rule 2.
 #
-# Called from ci.yml as job `lq`, after its rust and node jobs, so the check reads `lq / ratchet`
-# and runs on every pull_request, merge_group and push to main that ci.yml runs on. It counts the
-# runners' own output (the rust job's validated cargo-counts.json, from its test log and cargo's
-# exit status, and the node job's vitest json report, both uploaded by ci.yml; the raw cargo log
-# never leaves the rust job) and the tree, by LQ-WP01's measure rules, and compares that with
+# Called from lq-ratchet.yml as job `lq`, after its cargo-test and vitest-json measure jobs, so the
+# check reads `lq / ratchet` and runs on every pull_request, merge_group and push to main. It
+# counts the runners' own output (the cargo job's validated cargo-counts.json, from its test log
+# and cargo's exit status, and the vitest json report; the raw cargo log never leaves the cargo
+# job) and the tree, by LQ-WP01's measure rules, and compares that with
 # .agentile/coverage/ratchet.json at the merge base. Rules and exit codes: scripts/ci/lq/ratchet.mjs.
-# LQ-WP01's lq-ratchet.yml stays the standalone measuring workflow for a new baseline.
+#
+# What this does and does not guarantee: the merge base's script judges once it exports compare,
+# so a PR's edit to the rules applies from the next PR on. PR code still runs in the measuring
+# steps (the tests, the cargo build scripts, and src-tauri/formal/tlc_expect.py, which measure
+# imports from the PR tree), and a PR can edit these workflows. Required review of those files
+# (CODEOWNERS) is the control, not this job alone.
 #
 # A decrease passes only with the `ratchet-adr` label and a docs/adr/<file>.md linked in the PR
 # body that names the axis and each removed test. The same rule covers lowering the committed
@@ -25,11 +30,11 @@ on:
   workflow_call:
     inputs:
       rust_result:
-        description: needs.rust.result of the calling ci.yml run
+        description: needs.cargo-test.result of the calling lq-ratchet.yml run
         type: string
         required: true
       node_result:
-        description: needs.node.result of the calling ci.yml run
+        description: needs.vitest-json.result of the calling lq-ratchet.yml run
         type: string
         required: true
 
@@ -47,15 +52,15 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      # A rust or node job that did not succeed (a test binary that aborted, a cancelled or
-      # skipped job) is a refusal before any artifact is read.
-      - name: the rust and node jobs succeeded
+      # A measure job that did not succeed (a test binary that aborted, a cancelled or skipped
+      # job) is a refusal before any artifact is read.
+      - name: the cargo and vitest measure jobs succeeded
         env:
           RUST_RESULT: ${{ inputs.rust_result }}
           NODE_RESULT: ${{ inputs.node_result }}
         run: |
           if [ "$RUST_RESULT" = success ] && [ "$NODE_RESULT" = success ]; then exit 0; fi
-          echo "::error title=lq / ratchet::rust job $RUST_RESULT, node job $NODE_RESULT; the ratchet counts only a green run"
+          echo "::error title=lq / ratchet::cargo-test job $RUST_RESULT, vitest-json job $NODE_RESULT; the ratchet counts only a green run"
           exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -64,15 +69,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: validated counts from the rust job
+      - name: validated counts from the cargo-test job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: lq-cargo-counts
+          name: cargo-counts
           path: lq-artifacts
-      - name: runner output from the node job
+      - name: runner output from the vitest-json job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: lq-vitest-json
+          name: vitest-json
           path: lq-artifacts
       - name: merge base, diff and PR context
         env:
@@ -95,8 +100,9 @@ jobs:
                fi ;;
           esac
           echo "merge base: $base"
-          # The rules that judge a PR are the merge base's, once they exist there: a PR cannot
-          # loosen the ratchet that judges it (changes to the script apply from the next PR on).
+          # The rules that judge a PR are the merge base's, once they exist there, so a PR's edit
+          # to the script applies from the next PR on. PR code still runs in the measuring steps,
+          # so review of those files is the control (see the header).
           # LQ-WP01's script is measure-only, so the base's script judges only once it exports
           # compare; before that the head's script does (the bootstrap case).
           if git show "$base:scripts/ci/lq/ratchet.mjs" 2>/dev/null | grep -q '^export function compare('; then

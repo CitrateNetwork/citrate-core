@@ -306,7 +306,8 @@ export function buildRatchet({ cargo, vitest, tree, rev, measured }) {
 //   not: a PR cannot raise ratchet.json past what its own tree measures.
 // - A test the diff removes and does not add back (in any file of the diff) needs the same label
 //   and ADR whatever the counts say: the floor only advances when the record PR lands, so the
-//   totals alone can hide a deletion. A rename counts as a removal of the old name.
+//   totals alone can hide a deletion. A rename counts as a removal of the old name, and a test
+//   attribute deleted from a fn that stays (`#[test]` off, the fn kept) as a removal of that fn.
 // - A focused test (it/test/describe/suite .only) fails anywhere in the tree or the diff.
 // - A new #[ignore] or it/test/describe .skip, .todo, .skipIf needs a reason and an issue link,
 //   on its line or in the comment line above it.
@@ -345,6 +346,8 @@ function walk(dir, keep, out = []) {
 // unified diff. A rust test is a `fn` under a #[test] or #[tokio::test] attribute on the same side
 // of the diff (old side: removed and context lines; new side: added and context lines), so a fn
 // renamed under an unchanged attribute line is a removal of the old name and an addition of the new.
+// A test attribute removed (or added) on its own is a removal (or an addition) of the fn under it,
+// even when that fn line is unchanged context: deleting only `#[test]` turns the test off.
 const TEST_ATTR = /^\s*#\[(?:tokio::)?test\b/;
 const RS_FN = /\bfn (\w+)/;
 const JS_TEST = /(?<![.\w$])(?:it|test)(?:\.each\([^)]*\))?\(\s*(["'`])(.+?)\1/;
@@ -359,29 +362,76 @@ const diffPath = (s, prefix) => {
   if (p === "/dev/null") return "";
   return p.startsWith(prefix) ? p.slice(prefix.length) : p;
 };
-export function scanDiff(diff) {
+// One side's pending test attribute: `pending` while the attribute run continues, `changed` when a
+// test attribute in the run is a change line on this side, `at` its old-side line (for a name).
+const freshSide = () => ({ pending: false, changed: false, at: 0 });
+// Feeds one line to a side; returns the fn name when the line completes a test this side records
+// (the fn line is a change line, or a test attribute above it is).
+function sideStep(st, text, isChange, oldLine) {
+  if (TEST_ATTR.test(text)) {
+    if (!st.pending) Object.assign(st, freshSide(), { pending: true });
+    if (isChange && !st.changed) Object.assign(st, { changed: true, at: oldLine });
+    return null;
+  }
+  if (st.pending && RS_FN.test(text)) {
+    const record = isChange || st.changed;
+    Object.assign(st, freshSide());
+    return record ? text.match(RS_FN)[1] : null;
+  }
+  if (st.pending && /^\s*(?:#\[|\/\/)/.test(text)) return null;
+  Object.assign(st, freshSide());
+  return null;
+}
+// The fn under a test attribute whose run outlives the hunk, from the head tree: the lines after
+// a hunk are unchanged, so the head file there reads as the old one did. Null when the file is
+// not a regular file under root.
+function fnAfter(root, file, fromLine) {
+  if (!root || !file) return null;
+  const abs = path.resolve(root, file);
+  const rel = path.relative(path.resolve(root), abs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  try { if (!fs.lstatSync(abs).isFile()) return null; } catch { return null; }
+  const lines = (read(abs) || "").split("\n");
+  const st = { pending: true, changed: true, at: 0 };
+  for (let i = Math.max(0, fromLine - 1); i < lines.length && st.pending; i++) {
+    const name = sideStep(st, lines[i], false, 0);
+    if (name) return name;
+  }
+  return null;
+}
+// root: the head tree (compare's --root), used only to name a fn the diff context cuts off.
+export function scanDiff(diff, { root } = {}) {
   const out = { focused: [], unreasoned: [], removedTests: [], addedTests: [] };
-  let oldFile = "", newFile = "", line = 0, prev = "", oldAttr = false, newAttr = false;
+  let oldFile = "", newFile = "", line = 0, oldLine = 0, prev = "", inHunk = false;
+  let oldSide = freshSide(), newSide = freshSide();
   let oldLeft = 0, newLeft = 0; // lines of the current hunk still to come on each side
-  // Tracks a pending test attribute on one side; returns the fn name when this line completes it.
-  const step = (pending, text) => {
-    if (TEST_ATTR.test(text)) return [true, null];
-    if (pending && RS_FN.test(text)) return [false, text.match(RS_FN)[1]];
-    if (pending && /^\s*(?:#\[|\/\/)/.test(text)) return [true, null];
-    return [false, null];
+  // A hunk ended with a changed test attribute still pending on a side: its fn is past the
+  // context. Name it from the head tree; a removal that cannot be named is still a removal (by the
+  // old file and line), so the rule fails closed.
+  const endHunk = () => {
+    if (inHunk && oldSide.pending && oldSide.changed && oldFile.endsWith(".rs")) {
+      out.removedTests.push(fnAfter(root, newFile, line) || `${oldFile}:${oldSide.at}`);
+    }
+    if (inHunk && newSide.pending && newSide.changed && newFile.endsWith(".rs")) {
+      const name = fnAfter(root, newFile, line);
+      if (name) out.addedTests.push(name);
+    }
+    inHunk = false; oldSide = freshSide(); newSide = freshSide();
   };
   for (const raw of (diff || "").split("\n")) {
     // A file header always ends the hunk before it: no content line starts with "d".
-    if (raw.startsWith("diff --git ")) { oldFile = newFile = ""; oldLeft = newLeft = 0; oldAttr = newAttr = false; continue; }
+    if (inHunk && oldLeft === 0 && newLeft === 0) endHunk();
+    if (raw.startsWith("diff --git ")) { endHunk(); oldFile = newFile = ""; oldLeft = newLeft = 0; continue; }
     if (oldLeft === 0 && newLeft === 0) {
-      if (raw.startsWith("--- ")) { oldFile = diffPath(raw.slice(4), "a/"); oldAttr = false; continue; }
-      if (raw.startsWith("+++ ")) { newFile = diffPath(raw.slice(4), "b/"); newAttr = false; continue; }
+      if (raw.startsWith("--- ")) { oldFile = diffPath(raw.slice(4), "a/"); continue; }
+      if (raw.startsWith("+++ ")) { newFile = diffPath(raw.slice(4), "b/"); continue; }
     }
-    const h = raw.match(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    const h = raw.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
     if (h) {
-      oldLeft = h[1] === undefined ? 1 : +h[1];
-      newLeft = h[3] === undefined ? 1 : +h[3];
-      line = +h[2]; prev = ""; oldAttr = newAttr = false;
+      endHunk();
+      oldLeft = h[2] === undefined ? 1 : +h[2];
+      newLeft = h[4] === undefined ? 1 : +h[4];
+      oldLine = +h[1]; line = +h[3]; prev = ""; inHunk = true;
       continue;
     }
     const tag = raw[0], text = raw.slice(1);
@@ -389,15 +439,14 @@ export function scanDiff(diff) {
     if (tag !== "+") oldLeft = Math.max(0, oldLeft - 1);
     if (tag !== "-") newLeft = Math.max(0, newLeft - 1);
     if (tag !== "+" && oldFile.endsWith(".rs")) {
-      const [p, name] = step(oldAttr, text);
-      oldAttr = p;
-      if (name && tag === "-") out.removedTests.push(name);
+      const name = sideStep(oldSide, text, tag === "-", oldLine);
+      if (name) out.removedTests.push(name);
     }
     if (tag !== "-" && newFile.endsWith(".rs")) {
-      const [p, name] = step(newAttr, text);
-      newAttr = p;
-      if (name && tag === "+") out.addedTests.push(name);
+      const name = sideStep(newSide, text, tag === "+", oldLine);
+      if (name) out.addedTests.push(name);
     }
+    if (tag !== "+") oldLine += 1;
     const file = tag === "-" ? oldFile : newFile;
     const t = JS_EXT.test(file) && tag !== " " && !isComment(text) && text.match(JS_TEST);
     if (t) (tag === "-" ? out.removedTests : out.addedTests).push(t[2]);
@@ -415,6 +464,7 @@ export function scanDiff(diff) {
     }
     prev = text; line += 1;
   }
+  if (inHunk) endHunk();
   return out;
 }
 
@@ -443,7 +493,7 @@ const num = (v) => typeof v === "number" && Number.isFinite(v);
 // (undefined) to skip the floor rules. The CLI always supplies it from --root.
 export function compare(base, head, { root = ".", diff = "", labels = [], body = "", floor } = {}) {
   const failures = [], notes = [];
-  const scan = scanDiff(diff);
+  const scan = scanDiff(diff, { root });
   const decreases = []; // { axis, msg }
   if (!base) {
     notes.push("no ratchet.json at the merge base (LQ-WP01 not landed yet): axis comparison skipped; diff and tree rules still apply");

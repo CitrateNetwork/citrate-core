@@ -10,23 +10,19 @@ name: lq ratchet
 # writes no ratchet.json (scripts/ci/lq/ratchet.mjs refuses it). The cargo job publishes only
 # validated counts (`cargo-counts`), never the raw test output.
 #
-# The compare check `lq / ratchet` (LQ-WP02) is lq-compare.yml, called from ci.yml as job `lq` on
-# the counts ci.yml's own rust and node jobs publish. This workflow only measures, on the paths
-# that change what it measures with, and on demand for a new baseline.
+# LQ-WP02: the compare check `lq / ratchet` is lq-compare.yml, called below as job `lq` after the
+# two measure jobs, on the counts they publish. So this workflow runs on every pull_request, merge
+# group and push to main, with no path filter: a required check that does not run on a change
+# cannot judge it. ci.yml is L0's (lane-guard) and stays as it is; its rust and node jobs still
+# gate merges on their own, and these jobs run the same toolchain and commands to count.
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/lq-ratchet.yml"
-      - "scripts/ci/lq/**"
-      - ".agentile/coverage/**"
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/lq-ratchet.yml"
-      - "scripts/ci/lq/**"
-      - ".agentile/coverage/**"
 
 permissions:
   contents: read
@@ -50,9 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # The PR head itself, not the synthetic merge commit, so ratchet.json's rev is a real
-          # commit on the branch.
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The event commit (no ref): on a PR, the merge commit with the base branch, so the counts
+          # lq / ratchet compares with the base's ratchet.json include every test the base gained
+          # after the branch point. A PR head alone would read as a decrease. On a push to main
+          # (where the baseline and the record PR come from) it is the pushed commit itself.
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -109,7 +106,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -134,7 +130,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -149,7 +144,7 @@ jobs:
           path: ${{ runner.temp }}/in
       - name: ratchet.mjs measure
         env:
-          REV: ${{ github.event.pull_request.head.sha || github.sha }}
+          REV: ${{ github.sha }}
         run: |
           node scripts/ci/lq/ratchet.mjs measure \
             --cargo-counts "$RUNNER_TEMP/in/cargo-counts.json" \
@@ -167,3 +162,18 @@ jobs:
           name: ratchet-json
           path: ${{ runner.temp }}/ratchet.json
           if-no-files-found: error
+
+  # LQ-WP02: the check `lq / ratchet` (Rule 2), and `lq / record` on a push to main. It runs after
+  # both measure jobs even when they fail, because a skipped required check counts as passed; it
+  # then fails closed on their results and on missing runner output. The write permissions are for
+  # the `record` job only, which runs on a push to main; the `ratchet` job drops to read.
+  lq:
+    needs: [cargo-test, vitest-json]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/lq-compare.yml
+    with:
+      rust_result: ${{ needs.cargo-test.result }}
+      node_result: ${{ needs.vitest-json.result }}

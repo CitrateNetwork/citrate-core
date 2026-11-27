@@ -406,7 +406,8 @@ describe("ratchet.mjs hardening (LQ-WP01 review)", () => {
   it("the chain read token reaches only the cargo fetch step, never the tests or an artifact", () => {
     const wf = fs.readFileSync(path.join(ROOT, ".github/workflows/lq-ratchet.yml"), "utf8");
     const jobs = workflowJobs(wf);
-    expect(jobs.map((j) => j.name)).toEqual(["cargo-test", "vitest-json", "measure"]);
+    // LQ-WP02 adds `lq`, the reusable call to lq-compare.yml; it has no steps and takes no secret.
+    expect(jobs.map((j) => j.name)).toEqual(["cargo-test", "vitest-json", "measure", "lq"]);
     for (const j of jobs) {
       // No job-wide secret: a job env is inherited by every step, PR-controlled ones included.
       expect(j.head).not.toMatch(/secrets\./);
@@ -926,16 +927,31 @@ describe("CLI", () => {
   });
 });
 
+// ci.yml is L0's file (lane-guard, .agentile/v60-ownership.map), so `lq / ratchet` is wired from
+// LQ's own lq-ratchet.yml: it calls lq-compare.yml as job `lq` after its two measure jobs.
 describe("workflow wiring (tripwires)", () => {
   const ci = fs.readFileSync(path.join(repo, ".github/workflows/ci.yml"), "utf8");
+  const lr = fs.readFileSync(path.join(repo, ".github/workflows/lq-ratchet.yml"), "utf8");
   const wf = fs.readFileSync(path.join(repo, ".github/workflows/lq-compare.yml"), "utf8");
-  it("ci.yml calls lq-compare as job `lq` after rust and node, even when they fail, so a red test job cannot skip the check", () => {
-    const job = ci.slice(ci.indexOf("\n  lq:"));
+  it("lq-ratchet.yml calls lq-compare as job `lq` after both measure jobs, even when they fail, on every PR, merge group and push to main", () => {
+    const job = lr.slice(lr.indexOf("\n  lq:"));
     expect(job).toMatch(/uses: \.\/\.github\/workflows\/lq-compare\.yml/);
-    expect(job).toMatch(/needs: \[rust, node\]/);
+    expect(job).toMatch(/needs: \[cargo-test, vitest-json\]/);
     expect(job).toMatch(/if: \$\{\{ !cancelled\(\) \}\}/);
-    expect(ci).toMatch(/cargo test --workspace --locked --offline --no-fail-fast 2>&1 \| tee "\$RUNNER_TEMP\/cargo-test\.log"/);
-    expect(ci).toMatch(/--outputFile\.json=vitest\.json/);
+    expect(lr).toMatch(/cargo test --workspace --locked --offline --no-fail-fast 2>&1 \| tee "\$RUNNER_TEMP\/cargo-test\.log"/);
+    expect(lr).toMatch(/--reporter=json --outputFile\.json=/);
+    // A required check with a path filter does not run on most PRs, and a check that never ran
+    // cannot block one. Every trigger the merge path uses is there, with no filter.
+    const on = lr.slice(lr.indexOf("\non:"), lr.indexOf("\npermissions:"));
+    expect(on).toMatch(/\n  pull_request:\n/);
+    expect(on).toMatch(/\n  merge_group:\n\s+types: \[checks_requested\]/);
+    expect(on).toMatch(/\n  push:\n\s+branches: \[main\]/);
+    expect(on).not.toMatch(/paths(-ignore)?:/);
+    // The counts are of the event commit (the merge commit on a PR), never the PR head alone: a
+    // head that predates tests the base gained would read as a decrease.
+    expect(lr).not.toMatch(/pull_request\.head\.sha/);
+    // LQ does not edit L0's ci.yml.
+    expect(ci).not.toMatch(/lq-compare\.yml/);
   });
   it("the ratchet job is named ratchet (check `lq / ratchet`), reads only, and never puts PR text into a script", () => {
     const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
@@ -943,7 +959,8 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/permissions:\n\s+contents: read\n\s+pull-requests: read/);
     expect(wf).not.toMatch(/\$\{\{[^}]*(body|title|head_ref|labels)[^}]*\}\}/);
     expect(job).toMatch(/fails closed/);
-    // A PR cannot loosen the rules that judge it: the merge base's script runs once it exists there.
+    // The merge base's script judges once it exists there, so a PR's edit to the rules applies from
+    // the next PR on. PR code still runs in the measuring steps; review is the control there.
     expect(job).toMatch(/git show "\$base:scripts\/ci\/lq\/ratchet\.mjs" > "\$RUNNER_TEMP\/ratchet\.mjs"/);
     expect(job).toMatch(/node "\$LQ_SCRIPT" compare/);
   });
@@ -960,11 +977,11 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/s\/\.\*\\\(#\(\[0-9\]\+\)\\\)\$\/\\1\/p/);
     expect(job).toMatch(/s\/\^Merge pull request #\(\[0-9\]\+\) \.\*\/\\1\/p/);
   });
-  // Review of #790 (round 3): the raw test log never leaves the rust job, and the chain read token
-  // is scoped to one `cargo fetch --locked` step as an in-process git config, as LQ-WP01 does in
-  // lq-ratchet.yml. A grep for the literal token cannot catch an encoded form of it.
-  const rustJob = () => workflowJobs(ci).find((j) => j.name === "rust");
-  it("ci.yml rust job: the chain read token reaches only the cargo fetch step, never the tests or a git config file", () => {
+  // Review of #790 (round 3): the raw test log never leaves the cargo job, and the chain read token
+  // is scoped to one `cargo fetch --locked` step as an in-process git config. A grep for the
+  // literal token cannot catch an encoded form of it.
+  const rustJob = () => workflowJobs(lr).find((j) => j.name === "cargo-test");
+  it("lq-ratchet.yml cargo job: the chain read token reaches only the cargo fetch step, never the tests or a git config file", () => {
     const rust = rustJob();
     expect(rust).toBeTruthy();
     // No job-wide secret: a job env reaches every step, the PR's build scripts and tests included.
@@ -974,7 +991,7 @@ describe("workflow wiring (tripwires)", () => {
     expect(withToken[0]).toMatch(/cargo fetch --locked/);
     expect(withToken[0]).toMatch(/GIT_CONFIG_KEY_0=/);
     expect(withToken[0]).not.toMatch(/git config|cargo (test|build|run|check|clippy)\b/);
-    expect(ci).not.toMatch(/git config --global[^\n]*\n?[^\n]*insteadOf/);
+    expect(lr).not.toMatch(/git config --global[^\n]*\n?[^\n]*insteadOf/);
     const names = rust.steps.map((s) => /- name: (.+)/.exec(s)?.[1] ?? s.split("\n")[0].trim());
     const fetch = names.findIndex((n) => /cargo fetch --locked/.test(n));
     const check = names.findIndex((n) => /No credential left on disk/.test(n));
@@ -986,24 +1003,25 @@ describe("workflow wiring (tripwires)", () => {
     // Every build after the fetch is offline: nothing later can need, or reach for, the token.
     for (const s of rust.steps.filter((x) => /cargo (clippy|test)\b/.test(x))) expect(s).toMatch(/--offline/);
   });
-  it("ci.yml rust job: only validated counts leave the job, from cargo's own exit status; the raw log is never an artifact", () => {
+  it("lq-ratchet.yml cargo job: only validated counts leave the job, from cargo's own exit status; the raw log is never an artifact", () => {
     const rust = rustJob();
     const test = rust.steps.find((s) => /cargo test --workspace/.test(s));
     expect(test).toMatch(/code=\$\{PIPESTATUS\[0\]\}/);
     expect(test).toMatch(/ratchet\.mjs cargo-counts --cargo-log "\$RUNNER_TEMP\/cargo-test\.log"[\s\\]*--cargo-exit "\$code" --out "\$RUNNER_TEMP\/cargo-counts\.json"/);
     expect(test).toMatch(/exit "\$code"/);
-    const uploads = workflowJobs(ci).flatMap((j) => j.steps).filter((s) => s.includes("actions/upload-artifact"));
+    const uploads = workflowJobs(lr).flatMap((j) => j.steps).filter((s) => s.includes("actions/upload-artifact"));
     for (const s of uploads) expect(s).not.toMatch(/cargo-test\.log/);
-    expect(uploads.some((s) => /name: lq-cargo-counts/.test(s) && s.includes("cargo-counts.json"))).toBe(true);
+    expect(uploads.some((s) => /name: cargo-counts\n/.test(s) && s.includes("cargo-counts.json"))).toBe(true);
   });
-  it("lq / ratchet measures from the counts file and refuses when the rust or node job did not succeed", () => {
+  it("lq / ratchet measures from the counts file and refuses when a measure job did not succeed", () => {
     const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
-    expect(job).toMatch(/name: lq-cargo-counts/);
+    expect(job).toMatch(/name: cargo-counts\n/);
+    expect(job).toMatch(/name: vitest-json\n/);
     expect(job).toMatch(/--cargo-counts lq-artifacts\/cargo-counts\.json/);
     expect(job).not.toMatch(/--cargo-log/);
-    const lq = ci.slice(ci.indexOf("\n  lq:"));
-    expect(lq).toMatch(/rust_result: \$\{\{ needs\.rust\.result \}\}/);
-    expect(lq).toMatch(/node_result: \$\{\{ needs\.node\.result \}\}/);
+    const lq = lr.slice(lr.indexOf("\n  lq:"));
+    expect(lq).toMatch(/rust_result: \$\{\{ needs\.cargo-test\.result \}\}/);
+    expect(lq).toMatch(/node_result: \$\{\{ needs\.vitest-json\.result \}\}/);
     expect(wf).toMatch(/workflow_call:\n\s+inputs:\n\s+rust_result:/);
     expect(job).toMatch(/\[ "\$RUST_RESULT" = success \] && \[ "\$NODE_RESULT" = success \]/);
   });
