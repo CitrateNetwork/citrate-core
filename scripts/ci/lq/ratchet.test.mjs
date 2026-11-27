@@ -235,6 +235,39 @@ describe("ratchet.mjs measure (LQ-WP01)", () => {
   });
 });
 
+// A workflow file, split into jobs and steps by indentation (no YAML dependency).
+function workflowJobs(text) {
+  const jobs = [];
+  let inJobs = false;
+  let job = null;
+  let step = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\S/.test(line)) {
+      inJobs = /^jobs:\s*$/.test(line);
+      job = null;
+      continue;
+    }
+    if (!inJobs) continue;
+    if (/^ {2}[\w-]+:\s*$/.test(line)) {
+      job = { name: line.trim().slice(0, -1), head: [], steps: [], inSteps: false };
+      jobs.push(job);
+      step = null;
+    } else if (!job) {
+      continue;
+    } else if (/^ {4}steps:\s*$/.test(line)) {
+      job.inSteps = true;
+    } else if (job.inSteps && /^ {6}- /.test(line)) {
+      step = [line];
+      job.steps.push(step);
+    } else if (job.inSteps && step && (/^ {8}/.test(line) || line.trim() === "")) {
+      step.push(line);
+    } else if (!job.inSteps) {
+      job.head.push(line);
+    }
+  }
+  return jobs.map((j) => ({ name: j.name, head: j.head.join("\n"), steps: j.steps.map((st) => st.join("\n")) }));
+}
+
 // Review round on c56bf1f6 (PR #786): a partial cargo log, an orphan or invalid TLC config, and
 // the private-repo credential reaching PR-controlled tests or an uploaded artifact.
 describe("ratchet.mjs hardening (LQ-WP01 review)", () => {
@@ -369,38 +402,6 @@ describe("ratchet.mjs hardening (LQ-WP01 review)", () => {
     expect(t.specs.tlc_configs_in_ci).toBeGreaterThanOrEqual(61);
   });
 
-  // lq-ratchet.yml, split into jobs and steps by indentation (no YAML dependency).
-  function workflowJobs(text) {
-    const jobs = [];
-    let inJobs = false;
-    let job = null;
-    let step = null;
-    for (const line of text.split(/\r?\n/)) {
-      if (/^\S/.test(line)) {
-        inJobs = /^jobs:\s*$/.test(line);
-        job = null;
-        continue;
-      }
-      if (!inJobs) continue;
-      if (/^ {2}[\w-]+:\s*$/.test(line)) {
-        job = { name: line.trim().slice(0, -1), head: [], steps: [], inSteps: false };
-        jobs.push(job);
-        step = null;
-      } else if (!job) {
-        continue;
-      } else if (/^ {4}steps:\s*$/.test(line)) {
-        job.inSteps = true;
-      } else if (job.inSteps && /^ {6}- /.test(line)) {
-        step = [line];
-        job.steps.push(step);
-      } else if (job.inSteps && step && (/^ {8}/.test(line) || line.trim() === "")) {
-        step.push(line);
-      } else if (!job.inSteps) {
-        job.head.push(line);
-      }
-    }
-    return jobs.map((j) => ({ name: j.name, head: j.head.join("\n"), steps: j.steps.map((st) => st.join("\n")) }));
-  }
 
   it("the chain read token reaches only the cargo fetch step, never the tests or an artifact", () => {
     const wf = fs.readFileSync(path.join(ROOT, ".github/workflows/lq-ratchet.yml"), "utf8");
@@ -693,6 +694,136 @@ describe("compare: the committed floor and removed tests", () => {
   });
 });
 
+
+// Review of #790 (round 3), reproduced: (1) deleting a whole test file skipped the removed-test
+// rule, because the file name was taken from `+++ /dev/null`; (2) a head could raise its committed
+// ratchet.json above its own measured count and pass, after which every later PR, the record PR
+// included, is refused. These diffs are real `git diff` output, built the way lq-compare.yml
+// builds lq.diff.
+const DIFF_ARGS = ["diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "-M", "-U1"];
+const DIFF_PATHS = ["*.rs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"];
+function gitDiff(before, change) {
+  const dir = tree(before);
+  const git = (...args) => {
+    const r = spawnSync("git", ["-c", "user.name=lq", "-c", "user.email=lq@example.invalid", "-c", "commit.gpgsign=false",
+      "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", "-C", dir, ...args], { encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  change(dir);
+  git("add", "-A");
+  git("commit", "-qm", "head");
+  return git(...DIFF_ARGS, "HEAD~1", "HEAD", "--", ...DIFF_PATHS);
+}
+const RS_TESTS = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn guards_the_bridge() {\n        assert!(true);\n    }\n\n    #[tokio::test]\n    async fn keeps_the_relay() {}\n}\n";
+const TS_TESTS = 'import { it } from "vitest";\n\nit("keeps the probe", () => {\n  expect(1).toBe(1);\n});\n\nit("holds the floor", () => {});\n';
+
+describe("compare: removed tests from real git diffs", () => {
+  it("a deleted rust test file: every test in it is removed and needs the ADR", () => {
+    const diff = gitDiff({ "src-tauri/src/bridge_tests.rs": RS_TESTS, "src-tauri/src/lib.rs": "pub fn a() {}\n" },
+      (d) => fs.rmSync(path.join(d, "src-tauri/src/bridge_tests.rs")));
+    expect(diff).toMatch(/^\+\+\+ \/dev\/null$/m);
+    expect(R.scanDiff(diff).removedTests).toEqual(["guards_the_bridge", "keeps_the_relay"]);
+    const r = R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/test removed and not added back: guards_the_bridge/);
+    expect(r.failures.join("\n")).toMatch(/test removed and not added back: keeps_the_relay/);
+  });
+
+  it("a deleted vitest file: every test in it is removed and needs the ADR", () => {
+    const diff = gitDiff({ "src/lib/probe.test.ts": TS_TESTS }, (d) => fs.rmSync(path.join(d, "src/lib/probe.test.ts")));
+    expect(R.scanDiff(diff).removedTests).toEqual(["keeps the probe", "holds the floor"]);
+    const r = R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/keeps the probe/);
+    const adr = tree({ "docs/adr/ADR-probe.md": "Removes keeps the probe and holds the floor (moved to the e2e suite).\n" });
+    expect(R.compare(doc(), doc(), { root: adr, diff, floor: doc(), labels: ["ratchet-adr"], body: "docs/adr/ADR-probe.md" }))
+      .toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("a test file renamed with one test dropped: only the dropped test is a removal", () => {
+    const diff = gitDiff({ "src/lib/probe.test.ts": TS_TESTS }, (d) => {
+      fs.rmSync(path.join(d, "src/lib/probe.test.ts"));
+      fs.mkdirSync(path.join(d, "src/probe"), { recursive: true });
+      fs.writeFileSync(path.join(d, "src/probe/probe.test.ts"), TS_TESTS.replace('\nit("holds the floor", () => {});\n', ""));
+    });
+    expect(diff).toMatch(/^rename from src\/lib\/probe\.test\.ts$/m);
+    const s = R.scanDiff(diff);
+    expect(s.removedTests).toEqual(["holds the floor"]);
+    expect(R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() }).failures.join("\n")).toMatch(/holds the floor/);
+  });
+
+  it("a moved rust test file with every test kept is not a removal", () => {
+    const diff = gitDiff({ "src-tauri/src/bridge_tests.rs": RS_TESTS }, (d) => {
+      fs.rmSync(path.join(d, "src-tauri/src/bridge_tests.rs"));
+      fs.mkdirSync(path.join(d, "src-tauri/tests"), { recursive: true });
+      fs.writeFileSync(path.join(d, "src-tauri/tests/bridge.rs"), RS_TESTS.replace("assert!(true);", "assert_eq!(1, 1);"));
+    });
+    expect(R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("a new test file (from /dev/null) is scanned at its new path for focused and unreasoned skipped tests", () => {
+    const diff = gitDiff({ "src/a.ts": "export const a = 1;\n" }, (d) => {
+      fs.writeFileSync(path.join(d, "src/b.test.ts"), `${ONLY}("focus", () => {});\n${SKIP}("later", () => {});\n`);
+    });
+    expect(diff).toMatch(/^--- \/dev\/null$/m);
+    const s = R.scanDiff(diff);
+    expect(s.focused).toEqual([`src/b.test.ts:1: ${ONLY}("focus", () => {});`]);
+    expect(s.unreasoned).toEqual([`src/b.test.ts:2: ${SKIP}("later", () => {});`]);
+    expect(s.removedTests).toEqual([]);
+  });
+
+  it("a removed line that reads '-- x' is hunk content, not a file header", () => {
+    const body = 'const sql = `\n-- drops the index\nselect 1;\n`;\nit("runs the migration", () => {});\n';
+    const diff = gitDiff({ "src/m.test.ts": body }, (d) => fs.writeFileSync(path.join(d, "src/m.test.ts"), body.replace("-- drops the index\n", "")));
+    expect(diff).toMatch(/^--- drops the index$/m);
+    expect(R.scanDiff(diff)).toMatchObject({ removedTests: [], addedTests: [], focused: [], unreasoned: [] });
+    // And a test removed after it is still found in the right file.
+    const both = gitDiff({ "src/m.test.ts": body }, (d) => fs.writeFileSync(path.join(d, "src/m.test.ts"), "const sql = `\nselect 1;\n`;\n"));
+    expect(R.scanDiff(both).removedTests).toEqual(["runs the migration"]);
+  });
+});
+
+describe("compare: a committed floor above the measured head", () => {
+  it("a head that raises ratchet.json above its own measured count is refused, label or not", () => {
+    const at = doc({ "tests.rust.passed": 100 });
+    const r = R.compare(at, at, { root: tree({}), floor: doc({ "tests.rust.passed": 999999 }) });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/tests\.rust\.passed: \.agentile\/coverage\/ratchet\.json records 999999, above the 100 this head measures/);
+    const adr = tree({ "docs/adr/ADR-raise.md": "tests.rust.passed\n" });
+    expect(R.compare(at, at, { root: adr, floor: doc({ "tests.rust.passed": 999999 }), labels: ["ratchet-adr"], body: "docs/adr/ADR-raise.md" }).ok)
+      .toBe(false);
+  });
+
+  it("every axis: a floor above the head fails, a floor at or below it passes", () => {
+    for (const k of R.AXES) {
+      const head = doc();
+      const v = k.split(".").reduce((o, s) => o[s], head);
+      expect(R.compare(doc(), head, { root: tree({}), floor: doc({ [k]: v + 1 }) }).ok, k).toBe(false);
+      expect(R.compare(doc(), head, { root: tree({}), floor: doc({ [k]: v }) }).ok, k).toBe(true);
+    }
+    // Frontmatter: a floor that claims fewer docs without frontmatter than the head has.
+    const fm = R.compare(doc({ "frontmatter.docs": 262 }), doc({ "frontmatter.docs": 262 }), { root: tree({}), floor: doc() });
+    expect(fm.ok).toBe(false);
+    expect(fm.failures.join("\n")).toMatch(/frontmatter: .*records 0 docs without frontmatter, below the 1 this head measures/);
+    // With no baseline at the merge base yet, a floor above the head is still refused.
+    expect(R.compare(null, doc(), { root: tree({}), floor: doc({ "tests.vitest.passed": 5201 }) }).ok).toBe(false);
+    // A head that grew past its floor passes (the record PR raises the floor later).
+    expect(R.compare(doc(), doc({ "tests.rust.passed": 3300 }), { root: tree({}), floor: doc() })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("CLI: compare refuses a committed floor above the measured head", () => {
+    const d = tree({ "base.json": JSON.stringify(doc()), "head.json": JSON.stringify(doc()),
+      ".agentile/coverage/ratchet.json": JSON.stringify(doc({ "tests.vitest.passed": 999999 })) });
+    const res = spawnSync(process.execPath, [SCRIPT, "compare", "--base", path.join(d, "base.json"), "--head", path.join(d, "head.json"), "--root", d], { encoding: "utf8" });
+    expect(res.status).toBe(1);
+    expect(res.stdout).toMatch(/tests\.vitest\.passed: .*records 999999, above the 5200 this head measures/);
+  });
+});
+
 describe("CLI", () => {
   const run = (args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
   it("compare reads the head's floor from --root and refuses when it is missing or lowered", () => {
@@ -732,7 +863,7 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/uses: \.\/\.github\/workflows\/lq-compare\.yml/);
     expect(job).toMatch(/needs: \[rust, node\]/);
     expect(job).toMatch(/if: \$\{\{ !cancelled\(\) \}\}/);
-    expect(ci).toMatch(/cargo test --workspace --locked --no-fail-fast 2>&1 \| tee cargo-test\.log/);
+    expect(ci).toMatch(/cargo test --workspace --locked --offline --no-fail-fast 2>&1 \| tee "\$RUNNER_TEMP\/cargo-test\.log"/);
     expect(ci).toMatch(/--outputFile\.json=vitest\.json/);
   });
   it("the ratchet job is named ratchet (check `lq / ratchet`), reads only, and never puts PR text into a script", () => {
@@ -758,18 +889,56 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/s\/\.\*\\\(#\(\[0-9\]\+\)\\\)\$\/\\1\/p/);
     expect(job).toMatch(/s\/\^Merge pull request #\(\[0-9\]\+\) \.\*\/\\1\/p/);
   });
-  it("the uploaded cargo test log can never carry the private-repo credential", () => {
-    const rust = ci.slice(ci.indexOf("\n  rust:"), ci.indexOf("\n  node:"));
-    const guard = rust.indexOf("name: refuse to keep a test log that carries a credential");
-    const upload = rust.indexOf("name: keep the test log for lq / ratchet");
-    expect(guard).toBeGreaterThan(0);
-    expect(guard).toBeLessThan(upload);
-    const step = rust.slice(guard, upload);
-    expect(step).toMatch(/grep -q 'x-access-token' cargo-test\.log/);
-    // The token value is matched from a file descriptor, never put on a command line.
-    expect(step).toMatch(/grep -qF -f <\(printf '%s\\n' "\$CHAIN_TOKEN"\) cargo-test\.log/);
-    expect(step).toMatch(/rm -f cargo-test\.log/);
-    expect(step).toMatch(/exit 1/);
+  // Review of #790 (round 3): the raw test log never leaves the rust job, and the chain read token
+  // is scoped to one `cargo fetch --locked` step as an in-process git config, as LQ-WP01 does in
+  // lq-ratchet.yml. A grep for the literal token cannot catch an encoded form of it.
+  const rustJob = () => workflowJobs(ci).find((j) => j.name === "rust");
+  it("ci.yml rust job: the chain read token reaches only the cargo fetch step, never the tests or a git config file", () => {
+    const rust = rustJob();
+    expect(rust).toBeTruthy();
+    // No job-wide secret: a job env reaches every step, the PR's build scripts and tests included.
+    expect(rust.head).not.toMatch(/secrets\.|CHAIN_TOKEN/);
+    const withToken = rust.steps.filter((s) => /secrets\.CITRATE_CHAIN_READ_TOKEN|CHAIN_TOKEN/.test(s));
+    expect(withToken.length).toBe(1);
+    expect(withToken[0]).toMatch(/cargo fetch --locked/);
+    expect(withToken[0]).toMatch(/GIT_CONFIG_KEY_0=/);
+    expect(withToken[0]).not.toMatch(/git config|cargo (test|build|run|check|clippy)\b/);
+    expect(ci).not.toMatch(/git config --global[^\n]*\n?[^\n]*insteadOf/);
+    const names = rust.steps.map((s) => /- name: (.+)/.exec(s)?.[1] ?? s.split("\n")[0].trim());
+    const fetch = names.findIndex((n) => /cargo fetch --locked/.test(n));
+    const check = names.findIndex((n) => /No credential left on disk/.test(n));
+    const firstBuild = rust.steps.findIndex((s) => /cargo (clippy|test|build)\b/.test(s));
+    expect(fetch).toBeGreaterThanOrEqual(0);
+    expect(check).toBeGreaterThan(fetch);
+    expect(firstBuild).toBeGreaterThan(check);
+    expect(rust.steps[check]).toMatch(/grep -rIlq 'x-access-token' "\$HOME\/\.gitconfig" "\$cargo_home\/git"/);
+    // Every build after the fetch is offline: nothing later can need, or reach for, the token.
+    for (const s of rust.steps.filter((x) => /cargo (clippy|test)\b/.test(x))) expect(s).toMatch(/--offline/);
+  });
+  it("ci.yml rust job: only validated counts leave the job, from cargo's own exit status; the raw log is never an artifact", () => {
+    const rust = rustJob();
+    const test = rust.steps.find((s) => /cargo test --workspace/.test(s));
+    expect(test).toMatch(/code=\$\{PIPESTATUS\[0\]\}/);
+    expect(test).toMatch(/ratchet\.mjs cargo-counts --cargo-log "\$RUNNER_TEMP\/cargo-test\.log"[\s\\]*--cargo-exit "\$code" --out "\$RUNNER_TEMP\/cargo-counts\.json"/);
+    expect(test).toMatch(/exit "\$code"/);
+    const uploads = workflowJobs(ci).flatMap((j) => j.steps).filter((s) => s.includes("actions/upload-artifact"));
+    for (const s of uploads) expect(s).not.toMatch(/cargo-test\.log/);
+    expect(uploads.some((s) => /name: lq-cargo-counts/.test(s) && s.includes("cargo-counts.json"))).toBe(true);
+  });
+  it("lq / ratchet measures from the counts file and refuses when the rust or node job did not succeed", () => {
+    const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
+    expect(job).toMatch(/name: lq-cargo-counts/);
+    expect(job).toMatch(/--cargo-counts lq-artifacts\/cargo-counts\.json/);
+    expect(job).not.toMatch(/--cargo-log/);
+    const lq = ci.slice(ci.indexOf("\n  lq:"));
+    expect(lq).toMatch(/rust_result: \$\{\{ needs\.rust\.result \}\}/);
+    expect(lq).toMatch(/node_result: \$\{\{ needs\.node\.result \}\}/);
+    expect(wf).toMatch(/workflow_call:\n\s+inputs:\n\s+rust_result:/);
+    expect(job).toMatch(/\[ "\$RUST_RESULT" = success \] && \[ "\$NODE_RESULT" = success \]/);
+  });
+  it("the diff the ratchet reads is the one these tests build: a/ and b/ prefixes, renames found", () => {
+    const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
+    expect(job).toContain(`git ${DIFF_ARGS.join(" ")} "$base" HEAD -- ${DIFF_PATHS.map((p) => `'${p}'`).join(" ")} > lq.diff`);
   });
   it("the record job runs only on a push to main and opens a PR rather than pushing to main", () => {
     const job = wf.slice(wf.indexOf("\n  record:"));
