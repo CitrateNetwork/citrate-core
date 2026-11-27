@@ -63,6 +63,23 @@ jobs:
       - name: test
         shell: bash
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee cargo-test.log
+      # GitHub masks secrets only in the live log, not in an uploaded artifact. This job carries
+      # the private-repo credential (the insteadOf URL above), so a log that names it is deleted
+      # and the step fails; lq / ratchet then fails closed on the missing log. The token value is
+      # matched from a file descriptor (printf is a builtin), never put on a command line.
+      - name: refuse to keep a test log that carries a credential
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          [ -f cargo-test.log ] || exit 0
+          leak=0
+          grep -q 'x-access-token' cargo-test.log && leak=1
+          if [ -n "${CHAIN_TOKEN:-}" ] && grep -qF -f <(printf '%s\n' "$CHAIN_TOKEN") cargo-test.log; then leak=1; fi
+          if [ "$leak" = 1 ]; then
+            echo "::error title=lq / ratchet::cargo-test.log names the private-repo credential; not keeping it"
+            rm -f cargo-test.log
+            exit 1
+          fi
       - name: keep the test log for lq / ratchet
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

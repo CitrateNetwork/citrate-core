@@ -72,13 +72,15 @@ jobs:
           echo "merge base: $base"
           # The rules that judge a PR are the merge base's, once they exist there: a PR cannot
           # loosen the ratchet that judges it (changes to the script apply from the next PR on).
-          if git cat-file -e "$base:scripts/ci/lq/ratchet.mjs" 2>/dev/null; then
+          # LQ-WP01's script is measure-only, so the base's script judges only once it exports
+          # compare; before that the head's script does (the bootstrap case).
+          if git show "$base:scripts/ci/lq/ratchet.mjs" 2>/dev/null | grep -q '^export function compare('; then
             git show "$base:scripts/ci/lq/ratchet.mjs" > "$RUNNER_TEMP/ratchet.mjs"
             echo "LQ_SCRIPT=$RUNNER_TEMP/ratchet.mjs" >> "$GITHUB_ENV"
             echo "rules: scripts/ci/lq/ratchet.mjs at the merge base"
           else
             echo "LQ_SCRIPT=scripts/ci/lq/ratchet.mjs" >> "$GITHUB_ENV"
-            echo "rules: scripts/ci/lq/ratchet.mjs at the head (not at the merge base yet)"
+            echo "rules: scripts/ci/lq/ratchet.mjs at the head (no compare at the merge base yet)"
           fi
           if git cat-file -e "$base:.agentile/coverage/ratchet.json" 2>/dev/null; then
             git show "$base:.agentile/coverage/ratchet.json" > lq-base.json

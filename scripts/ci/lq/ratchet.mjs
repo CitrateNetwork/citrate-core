@@ -15,6 +15,20 @@
 // configs, the tripwire registry, CI steps and frontmatter, the merge base's
 // .agentile/coverage/ratchet.json, and the PR diff, labels and body.
 //
+// Measure rules (LQ-WP01, the rules the committed baseline was measured with; a head is only
+// comparable with its base when both are counted the same way):
+//   rust    the `test result:` summary lines of the cargo log (libtest), one per test binary and
+//           doc-test target; passed and ignored are summed separately.
+//   vitest  the json reporter file (numPassedTests; skipped is numPendingTests + numTodoTests).
+//   tree    src-tauri/formal/*.tla and the *.cfg files carrying an `EXPECT:` line (what
+//           tla-models.yml checks); Markdown under docs/ and .agentile/ with all four Rule-5 keys
+//           (created, branch, author, status) in a leading frontmatter block; the named `run:`
+//           steps of the merge-queue gate workflows (ci.yml, merge-gate.yml, eval-check.yml),
+//           setup steps excepted.
+//   tripwires  the live (not replaced) entries of the LQ-WP03 registry
+//           (.agentile/coverage/tripwires.json) once it exists; until then the tests the runners
+//           passed whose full name contains "tripwire".
+//
 // Rules:
 // - No ratcheted axis may go down. A decrease passes only with the `ratchet-adr` label AND a
 //   docs/adr/<file>.md linked in the PR body that exists in the head and names the axis and
@@ -28,12 +42,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const AXES = [
+export const AXES = [
   "tests.rust.passed", "tests.vitest.passed",
   "specs.tla", "specs.tlc_configs_in_ci",
   "tripwires.registered", "tripwires.ci_steps",
 ];
-const CI_WORKFLOWS = ["ci.yml", "merge-gate.yml", "eval-check.yml"]; // the merge-queue workflows
 const ISSUE = /(?:^|[^\w&[])#\d+\b|github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+/;
 // A call, not a mention: `it.only(`, `describe.only.each(`; a test title that names it.only is not one.
 const FOCUS = /\b(?:it|test|describe|suite)\.only\s*(?:\(|\.each\b)/;
@@ -52,52 +65,161 @@ function walk(dir, keep, out = []) {
     if (e.name === "node_modules" || e.name === ".git" || e.name === "target") continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, keep, out);
-    else if (keep(e.name)) out.push(p);
+    else if (e.isFile() && keep(e.name)) out.push(p);
   }
   return out;
 }
 const get = (d, k) => k.split(".").reduce((o, s) => (o == null ? undefined : o[s]), d);
 
+const SUMMARY =
+  /test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out/;
+// libtest per-test line: `test <name> ... ok|ignored[, reason]|FAILED`. GitHub log exports put
+// job, step and timestamp columns in front of it; anything before " test " is ignored.
+const PER_TEST = /(?:^|\s)test (\S+) \.\.\. (ok|ignored|FAILED)\b/;
+const TRIPWIRE = /tripwire/i;
+
 export function parseCargoLog(text) {
-  const r = { passed: 0, ignored: 0, failed: 0, binaries: 0 };
-  for (const m of text.matchAll(/^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored/gm)) {
-    r.passed += +m[1]; r.failed += +m[2]; r.ignored += +m[3]; r.binaries += 1;
+  const out = { suites: 0, passed: 0, failed: 0, ignored: 0, tripwireTests: [] };
+  for (const line of String(text).split(/\r?\n/)) {
+    const s = SUMMARY.exec(line);
+    if (s) {
+      out.suites += 1;
+      out.passed += Number(s[2]);
+      out.failed += Number(s[3]);
+      out.ignored += Number(s[4]);
+      if (s[1] === "FAILED" && Number(s[3]) === 0) out.failed += 1;
+      continue;
+    }
+    const t = PER_TEST.exec(line);
+    if (t && t[2] !== "ignored" && TRIPWIRE.test(t[1])) out.tripwireTests.push(t[1]);
   }
-  return r;
+  return out;
 }
 
-export function parseVitestJson(v) {
-  return {
-    passed: v.numPassedTests | 0,
-    skipped: (v.numPendingTests | 0) + (v.numTodoTests | 0),
-    failed: (v.numFailedTests | 0) + (v.numFailedTestSuites | 0),
+export function parseVitestJson(doc) {
+  const d = typeof doc === "string" ? JSON.parse(doc) : doc;
+  const num = (k) => {
+    if (!Number.isInteger(d?.[k]) || d[k] < 0) throw new Error(`vitest json: ${k} is not a count`);
+    return d[k];
   };
+  const out = {
+    passed: num("numPassedTests"),
+    skipped: num("numPendingTests") + num("numTodoTests"),
+    failed: num("numFailedTests"),
+    failedSuites: Number.isInteger(d.numFailedTestSuites) ? d.numFailedTestSuites : 0,
+    success: d.success === true,
+    tripwireTests: [],
+  };
+  for (const file of d.testResults ?? []) {
+    for (const a of file.assertionResults ?? []) {
+      if (a.status === "passed" && TRIPWIRE.test(a.fullName ?? "")) out.tripwireTests.push(a.fullName);
+    }
+  }
+  return out;
 }
 
-export function measure({ root = ".", cargoLog, vitestJson, rev = "", now = new Date().toISOString() }) {
-  const rust = parseCargoLog(cargoLog);
-  if (rust.binaries === 0) throw new Error('cargo log has no "test result" lines; refusing to measure');
-  if (rust.failed) throw new Error(`cargo log has ${rust.failed} failed test(s); a red run is not a measurement`);
-  const vit = parseVitestJson(vitestJson);
-  if (vit.failed) throw new Error(`vitest report has ${vit.failed} failed test(s) or suite(s); a red run is not a measurement`);
+const RULE5_KEYS = ["created", "branch", "author", "status"];
+
+export function hasRule5Frontmatter(text) {
+  const lines = String(text).split(/\r?\n/);
+  if (lines[0] !== "---") return false;
+  const end = lines.indexOf("---", 1);
+  if (end < 0) return false;
+  const keys = new Set(lines.slice(1, end).map((l) => /^([A-Za-z_][\w-]*):/.exec(l)?.[1]).filter(Boolean));
+  return RULE5_KEYS.every((k) => keys.has(k));
+}
+
+// The merge-queue gate workflows (branch protection: ci, secret-scan, rust, node; merge-gate's ci
+// summary also waits on eval-check). A gate step is a named step that runs a command; checkout,
+// toolchain, auth, install, fetch and upload steps are setup, not gates.
+const GATE_WORKFLOWS = ["ci.yml", "merge-gate.yml", "eval-check.yml"];
+const SETUP_STEP = /^(authenticate|install|fetch|upload)\b/i;
+
+export function countGateSteps(yamlText) {
+  const lines = String(yamlText).split(/\r?\n/);
+  let n = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)- name:\s*(.+?)\s*$/.exec(lines[i]);
+    if (!m) continue;
+    const indent = m[1].length;
+    let runs = false;
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() === "") continue;
+      const ind = l.length - l.trimStart().length;
+      if (ind <= indent) break;
+      if (ind === indent + 2 && /^run:/.test(l.trimStart())) runs = true;
+    }
+    if (runs && !SETUP_STEP.test(m[2].replace(/^["']/, ""))) n += 1;
+  }
+  return n;
+}
+
+export function measureTree(root) {
   const formal = path.join(root, "src-tauri", "formal");
-  const inFormal = (ext) => { try { return fs.readdirSync(formal).filter((f) => f.endsWith(ext)); } catch { return []; } };
-  const reg = JSON.parse(read(path.join(root, ".agentile/coverage/tripwires.json")) || '{"tripwires":[]}');
-  const steps = CI_WORKFLOWS.map((w) => read(path.join(root, ".github/workflows", w)) || "")
-    .reduce((n, t) => n + (t.match(/^\s*- (?:name|uses|run):/gm) || []).length, 0);
+  let formalFiles = [];
+  try { formalFiles = fs.readdirSync(formal); } catch { formalFiles = []; }
+  const tla = formalFiles.filter((f) => f.endsWith(".tla")).length;
+  const tlcConfigs = formalFiles
+    .filter((f) => f.endsWith(".cfg"))
+    .filter((f) => (read(path.join(formal, f)) || "").includes("EXPECT:")).length;
+
+  const rel = (p) => path.relative(root, p).split(path.sep).join("/");
   const docs = [...walk(path.join(root, "docs"), (n) => n.endsWith(".md")),
-    ...walk(path.join(root, ".agentile"), (n) => n.endsWith(".md"))];
-  const withFm = docs.filter((f) => /^---\r?\n[\s\S]*?\r?\n---/.test(read(f) || "")).length;
+    ...walk(path.join(root, ".agentile"), (n) => n.endsWith(".md"))].map(rel);
+  const missing = docs.filter((r) => !hasRule5Frontmatter(read(path.join(root, r)) || ""));
+
+  let ciSteps = 0;
+  for (const wf of GATE_WORKFLOWS) {
+    const text = read(path.join(root, ".github", "workflows", wf));
+    if (text != null) ciSteps += countGateSteps(text);
+  }
+  // The LQ-WP03 registry, once it exists: its live (not replaced) entries. A registry that is
+  // present but unreadable is a refusal, never a silent fall back to the runner count.
+  let registered = null;
+  const regText = read(path.join(root, ".agentile", "coverage", "tripwires.json"));
+  if (regText != null) {
+    const reg = JSON.parse(regText);
+    if (!Array.isArray(reg?.tripwires)) throw new Error(".agentile/coverage/tripwires.json has no tripwires array");
+    registered = reg.tripwires.filter((t) => !t?.replaced_by).length;
+  }
   return {
-    version: 1, rev, measured: now,
-    tests: { rust: { passed: rust.passed, ignored: rust.ignored }, vitest: { passed: vit.passed, skipped: vit.skipped } },
-    specs: {
-      tla: inFormal(".tla").length,
-      tlc_configs_in_ci: inFormal(".cfg").filter((f) => (read(path.join(formal, f)) || "").includes("EXPECT:")).length,
-    },
-    tripwires: { registered: (reg.tripwires || []).filter((t) => !t.replaced_by).length, ci_steps: steps },
-    frontmatter: { docs: docs.length, with: withFm },
+    specs: { tla, tlc_configs_in_ci: tlcConfigs },
+    frontmatter: { docs: docs.length, with: docs.length - missing.length, missing },
+    ci_steps: ciSteps,
+    tripwires_registered: registered,
   };
+}
+
+export function buildRatchet({ cargo, vitest, tree, rev, measured }) {
+  if (cargo.suites === 0) throw new Error('cargo log: no "test result" line (empty or truncated log)');
+  if (cargo.failed > 0) throw new Error(`cargo log: ${cargo.failed} failed test(s); a red run is not a measurement`);
+  if (vitest.failed > 0 || vitest.failedSuites > 0 || !vitest.success) {
+    throw new Error(
+      `vitest json: ${vitest.failed} failed test(s), ${vitest.failedSuites} failed suite(s); a red run is not a measurement`,
+    );
+  }
+  const t = tree ?? { specs: { tla: 0, tlc_configs_in_ci: 0 }, frontmatter: { docs: 0, with: 0 }, ci_steps: 0 };
+  const runnerTripwires = cargo.tripwireTests.length + vitest.tripwireTests.length;
+  return {
+    version: 1,
+    rev: rev ?? null,
+    measured: measured ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    tests: {
+      rust: { passed: cargo.passed, ignored: cargo.ignored },
+      vitest: { passed: vitest.passed, skipped: vitest.skipped },
+    },
+    specs: { tla: t.specs.tla, tlc_configs_in_ci: t.specs.tlc_configs_in_ci },
+    tripwires: { registered: t.tripwires_registered ?? runnerTripwires, ci_steps: t.ci_steps },
+    frontmatter: { docs: t.frontmatter.docs, with: t.frontmatter.with },
+  };
+}
+
+export function measure({ root = ".", cargoLog, vitestJson, rev = null, now }) {
+  return buildRatchet({
+    cargo: parseCargoLog(cargoLog), vitest: parseVitestJson(vitestJson),
+    tree: measureTree(root), rev, measured: now,
+  });
 }
 
 // Added focused / ignored / skipped tests and the names of removed tests, from a unified diff.
@@ -198,10 +320,12 @@ function main(argv) {
     if (!opt["cargo-log"] || !opt["vitest-json"]) return usage("measure needs --cargo-log and --vitest-json");
     const cargoLog = read(opt["cargo-log"]), vj = read(opt["vitest-json"]);
     if (cargoLog == null || vj == null) { console.error("lq/ratchet: a runner artifact is missing; fails closed"); return 1; }
+    if (opt.rev && !/^[0-9a-f]{40}$/.test(opt.rev)) return usage("--rev must be a full 40-hex commit sha");
     let d;
-    try { d = measure({ root, cargoLog, vitestJson: JSON.parse(vj), rev: opt.rev || "" }); } catch (e) { console.error(`lq/ratchet: ${e.message}`); return 1; }
+    try { d = measure({ root, cargoLog, vitestJson: vj, rev: opt.rev || null }); } catch (e) { console.error(`lq/ratchet: refused: ${e.message}`); return 1; }
     const s = `${JSON.stringify(d, null, 2)}\n`;
-    if (opt.out) fs.writeFileSync(opt.out, s); else process.stdout.write(s);
+    if (opt.out) fs.writeFileSync(opt.out, s);
+    process.stdout.write(s);
     return 0;
   }
   if (cmd === "compare") {
