@@ -271,19 +271,23 @@ mod l6_char {
         out
     }
 
-    /// The lane's suite files, by registry suite id.
-    const SUITE_FILES: &[(&str, &str)] = &[
+    /// The lane's suite files, by registry suite id, with the module whose test block includes
+    /// each one (so the registry's cargo filter is `<module>::tests::l6_char::`).
+    const SUITE_FILES: &[(&str, &str, &str)] = &[
         (
             "L6-CH-1",
             "src-tauri/src/lanes/l6/characterization/connections_char_tests.rs",
+            "connections",
         ),
         (
             "L6-CH-2",
             "src-tauri/src/lanes/l6/characterization/mcp_servers_char_tests.rs",
+            "mcp_servers",
         ),
         (
             "L6-CH-3",
             "src-tauri/src/lanes/l6/characterization/store_char_tests.rs",
+            "store_catalog",
         ),
     ];
 
@@ -298,7 +302,7 @@ mod l6_char {
     #[test]
     fn char_suite_is_listed_for_lq() {
         let mut declared = BTreeSet::new();
-        for (id, file) in SUITE_FILES {
+        for (id, file, _) in SUITE_FILES {
             let here = declared_char_tests(&repo_file(file));
             assert!(!here.is_empty(), "{id}: {file} declares no char_ test");
             declared.extend(here);
@@ -311,12 +315,21 @@ mod l6_char {
         assert_eq!(reg["owner"], "L6", "{reg}");
         let suites = reg["suites"].as_array().cloned().unwrap_or_default();
         let mut registered = BTreeSet::new();
-        for (id, file) in SUITE_FILES {
+        for (id, file, module) in SUITE_FILES {
             let suite = suites
                 .iter()
                 .find(|s| s["id"] == *id)
                 .unwrap_or_else(|| panic!("{id} missing from l6.json"));
             assert_eq!(suite["runner"], "cargo", "{id}");
+            assert_eq!(suite["package"], "citrate-core", "{id}");
+            // The filter selects exactly the tests the host module's test block includes.
+            assert_eq!(suite["filter"], format!("{module}::tests::l6_char::"), "{id}");
+            let base = file.rsplit('/').next().unwrap_or(file);
+            let host = repo_file(&format!("src-tauri/src/{module}.rs"));
+            assert!(
+                host.contains(&format!("include!(\"lanes/l6/characterization/{base}\");")),
+                "{id}: src-tauri/src/{module}.rs does not include {file}"
+            );
             let files: Vec<&str> = suite["files"]
                 .as_array()
                 .map(|a| a.iter().filter_map(|f| f.as_str()).collect())

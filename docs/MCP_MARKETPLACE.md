@@ -29,9 +29,12 @@ Run it alone:
 cargo test -p citrate-core --lib l6_char
 ```
 
-LQ runs it on every merge-queue group from the registry
-[`ci/characterization.d/l6.json`](../ci/characterization.d/l6.json). The registry, this list and
-the suite files must name the same tests (`char_suite_is_listed_for_lq` checks it).
+The registry [`ci/characterization.d/l6.json`](../ci/characterization.d/l6.json) names each suite,
+its cargo filter and its tests. Nothing in citrate-core reads `ci/characterization.d/` yet; LQ wires
+the registries into the merge-queue run, and until then the suite runs as part of the ordinary
+`cargo test` job. The registry, this list and the suite files must name the same tests, and each
+filter must select the module test block that includes the suite file
+(`char_suite_is_listed_for_lq` checks both).
 
 ### L6-CH-1 Connections (`src-tauri/src/lanes/l6/characterization/connections_char_tests.rs`)
 
@@ -49,9 +52,13 @@ the suite files must name the same tests (`char_suite_is_listed_for_lq` checks i
 ### L6-CH-2 User-added MCP servers (`src-tauri/src/lanes/l6/characterization/mcp_servers_char_tests.rs`)
 
 - `char_user_server_saved_disabled_and_needs_probe`: a saved server is disabled until a probe of
-  the entry as it stands succeeds.
+  the entry as it stands succeeds; an edit after a successful probe, or turning the server off,
+  needs a new probe before it is enabled.
 - `char_probe_claiming_trusted_tool_refused`: a probe report that claims a trusted tool is refused.
-- `char_env_values_only_in_keychain`: env values live in the OS keychain, never in a file.
+- `char_env_values_only_in_keychain`: env values live in the OS keychain and never in the saved
+  server list (`mcp-servers.json`). They still leave the keychain to run a server, into the
+  private probe file during a check and into the spawn-time allowlist at Hermes start (see
+  [MCP_USER_SERVERS.md](MCP_USER_SERVERS.md), Files); this test does not pin those.
 - `char_max_servers_is_16`: at most 16 servers, the runtime's limit.
 - `char_hermes_node_write_tools_off`: Hermes is offered the node server's read tools only, pending
   the owner's sign-off.

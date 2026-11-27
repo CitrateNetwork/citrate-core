@@ -13,10 +13,14 @@
 mod l6_char {
     use super::*;
 
+    /// "As it stands": a check binds to the exact entry. An edit after a successful check, or
+    /// turning the server off, leaves the earlier check unable to enable it.
     #[test]
     fn char_user_server_saved_disabled_and_needs_probe() {
         super::save_adds_a_disabled_entry_that_needs_review();
         super::enable_requires_a_successful_probe_of_the_entry_as_it_stands();
+        super::a_review_of_an_older_version_cannot_enable_the_edited_entry();
+        super::turning_a_server_off_needs_a_fresh_check_to_turn_it_on_again();
     }
 
     #[test]
@@ -24,6 +28,9 @@ mod l6_char {
         super::a_probe_report_claiming_a_trusted_tool_is_refused();
     }
 
+    /// Scope: the saved server list (`mcp-servers.json`). Values still leave the keychain to run
+    /// a server: into the private probe file during a check and into the spawn-time allowlist at
+    /// Hermes start (docs/MCP_USER_SERVERS.md, Files). This test does not pin those.
     #[test]
     fn char_env_values_only_in_keychain() {
         super::saved_env_values_live_in_the_keychain_and_never_in_the_file();

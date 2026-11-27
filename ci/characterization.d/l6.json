@@ -2,7 +2,7 @@
   "version": 1,
   "owner": "L6",
   "base": "a826e441",
-  "about": "L6-WP02 characterization suites for lane L6 (Connections and Marketplace), planset v060 L6 section 4. Each suite pins a guarantee at citrate-core a826e441 before an L6 work package changes the code around it. A later L6 PR that changes a pinned behavior names the suite and test it supersedes and replaces the assertion only with a stricter one, in a commit that says why. LQ runs every suite here on every merge-queue group; char_suite_is_listed_for_lq fails when this file, docs/MCP_MARKETPLACE.md and the suite files stop naming the same tests.",
+  "about": "L6-WP02 characterization suites for lane L6 (Connections and Marketplace), planset v060 L6 section 4. Each suite pins a guarantee at citrate-core a826e441 before an L6 work package changes the code around it. A later L6 PR that changes a pinned behavior names the suite and test it supersedes and replaces the assertion only with a stricter one, in a commit that says why. LQ is to run every suite here on every merge-queue group (not wired yet; until then the suites run in the ordinary cargo test job); char_suite_is_listed_for_lq fails when this file, docs/MCP_MARKETPLACE.md and the suite files stop naming the same tests, or a filter stops selecting the module test block that includes its suite file.",
   "suites": [
     {
       "id": "L6-CH-1",
@@ -54,7 +54,7 @@
         "char_max_servers_is_16",
         "char_hermes_node_write_tools_off"
       ],
-      "pins": "user-added MCP servers: a saved server is disabled and needs a successful probe of the entry as it stands before it is enabled; a probe report claiming a trusted tool is refused; env values live in the keychain and never in a file; at most 16 servers; Hermes is offered the node server's read tools only (HERMES_NODE_WRITE_TOOLS false, the rendered node entry has allow_write_tools false)",
+      "pins": "user-added MCP servers: a saved server is disabled and needs a successful probe of the entry as it stands before it is enabled, and an edit after a successful probe or turning the server off needs a new probe; a probe report claiming a trusted tool is refused; env values live in the keychain and never in the saved server list (mcp-servers.json; the private probe file during a check and the spawn-time allowlist at Hermes start do carry them, and this suite does not pin those); at most 16 servers; Hermes is offered the node server's read tools only (HERMES_NODE_WRITE_TOOLS false, the rendered node entry has allow_write_tools false)",
       "keepsGreen": [
         "src-tauri/src/mcp_servers_tests.rs",
         "src-tauri/src/hermes_mcp_tests.rs"
