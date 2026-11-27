@@ -11,8 +11,8 @@
 // A suite whose fixture is missing fails and prints the value it computed, one line per fixture:
 //   SEAMS_SNAPSHOT_MISSING <repo-relative path> <hex of the exact fixture bytes>
 // so the recording is the code's own output on the CI runner, never a hand-written file.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { Buffer } from "node:buffer";
@@ -106,14 +106,41 @@ function missing(rel, body, log) {
   return new Error(`characterization fixture ${rel} is missing; record it with node scripts/seams-snapshot.mjs (an L0-reviewed update)`);
 }
 
+/** Write `body` to the repo-relative `rel` under `root`, refusing to follow a symlink: every
+ *  existing path component below `root` (each parent directory and the file itself) is checked
+ *  with lstat, and a missing directory is created one level at a time. */
+export function writeFixture(root, rel, body) {
+  const parts = rel.split("/");
+  if (isAbsolute(rel) || parts.some((p) => p === "" || p === "." || p === "..")) throw new Error(`refusing fixture path ${rel}`);
+  let at = root;
+  for (const [i, part] of parts.entries()) {
+    at = join(at, part);
+    const last = i === parts.length - 1;
+    let st = null;
+    try {
+      st = lstatSync(at);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    if (st?.isSymbolicLink()) throw new Error(`refusing to write ${rel}: ${relative(root, at)} is a symlink`);
+    if (last) {
+      if (st && !st.isFile()) throw new Error(`refusing to write ${rel}: not a regular file`);
+    } else if (!st) {
+      mkdirSync(at);
+    } else if (!st.isDirectory()) {
+      throw new Error(`refusing to write ${rel}: ${relative(root, at)} is not a directory`);
+    }
+  }
+  writeFileSync(at, body);
+}
+
 /** Compare `actual` with the recorded fixture `rel` (repo-relative). Returns the differences;
  *  [] means byte-identical. In write mode it records the fixture instead. */
 export function checkSnapshot(rel, actual, { root = ROOT, env = process.env, log = console.log } = {}) {
   const file = join(root, rel);
   const body = JSON.stringify(canonical(actual), null, 2) + "\n";
   if (writeMode(env)) {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, body);
+    writeFixture(root, rel, body);
     return [];
   }
   if (!existsSync(file)) throw missing(rel, body, log);
@@ -136,8 +163,7 @@ export function inputFixture(rel, make, { root = ROOT, env = process.env, log = 
   const file = join(root, rel);
   if (writeMode(env)) {
     const value = make();
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
+    writeFixture(root, rel, JSON.stringify(value, null, 2) + "\n");
     return { value, recorded: true };
   }
   if (!existsSync(file)) {
@@ -168,8 +194,7 @@ function main(argv) {
   if (argv[0] === "decode") {
     if (!argv[1]) throw new Error("usage: node scripts/seams-snapshot.mjs decode <ci-log>");
     for (const [rel, body] of decodeLog(readFileSync(argv[1], "utf8"))) {
-      mkdirSync(dirname(join(ROOT, rel)), { recursive: true });
-      writeFileSync(join(ROOT, rel), body);
+      writeFixture(ROOT, rel, body);
       console.log(`wrote ${rel}`);
     }
     return 0;
