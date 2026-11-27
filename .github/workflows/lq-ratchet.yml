@@ -11,7 +11,11 @@
 # merge base. Rules and exit codes: scripts/ci/lq/ratchet.mjs.
 #
 # A decrease passes only with the `ratchet-adr` label and a docs/adr/<file>.md linked in the PR
-# body that names the axis and each removed test. The labels and body are read from the API at
+# body that names the axis and each removed test. The same rule covers lowering the committed
+# .agentile/coverage/ratchet.json in the head (deleting it is refused) and removing a test the
+# diff does not add back, whatever the counts. An accepted decrease lowers ratchet.json to the
+# measured count in the same PR, so the next PR and the record PR are not refused on that axis.
+# The labels and body are read from the API at
 # run time (so a re-run after labelling sees the label) and reach the script only as files.
 name: lq
 
@@ -90,11 +94,18 @@ jobs:
             echo "LQ_BASE_FILE=none" >> "$GITHUB_ENV"
           fi
           git diff --no-color -U1 "$base" HEAD -- '*.rs' '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' > lq.diff
-          # Whose labels and body count: the PR itself, or each PR squashed into the group or push.
+          # Whose labels and body count: the PR itself, or each PR in the group or push. The queue
+          # branch GitHub builds for a group names its PR (gh-readonly-queue/<base>/pr-<N>-<sha>);
+          # squash subjects end in (#N); merge-commit subjects start "Merge pull request #N ".
+          # Subjects are author-written, so this only widens what an ADR may cite; the
+          # pull_request run is the gate a PR has to pass first.
           if [ "$EVENT" = pull_request ]; then
             prs="$PR_NUMBER"
           else
-            prs=$(git log --format=%s "$base..HEAD" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' || true)
+            prs=$( {
+              printf '%s\n' "$GITHUB_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$#\1#p'
+              git log --format=%s "$base..HEAD" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p; s/^Merge pull request #([0-9]+) .*/\1/p'
+            } | sort -un | tr '\n' ' ')
           fi
           : > lq-body.md
           : > lq-labels.txt

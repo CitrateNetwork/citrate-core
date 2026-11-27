@@ -33,6 +33,14 @@
 // - No ratcheted axis may go down. A decrease passes only with the `ratchet-adr` label AND a
 //   docs/adr/<file>.md linked in the PR body that exists in the head and names the axis and
 //   every test the diff removes.
+// - The committed floor (the head's .agentile/coverage/ratchet.json) is ratcheted the same way:
+//   a head that lowers an axis in it is a decrease under the same rule, and a head that deletes
+//   it is refused. An accepted measured decrease must lower the floor to the measured count (or
+//   less) in the same PR; otherwise every later PR, the record PR included, is refused on that
+//   axis.
+// - A test the diff removes and does not add back (in any file of the diff) needs the same label
+//   and ADR whatever the counts say: the floor only advances when the record PR lands, so the
+//   totals alone can hide a deletion. A rename counts as a removal of the old name.
 // - A focused test (it/test/describe/suite .only) fails anywhere in the tree or the diff.
 // - A new #[ignore] or it/test/describe .skip, .todo, .skipIf needs a reason and an issue link,
 //   on its line or in the comment line above it.
@@ -222,29 +230,48 @@ export function measure({ root = ".", cargoLog, vitestJson, rev = null, now }) {
   });
 }
 
-// Added focused / ignored / skipped tests and the names of removed tests, from a unified diff.
+// Added focused / ignored / skipped tests and the names of removed and added tests, from a
+// unified diff. A rust test is a `fn` under a #[test] or #[tokio::test] attribute on the same side
+// of the diff (old side: removed and context lines; new side: added and context lines), so a fn
+// renamed under an unchanged attribute line is a removal of the old name and an addition of the new.
+const TEST_ATTR = /^\s*#\[(?:tokio::)?test\b/;
+const RS_FN = /\bfn (\w+)/;
+const JS_TEST = /(?<![.\w$])(?:it|test)(?:\.each\([^)]*\))?\(\s*(["'`])(.+?)\1/;
 export function scanDiff(diff) {
-  const out = { focused: [], unreasoned: [], removedTests: [] };
-  let file = "", line = 0, prev = "", removedAttr = false;
+  const out = { focused: [], unreasoned: [], removedTests: [], addedTests: [] };
+  let file = "", line = 0, prev = "", oldAttr = false, newAttr = false;
+  // Tracks a pending test attribute on one side; returns the fn name when this line completes it.
+  const step = (pending, text) => {
+    if (TEST_ATTR.test(text)) return [true, null];
+    if (pending && RS_FN.test(text)) return [false, text.match(RS_FN)[1]];
+    if (pending && /^\s*(?:#\[|\/\/)/.test(text)) return [true, null];
+    return [false, null];
+  };
   for (const raw of (diff || "").split("\n")) {
-    if (raw.startsWith("+++ ")) { file = raw.slice(4).replace(/^b\//, ""); continue; }
+    if (raw.startsWith("+++ ")) { file = raw.slice(4).replace(/^b\//, ""); oldAttr = newAttr = false; continue; }
     if (raw.startsWith("--- ") || raw.startsWith("diff --git")) continue;
     const h = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (h) { line = +h[1]; prev = ""; continue; }
+    if (h) { line = +h[1]; prev = ""; oldAttr = newAttr = false; continue; }
     const tag = raw[0], text = raw.slice(1);
-    if (tag === "-") {
-      if (/^\s*#\[(?:tokio::)?test\b/.test(text)) removedAttr = true;
-      else if (removedAttr && /\bfn (\w+)/.test(text)) { out.removedTests.push(text.match(/\bfn (\w+)/)[1]); removedAttr = false; }
-      const t = JS_EXT.test(file) && !isComment(text) && text.match(/\b(?:it|test)(?:\.each\([^)]*\))?\(\s*(["'`])(.+?)\1/);
-      if (t) out.removedTests.push(t[2]);
-      continue;
+    if (tag !== "+" && tag !== " " && tag !== "-") continue;
+    const rs = file.endsWith(".rs");
+    if (rs && tag !== "+") {
+      const [p, name] = step(oldAttr, text);
+      oldAttr = p;
+      if (name && tag === "-") out.removedTests.push(name);
     }
-    if (tag !== "+" && tag !== " ") continue;
-    removedAttr = false;
+    if (rs && tag !== "-") {
+      const [p, name] = step(newAttr, text);
+      newAttr = p;
+      if (name && tag === "+") out.addedTests.push(name);
+    }
+    const t = JS_EXT.test(file) && tag !== " " && !isComment(text) && text.match(JS_TEST);
+    if (t) (tag === "-" ? out.removedTests : out.addedTests).push(t[2]);
+    if (tag === "-") continue;
     if (tag === "+") {
       const at = `${file}:${line}`;
       const ok = (m) => hasReason(commentOf(text)) || (isComment(prev) && hasReason(prev)) || m;
-      if (file.endsWith(".rs") && /^\s*#\[ignore\b/.test(text)) {
+      if (rs && /^\s*#\[ignore\b/.test(text)) {
         const m = text.match(/#\[ignore\s*=\s*"([^"]*)"/);
         if (!ok(Boolean(m && hasReason(m[1])))) out.unreasoned.push(`${at}: ${text.trim()}`);
       } else if (JS_EXT.test(file) && !isComment(text)) {
@@ -269,22 +296,51 @@ export function scanTreeForFocus(root) {
   return hits;
 }
 
-export function compare(base, head, { root = ".", diff = "", labels = [], body = "" } = {}) {
+export const FLOOR_FILE = ".agentile/coverage/ratchet.json";
+// Every ratcheted value, higher is better: the AXES, and frontmatter as minus the count of docs
+// without it (a doc added without frontmatter is a decrease; a doc removed is not).
+const RATCHETED = [
+  ...AXES.map((k) => ({ axis: k, val: (d) => get(d, k), show: (v) => v })),
+  { axis: "frontmatter", val: (d) => (d?.frontmatter ? d.frontmatter.with - d.frontmatter.docs : undefined), show: (v) => -v },
+];
+const num = (v) => typeof v === "number" && Number.isFinite(v);
+
+// floor: the head's committed ratchet.json (parsed), null when the head has none, or left out
+// (undefined) to skip the floor rules. The CLI always supplies it from --root.
+export function compare(base, head, { root = ".", diff = "", labels = [], body = "", floor } = {}) {
   const failures = [], notes = [];
   const scan = scanDiff(diff);
-  const decreases = [];
+  const decreases = []; // { axis, msg }
   if (!base) {
     notes.push("no ratchet.json at the merge base (LQ-WP01 not landed yet): axis comparison skipped; diff and tree rules still apply");
   } else {
-    for (const k of AXES) {
-      const b = get(base, k), h = get(head, k);
-      if (typeof b === "number" && (typeof h !== "number" || h < b)) decreases.push(`${k} decreased ${b} -> ${h} (${h - b})`);
+    if (floor === null) failures.push(`${FLOOR_FILE} is missing or unreadable in the head; the floor is never deleted`);
+    for (const { axis, val, show } of RATCHETED) {
+      const b = val(base), h = val(head), f = floor ? val(floor) : undefined;
+      if (!num(b)) continue;
+      if (!num(h) || h < b) {
+        decreases.push({
+          axis,
+          msg: axis === "frontmatter"
+            ? `frontmatter: docs without frontmatter ${show(b)} -> ${show(h)} (+${show(h) - show(b)})`
+            : `${axis} decreased ${b} -> ${h} (${h - b})`,
+        });
+        // Accepted or not, a measured decrease the floor does not follow refuses every later PR.
+        if (floor && num(h) && !(num(f) && f <= h)) {
+          const target = axis === "frontmatter" ? `${show(h)} or more docs without frontmatter` : `${h} or less`;
+          failures.push(`${axis}: an accepted decrease must lower ${FLOOR_FILE} to ${target} in the same PR (it records ${num(f) ? show(f) : f}), or every later PR is refused on this axis`);
+        }
+      }
+      if (floor && (!num(f) || f < b)) {
+        decreases.push({ axis, msg: `${FLOOR_FILE} lowers ${axis} ${show(b)} -> ${num(f) ? show(f) : f}${num(f) ? ` (${axis === "frontmatter" ? "+" : ""}${show(f) - show(b)})` : ""}` });
+      }
     }
-    const missB = base.frontmatter.docs - base.frontmatter.with, missH = head.frontmatter.docs - head.frontmatter.with;
-    if (missH > missB) decreases.push(`frontmatter: docs without frontmatter ${missB} -> ${missH} (+${missH - missB})`);
   }
-  if (decreases.length) {
-    const axes = decreases.map((d) => d.split(/ decreased|:/)[0]);
+  const added = new Set(scan.addedTests);
+  const gone = [...new Set(scan.removedTests.filter((n) => !added.has(n)))];
+  const needs = [...decreases.map((d) => d.msg), ...gone.map((n) => `test removed and not added back: ${n}`)];
+  if (needs.length) {
+    const names = [...new Set(decreases.map((d) => d.axis)), ...gone];
     let accepted = null;
     if (labels.includes("ratchet-adr")) {
       const refs = [...new Set([...(body || "").matchAll(/docs\/adr\/([A-Za-z0-9_-][\w.-]*\.md)\b/g)].map((m) => `docs/adr/${m[1]}`))];
@@ -293,14 +349,14 @@ export function compare(base, head, { root = ".", diff = "", labels = [], body =
       for (const ref of refs) {
         const text = read(path.join(root, ref));
         if (text == null) { why.push(`${ref} does not exist in the head`); continue; }
-        const missing = [...axes, ...scan.removedTests].filter((n) => !text.includes(n));
+        const missing = names.filter((n) => !text.includes(n));
         if (missing.length) why.push(`${ref} does not name: ${missing.join(", ")}`);
         else { accepted = ref; break; }
       }
       if (!accepted) failures.push(...why);
     }
-    if (accepted) notes.push(...decreases.map((d) => `${d}: accepted by ${accepted}`));
-    else failures.push(...decreases.map((d) => `${d}; needs label ratchet-adr and a linked docs/adr/<file>.md naming the axis and each removed test`));
+    if (accepted) notes.push(...needs.map((d) => `${d}: accepted by ${accepted}`));
+    else failures.push(...needs.map((d) => `${d}; needs label ratchet-adr and a linked docs/adr/<file>.md naming the axis and each removed test`));
   }
   for (const f of scan.focused) failures.push(`focused test added (never allowed): ${f}`);
   for (const f of scanTreeForFocus(root)) failures.push(`focused test in the tree (never allowed): ${f}`);
@@ -333,8 +389,11 @@ function main(argv) {
     const head = JSON.parse(read(opt.head) || "null");
     const base = opt.base === "none" ? null : JSON.parse(read(opt.base) || "null");
     if (!head || (opt.base !== "none" && !base)) { console.error("lq/ratchet: base or head file unreadable; fails closed"); return 1; }
+    // The head's committed floor, from the tree being judged; unreadable counts as missing.
+    let floor = null;
+    try { floor = JSON.parse(read(path.join(root, FLOOR_FILE)) || "null"); } catch { floor = null; }
     const r = compare(base, head, {
-      root, diff: opt.diff ? read(opt.diff) || "" : "",
+      root, floor, diff: opt.diff ? read(opt.diff) || "" : "",
       labels: (opt.labels || "").split(",").map((s) => s.trim()).filter(Boolean),
       body: opt["pr-body"] ? read(opt["pr-body"]) || "" : "",
     });
