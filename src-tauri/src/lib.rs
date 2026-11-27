@@ -374,6 +374,17 @@ pub fn run() {
     // node and its RocksDB first) inherits it. A Finder/Dock launch on macOS starts at 256, too
     // few for the node's SST files. Logs one line; never fails start-up.
     fd_limit::apply_at_startup();
+    // K6 — install the network gate before anything can sign. Every wallet signature is
+    // checked locally against the active network profile (refused when no network is set,
+    // or when it commits to another chain id). Transaction sends additionally check the
+    // RPC's chain id and block-0 hash against the profile before broadcasting.
+    // L0-WP04: both gates are installed here, before the builder, because a plugin's own init
+    // (a lane plugin from `lanes::plugins_all` included) runs while the app is built, before the
+    // setup closure. The profile is compiled in, so nothing in setup is needed first.
+    network_profile::install_network_gate();
+    // G-SEC PAY-10/11/14: the FL payouts gate, from the same profile, before anything can
+    // sign. Payouts are dark unless the profile opens them and the pinned code matches.
+    network_profile::install_payouts_gate();
 
     let builder = tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
@@ -402,7 +413,8 @@ pub fn run() {
         // W2.4 — relaunch into the freshly-installed version.
         .plugin(tauri_plugin_process::init());
     // L0-WP04: each lane's plugins (`lanes/l<N>/hooks.rs`), l0 to l9, after every plugin above, so
-    // single-instance stays first. A new plugin goes in a lane's hooks.rs, not here.
+    // single-instance stays first, and after the network and payouts gates (installed above), so a
+    // lane plugin's init cannot sign ungated. A new plugin goes in a lane's hooks.rs, not here.
     crate::lanes::plugins_all(builder)
         // HUP-S10.3 — widget documents (`citrate-widget://localhost/<id>`), served from the widget
         // store with a strict CSP, to the main window only. See widgets.rs.
@@ -415,14 +427,8 @@ pub fn run() {
             // 0.5.4 (#677, owner 2026-11-14: on for new installs only): whether this install has
             // data from an earlier run, read before this launch writes anything.
             let had_existing_data = hermes_setup::had_existing_data(&hermes_setup::data_roots(app.handle()));
-            // K6 — install the network gate before anything can sign. Every wallet signature is
-            // checked locally against the active network profile (refused when no network is set,
-            // or when it commits to another chain id). Transaction sends additionally check the
-            // RPC's chain id and block-0 hash against the profile before broadcasting.
-            network_profile::install_network_gate();
-            // G-SEC PAY-10/11/14: the FL payouts gate, from the same profile, before anything can
-            // sign. Payouts are dark unless the profile opens them and the pinned code matches.
-            network_profile::install_payouts_gate();
+            // The network and payouts gates are already installed: run() installs them before the
+            // builder, so they hold before any plugin (lane plugins included) initializes.
             // CORE-D5: the sidecar log folder is set before any sidecar can start.
             if let Ok(dir) = app.path().app_log_dir() {
                 sidecar_logs::init(&dir);
@@ -648,8 +654,8 @@ pub fn run() {
             // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
             hermes_headless::spawn(app.handle().clone());
             // L0-WP04: each lane's setup step (`lanes/l<N>/hooks.rs`), l0 to l9, LAST: after the
-            // network and payouts gates above, so no lane hook can sign before the gate. The first
-            // failing hook stops start-up with its lane id in the error.
+            // whole existing setup body (the network and payouts gates were installed before the
+            // builder). The first failing hook stops start-up with its lane id in the error.
             crate::lanes::setup_all(app)?;
             Ok(())
         })

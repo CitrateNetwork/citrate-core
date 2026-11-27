@@ -7,13 +7,15 @@
 //!   (moving them is churn with no benefit).
 //! - A lane registers a Tauri plugin, a start-up step or a quit step in its own
 //!   `lanes/l<N>/hooks.rs` (`plugins`, `setup`, `on_exit`), never in lib.rs.
+//! - run() installs `network_profile::install_network_gate` and `install_payouts_gate` before it
+//!   creates the builder, so both gates hold before any plugin initializes and before any hook
+//!   runs: no lane code can sign ungated.
 //! - lib.rs calls [`plugins_all`] after its own plugins (so `tauri_plugin_single_instance` stays
-//!   first, which tauri requires), [`setup_all`] as the last step of its setup closure (so every
-//!   hook runs after `network_profile::install_network_gate` and `install_payouts_gate`, and
-//!   cannot sign before the gate), and [`on_exit_all`] after `shutdown_all_sidecars`. The existing
-//!   start-up and quit order is unchanged.
+//!   first, which tauri requires), [`setup_all`] as the last step of its setup closure, and
+//!   [`on_exit_all`] inside the exit branch of the run-event handler, after
+//!   `shutdown_all_sidecars`. The existing start-up and quit order is otherwise unchanged.
 //! - A plugin hook adds plugins only. A plugin's own init runs while the app is built, before the
-//!   setup closure and the network gate, so signing or key work goes in a setup hook.
+//!   setup closure, so no managed state exists yet: start-up work goes in a setup hook.
 //! - Every phase runs the lanes in the fixed order l0 to l9. A failing setup hook stops start-up
 //!   with the first error, prefixed with its lane id; later lanes' setup hooks do not run.
 //!

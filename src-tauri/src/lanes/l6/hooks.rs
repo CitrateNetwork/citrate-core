@@ -3,8 +3,9 @@
 //! `crate::lanes` calls these with every other lane's, in lane order l0 to l9:
 //! - `plugins` after every plugin lib.rs registers (single-instance stays first). Add plugins only
 //!   (`builder.plugin(..)`): lib.rs sets `.setup` and `.invoke_handler` after this, which would
-//!   replace a lane's. A plugin's own init runs while the app is built, before the setup closure
-//!   and so before the network gate: anything that signs or reads keys belongs in `setup`;
+//!   replace a lane's. A plugin's own init runs while the app is built, after the network and
+//!   payouts gates but before the setup closure, so no managed state exists yet: start-up work
+//!   belongs in `setup`;
 //! - `setup` at the end of lib.rs's setup closure, after the network and payouts gates are
 //!   installed and every existing state is managed;
 //! - `on_exit` after the existing sidecar teardown, on `ExitRequested` and again on `Exit`, so
