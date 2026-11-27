@@ -208,11 +208,64 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "fn block_comment() {}",
       "*/",
       "    #[tokio::test]",
-      "    #[ignore]",
+      "    #[should_panic]",
       "    async fn nested_async() {}",
       "fn not_a_test() {}",
     ].join("\n");
     expect(declaredCargo(rs)).toEqual(["kept", "nested_async"]);
     expect(countTests("cargo", rs)).toBe(2);
+  });
+
+  it("cargo_checks_reject_an_ignored_or_cfgd_out_test", () => {
+    // A Rust test that no longer runs is a lost test, as it.skip is on the vitest side, wherever
+    // the attribute sits in its block.
+    const rs = [
+      "#[ignore]",
+      "#[test]",
+      "fn ignore_above() {}",
+      "#[test]",
+      '#[ignore = "flaky"]',
+      "fn ignore_below() {}",
+      "#[test] #[ignore] fn same_line() {}",
+      "# [ignore]",
+      "#[test]",
+      "fn spaced_ignore() {}",
+      "#[ignore] // for now",
+      "#[test]",
+      "fn ignore_with_a_comment() {}",
+      '#[ignore = "see [1]"]',
+      "#[test]",
+      "fn ignore_with_a_bracket() {}",
+      "#[cfg(any())]",
+      "#[test]",
+      "fn cfg_never() {}",
+      "#[cfg(not(test))]",
+      "#[test]",
+      "fn cfg_not_test() {}",
+      "#[cfg_attr(unix, ignore)]",
+      "#[test]",
+      "fn cfg_attr_ignore() {}",
+      "#[cfg_attr(",
+      "    unix,",
+      "    ignore",
+      ")]",
+      "#[test]",
+      "fn cfg_attr_wrapped() {}",
+      "#[cfg(test)]",
+      "#[test]",
+      "fn cfg_test_runs() {}",
+      "#[test]",
+      "#[should_panic]",
+      "fn should_panic_runs() {}",
+    ].join("\n");
+    expect(declaredCargo(rs)).toEqual(["cfg_test_runs", "should_panic_runs"]);
+    expect(countTests("cargo", rs)).toBe(2);
+    // So a protected file whose test gains #[ignore] drops below its count and loses the name.
+    const before = "#[test]\nfn guard() {}\n#[test]\nfn other() {}";
+    const after = "#[ignore]\n#[test]\nfn guard() {}\n#[test]\nfn other() {}";
+    expect(countTests("cargo", before)).toBe(2);
+    expect(protectedDeclares("cargo", before, "guard")).toBe(true);
+    expect(countTests("cargo", after)).toBe(1);
+    expect(protectedDeclares("cargo", after, "guard")).toBe(false);
   });
 });

@@ -9,7 +9,11 @@
 //  - the kit payouts gate, under the shipped r1007 profile, refuses every WorkMarket write while
 //    payouts are dark and lets FederatedRoundLedger commitRound and finalize through without a
 //    code read (this calls kit's check_intent; it edits nothing in kit);
-//  - the eight collector safety tests in fl_collect_tests.rs stay declared by name.
+//  - the two command bodies (training_status_sync :191, training_reward_sync :222) build their
+//    own RpcClient::citrate(), so no test transport reaches them; their source is pinned instead:
+//    the ledger only from patronage_ledger()?, and no chain read beyond the helpers tested here;
+//  - the eight collector safety tests in fl_collect_tests.rs stay declared by name, live: under
+//    #[test], never #[ignore]d, cfg'd out or behind a cfg_attr.
 // A failure here means one of those changed. Change an expectation only in the L8 WP the
 // registry names for this suite, with a stricter test, in a commit that says why.
 
@@ -161,6 +165,43 @@ mod lq_l8_fl {
         serde_json::json!(format!("0x{n:064x}"))
     }
 
+    /// The source of the fn that starts with `head`, through its closing `}` at column 0.
+    fn fn_body<'a>(src: &'a str, head: &str) -> &'a str {
+        let start = src.find(head).expect("the fn is declared");
+        let len = src[start..].find("\n}\n").expect("the fn closes");
+        &src[start..start + len + 2]
+    }
+
+    /// The names a body calls (`name(` or `path::name(`), in order, whole-line comments skipped.
+    fn calls_in(body: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in body.lines().map(str::trim) {
+            if line.starts_with("//") {
+                continue;
+            }
+            let mut token = String::new();
+            for c in line.chars() {
+                if c.is_ascii_alphanumeric() || c == '_' || c == ':' {
+                    token.push(c);
+                    continue;
+                }
+                let named = token.starts_with(|t: char| t.is_ascii_alphabetic());
+                if c == '(' && named {
+                    out.push(token.clone());
+                }
+                token.clear();
+            }
+        }
+        out
+    }
+
+    /// How often `word` appears in `src` as a whole identifier.
+    fn uses_of(src: &str, word: &str) -> usize {
+        src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|w| *w == word)
+            .count()
+    }
+
     #[test]
     fn today_training_status_reads_patronage_only() {
         // The ledger the training commands read is the book's PatronageLedger.
@@ -221,6 +262,73 @@ mod lq_l8_fl {
             "sign_request",
         ] {
             assert!(!src.contains(send), "{send}");
+        }
+
+        // The command bodies build RpcClient::citrate() themselves, so no test transport reaches
+        // them; their source is pinned. The ledger comes only from patronage_ledger()?, which is
+        // the one crate::addresses read; the only selectors are the three pinned above; and the
+        // only chain reads are scan_rounds and read_patronage, tested above, plus the round lookup.
+        let (prod, _) = src
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("training.rs has its test module");
+        assert_eq!(prod.matches("RpcClient::citrate()").count(), 2);
+        assert_eq!(prod.matches("addresses").count(), 1);
+        let ledger_fn = fn_body(prod, "fn patronage_ledger() ");
+        let book_read = "let a = crate::addresses::patronage_ledger();";
+        assert!(ledger_fn.contains(book_read));
+        assert_eq!(prod.matches(": [u8; 4] = [").count(), 3);
+        let uses: Vec<&str> = prod.lines().filter(|l| l.starts_with("use ")).collect();
+        let want_uses = [
+            "use serde::Serialize;",
+            "use sha3::{Digest, Keccak256};",
+            "use crate::agent_sbt::decode_u128;",
+            "use crate::rpc::RpcClient;",
+        ];
+        assert_eq!(uses, want_uses);
+
+        let status = fn_body(prod, "pub fn training_status_sync(");
+        let want_status = [
+            "training_status_sync",
+            "patronage_ledger",
+            "RpcClient::citrate",
+            "group_bytes32",
+            "scan_rounds",
+            "Ok",
+            "to_string",
+        ];
+        assert_eq!(calls_in(status), want_status);
+        let take_ledger = "let ledger = patronage_ledger()?;";
+        assert!(status.contains(take_ledger));
+        let scan = "let current = scan_rounds(&rpc, ledger, &gid)?;";
+        assert!(status.contains(scan));
+
+        let reward = fn_body(prod, "pub fn training_reward_sync(");
+        let want_reward = [
+            "training_reward_sync",
+            "patronage_ledger",
+            "RpcClient::citrate",
+            "crate::wallet::address",
+            "map_err",
+            "to_string",
+            "read_patronage",
+            "training_status_sync",
+            "Ok",
+            "to_string",
+            "to_string",
+            "to_string",
+        ];
+        assert_eq!(calls_in(reward), want_reward);
+        assert!(reward.contains(take_ledger));
+        let read = "let (weight, pending_wei) = read_patronage(&rpc, ledger, &member)?;";
+        assert!(reward.contains(read));
+        let lookup = "let round = training_status_sync(app, group)?.round;";
+        assert!(reward.contains(lookup));
+
+        // Each body names its client and its ledger once to build them and once to read.
+        for body in [status, reward] {
+            assert_eq!(uses_of(body, "rpc"), 2, "{body}");
+            assert_eq!(uses_of(body, "ledger"), 2, "{body}");
+            assert_eq!(uses_of(body, "RpcClient"), 1, "{body}");
         }
     }
 
@@ -345,22 +453,60 @@ mod lq_l8_fl {
         assert_eq!(got, Err(want));
     }
 
+    /// Ok when `src` declares `fn <name>() {` as a live #[test].
+    fn live_test(src: &str, name: &str) -> Result<(), String> {
+        let lines: Vec<&str> = src.lines().map(str::trim).collect();
+        let decl = format!("fn {name}() {{");
+        let Some(at) = lines.iter().position(|l| *l == decl) else {
+            return Err(format!("{name} is not declared"));
+        };
+        if at > 0 && lines[at - 1] == "#[test]" {
+            Ok(())
+        } else {
+            Err(format!("{name} is not under #[test]"))
+        }
+    }
+
     #[test]
     fn collector_safety_tests_stay_declared() {
         let src = include_str!("fl_collect_tests.rs");
-        let lines: Vec<&str> = src.lines().map(str::trim).collect();
         for name in COLLECTOR_SAFETY_TESTS {
-            let decl = format!("fn {name}() {{");
-            let Some(at) = lines.iter().position(|l| *l == decl) else {
-                panic!("fl_collect_tests.rs no longer declares {name}");
-            };
-            assert!(
-                at > 0 && lines[at - 1] == "#[test]",
-                "{name} is not under #[test]"
-            );
+            if let Err(why) = live_test(src, name) {
+                panic!("fl_collect_tests.rs: {why}");
+            }
         }
         // And the file is compiled in: fl_collect.rs pulls it into its test module.
         let host = include_str!("fl_collect.rs");
         assert!(host.contains("include!(\"fl_collect_tests.rs\");"));
+    }
+
+    #[test]
+    fn collector_check_rejects_an_ignored_or_cfgd_out_test() {
+        // A safety test that no longer runs is a lost test, wherever the attribute sits.
+        let lost = [
+            "fn t() {\n}\n",
+            "#[ignore]\n#[test]\nfn t() {\n}\n",
+            "#[test]\n#[ignore = \"flaky\"]\nfn t() {\n}\n",
+            "#[test] #[ignore]\nfn t() {\n}\n",
+            "# [ignore]\n#[test]\nfn t() {\n}\n",
+            "#[ignore] // for now\n#[test]\nfn t() {\n}\n",
+            "#[ignore = \"see [1]\"]\n#[test]\nfn t() {\n}\n",
+            "#[cfg(any())]\n#[test]\nfn t() {\n}\n",
+            "#[cfg(not(test))]\n#[test]\nfn t() {\n}\n",
+            "#[cfg_attr(unix, ignore)]\n#[test]\nfn t() {\n}\n",
+            "#[cfg_attr(\n    unix,\n    ignore\n)]\n#[test]\nfn t() {\n}\n",
+        ];
+        for case in lost {
+            assert!(live_test(case, "t").is_err(), "{case}");
+        }
+        let live = [
+            "#[test]\nfn t() {\n}\n",
+            "/// Doc.\n#[test]\n#[should_panic]\nfn t() {\n}\n",
+            "#[cfg(test)]\n#[test]\nfn t() {\n}\n",
+            "}\n\n#[test]\nfn t() {\n}\n",
+        ];
+        for case in live {
+            assert_eq!(live_test(case, "t"), Ok(()), "{case}");
+        }
     }
 }

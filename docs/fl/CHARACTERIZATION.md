@@ -9,8 +9,9 @@ status: active
 
 What the federated-learning code does today (citrate-core `a826e441`), pinned by name before any
 0.6.0 lane L8 (Train together) work package changes it. The canonical list is the registry
-[`ci/characterization.d/l8.json`](../../ci/characterization.d/l8.json); LQ runs every suite in it on
-every merge-queue group. This page is the human view of that registry, and
+[`ci/characterization.d/l8.json`](../../ci/characterization.d/l8.json). When LQ-WP02 lands, LQ runs
+every suite in it by that registry on every merge-queue group; until then CI runs them inside the
+full cargo and vitest suites. This page is the human view of that registry, and
 `src/fl/flRegistry.characterization.test.ts` fails if the two drift apart.
 
 **The rule.** A test here, or a protected test below, is replaced only by a stricter one, only by
@@ -39,10 +40,11 @@ File: `src-tauri/src/fl_characterization_tests.rs`, compiled into `fl_payouts::t
 
 | Test | Pins | May be replaced by | Stricter replacement |
 |---|---|---|---|
-| `today_training_status_reads_patronage_only` | `training_status` and `training_reward` read the book's PatronageLedger only (`roundMergedHash`, `units`, `pendingDividendOf`, pinned selectors), and no training write command exists (`training.rs:1-7`, commands `:182`, `:211`) | L8-WP12 | the live round view adds FRL and coordinator reads beside these, which stay byte for byte |
+| `today_training_status_reads_patronage_only` | `training_status` and `training_reward` read the book's PatronageLedger only (`roundMergedHash`, `units`, `pendingDividendOf`, pinned selectors), and no training write command exists (`training.rs:1-7`, commands `:182`, `:211`). The blocking bodies (`training_status_sync` `:191`, `training_reward_sync` `:222`) build `RpcClient::citrate()` themselves, so their source is pinned: the ledger only from `patronage_ledger()?` (the one `crate::addresses` read), `RpcClient::citrate()` twice, the three pinned selectors only, and no call beyond `scan_rounds(&rpc, ledger, &gid)`, `read_patronage(&rpc, ledger, &member)` and the round lookup | L8-WP12 | the live round view adds FRL and coordinator reads beside these, which stay byte for byte |
 | `payouts_gate_refuses_workmarket_writes_while_dark` | kit `check_intent` under the shipped r1007 profile: every distinctive WorkMarket selector to an unpinned address is refused as not this network's WorkMarket; with a WorkMarket pinned and payouts dark, every WorkMarket write (each money selector, an unknown selector, a plain transfer) is refused, and no code is read | L8-WP17 | the same refusals, plus the flip test: a profile with `payoutsOpen` and matching pins signs, from the same code |
 | `payouts_gate_passes_frl_commit_and_finalize` | FRL `commitRound` and `finalize` are not money classes: the gate passes them with the flag off or on, and reads no code; an FRL challenge is still refused while dark | L8-WP17 | (lane invariant: coordinator rounds commit to FRL while payouts are dark) |
-| `collector_safety_tests_stay_declared` | the eight collector safety tests below stay declared under `#[test]` in `src-tauri/src/fl_collect_tests.rs`, and that file stays compiled in | (lane invariant) | none: the collector rules 1-8 (`fl_collect.rs` header) do not change in 0.6.0 |
+| `collector_safety_tests_stay_declared` | the eight collector safety tests below stay declared and live in `src-tauri/src/fl_collect_tests.rs`: under `#[test]`, with no `#[ignore]`, `cfg_attr` or `cfg` other than `cfg(test)` anywhere in the attribute block, and that file stays compiled in | (lane invariant) | none: the collector rules 1-8 (`fl_collect.rs` header) do not change in 0.6.0 |
+| `collector_check_rejects_an_ignored_or_cfgd_out_test` | the check above fails a safety test that is `#[ignore]`d above or below `#[test]`, on the same line, behind a trailing comment, cfg'd out or behind a `cfg_attr`, and passes `#[should_panic]` and `cfg(test)` | (lane invariant) | none |
 
 ### `L8-REGISTRY`: the registry check (vitest)
 
@@ -50,7 +52,10 @@ File: `src/fl/flRegistry.characterization.test.ts`. Tests: `registry_lists_every
 `every_listed_test_is_declared_and_every_declared_test_is_listed`,
 `cargo_suite_is_compiled_in_where_the_registry_says`,
 `protected_suites_keep_their_counts_and_named_tests`,
-`characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`.
+`characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`,
+`cargo_checks_reject_an_ignored_or_cfgd_out_test`. A Rust test under `#[ignore]`, a `cfg_attr` or a
+`cfg` other than `cfg(test)` is not declared and does not count, so a protected or pinned file whose
+test is turned off fails the same way as one that lost the test (vitest's `it.skip` already did).
 
 ## Protected honesty list (handed to LQ)
 
