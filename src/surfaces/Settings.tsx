@@ -63,6 +63,7 @@ import { setTelemetryConsent } from "../privacy/joinFunnel";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
 import { ControlsPanel } from "./hermes/ControlsPanel";
 import { ModelsSettings } from "./providers/ModelsSettings";
+import { neverHeldMembership } from "../shell/actions/l3/membership";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -498,7 +499,7 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
   // free user who never held a paid tier). effTier collapses lapsed→free for gating,
   // so detect the lapsed case on the entitlement BEFORE the free-tier copy.
   const memRenewLine =
-    s.entitlement === "lapsed"
+    s.entitlement === "lapsed" && !neverHeldMembership(s)
       ? memExpiry
         ? "lapsed · expired " + memExpiry
         : "lapsed"
@@ -508,8 +509,10 @@ export function Settings({ store, s, sections, heading = "Settings" }: { store: 
           ? "expires " + memExpiry
           : "expiry not set";
   // A free user (no membership, not lapsed, no grant) is offered membership, not renewal; the
-  // price is shown only on the checkout itself.
-  const freeUser = s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant;
+  // price is shown only on the checkout itself. L3-WP19: a free member's claim carries no tier, so
+  // it folds as "lapsed" too; with nothing showing a past membership (neverHeldMembership: no grant
+  // or SBT on chain, no settled checkout, no claim expiry) they get the guarded checkout, not Renew.
+  const freeUser = (s.entitlement !== "lapsed" && effTier === "free" && !s.hasGrant) || (s.entitlement === "lapsed" && neverHeldMembership(s));
   // A free user has no membership to be "active": a neutral "free" badge, never the green one.
   const memBadge = freeUser ? "free" : s.entitlement === "active" ? "active" : s.entitlement;
   const mb = freeUser

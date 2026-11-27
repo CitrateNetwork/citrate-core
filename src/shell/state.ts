@@ -428,6 +428,13 @@ export interface AppState {
    */
   membershipActivating: boolean;
   /**
+   * L3-WP19: when THIS session opened a membership checkout (ms), or null. Opening is all the app
+   * can see (the order is the server's), so the banner says "if you completed checkout" and never
+   * shows the red lapse to someone who may just have paid. Cleared when the claim reads active and
+   * on sign-out. Not persisted: a checkout from an earlier session is `s3: "paying"`.
+   */
+  membershipCheckoutAt: number | null;
+  /**
    * rc.5 FIX 5: a one-shot request for the Agent surface to open a tab (the chat's "Open toolchain
    * settings" asks for "contracts"). The Agent surface consumes and clears it. Not persisted.
    */
@@ -973,6 +980,7 @@ export function freshState(pid: string): AppState {
     s3Checking: false,
     billingChecking: false,
     membershipActivating: false,
+    membershipCheckoutAt: null,
     agentTabRequest: null,
     s5: "idle",
     s5c: 0,

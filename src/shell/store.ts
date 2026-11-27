@@ -38,6 +38,7 @@ import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
+import { neverHeldMembership, readLiveClaim, walletLinked } from "./actions/l3/membership";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
@@ -2449,6 +2450,7 @@ export class Store {
       patch.tier = st.tier;
       patch.entitlement = "active";
       patch.membershipActivating = false; // the claim landed: nothing left to activate
+      patch.membershipCheckoutAt = null; // L3-WP19: and no checkout left waiting
     } else {
       // Signed in but the authority granted NO tier — fail closed to free so an
       // ungranted session can never inherit a prior session's persisted paid
@@ -2517,7 +2519,9 @@ export class Store {
    * itself fails, so callers decide whether that is fatal.
    */
   async refreshEntitlement(): Promise<void> {
-    const st = await bridge.auth.userinfo();
+    // L3-WP19: a 401 (the hour-long access token expired on a node left open) renews the session
+    // from the vaulted refresh token and reads again, instead of failing every poll until restart.
+    const st = await readLiveClaim(bridge.auth);
     let grant: GrantStatus | null = null;
     const member = st.walletAddr || this.state.walletAddr;
     const claimActive = !!st.tier && !isExpiredClaim(st.expiresAt);
@@ -2633,6 +2637,7 @@ export class Store {
       entitlement: "lapsed",
       citrateRole: "member",
       membershipActivating: false,
+      membershipCheckoutAt: null,
       alfMember: false, // clear the ALF flag on sign-out — a signed-out account is not an ALF member (Rule 1)
       org: null,
       signedIn: false,
@@ -2744,6 +2749,11 @@ export class Store {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
+      // L3-WP19: the checkout is open, so the banner stops saying "lapsed" (it cannot know whether the
+      // member pays). A free member's purchase is the same step S3 records, persisted as "paying".
+      const upgrade = this.state.s3 === "idle" && neverHeldMembership(this.state);
+      this.setState(upgrade ? { membershipCheckoutAt: Date.now(), s3: "paying" } : { membershipCheckoutAt: Date.now() });
+      if (upgrade) this.save();
       // FIX 1a: watch for the new entitlement so the banner clears without a restart.
       this.startEntitlementPoll();
     } catch (err) {
@@ -6450,9 +6460,7 @@ export class Store {
    * unknown either side reads false (never an optimistic yes).
    */
   walletIsLinked(): boolean {
-    const claim = (this.state.walletAddr || "").toLowerCase();
-    const custody = (this.state.custodyAddr || "").toLowerCase();
-    return claim !== "" && custody !== "" && claim === custody;
+    return walletLinked(this.state);
   }
 
   /**
@@ -7208,7 +7216,7 @@ export class Store {
         this.setState({ s3Checking: false });
         if (settled || this.state.stage !== stage) return;
         this.s3PayingSince = Date.now();
-        this.setState({ s3: "paying", s3GrantDelayed: false, s3SignerReady: null });
+        this.setState({ s3: "paying", s3GrantDelayed: false, s3SignerReady: null, membershipCheckoutAt: this.s3PayingSince });
         // login_hint = the signed-in email → the browser checkout binds to THIS account.
         void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
           // Popup open failed (headless / user cancel at OS level) — stay "paying";

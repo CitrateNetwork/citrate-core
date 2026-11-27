@@ -110,6 +110,7 @@
     "memSemantic": false,
     "memSocketPath": null,
     "membershipActivating": false,
+    "membershipCheckoutAt": null,
     "membershipPrice": null,
     "minStakeWei": null,
     "miningHold": null,
