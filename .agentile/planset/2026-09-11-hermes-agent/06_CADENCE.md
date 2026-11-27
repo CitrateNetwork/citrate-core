@@ -1,5 +1,6 @@
 ---
 created: 2026-09-11
+branch: docs/hermes-agent-planset (PR #15; backfilled by LQ-WP01 2026-11-26)
 author: Claude Opus 4.8, directed by @SaulBuilds + Luke
 status: active
 planset: 2026-09-11-hermes-agent
