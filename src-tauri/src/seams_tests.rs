@@ -237,3 +237,262 @@ fn a_module_losing_its_cfg_is_named() {
     assert_eq!(missing, vec!["#[cfg(test)] mod t;".to_string()]);
     assert_eq!(added, vec!["mod t;".to_string()]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// L0-WP03: per-lane command registration (`src/commands/l<N>.rs`) and per-lane ACL
+// (`permissions/l<N>-commands.toml`), L0_INTEGRATION_SEAMS section 3.1. These read the files from
+// disk, so a lane file that is missing, extra or not wired into the chain fails by name.
+// ---------------------------------------------------------------------------------------------
+
+const LANES: [&str; 10] = ["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"];
+/// Where each lane's list starts inside its macro: the accumulator, then the lane's own paths.
+const LANE_LIST_OPEN: &str = "[$($acc)*";
+
+fn tauri_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn read_rel(rel: &str) -> String {
+    fs::read_to_string(tauri_dir().join(rel)).unwrap_or_else(|e| panic!("src-tauri/{rel}: {e}"))
+}
+
+fn lane_rs(lane: &str) -> String {
+    read_rel(&format!("src/commands/{lane}.rs"))
+}
+
+fn lane_toml(lane: &str) -> String {
+    read_rel(&format!("permissions/{lane}-commands.toml"))
+}
+
+/// The command paths a lane file appends, in file order (comments dropped).
+fn lane_paths(lane: &str, src: &str) -> Vec<String> {
+    assert_eq!(
+        src.matches(&format!("macro_rules! v60_commands_{lane} "))
+            .count(),
+        1,
+        "commands/{lane}.rs defines its macro v60_commands_{lane} exactly once"
+    );
+    assert_eq!(
+        src.matches(LANE_LIST_OPEN).count(),
+        1,
+        "commands/{lane}.rs has exactly one list"
+    );
+    let Some(at) = src.find(LANE_LIST_OPEN) else {
+        return Vec::new();
+    };
+    let start = at + LANE_LIST_OPEN.len();
+    let len = src[start..]
+        .find("])")
+        .unwrap_or_else(|| panic!("commands/{lane}.rs: end of the list"));
+    src[start..start + len]
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .flat_map(|l| l.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_start_matches("crate::").to_string())
+        .collect()
+}
+
+fn fixture_lines(name: &str) -> Vec<String> {
+    let (rel, path) = fixture(name);
+    fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn lane_lists_partition_the_registry() {
+    let mut owner: std::collections::BTreeMap<String, &str> = std::collections::BTreeMap::new();
+    let mut all: Vec<String> = Vec::new();
+    for lane in LANES {
+        for path in lane_paths(lane, &lane_rs(lane)) {
+            assert!(
+                path.contains("::"),
+                "commands/{lane}.rs: `{path}` is not a module path"
+            );
+            let name = path.rsplit("::").next().unwrap_or_default().to_string();
+            if let Some(first) = owner.insert(name.clone(), lane) {
+                panic!("{name} is registered by both {first} and {lane}");
+            }
+            all.push(path);
+        }
+    }
+    all.sort();
+    let (missing, added) = line_diff(&fixture_lines("commands"), &all);
+    assert!(
+        missing.is_empty() && added.is_empty(),
+        "the lane lists are not the registry: missing {missing:?}, added {added:?}"
+    );
+    // lib.rs keeps no list of its own: one invocation of the chain, no generate_handler.
+    assert!(
+        registered_paths(LIB_RS).is_empty(),
+        "lib.rs still has a generate_handler! list"
+    );
+    assert_eq!(
+        LIB_RS
+            .matches(".invoke_handler(crate::v60_all_commands!())")
+            .count(),
+        1,
+        "lib.rs registers the commands through the lane chain exactly once"
+    );
+    assert_eq!(LIB_RS.matches(".invoke_handler(").count(), 1);
+}
+
+#[test]
+fn lane_acl_matches_lane_list() {
+    let mut union: BTreeSet<String> = BTreeSet::new();
+    for lane in LANES {
+        let toml = lane_toml(lane);
+        let id = format!("identifier = \"{lane}-commands\"");
+        assert_eq!(toml.matches(&id).count(), 1, "{lane}-commands.toml: {id}");
+        assert_eq!(
+            toml.matches("[[permission]]").count(),
+            1,
+            "{lane}-commands.toml holds one permission"
+        );
+        assert!(
+            !toml.contains("commands.deny"),
+            "{lane}-commands.toml denies nothing"
+        );
+        let acl = acl_commands(&toml);
+        let allowed: BTreeSet<String> = acl.iter().cloned().collect();
+        assert_eq!(
+            allowed.len(),
+            acl.len(),
+            "{lane}-commands.toml lists a command twice"
+        );
+        let listed = command_names(&lane_paths(lane, &lane_rs(lane)));
+        let missing: Vec<_> = listed.difference(&allowed).collect();
+        let extra: Vec<_> = allowed.difference(&listed).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "{lane}: registered but not allowed {missing:?}, allowed but not registered {extra:?}"
+        );
+        union.extend(allowed);
+    }
+    // The union is exactly the old main-window-commands set (the recorded registry's names).
+    let old = command_names(&fixture_lines("commands"));
+    let missing: Vec<_> = old.difference(&union).collect();
+    let extra: Vec<_> = union.difference(&old).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "the lane ACLs differ from main-window-commands: missing {missing:?}, extra {extra:?}"
+    );
+    // The main window holds every lane's permission and no longer the single one.
+    let cap: serde_json::Value =
+        serde_json::from_str(&read_rel("capabilities/default.json")).expect("default.json is JSON");
+    let perms: Vec<&str> = cap["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect();
+    for lane in LANES {
+        let want = format!("{lane}-commands");
+        assert_eq!(
+            perms.iter().filter(|p| **p == want).count(),
+            1,
+            "default.json holds {want} once"
+        );
+    }
+    assert!(
+        !perms.contains(&"main-window-commands"),
+        "default.json still holds main-window-commands"
+    );
+    assert!(
+        !tauri_dir().join("permissions/main-window.toml").exists(),
+        "permissions/main-window.toml is split into the lane files"
+    );
+}
+
+#[test]
+fn registry_source_sees_every_lane() {
+    let want: BTreeSet<String> = LANES.iter().map(|l| format!("{l}.rs")).collect();
+    let mut got: BTreeSet<String> = BTreeSet::new();
+    for entry in fs::read_dir(tauri_dir().join("src/commands"))
+        .unwrap_or_else(|e| panic!("src-tauri/src/commands: {e}"))
+    {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .to_string();
+        if name != "mod.rs" {
+            got.insert(name);
+        }
+    }
+    assert_eq!(
+        got, want,
+        "src/commands holds mod.rs and exactly the ten lane files"
+    );
+    let mut tomls: BTreeSet<String> = BTreeSet::new();
+    for entry in fs::read_dir(tauri_dir().join("permissions")).expect("permissions dir") {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .to_string();
+        if name.ends_with("-commands.toml") {
+            tomls.insert(name);
+        }
+    }
+    let want_tomls: BTreeSet<String> = LANES.iter().map(|l| format!("{l}-commands.toml")).collect();
+    assert_eq!(
+        tomls, want_tomls,
+        "permissions holds exactly the ten lane ACL files"
+    );
+
+    let modrs = read_rel("src/commands/mod.rs");
+    assert!(
+        LIB_RS.lines().any(|l| l == "mod commands;"),
+        "lib.rs declares mod commands"
+    );
+    // The chain runs l0 to l9, then the one generate_handler!, in this order and nothing else.
+    let chain: Vec<String> = LANES[1..]
+        .iter()
+        .map(|l| format!("v60_commands_{l}"))
+        .chain(["v60_commands_finish".to_string(), "[]".to_string()])
+        .collect();
+    let flat: String = modrs.split_whitespace().collect::<Vec<_>>().join(" ");
+    let call = format!("$crate::v60_commands_l0!( {} )", chain.join(" "));
+    assert_eq!(
+        flat.matches(&call).count(),
+        1,
+        "mod.rs chains l0..l9 then finish: {call}"
+    );
+    assert_eq!(
+        modrs.matches("generate_handler!").count(),
+        1,
+        "exactly one generate_handler! in mod.rs"
+    );
+    for lane in LANES {
+        assert!(
+            modrs.contains(&format!("mod {lane};")),
+            "mod.rs declares mod {lane}"
+        );
+        // The test-only sources every structural test reads include every lane's list and ACL.
+        assert!(
+            modrs.contains(&format!("include_str!(\"{lane}.rs\")")),
+            "registry_source() includes commands/{lane}.rs"
+        );
+        assert!(
+            modrs.contains(&format!(
+                "include_str!(\"../../permissions/{lane}-commands.toml\")"
+            )),
+            "acl_source() includes permissions/{lane}-commands.toml"
+        );
+        // A lane macro only appends to the accumulator and hands it to the next macro.
+        let src = lane_rs(lane);
+        assert!(
+            src.contains("$crate::$next!($($rest)* [$($acc)*"),
+            "commands/{lane}.rs passes the accumulator on"
+        );
+        assert!(
+            !src.contains("generate_handler"),
+            "commands/{lane}.rs must not call generate_handler! itself"
+        );
+    }
+}
