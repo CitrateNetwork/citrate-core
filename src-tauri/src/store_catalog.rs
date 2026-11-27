@@ -552,11 +552,10 @@ fn fetch_catalog(
     })?;
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut st = read_store_file(root)?;
-    // L6-WP02 RED MUTANT (reverted in the next commit): keep the copy before verifying it.
-    write_atomic(&root.join(CATALOG_FILE), &bytes)?;
-    write_atomic(&root.join(CATALOG_SIG_FILE), sig.as_bytes())?;
     let vc = verify_catalog(&bytes, &sig, key, st.last_seen.as_ref(), now)
         .map_err(|e| catalog_refusal(&e))?;
+    write_atomic(&root.join(CATALOG_FILE), &bytes)?;
+    write_atomic(&root.join(CATALOG_SIG_FILE), sig.as_bytes())?;
     st.version = STATE_VERSION;
     st.last_seen = Some(vc.seen());
     write_store_file(root, &st)?;

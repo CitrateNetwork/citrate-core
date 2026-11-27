@@ -64,8 +64,7 @@ pub const ENV_ACCOUNT_PREFIX: &str = "mcp-server-env:";
 /// What the webview sees in place of an env value.
 pub const MASK: &str = "•••••••• (in the system keychain)";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).
-// L6-WP02 RED MUTANT (reverted in the next commit): one more server than the runtime allows.
-pub const MAX_SERVERS: usize = 17;
+pub const MAX_SERVERS: usize = 16;
 
 const KEYCHAIN_UNAVAILABLE: &str = "the system keychain is not available";
 const KEYCHAIN_SAVE_FAILED: &str =

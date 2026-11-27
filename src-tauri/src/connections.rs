@@ -750,9 +750,9 @@ impl ConnectionManager {
         vault: &CustodyVault,
         open: impl Fn(&str) -> std::result::Result<(), ConnError>,
     ) -> std::result::Result<ConnectionStatus, ConnError> {
-        // L6-WP02 RED MUTANT (reverted in the next commit): bind before checking credentials.
-        let listener = ConnectionListener::bind()?;
+        // Fail fast before opening a browser / binding a socket if unconfigured.
         let creds = self.creds(service)?;
+        let listener = ConnectionListener::bind()?;
         let state = random_state();
         let pkce = Pkce::new();
         let auth_url = authorize_url(service, &creds.client_id, &state, &pkce.challenge);
