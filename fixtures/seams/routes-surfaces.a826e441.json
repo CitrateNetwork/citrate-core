@@ -1,0 +1,168 @@
+{
+  "<unknown>": {
+    "component": "Dashboard",
+    "props": {}
+  },
+  "groups/alf": {
+    "component": "ALF",
+    "props": {}
+  },
+  "groups/chat": {
+    "component": "Groups",
+    "props": {}
+  },
+  "groups/chat/alerts": {
+    "component": "GroupChat",
+    "props": {
+      "view": "alerts"
+    }
+  },
+  "groups/cluster": {
+    "component": "Cluster",
+    "props": {}
+  },
+  "groups/community": {
+    "component": "Community",
+    "props": {}
+  },
+  "groups/members": {
+    "component": "GroupMembers",
+    "props": {}
+  },
+  "groups/rounds": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds"
+    }
+  },
+  "groups/rounds/adapters": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds/adapters"
+    }
+  },
+  "groups/rounds/datasets": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds/datasets"
+    }
+  },
+  "groups/rounds/live": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds/live"
+    }
+  },
+  "groups/rounds/open": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds/open"
+    }
+  },
+  "groups/rounds/payouts": {
+    "component": "RoundsRoute",
+    "props": {
+      "route": "groups/rounds/payouts"
+    }
+  },
+  "hermes/chat": {
+    "component": "Dashboard",
+    "props": {}
+  },
+  "hermes/controls": {
+    "component": "HermesControls",
+    "props": {
+      "route": "hermes/controls"
+    }
+  },
+  "hermes/controls/details": {
+    "component": "HermesControls",
+    "props": {
+      "route": "hermes/controls/details"
+    }
+  },
+  "hermes/controls/records": {
+    "component": "HermesControls",
+    "props": {
+      "route": "hermes/controls/records"
+    }
+  },
+  "hermes/journal": {
+    "component": "Journal",
+    "props": {}
+  },
+  "hermes/learn": {
+    "component": "HermesLearn",
+    "props": {}
+  },
+  "hermes/work": {
+    "component": "HermesWork",
+    "props": {}
+  },
+  "node/advanced": {
+    "component": "NodeAdvanced",
+    "props": {}
+  },
+  "node/rewards": {
+    "component": "NodeRewards",
+    "props": {}
+  },
+  "node/services": {
+    "component": "NodeServices",
+    "props": {}
+  },
+  "node/status": {
+    "component": "Node",
+    "props": {}
+  },
+  "node/storage/backup": {
+    "component": "StorageBackup",
+    "props": {}
+  },
+  "node/storage/files": {
+    "component": "StorageFiles",
+    "props": {}
+  },
+  "node/storage/memory": {
+    "component": "Storage",
+    "props": {}
+  },
+  "node/storage/pins": {
+    "component": "StoragePins",
+    "props": {}
+  },
+  "settings": {
+    "component": "Settings",
+    "props": {
+      "sections": [
+        "account",
+        "connections",
+        "api",
+        "keys",
+        "billing",
+        "privacy",
+        "app"
+      ]
+    }
+  },
+  "settings/connections": {
+    "component": "Connections",
+    "props": {}
+  },
+  "settings/work": {
+    "component": "WorkSettings",
+    "props": {}
+  },
+  "store/apps": {
+    "component": "Commissary",
+    "props": {}
+  },
+  "store/models": {
+    "component": "Models",
+    "props": {}
+  },
+  "wallet": {
+    "component": "Wallet",
+    "props": {}
+  }
+}

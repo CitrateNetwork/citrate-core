@@ -1,5 +1,7 @@
 ---
 created: 2026-09-11
+branch: feat/hermes-p0-wp1-model-router (PR #28; backfilled by LQ-WP01 2026-11-26)
+author: SaulBuilds (commit author of 65a1d246; backfilled by LQ-WP01 2026-11-26)
 status: active
 sprint: sprint-hermes-p0-router
 ---

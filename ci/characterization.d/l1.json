@@ -1,0 +1,308 @@
+{
+  "version": 1,
+  "owner": "L1",
+  "base": "a826e441",
+  "about": "L1-WP01 characterization suites for lane L1 (Agent Runtime), planset v060 L1 section 2.3. Each CH id pins one behavior at citrate-core a826e441 before an L1 work package changes it; a later L1 PR that changes a pinned behavior names the CH id it supersedes, in a separate commit that says why (assertion-edit rule). LQ runs every suite here on every merge-queue group. CH-12 (sidecar route table) and the runtime half of CH-4 belong to citrate-agent-runtime and are listed under external.",
+  "suites": [
+    {
+      "id": "CH-1",
+      "lane": "L1",
+      "runner": "vitest",
+      "files": [
+        "src/shell/actions/l1/characterization/providerSelection.characterization.test.ts"
+      ],
+      "covers": [
+        "src/shell/store.ts"
+      ],
+      "pins": "provider selection: sidecar up gives the sidecar provider, down gives the tool-less fallback with its reason, loop off reads nothing, a cloud choice never applies under local only",
+      "keepsGreen": [
+        "src/shell/hermesLiveness.store.test.ts",
+        "src/shell/chatProviderKind.test.ts",
+        "src/shell/sidecarLoopDefault.test.ts"
+      ],
+      "supersededBy": [
+        "L1-WP08",
+        "L1-WP09"
+      ]
+    },
+    {
+      "id": "CH-2",
+      "lane": "L1",
+      "runner": "vitest",
+      "files": [
+        "src/shell/actions/l1/characterization/launchOrder.characterization.test.ts"
+      ],
+      "covers": [
+        "src/shell/store.ts"
+      ],
+      "pins": "launch order in start(): syncHermesTerminal, then rebuildProvider, then followHermes; a second start() does nothing",
+      "supersededBy": [
+        "L1-WP08"
+      ]
+    },
+    {
+      "id": "CH-3",
+      "lane": "L1",
+      "runner": "vitest",
+      "files": [
+        "src/shell/actions/l1/characterization/startRuntime.characterization.test.ts"
+      ],
+      "covers": [
+        "src/shell/slices/agent.ts"
+      ],
+      "pins": "startRuntime idempotence; core's already-running refusal is success; other errors are reported once; polls until running; never-up ends off",
+      "keepsGreen": [
+        "src/agent/sidecarProvider.lifecycle.test.ts"
+      ],
+      "supersededBy": [
+        "L1-WP08"
+      ]
+    },
+    {
+      "id": "CH-4",
+      "lane": "L1",
+      "runner": "vitest",
+      "files": [
+        "src/shell/actions/l1/characterization/toolSelection.characterization.test.ts"
+      ],
+      "covers": [
+        "src/agent/harness.ts"
+      ],
+      "pins": "tool schema ceiling 8 and the ranking on a fixed request corpus (core half; the agent-loop offered_tools half belongs to citrate-agent-runtime)",
+      "keepsGreen": [
+        "src/agent/harness.retire.test.ts"
+      ],
+      "supersededBy": [
+        "L1-WP17"
+      ]
+    },
+    {
+      "id": "CH-5",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch5_hermes_spec_env_keyless::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/hermes_spec_env_keyless_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/hermes.rs"
+      ],
+      "pins": "sidecar env: only allowlisted env-source keys cross, no key-shaped value in any of them, no override of the control bind or bearer file, vendor SDK key variables never inherited",
+      "supersededBy": [
+        "L1-WP05",
+        "L1-WP14",
+        "L1-WP19"
+      ]
+    },
+    {
+      "id": "CH-6",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch6_proxy_paths::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/proxy_paths_characterize_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/model_proxy_http.rs"
+      ],
+      "pins": "model proxy: only POST /v1/chat/completions is served; every other path is 404 and reaches no vendor; origin and Host guards run first",
+      "keepsGreen": [
+        "src-tauri/src/model_proxy_http_tests.rs"
+      ],
+      "supersededBy": [
+        "L1-WP10",
+        "L1-WP11",
+        "L1-WP12"
+      ]
+    },
+    {
+      "id": "CH-7",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "provider_egress::tests::",
+      "files": [
+        "src-tauri/src/provider_egress_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/provider_egress.rs"
+      ],
+      "pins": "custom endpoints refuse IP literals, local names and trailing dots (existing tests, kept as is; WP11 must not edit them)",
+      "supersededBy": [
+        "L1-WP11"
+      ]
+    },
+    {
+      "id": "CH-8",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch8_node_mcp_scope::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/node_mcp_scope_characterize_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/node_mcp_protocol.rs",
+        "src-tauri/src/node_mcp_tools.rs"
+      ],
+      "pins": "node MCP for Hermes is read-only: a read-only token is offered exactly the Read tools and refused every Signature, Action and Budgeted tool before anything is proposed or queued",
+      "keepsGreen": [
+        "src-tauri/src/hermes_mcp_tests.rs",
+        "src-tauri/src/node_mcp_tests.rs"
+      ],
+      "supersededBy": [
+        "L1-WP16a",
+        "L1-WP18"
+      ]
+    },
+    {
+      "id": "CH-9",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch9_approvals_once_ttl::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/approvals_once_ttl_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/node_mcp_approvals.rs"
+      ],
+      "pins": "approval inbox: decided once, owner-only, expires at exactly the ceremony TTL with its ceremony closed once, MAX_PENDING, pending never trimmed",
+      "supersededBy": [
+        "L1-WP06",
+        "L1-WP16b",
+        "L1-WP18"
+      ]
+    },
+    {
+      "id": "CH-10",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch10_headless_never_approves::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/headless_never_approves_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/hermes_headless.rs"
+      ],
+      "pins": "the headless dispatcher answers only node_status and groups_list, declines everything else and every hic-required call, and never proposes or approves",
+      "keepsGreen": [
+        "src-tauri/src/hermes_headless_tests.rs"
+      ],
+      "supersededBy": [
+        "L1-WP06"
+      ]
+    },
+    {
+      "id": "CH-11",
+      "lane": "L1",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_ch11_grants_fail_closed::",
+      "files": [
+        "src-tauri/src/lanes/l1/characterization/grants_fail_closed_tests.rs"
+      ],
+      "covers": [
+        "src-tauri/src/agent_grants.rs"
+      ],
+      "pins": "folder grants fail closed: core's data folder and anything inside it is never grantable (resolved path, by component); a corrupted document grants nothing, refuses every change and is never written over",
+      "keepsGreen": [
+        "src-tauri/src/agent_grants_tests.rs"
+      ],
+      "supersededBy": [
+        "L1-WP04",
+        "L1-WP05",
+        "L1-WP21"
+      ]
+    }
+  ],
+  "external": [
+    {
+      "id": "CH-12",
+      "lane": "L1",
+      "repo": "citrate-agent-runtime",
+      "covers": [
+        "agent-sidecar/src/lib.rs"
+      ],
+      "pins": "sidecar HTTP route table used by the citrate hermes CLI and node MCP hermes_session_send",
+      "supersededBy": [
+        "L1-WP03",
+        "L1-WP07"
+      ]
+    },
+    {
+      "id": "CH-4-runtime",
+      "lane": "L1",
+      "repo": "citrate-agent-runtime",
+      "covers": [
+        "agent-loop/src/lib.rs"
+      ],
+      "pins": "agent-loop offered_tools selection",
+      "supersededBy": [
+        "L1-WP17"
+      ]
+    }
+  ],
+  "supersedesByWp": {
+    "L1-WP03": [
+      "CH-12"
+    ],
+    "L1-WP04": [
+      "CH-11"
+    ],
+    "L1-WP05": [
+      "CH-5",
+      "CH-11"
+    ],
+    "L1-WP06": [
+      "CH-9",
+      "CH-10"
+    ],
+    "L1-WP07": [
+      "CH-12"
+    ],
+    "L1-WP08": [
+      "CH-1",
+      "CH-2",
+      "CH-3"
+    ],
+    "L1-WP09": [
+      "CH-1"
+    ],
+    "L1-WP10": [
+      "CH-6"
+    ],
+    "L1-WP11": [
+      "CH-6",
+      "CH-7"
+    ],
+    "L1-WP12": [
+      "CH-6"
+    ],
+    "L1-WP14": [
+      "CH-5"
+    ],
+    "L1-WP16a": [
+      "CH-8"
+    ],
+    "L1-WP16b": [
+      "CH-9"
+    ],
+    "L1-WP17": [
+      "CH-4"
+    ],
+    "L1-WP18": [
+      "CH-8",
+      "CH-9"
+    ],
+    "L1-WP19": [
+      "CH-5"
+    ],
+    "L1-WP21": [
+      "CH-11"
+    ]
+  }
+}
