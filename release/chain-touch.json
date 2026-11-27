@@ -1,0 +1,120 @@
+{
+  "$comment": [
+    "LQ-WP04 chain-touch map (planset 2026-11-07-v060, lanes/LQ_NON_REGRESSION_GUARD.md sections 3.1, 4.1, 4.3). Schema v1 is frozen.",
+    "Read by scripts/ci/lq/chain-touch.mjs (the lq / chain-touch check). The check reads this file from the PR's BASE commit, so a PR cannot widen or narrow its own guard; change it in its own PR (CODEOWNERS: the owner).",
+    "Class A and B are citrate-chain paths (rules, node integrity). LQ never edits chain; LQ-WP06 reads class A for the source fingerprint and component-pins NODE_CONSENSUS_PATHS. Class C is what citrate-core ships that is chain-adjacent; the check fails a PR that changes a class C path unless it is a chain-touch PR (label, evidence, agreement run, and for a rules delta the consensus review).",
+    "Path syntax: a trailing '/' matches everything under it; '**/' matches zero or more directories; '*' matches within one path segment; anything else is an exact path.",
+    "classes.C.scoped: files where only part of the file is class C. kind 'lines' compares the lines matching 'match' (case-insensitive) at base and head; kind 'json-entry' compares one element of a JSON array; kind 'lock-closure' compares the Cargo.lock packages reachable from the roots (and from every package whose source matches source_match). An unreadable or unparsable scoped file counts as changed (fail closed).",
+    "classes.C.rules_paths: core files that set a consensus input the node reads (genesis, activation heights, the network cut). A change to one is a rules delta: it needs the consensus-review label and an approval from release/consensus-reviewers.json, like a changed rules fingerprint.",
+    "chain_touch_branches: the only branch prefixes a chain-touch PR may come from (policy 2). lane_branch_pattern: product-lane branches, refused outright on any class C change (policy 1)."
+  ],
+  "version": 1,
+  "classes": {
+    "A": {
+      "why": "consensus rules: block validity, state transition, fork choice, genesis",
+      "repo": "citrate-chain",
+      "paths": [
+        "core/consensus/",
+        "core/execution/",
+        "core/sequencer/",
+        "core/economics/",
+        "core/genesis/",
+        "core/signing/",
+        "core/network/",
+        "core/storage/src/state/",
+        "core/storage/src/state_manager.rs",
+        "core/storage/src/chain/",
+        "core/storage/src/pruning/",
+        "node/src/genesis.rs",
+        "node/src/consensus_manifest.rs",
+        "node/src/mergeset.rs",
+        "node/src/canonical_apply.rs",
+        "node/src/finality_*.rs",
+        "node/src/producer.rs",
+        "node/src/persistent_dag.rs",
+        "node/src/admission.rs",
+        "node/src/dead_branch.rs",
+        "node/src/rollback.rs",
+        "node/src/cold_resync.rs",
+        "wallet-core/",
+        "contracts/",
+        "config/",
+        "genesis/",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "tools/replay-ref/",
+        "tools/mergeset-ref/"
+      ]
+    },
+    "B": {
+      "why": "node integrity: code the node binary links that is not rules",
+      "repo": "citrate-chain",
+      "paths": [
+        "core/storage/",
+        "node/",
+        "core/api/",
+        "core/mcp/",
+        "core/learning/",
+        "wallet/",
+        "cli/",
+        "crates/citrate-commd/",
+        "crates/citrate-fork/"
+      ]
+    },
+    "C": {
+      "why": "chain-adjacent in Core: what chain bytes, crates, genesis, book or node launch Core ships",
+      "repo": "citrate-core",
+      "paths": [
+        "release/network-cut.json",
+        "scripts/build-sidecar.sh",
+        "src-tauri/network/profiles.json",
+        "src-tauri/addresses/40204.json",
+        "src-tauri/addresses/40204.canonical.json",
+        "src-tauri/abis/40204.system-abis.json",
+        "src-tauri/config/member-node.toml",
+        "src-tauri/src/node.rs",
+        "src-tauri/src/node_genesis.rs",
+        "src-tauri/src/network_profile.rs",
+        "src-tauri/src/validator.rs",
+        "src-tauri/src/addresses.rs",
+        "scripts/ci/consensus-fingerprint.py",
+        "scripts/e2e/cold-sync.py",
+        "scripts/network-cut.py",
+        "scripts/network-profile.py",
+        "scripts/sync-addresses.py"
+      ],
+      "scoped": [
+        { "path": "**/Cargo.toml", "kind": "lines", "match": "citrate-chain|citrate-wallet-core|citrate-commd",
+          "why": "the chain git dependencies (and any [patch] that redirects them)" },
+        { "path": "Cargo.lock", "kind": "lock-closure", "roots": ["citrate-wallet-core", "citrate-commd"], "source_match": "citrate-chain",
+          "why": "a lockfile move of any crate the chain crates pull (k256, sha3, rlp, bip32, ...) changes tx-signing code" },
+        { "path": "release/components.json", "kind": "json-entry", "array": "components", "key": "id", "value": "citrate-node",
+          "why": "the bundled node's source rev, per-target revs and pinned bytes" },
+        { "path": "src-tauri/runtime-deps.sha256", "kind": "lines", "match": "\\scitrate-(x86_64|aarch64|i686|armv7)-",
+          "why": "the pinned node sidecar bytes" }
+      ],
+      "rules_paths": [
+        "release/network-cut.json",
+        "src-tauri/src/node.rs",
+        "src-tauri/src/node_genesis.rs",
+        "src-tauri/config/member-node.toml"
+      ]
+    }
+  },
+  "chain_crate_consumers": [
+    { "repo": "citrate-core", "file": "src-tauri/Cargo.toml", "crate": "citrate-wallet-core" },
+    { "repo": "citrate-core", "file": "src-tauri/Cargo.toml", "crate": "citrate-commd" },
+    { "repo": "citrate-core", "file": "kit/Cargo.toml", "crate": "citrate-wallet-core" },
+    { "repo": "citrate-agent-runtime", "file": "agent/core/Cargo.toml", "crate": "citrate-wallet-core" }
+  ],
+  "chain_touch_branches": ["feat/v60-chain-", "feat/v60-l0-"],
+  "lane_branch_pattern": "^feat/v60-l[1-9][0-9]*-",
+  "node_component": "citrate-node",
+  "evidence": {
+    "dir": "release/evidence/chain/",
+    "required": ["source-fingerprint.json", "agreement-x86_64.json", "agreement-aarch64.json", "bench.md"]
+  },
+  "agreement_check": "lq / chain-agreement",
+  "labels": { "chain_touch": "chain-touch", "consensus_review": "consensus-review" }
+}
