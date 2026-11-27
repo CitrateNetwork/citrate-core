@@ -110,6 +110,22 @@
       "supersededBy": ["L3-WP16"]
     },
     {
+      "id": "L3-MEMBANNER",
+      "lane": "L3",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l3/characterization/membershipBanner.characterization.test.ts"],
+      "covers": ["src/shell/entitlementBanner.ts", "src/App.tsx"],
+      "pins": "the entitlement banner cases L3-WP19 keeps: a lapsed member with a grant and an expired claim are red with Renew, active hides it, expiring and the offline grace window are warn, a grant visibly in flight on chain is the neutral activating notice",
+      "tests": [
+        "lapsed_member_with_a_grant_is_red_with_renew",
+        "expired_claim_is_red_with_renew",
+        "active_hides_the_banner",
+        "expiring_is_warn_with_renew",
+        "grace_is_warn_without_a_call_to_action",
+        "grant_in_flight_on_chain_is_neutral_activating"
+      ]
+    },
+    {
       "id": "L3-REGISTRY",
       "lane": "L3",
       "runner": "vitest",

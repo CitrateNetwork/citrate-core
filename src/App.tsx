@@ -22,6 +22,7 @@ import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { useNetworkLabel } from "./shell/networkCompat";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
+import { runBannerAction } from "./shell/actions/l3/membership";
 import { reachedStep, setJoinFunnelConsent, stepForStage, funnelConsented, setTelemetryConsent } from "./privacy/joinFunnel";
 import { JoinStepsNote } from "./privacy/JoinStepsNote";
 
@@ -40,19 +41,24 @@ function Shell({ s }: { s: AppState }) {
   const bannerShow = banner.show;
   const { bg: bannerBg, bd: bannerBd, fg: bannerFg } = BANNER_TONE_TOKENS[banner.tone];
   const bannerText = banner.text;
-  const bannerCta = banner.cta;
+  const bannerAction = banner.cta ? banner.action : null;
 
   return (
     <div style={{ height: "100vh", display: "grid", gridTemplateColumns: sideW + "px 1fr", overflow: "hidden", transition: "grid-template-columns var(--dur-fast) var(--ease-standard)" }}>
       <Sidebar store={store} s={s} />
       <main style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", background: "var(--srf-0)", color: "var(--tx-1)" }} data-register={reg}>
         {bannerShow && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 26px", background: bannerBg, borderBottom: "1px solid " + bannerBd }}>
+          <div data-testid="entitlement-banner" data-tone={banner.tone} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 26px", background: bannerBg, borderBottom: "1px solid " + bannerBd }}>
             <span style={{ width: 7, height: 7, borderRadius: 999, background: bannerBd, flexShrink: 0 }}></span>
             <span style={{ fontSize: 12.5, color: bannerFg, flex: 1 }}>{bannerText}</span>
-            {bannerCta && (
-              <button className="btn btn-ghost btn-sm" onClick={() => void store.renewMembership()}>
-                Renew
+            {/* L3-WP19: renew, upgrade (the guarded checkout) or verify identity, per the banner. */}
+            {bannerAction && (
+              <button
+                className={banner.tone === "brand" ? "btn btn-primary btn-sm" : "btn btn-ghost btn-sm"}
+                data-testid="entitlement-banner-cta"
+                onClick={() => void runBannerAction(store, bannerAction)}
+              >
+                {banner.ctaLabel}
               </button>
             )}
           </div>
