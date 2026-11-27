@@ -374,7 +374,7 @@ pub fn run() {
     // node and its RocksDB first) inherits it. A Finder/Dock launch on macOS starts at 256, too
     // few for the node's SST files. Logs one line; never fails start-up.
     fd_limit::apply_at_startup();
-    // K6 — install the network gate before anything can sign. Every wallet signature is
+    // K6: install the network gate before anything can sign. Every wallet signature is
     // checked locally against the active network profile (refused when no network is set,
     // or when it commits to another chain id). Transaction sends additionally check the
     // RPC's chain id and block-0 hash against the profile before broadcasting.
