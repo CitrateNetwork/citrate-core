@@ -6,18 +6,96 @@
 # lane's owned set. Run in CI / before every merge:
 #
 #     scripts/cx-ownership-check.sh <lane> [base-ref]      # default base = origin/main
+#     scripts/cx-ownership-check.sh --map v60 <lane> [base-ref]
+#     scripts/cx-ownership-check.sh --lane-of <branch>     # feat/v60-l<N>-wpNN-<slug> -> l<N>
 #     scripts/cx-ownership-check.sh --selftest             # unit-checks the matcher, no git
 #
-# Lanes: s0 s1 s2 s3 s4 s5 s6 s7  (s0 = scaffold, owns the spine; see the map header).
+# Maps: cx (default; lanes s0..s7, s0 = scaffold, owns the spine; see the map header) and v60
+# (.agentile/v60-ownership.map, lanes l0..l9 and lq; read by lane-guard.yml, written into
+# .github/CODEOWNERS by scripts/gen-codeowners.mjs).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MAP_NAME=cx
 MAP="$REPO_ROOT/.agentile/cx-ownership.map"
+V60_LANES=()
+V60_RES=()
 
-# In [[ str == pat ]], '*' spans '/', so a trailing '**' or '*' matches any subpath.
-# Returns 0 if $file is allowed for $lane (its own globs + the always-allowed '*' globs).
+use_map() { # cx | v60
+  case "$1" in
+    cx)  MAP_NAME=cx;  MAP="$REPO_ROOT/.agentile/cx-ownership.map" ;;
+    v60) MAP_NAME=v60; MAP="$REPO_ROOT/.agentile/v60-ownership.map"; load_v60 ;;
+    *) echo "unknown map '$1' (cx | v60)" >&2; return 2 ;;
+  esac
+}
+
+# v60 globs follow CODEOWNERS: '**' spans '/', '*' and '?' stay inside one path segment.
+glob_to_ere() {
+  local g="$1" re="" c i n=${#1}
+  for ((i = 0; i < n; i++)); do
+    c="${g:i:1}"
+    case "$c" in
+      '*') if [[ "${g:i+1:1}" == '*' ]]; then re+='.*'; i=$((i + 1)); else re+='[^/]*'; fi ;;
+      '?') re+='[^/]' ;;
+      '.'|'+'|'('|')'|'{'|'}'|'['|']'|'^'|'$'|'|'|'\') re+="\\$c" ;;
+      *) re+="$c" ;;
+    esac
+  done
+  printf '%s' "$re"
+}
+
+load_v60() {
+  local l pat
+  [[ -f "$MAP" ]] || { echo "missing $MAP" >&2; return 2; }
+  V60_LANES=(); V60_RES=()
+  while read -r l pat; do
+    [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
+    V60_LANES+=("$l"); V60_RES+=("^$(glob_to_ere "$pat")\$")
+  done < "$MAP"
+}
+
+# The lanes (comma list) of the LAST matching non-'*' row; empty when no row claims the file.
+v60_owner() {
+  local file="$1" i owner=""
+  for ((i = 0; i < ${#V60_LANES[@]}; i++)); do
+    [[ "${V60_LANES[i]}" == "*" ]] && continue
+    [[ "$file" =~ ${V60_RES[i]} ]] && owner="${V60_LANES[i]}"
+  done
+  printf '%s' "$owner"
+}
+
+v60_always_allowed() {
+  local file="$1" i
+  for ((i = 0; i < ${#V60_LANES[@]}; i++)); do
+    [[ "${V60_LANES[i]}" == "*" && "$file" =~ ${V60_RES[i]} ]] && return 0
+  done
+  return 1
+}
+
+# Branch -> lane for lane-guard. Prints the lane and returns 0; returns 1 for a branch the guard
+# does not govern (not feat/v60-*, or the chain lane, which LQ's chain-touch guard covers); returns
+# 2 for a feat/v60-* branch that does not follow feat/v60-l<N>-wpNN[a-z]-<slug>.
+lane_of() {
+  local b="$1"
+  [[ "$b" == feat/v60-* ]] || return 1
+  [[ "$b" == feat/v60-chain-* ]] && return 1
+  if [[ "$b" =~ ^feat/v60-(l[0-9]|lq)-wp[0-9]{2}[a-z]?-[a-z0-9][a-z0-9.-]*$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"; return 0
+  fi
+  return 2
+}
+
+# Returns 0 if $file is allowed for $lane.
+# cx: in [[ str == pat ]], '*' spans '/', so a trailing '**' or '*' matches any subpath; a file is
+# allowed by any of the lane's globs plus the always-allowed '*' globs.
+# v60: the owner is the last matching row (see v60_owner); '*' rows are always allowed.
 file_allowed() {
   local lane="$1" file="$2" l pat
+  if [[ "$MAP_NAME" == v60 ]]; then
+    v60_always_allowed "$file" && return 0
+    [[ ",$(v60_owner "$file")," == *",$lane,"* ]]
+    return
+  fi
   while read -r l pat; do
     [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
     if [[ "$l" == "$lane" || "$l" == "*" ]]; then
@@ -109,19 +187,27 @@ selftest() {
 
 main() {
   if [[ "${1:-}" == "--selftest" ]]; then selftest; return; fi
-  local lane="${1:?usage: cx-ownership-check.sh <lane> [base-ref] | --selftest}"
+  if [[ "${1:-}" == "--lane-of" ]]; then lane_of "${2:?--lane-of needs a branch name}"; return; fi
+  if [[ "${1:-}" == "--map" ]]; then use_map "${2:?--map needs cx or v60}"; shift 2; fi
+  local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --selftest}"
   local base="${2:-origin/main}"
   local changed offenders=()
   changed="$(cd "$REPO_ROOT" && git diff --name-only "${base}...HEAD" 2>/dev/null || git diff --name-only "$base" 2>/dev/null)"
   [[ -z "$changed" ]] && { echo "no changes vs $base — nothing to check"; return 0; }
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    file_allowed "$lane" "$f" || offenders+=("$f")
+    if ! file_allowed "$lane" "$f"; then
+      if [[ "$MAP_NAME" == v60 ]]; then offenders+=("$f (owner: $(v60_owner "$f"))"); else offenders+=("$f"); fi
+    fi
   done <<< "$changed"
   if [[ ${#offenders[@]} -gt 0 ]]; then
     echo "OWNERSHIP VIOLATION — lane '$lane' touched files it does not own (race risk):" >&2
     printf '  %s\n' "${offenders[@]}" >&2
-    echo "Fix: move the change into the owning lane, or open a serialized spine-PR (01 §5.2)." >&2
+    if [[ "$MAP_NAME" == v60 ]]; then
+      echo "Fix: move the change into the owning lane, or ask L0 for a seam PR (L0_INTEGRATION_SEAMS §2)." >&2
+    else
+      echo "Fix: move the change into the owning lane, or open a serialized spine-PR (01 §5.2)." >&2
+    fi
     return 1
   fi
   echo "ownership OK — lane '$lane' diff vs $base is within its owned set (${changed//$'\n'/, })"

@@ -56,11 +56,21 @@ describe("lane-guard workflow", () => {
   it("passes refs through env and never expands them inside a run block", () => {
     const wf = read(".github/workflows/lane-guard.yml");
     expect(wf).toMatch(/^on:\n {2}pull_request:[^\n]*\n {2}merge_group:/m);
+    // Collect every run: body (single line or block) and require it to hold no ${{ }} expression.
     const lines = wf.split("\n");
+    const runBodies = [];
     lines.forEach((line, i) => {
-      if (!/\$\{\{[^}]*(head_ref|base_ref|\.ref\b|title|body)/.test(line)) return;
-      // Only `NAME: ${{ ... }}` env entries may carry a ref expression.
-      expect(line, `lane-guard.yml:${i + 1}`).toMatch(/^\s+[A-Z_]+: \$\{\{ [a-z_.]+ \}\}\s*$/);
+      const m = /^(\s*)(- )?run: ?(.*)$/.exec(line);
+      if (!m) return;
+      const indent = m[1].length + (m[2] ? 2 : 0);
+      if (m[3] !== "|") return void runBodies.push([i + 1, m[3]]);
+      for (let j = i + 1; j < lines.length && (!lines[j].trim() || lines[j].search(/\S/) > indent); j++) {
+        runBodies.push([j + 1, lines[j]]);
+      }
     });
+    expect(runBodies.length).toBeGreaterThan(5);
+    for (const [n, body] of runBodies) expect(body, `lane-guard.yml:${n}`).not.toContain("${{");
+    // The head ref reaches the shell only as an env value.
+    expect(wf).toContain("HEAD_REF: ${{ github.head_ref }}");
   });
 });

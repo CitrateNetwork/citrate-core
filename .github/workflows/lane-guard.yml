@@ -1,0 +1,75 @@
+# created: 2026-11-27 | branch: feat/v60-l0-wp01-ownership-map
+# author: Larry Klosowski (L0 lane, L0-WP01; Claude Opus 5.5)
+# status: active
+#
+# lane-guard (planset v060, L0-WP01): a feat/v60-l<N>-wpNN-<slug> branch may change only the files
+# its lane owns in .agentile/v60-ownership.map. Other branches pass with a notice; a feat/v60-*
+# branch with any other shape fails. merge-gate's `ci` waits on this check like every other one.
+#
+# Untrusted input: the branch name and the changed paths. Refs reach the shell only through env,
+# are validated by `--lane-of` before use, and workflow commands are paused while paths print.
+name: lane-guard
+
+on:
+  pull_request: {}
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: lane-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lane-guard:
+    name: lane-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Matcher selftest (cx and v60 maps, branch parsing)
+        run: bash scripts/cx-ownership-check.sh --selftest
+
+      - name: CODEOWNERS matches the ownership map
+        run: node scripts/gen-codeowners.mjs --check
+
+      - name: The lane owns every changed file
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          MQ_REF: ${{ github.event.merge_group.head_ref }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = merge_group ]; then
+            # refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>: judge the queued PR's own branch.
+            pr=$(printf '%s' "$MQ_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p')
+            if [ -z "$pr" ]; then echo "::error::unexpected merge-group ref shape"; exit 1; fi
+            branch=$(gh api "repos/$REPO/pulls/$pr" --jq .head.ref)
+            base="$MQ_BASE"
+          else
+            branch="$HEAD_REF"
+            # The PR merge commit: its first parent is the base it merges into.
+            base="HEAD^1"
+          fi
+          rc=0
+          lane=$(bash scripts/cx-ownership-check.sh --lane-of "$branch") || rc=$?
+          case "$rc" in
+            0) ;;
+            1) echo "Not a v60 lane branch: lane-guard does not apply."; exit 0 ;;
+            *) echo "::error::v60 branch name must be feat/v60-l<N>-wpNN-<slug> (L0_INTEGRATION_SEAMS 3.6)"; exit 1 ;;
+          esac
+          echo "lane: $lane"
+          pause="$(openssl rand -hex 16)"
+          echo "::stop-commands::$pause"
+          bash scripts/cx-ownership-check.sh --map v60 "$lane" "$base"
+          echo "::$pause::"
