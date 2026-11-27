@@ -489,7 +489,7 @@ fn resolved_app_acl() -> tauri_utils::acl::resolved::Resolved {
     use tauri_utils::acl::manifest::{Manifest, PermissionFile};
     let mut files: Vec<PermissionFile> = crate::commands::lane_acls()
         .into_iter()
-        .map(|(id, toml)| toml::from_str(toml).unwrap_or_else(|e| panic!("{id}: {e}")))
+        .map(|(id, text)| toml::from_str(text).unwrap_or_else(|e| panic!("{id}: {e}")))
         .collect();
     let relay: PermissionFile = toml::from_str(include_str!("../permissions/contract-reader.toml"))
         .expect("contract-reader.toml");

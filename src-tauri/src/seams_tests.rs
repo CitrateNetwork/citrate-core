@@ -196,7 +196,7 @@ fn acl_allows_exactly_the_registered_commands() {
     for (id, toml) in crate::commands::lane_acls() {
         assert!(
             toml.contains(&format!("identifier = \"{id}\"")),
-            "{id}-commands.toml names its permission"
+            "the {id} ACL names its permission"
         );
         acl.extend(acl_commands(toml));
     }

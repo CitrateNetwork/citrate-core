@@ -778,10 +778,9 @@ fn storage_daemons_run_under_the_supervisor_and_stop_on_quit() {
 /// and no command in storage.rs builds a bond transaction.
 #[test]
 fn the_bonded_storage_pin_command_is_not_invocable() {
+    let handler = crate::commands::registry_source();
     assert!(
-        !crate::commands::registered_paths()
-            .iter()
-            .any(|p| p == "storage::storage_pin"),
+        !handler.contains("storage::storage_pin,"),
         "storage_pin must not be registered"
     );
     let acl = crate::commands::acl_source();
