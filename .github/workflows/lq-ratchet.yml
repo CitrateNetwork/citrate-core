@@ -63,10 +63,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The test log becomes an artifact, and GitHub masks secrets only in the live log, not in
+      # artifacts. So the private crates are fetched first (log not kept), the credential is
+      # dropped, and the tests run offline: no git URL carrying the token can reach the log.
+      - name: cargo fetch --locked (private crates; log not kept)
+        run: cargo fetch --locked
+      - name: Drop the private-repo credential before the tests
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        run: git config --global --unset-all url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf
       - name: cargo test --workspace --locked --no-fail-fast
         run: |
           set -o pipefail
-          cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/cargo-test.log"
+          cargo test --workspace --locked --offline --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/cargo-test.log"
+      - name: Refuse to upload a log that carries a credential
+        if: ${{ !cancelled() }}
+        run: |
+          if grep -q 'x-access-token' "$RUNNER_TEMP/cargo-test.log"; then
+            echo "cargo-test.log mentions x-access-token; not uploading it" >&2
+            rm -f "$RUNNER_TEMP/cargo-test.log"
+            exit 1
+          fi
       - name: Upload the cargo test log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
