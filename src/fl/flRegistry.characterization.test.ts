@@ -8,8 +8,9 @@
 // The registry is the one list (Rule 9): LQ reads it, and this test fails when a suite, a file or
 // a test goes missing, when a file declares a test the registry does not list, when a listed test
 // survives only inside a comment, when the Rust suite is not compiled in where the registry says,
-// when a protected (honesty) suite loses tests, or when the characterization doc stops naming a
-// pinned test. That a declared test also runs is shown by the runners' own counts (LQ ratchet).
+// when a protected (honesty) suite loses tests, when a pinned or protected Rust test is turned off
+// (#[ignore], cfg_attr, or a cfg other than cfg(test)), or when the characterization doc stops
+// naming a pinned test. That a declared test also runs is shown by the runners' own counts (LQ ratchet).
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -73,16 +74,62 @@ function declaredVitest(src: string): string[] {
   return [...uncommented(src).matchAll(/^[ \t]*it\(\s*"([A-Za-z0-9_]+)"\s*,/gm)].map((m) => m[1]);
 }
 
-/** cargo: the functions under a `#[test]` (or `#[tokio::test]`) attribute, outside comments. */
-function declaredCargo(src: string): string[] {
-  const re = /^[ \t]*#\[(?:tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*\(/gm;
-  return [...uncommented(src).matchAll(re)].map((m) => m[1]);
+/** A Rust fn and its whole attribute block, each attribute with its whitespace removed. */
+interface CargoFn {
+  name: string;
+  attrs: string[];
 }
 
-/** Every test a protected file declares, counted the way its runner sees a test start. */
+/** One attribute, `#[...]`, its body captured; brackets inside a string literal stay in the body. */
+const ATTR = /#\s*\[((?:"(?:[^"\\]|\\.)*"|[^\]"])*)\]/.source;
+const CARGO_FN = new RegExp(
+  `^[ \\t]*((?:${ATTR}\\s*)+)(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+([A-Za-z0-9_]+)\\s*\\(`,
+  "gm",
+);
+
+/** Rust source for the cargo checks: comments out, and a trailing `//` comment after an attribute dropped. */
+function cargoSource(src: string): string {
+  return uncommented(src).replace(/^([ \t]*#.*\])[ \t]*\/\/.*$/gm, "$1");
+}
+
+/** Every fn with attributes directly above it, outside comments. */
+function cargoFns(src: string): CargoFn[] {
+  return [...cargoSource(src).matchAll(CARGO_FN)].map((m) => ({
+    name: m[m.length - 1],
+    attrs: [...m[1].matchAll(new RegExp(ATTR, "g"))].map((a) => a[1].replace(/\s+/g, "")),
+  }));
+}
+
+const isCargoTest = (f: CargoFn) => f.attrs.some((a) => /^(?:tokio::)?test\b/.test(a));
+
+/** What turns a Rust test off: an #[ignore], a cfg_attr, or a cfg other than cfg(test), anywhere in its block. */
+function disabledBy(f: CargoFn): string | undefined {
+  return f.attrs.find((a) => /^(?:ignore|cfg_attr)\b/.test(a) || (/^cfg\b/.test(a) && a !== "cfg(test)"));
+}
+
+/** Lines that turn a Rust test off wherever they sit: a backstop for an attribute the block parse misreads. */
+const DISABLING_LINE = /^[ \t]*#\s*\[\s*(?:ignore|cfg_attr)\b.*$/gm;
+
+/** cargo: the functions under `#[test]` (or `#[tokio::test]`) that still run, outside comments. */
+function declaredCargo(src: string): string[] {
+  return cargoFns(src)
+    .filter((f) => isCargoTest(f) && disabledBy(f) === undefined)
+    .map((f) => f.name);
+}
+
+/** cargo: each test turned off (`name: #[attr]`), then each disabling line. Empty when every test runs. */
+function disabledCargo(src: string): string[] {
+  const off = cargoFns(src)
+    .filter((f) => isCargoTest(f) && disabledBy(f) !== undefined)
+    .map((f) => `${f.name}: #[${disabledBy(f)}]`);
+  const lines = (cargoSource(src).match(DISABLING_LINE) ?? []).map((l) => l.trim());
+  return [...off, ...lines];
+}
+
+/** Every test a protected file declares, counted the way its runner sees a test start (a Rust test only if it runs). */
 function countTests(runner: Runner, src: string): number {
-  const re = runner === "cargo" ? /^[ \t]*#\[(?:tokio::)?test/gm : /^[ \t]*(?:it|test)(?:\.each)?\(/gm;
-  return (uncommented(src).match(re) ?? []).length;
+  if (runner === "cargo") return declaredCargo(src).length;
+  return (uncommented(src).match(/^[ \t]*(?:it|test)(?:\.each)?\(/gm) ?? []).length;
 }
 
 /** A protected test is named by its id: a Rust test fn, or a vitest `it("<id>"` / `test("<id>"`. */
@@ -166,6 +213,20 @@ describe("L8 characterization registry (L8-WP01)", () => {
       const src = existsSync(p.file) ? readFileSync(p.file, "utf8") : "";
       expect(countTests(p.runner, src), p.file).toBeGreaterThanOrEqual(p.count);
       for (const id of p.tests) expect(protectedDeclares(p.runner, src, id), `${p.file} declares ${id}`).toBe(true);
+    }
+  });
+
+  it("no_pinned_or_protected_cargo_test_is_disabled", () => {
+    // A Rust test that is #[ignore]d, behind a cfg_attr or cfg'd out no longer runs, so no pinned
+    // or protected file carries one (the collector safety guards in fl_collect_tests.rs above all).
+    const files = [
+      ...REG.suites.filter((s) => s.runner === "cargo").flatMap((s) => s.files),
+      ...REG.protected.filter((p) => p.runner === "cargo").map((p) => p.file),
+    ];
+    expect(files).toContain("src-tauri/src/fl_collect_tests.rs");
+    for (const f of files) {
+      const src = existsSync(f) ? readFileSync(f, "utf8") : "";
+      expect(disabledCargo(src), f).toEqual([]);
     }
   });
 
@@ -260,6 +321,25 @@ describe("L8 characterization registry (L8-WP01)", () => {
     ].join("\n");
     expect(declaredCargo(rs)).toEqual(["cfg_test_runs", "should_panic_runs"]);
     expect(countTests("cargo", rs)).toBe(2);
+    expect(disabledCargo(rs)).toEqual([
+      "ignore_above: #[ignore]",
+      'ignore_below: #[ignore="flaky"]',
+      "same_line: #[ignore]",
+      "spaced_ignore: #[ignore]",
+      "ignore_with_a_comment: #[ignore]",
+      'ignore_with_a_bracket: #[ignore="see[1]"]',
+      "cfg_never: #[cfg(any())]",
+      "cfg_not_test: #[cfg(not(test))]",
+      "cfg_attr_ignore: #[cfg_attr(unix,ignore)]",
+      "cfg_attr_wrapped: #[cfg_attr(unix,ignore)]",
+      "#[ignore]",
+      '#[ignore = "flaky"]',
+      "# [ignore]",
+      "#[ignore]",
+      '#[ignore = "see [1]"]',
+      "#[cfg_attr(unix, ignore)]",
+      "#[cfg_attr(",
+    ]);
     // So a protected file whose test gains #[ignore] drops below its count and loses the name.
     const before = "#[test]\nfn guard() {}\n#[test]\nfn other() {}";
     const after = "#[ignore]\n#[test]\nfn guard() {}\n#[test]\nfn other() {}";

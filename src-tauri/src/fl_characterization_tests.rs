@@ -453,18 +453,92 @@ mod lq_l8_fl {
         assert_eq!(got, Err(want));
     }
 
-    /// Ok when `src` declares `fn <name>() {` as a live #[test].
+    /// Source with each line trimmed and whole-line `//` comments (doc comments too) blanked.
+    fn code_lines(src: &str) -> String {
+        let lines: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .map(|l| if l.starts_with("//") { "" } else { l })
+            .collect();
+        lines.join("\n")
+    }
+
+    /// True where the item before an attribute block ends (or the source starts).
+    fn item_ends(code: &str) -> bool {
+        code.is_empty() || code.ends_with(|c: char| matches!(c, '}' | ';' | '{'))
+    }
+
+    /// The attributes directly above byte `at` of `code`, nearest first, whitespace removed. Any
+    /// other text between them and the item before (a trailing comment, a stray token) is an
+    /// error, so the check fails closed.
+    fn attributes_above(code: &str, at: usize) -> Result<Vec<String>, String> {
+        let mut rest = code[..at].trim_end();
+        let mut attrs: Vec<String> = Vec::new();
+        while !item_ends(rest) {
+            let line = rest.rsplit('\n').next().unwrap_or(rest);
+            let Some(body) = rest.strip_suffix(']') else {
+                return Err(format!("unexpected text above the fn: {line:?}"));
+            };
+            let mut depth = 1usize;
+            let mut open = None;
+            for (i, b) in body.bytes().enumerate().rev() {
+                match b {
+                    b']' => depth += 1,
+                    b'[' if depth == 1 => {
+                        open = Some(i);
+                        break;
+                    }
+                    b'[' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let Some(open) = open else {
+                return Err(format!("an unbalanced attribute: {line:?}"));
+            };
+            let Some(before) = body[..open].trim_end().strip_suffix('#') else {
+                return Err(format!("a bracket that is no attribute: {line:?}"));
+            };
+            attrs.push(body[open + 1..].split_whitespace().collect());
+            rest = before.trim_end();
+        }
+        Ok(attrs)
+    }
+
+    /// Ok when `src` declares `fn <name>() {` as a test that runs: under #[test], with no
+    /// #[ignore], no cfg_attr and no cfg other than cfg(test) anywhere in its attribute block. A
+    /// line that starts an #[ignore] or a cfg_attr anywhere in the file fails it too (a backstop).
     fn live_test(src: &str, name: &str) -> Result<(), String> {
-        let lines: Vec<&str> = src.lines().map(str::trim).collect();
+        let code = code_lines(src);
+        for line in code.lines() {
+            let squashed: String = line.split_whitespace().collect();
+            if squashed.starts_with("#[ignore") || squashed.starts_with("#[cfg_attr") {
+                return Err(format!("a test is turned off: {line}"));
+            }
+        }
         let decl = format!("fn {name}() {{");
-        let Some(at) = lines.iter().position(|l| *l == decl) else {
+        let mut at = None;
+        let mut offset = 0;
+        for line in code.split('\n') {
+            if line == decl {
+                at = Some(offset);
+                break;
+            }
+            offset += line.len() + 1;
+        }
+        let Some(at) = at else {
             return Err(format!("{name} is not declared"));
         };
-        if at > 0 && lines[at - 1] == "#[test]" {
-            Ok(())
-        } else {
-            Err(format!("{name} is not under #[test]"))
+        let attrs = attributes_above(&code, at)?;
+        if !attrs.iter().any(|a| a == "test") {
+            return Err(format!("{name} is not under #[test]"));
         }
+        for a in &attrs {
+            let off = a.starts_with("ignore") || a.starts_with("cfg_attr");
+            if off || (a.starts_with("cfg") && a != "cfg(test)") {
+                return Err(format!("{name} is turned off by #[{a}]"));
+            }
+        }
+        Ok(())
     }
 
     #[test]

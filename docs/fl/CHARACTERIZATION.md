@@ -52,6 +52,7 @@ File: `src/fl/flRegistry.characterization.test.ts`. Tests: `registry_lists_every
 `every_listed_test_is_declared_and_every_declared_test_is_listed`,
 `cargo_suite_is_compiled_in_where_the_registry_says`,
 `protected_suites_keep_their_counts_and_named_tests`,
+`no_pinned_or_protected_cargo_test_is_disabled`,
 `characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`,
 `cargo_checks_reject_an_ignored_or_cfgd_out_test`. A Rust test under `#[ignore]`, a `cfg_attr` or a
 `cfg` other than `cfg(test)` is not declared and does not count, so a protected or pinned file whose
