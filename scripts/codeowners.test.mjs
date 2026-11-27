@@ -46,6 +46,24 @@ describe("CODEOWNERS is generated from the v60 ownership map", () => {
     expect(toCodeownersPattern("src-tauri/src/fl_*.rs")).toBe("/src-tauri/src/fl_*.rs");
   });
 
+  it("rejects a trailing-slash glob (CODEOWNERS reads a directory, the matcher a literal path)", () => {
+    expect(() => toCodeownersPattern("src/models/")).toThrow();
+    expect(() => parseMap("#! reviewers * @o/t\nl5 src/models/\n")).toThrow();
+  });
+
+  it("seed rows let L0 create registration points and never change CODEOWNERS", () => {
+    const map = read(".agentile/v60-ownership.map");
+    const { creates } = parseMap(map);
+    expect(creates.length).toBeGreaterThanOrEqual(10);
+    for (const c of creates) {
+      expect(c.lanes).toEqual(["l0"]);
+      expect(() => toCodeownersPattern(c.glob)).not.toThrow();
+    }
+    const withoutSeeds = map.split("\n").filter((l) => !l.startsWith("create:")).join("\n");
+    expect(generate(map)).toBe(generate(withoutSeeds));
+    expect(() => parseMap("#! reviewers * @o/t\ncreate:l11 src/a.ts\n")).toThrow();
+  });
+
   it("the ownership matcher selftest passes for the cx and v60 maps", () => {
     const out = execFileSync("bash", ["scripts/cx-ownership-check.sh", "--selftest"], { cwd: repo, encoding: "utf8" });
     expect(out).toContain("SELFTEST: PASS");
@@ -161,7 +179,7 @@ describe("lane-guard workflow", () => {
     for (let j = start; j < lines.length && (!lines[j].trim() || lines[j].startsWith("          ")); j++) body.push(lines[j].slice(10));
     return body.join("\n");
   };
-  const scratchPr = (prefix, { baseHasPolicy }) => {
+  const scratchPr = (prefix, { baseHasPolicy, baseFiles = {} }) => {
     const tmp = mkdtempSync(path.join(os.tmpdir(), prefix));
     const git = (...a) =>
       execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], { cwd: tmp, encoding: "utf8" });
@@ -175,20 +193,23 @@ describe("lane-guard workflow", () => {
     };
     git("init", "-q", "-b", "main");
     put("src/shell/store.ts", "export const store = 1;\n");
+    for (const [rel, text] of Object.entries(baseFiles)) put(rel, text);
     if (baseHasPolicy) policy();
     git("add", "-A");
     git("commit", "-q", "-m", "base");
     git("checkout", "-q", "-b", "pr");
     return { tmp, git, put, policy };
   };
-  const runGuard = (tmp, branch) => {
+  // sha: the event commit (github.sha); defaults to the scratch repo's HEAD, the PR merge commit.
+  const runGuard = (tmp, branch, sha) => {
     const runnerTemp = mkdtempSync(path.join(os.tmpdir(), "lane-guard-runner-"));
     try {
+      const SHA = sha ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
       const out = execFileSync("bash", ["-c", guardStep()], {
         cwd: tmp,
         encoding: "utf8",
         stdio: "pipe",
-        env: { ...process.env, EVENT: "pull_request", HEAD_REF: branch, MQ_REF: "", REPO: "o/r", RUNNER_TEMP: runnerTemp },
+        env: { ...process.env, EVENT: "pull_request", HEAD_REF: branch, MQ_REF: "", REPO: "o/r", SHA, RUNNER_TEMP: runnerTemp },
       });
       return { ok: true, out };
     } catch (e) {
@@ -233,6 +254,100 @@ describe("lane-guard workflow", () => {
       const r = runGuard(tmp, "feat/v60-l1-wp01-claim-store");
       expect(r.ok, r.out).toBe(false);
       expect(r.out).toContain("scripts/cx-ownership-check.sh (owner: l0)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("the guard runs in its own job, with no PR-controlled step before it", () => {
+    // A step that runs the PR's scripts could move HEAD, rewrite .git or put a shim on PATH before
+    // the trusted step reads the base policy. The guard job is checkout plus the guard, nothing else.
+    const wf = read(".github/workflows/lane-guard.yml");
+    const jobs = wf.slice(wf.indexOf("\njobs:\n") + 7).split(/\n(?= {2}[a-z0-9-]+:\n)/);
+    const guard = jobs.filter((j) => j.includes("name: The lane owns every changed file"));
+    expect(guard).toHaveLength(1);
+    const steps = guard[0].split("\n").filter((l) => /^ {6}- /.test(l));
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toMatch(/^ {6}- uses: actions\/checkout@[0-9a-f]{40} /);
+    expect(guard[0]).not.toContain("--selftest");
+    expect(guard[0]).not.toContain("gen-codeowners");
+    expect(guard[0]).not.toMatch(/\bnpm\b|\bnode\b/);
+    // The PR's own self-consistency checks still run, in another job.
+    expect(jobs.some((j) => !guard.includes(j) && j.includes("--selftest") && j.includes("gen-codeowners.mjs --check"))).toBe(true);
+    // The judged commit comes from the event, not from whatever HEAD points at.
+    expect(guard[0]).toContain("SHA: ${{ github.sha }}");
+  });
+
+  it("the guard judges the event commit even if HEAD was moved before it ran", () => {
+    const { tmp, git, put } = scratchPr("lane-guard-sha-", { baseHasPolicy: true });
+    try {
+      put("src/shell/store.ts", "export const store = 2;\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "l5 edits the L0 hotspot");
+      mergeIntoMain(git);
+      const sha = git("rev-parse", "HEAD").trim();
+      // A hostile earlier step points HEAD at a commit with an empty diff.
+      git("checkout", "-q", "--detach", "HEAD^1");
+      const r = runGuard(tmp, "feat/v60-l5-wp02-hf-caps", sha);
+      expect(r.ok, r.out).toBe(false);
+      expect(r.out).toContain("src/shell/store.ts (owner: l0)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("an L0 seam PR may create other lanes' registration points (spec 2.2)", () => {
+    const { tmp, git, put } = scratchPr("lane-guard-seed-", { baseHasPolicy: true });
+    try {
+      for (const rel of [
+        "src-tauri/src/commands/l1.rs",
+        "src-tauri/permissions/l3-commands.toml",
+        "src/bridge/lanes/l5.ts",
+        "src/shell/actions/l4/x.ts",
+        "src-tauri/src/lanes/l2/hooks.rs",
+      ]) put(rel, "// registration point\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "L0 seeds registration points");
+      mergeIntoMain(git);
+      const ok = runGuard(tmp, "feat/v60-l0-wp03-command-registry");
+      expect(ok.ok, ok.out).toBe(true);
+      const other = runGuard(tmp, "feat/v60-l2-wp01-x");
+      expect(other.ok, other.out).toBe(false);
+      expect(other.out).toContain("src-tauri/src/commands/l1.rs (owner: l1)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("once a registration point exists, L0 may not edit or delete it", () => {
+    const baseFiles = { "src-tauri/src/commands/l1.rs": "// l1\n", "src/bridge/lanes/l5.ts": "export {};\n" };
+    for (const change of ["edit", "delete"]) {
+      const { tmp, git, put } = scratchPr(`lane-guard-seed-${change}-`, { baseHasPolicy: true, baseFiles });
+      try {
+        if (change === "edit") put("src-tauri/src/commands/l1.rs", "// l0 edits l1\n");
+        else git("rm", "-q", "src/bridge/lanes/l5.ts");
+        git("add", "-A");
+        git("commit", "-q", "-m", `l0 ${change}s a lane's registration point`);
+        mergeIntoMain(git);
+        const r = runGuard(tmp, "feat/v60-l0-wp05-bridge-split");
+        expect(r.ok, r.out).toBe(false);
+        expect(r.out).toContain(change === "edit" ? "src-tauri/src/commands/l1.rs (owner: l1)" : "src/bridge/lanes/l5.ts (owner: l5)");
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("a chain-lane branch gets the frozen-path check here", () => {
+    const { tmp, git, put } = scratchPr("lane-guard-chain-", { baseHasPolicy: true, baseFiles: { "src-tauri/addresses/40204.json": "{}\n" } });
+    try {
+      put("src-tauri/addresses/40204.json", "{\"x\":1}\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "chain branch edits the address book");
+      mergeIntoMain(git);
+      const r = runGuard(tmp, "feat/v60-chain-r1008-pin");
+      expect(r.ok, r.out).toBe(false);
+      expect(r.out).toContain("src-tauri/addresses/40204.json (owner: frozen)");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

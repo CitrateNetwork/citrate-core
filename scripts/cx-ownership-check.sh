@@ -111,10 +111,11 @@ file_allowed() {
 
 selftest() {
   local fails=0
-  check() { # <expect pass|fail> <lane> <file>
-    if file_allowed "$2" "$3"; then local got=pass; else local got=fail; fi
-    if [[ "$got" != "$1" ]]; then echo "  SELFTEST FAIL: lane=$2 file=$3 want=$1 got=$got"; fails=1
-    else echo "  ok: lane=$2 file=$3 -> $got"; fi
+  check() { # <expect pass|fail> <lane> <file> [git status: A added, M modified (default), D deleted]
+    local st="${4:-M}"
+    if file_allowed "$2" "$3" "$st"; then local got=pass; else local got=fail; fi
+    if [[ "$got" != "$1" ]]; then echo "  SELFTEST FAIL: lane=$2 file=$3 status=$st want=$1 got=$got"; fails=1
+    else echo "  ok: lane=$2 file=$3 status=$st -> $got"; fi
   }
   echo "cx-ownership-check --selftest"
   use_map cx
@@ -166,6 +167,24 @@ selftest() {
   check pass l4 .agentile/sprints/active/v60/SPRINT.md # always allowed
   check pass l0 src/surfaces/Unclaimed.tsx       # unclaimed paths fall back to L0
   check fail l9 src/surfaces/Unclaimed.tsx
+  # L0 seeds the per-lane registration points (section 2.2, WP03 to WP08): it may ADD one that does
+  # not exist at the base; editing or deleting it afterwards is the owning lane's alone.
+  check pass l0 src-tauri/src/commands/l1.rs A
+  check pass l0 src-tauri/permissions/l3-commands.toml A
+  check pass l0 src/bridge/lanes/l5.ts A
+  check pass l0 src/shell/actions/l4/x.ts A
+  check pass l0 src-tauri/src/lanes/l2/hooks.rs A
+  check pass l0 src/shell/routes/l6.tsx A
+  check fail l0 src-tauri/src/commands/l1.rs M   # exists at the base: L1's file
+  check fail l0 src/bridge/lanes/l5.ts D         # deleting is not creating
+  check fail l2 src-tauri/src/commands/l1.rs A   # only L0 seeds another lane's point
+  check fail l0 src-tauri/src/provider_new.rs A  # L1 code, not a registration point
+  check fail l0 src-tauri/addresses/40204.json A # frozen beats the seed grant
+  check pass l1 src-tauri/src/commands/l1.rs A   # the lane may add its own point too
+  # Chain lane branches in this repo: frozen paths only (LQ's chain-touch guard covers the rest).
+  check fail chain src-tauri/addresses/40204.json
+  check fail chain src-tauri/network/profiles.json
+  check pass chain src-tauri/src/node_pin.rs
 
   # Branch name -> lane (lane-guard.yml). 1 = not a lane branch (skip), 2 = malformed v60 branch.
   lane_case() { # <want lane|none|bad> <branch>
@@ -180,7 +199,8 @@ selftest() {
   lane_case l0 feat/v60-l0-wp24-release-0.6.0
   lane_case l2 feat/v60-l2-wp99b-split-example
   lane_case none fix/055-sidecar-flake
-  lane_case none feat/v60-chain-r1008-pin        # chain lane: LQ's chain-touch guard
+  lane_case chain feat/v60-chain-r1008-pin       # chain lane: frozen paths here, the rest in LQ's guard
+  lane_case bad 'feat/v60-chain-$(id)'
   lane_case bad feat/v60-l5-hf-caps              # no wp number
   lane_case bad feat/v60-L5-wp02-hf-caps
   lane_case bad feat/v60-l10-wp01-x
