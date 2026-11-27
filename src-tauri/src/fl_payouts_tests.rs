@@ -93,3 +93,6 @@ fn distinctive_selectors_occur_in_no_other_system_contract() {
             .all(|m| !m.distinctive));
     }
 }
+
+// L8-WP01 L8-RUST characterization (registry ci/characterization.d/l8.json).
+include!("fl_characterization_tests.rs");
