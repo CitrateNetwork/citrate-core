@@ -1,9 +1,10 @@
 // @vitest-environment node
 //
-// LQ-WP02 (0.6.0 planset, lane LQ): the test-count ratchet behind the `lq / ratchet` check.
-// scripts/ci/lq/ratchet.mjs measures a head (the rust and node jobs' own runner output plus tree
-// counts) and compares it with the merge base's .agentile/coverage/ratchet.json. These tests are
-// the revert check for each rule: every rule here fails on the defect it guards.
+// LQ-WP01 + LQ-WP02 (0.6.0 planset, lane LQ): the test-count ratchet behind the `lq / ratchet`
+// check. scripts/ci/lq/ratchet.mjs measures a head (the rust and node jobs' own runner output plus
+// tree counts, by the rules LQ-WP01 measured the committed baseline with) and compares it with the
+// merge base's .agentile/coverage/ratchet.json. These tests are the revert check for each rule:
+// every rule here fails on the defect it guards.
 //
 // Fixture strings that look like focused or skipped tests are built by concatenation, so this file
 // does not itself trip the tree and diff scans it tests.
@@ -54,51 +55,76 @@ const rustDiff = (lines) => ["diff --git a/src-tauri/src/x_tests.rs b/src-tauri/
 const tsDiff = (lines) => ["diff --git a/src/a.test.ts b/src/a.test.ts",
   "--- a/src/a.test.ts", "+++ b/src/a.test.ts", "@@ -1,4 +1,4 @@", ...lines].join("\n");
 
-describe("measure", () => {
+const VIT = (over = {}) => ({
+  numPassedTests: 1, numPendingTests: 0, numTodoTests: 0, numFailedTests: 0, numFailedTestSuites: 0, success: true,
+  testResults: [], ...over,
+});
+const FULL_FM = "---\ncreated: 2026-11-26\nbranch: main\nauthor: Larry Klosowski\nstatus: active\n---\n# x\n";
+
+describe("measure (LQ-WP02 head, LQ-WP01 rules)", () => {
   it("parses cargo \"test result\" lines across crates and counts ignored separately", () => {
     const log = [
       "running 3 tests", "test a ... ok",
       "test result: ok. 3000 passed; 0 failed; 35 ignored; 0 measured; 0 filtered out; finished in 9.1s",
       "test result: ok. 218 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 1.0s",
     ].join("\n");
-    expect(R.parseCargoLog(log)).toEqual({ passed: 3218, ignored: 38, failed: 0, binaries: 2 });
+    expect(R.parseCargoLog(log)).toMatchObject({ passed: 3218, ignored: 38, failed: 0, suites: 2 });
   });
 
   it("parses the vitest json reporter totals, counting todo as skipped", () => {
-    const v = { numPassedTests: 5200, numPendingTests: 7, numTodoTests: 2, numFailedTests: 0, numFailedTestSuites: 0 };
-    expect(R.parseVitestJson(v)).toEqual({ passed: 5200, skipped: 9, failed: 0 });
+    const v = VIT({ numPassedTests: 5200, numPendingTests: 7, numTodoTests: 2 });
+    expect(R.parseVitestJson(v)).toMatchObject({ passed: 5200, skipped: 9, failed: 0 });
   });
 
   it("refuses a log with a failed test, or a suite that failed to load, as a measurement", () => {
     const root = tree({ "src-tauri/formal/A.tla": "" });
     const cargo = "test result: FAILED. 3217 passed; 1 failed; 38 ignored; 0 measured; 0 filtered out";
-    const vit = { numPassedTests: 1, numPendingTests: 0, numTodoTests: 0, numFailedTests: 0, numFailedTestSuites: 0 };
-    expect(() => R.measure({ root, cargoLog: cargo, vitestJson: vit })).toThrow(/failed/);
+    expect(() => R.measure({ root, cargoLog: cargo, vitestJson: VIT() })).toThrow(/failed/);
     const ok = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
-    expect(() => R.measure({ root, cargoLog: ok, vitestJson: { ...vit, numFailedTestSuites: 1 } })).toThrow(/failed/);
-    expect(() => R.measure({ root, cargoLog: "no summary here", vitestJson: vit })).toThrow(/no "test result"/);
+    expect(() => R.measure({ root, cargoLog: ok, vitestJson: VIT({ numFailedTestSuites: 1, success: false }) })).toThrow(/failed/);
+    expect(() => R.measure({ root, cargoLog: "no summary here", vitestJson: VIT() })).toThrow(/no "test result"/);
   });
 
-  it("counts specs, EXPECT configs, registered tripwires, CI steps and frontmatter from the tree", () => {
+  it("counts specs, EXPECT configs, CI gate steps and Rule-5 frontmatter from the tree", () => {
     const root = tree({
       "src-tauri/formal/A.tla": "", "src-tauri/formal/B.tla": "",
       "src-tauri/formal/A_ok.cfg": "\\* EXPECT: ok\n", "src-tauri/formal/B.cfg": "SPECIFICATION Spec\n",
-      ".agentile/coverage/tripwires.json": JSON.stringify({ version: 1, tripwires: [{ id: "a" }, { id: "b" }] }),
-      ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: x\n      - name: y\n        run: z\n      - run: w\n",
-      "docs/a.md": "---\ncreated: x\n---\nbody\n", "docs/b.md": "no frontmatter\n", ".agentile/c.md": "---\na: b\n---\n",
+      // One gate step: a named step that runs a command. `uses:`, unnamed and setup steps are not gates.
+      ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: x\n      - name: y\n        run: z\n      - run: w\n      - name: Install deps\n        run: apt\n",
+      "docs/a.md": FULL_FM, "docs/b.md": "no frontmatter\n", ".agentile/c.md": "---\ncreated: x\n---\nonly one Rule-5 key\n",
     });
     const d = R.measure({
       root, rev: "c".repeat(40), now: "2026-11-26T00:00:00Z",
       cargoLog: "test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out",
-      vitestJson: { numPassedTests: 4, numPendingTests: 0, numTodoTests: 0, numFailedTests: 0, numFailedTestSuites: 0 },
+      vitestJson: VIT({ numPassedTests: 4 }),
     });
     expect(d).toEqual({
       version: 1, rev: "c".repeat(40), measured: "2026-11-26T00:00:00Z",
       tests: { rust: { passed: 5, ignored: 1 }, vitest: { passed: 4, skipped: 0 } },
       specs: { tla: 2, tlc_configs_in_ci: 1 },
-      tripwires: { registered: 2, ci_steps: 3 },
-      frontmatter: { docs: 3, with: 2 },
+      tripwires: { registered: 0, ci_steps: 1 },
+      frontmatter: { docs: 3, with: 1 },
     });
+  });
+
+  it("registered tripwires: the runners' passed tripwire tests until the LQ-WP03 registry exists, then its live entries", () => {
+    const cargoLog = ["test fleet_tests::rule3_tripwire_no_silent_peer ... ok", "test x::tripwire_ignored ... ignored",
+      "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out"].join("\n");
+    const vitestJson = VIT({ testResults: [{ assertionResults: [
+      { fullName: "bridge Tripwire: no token crosses", status: "passed" }, { fullName: "tripwire later", status: "skipped" }] }] });
+    expect(R.measure({ root: tree({}), cargoLog, vitestJson }).tripwires.registered).toBe(2);
+    const withRegistry = tree({ ".agentile/coverage/tripwires.json": JSON.stringify({ version: 1, tripwires: [
+      { id: "a", replaced_by: null }, { id: "b", replaced_by: null }, { id: "c", replaced_by: null }, { id: "old", replaced_by: "c" }] }) });
+    expect(R.measure({ root: withRegistry, cargoLog, vitestJson }).tripwires.registered).toBe(3);
+  });
+
+  it("the committed LQ-WP01 baseline is a valid base: every axis is a count, it compares clean with itself, one test less fails", () => {
+    const base = JSON.parse(fs.readFileSync(path.join(repo, ".agentile/coverage/ratchet.json"), "utf8"));
+    for (const k of R.AXES) expect(typeof k.split(".").reduce((o, s) => o?.[s], base), k).toBe("number");
+    expect(R.compare(base, base, { root: tree({}) })).toMatchObject({ ok: true, failures: [] });
+    const less = JSON.parse(JSON.stringify(base));
+    less.tests.rust.passed -= 1;
+    expect(R.compare(base, less, { root: tree({}) }).ok).toBe(false);
   });
 });
 
@@ -261,10 +287,233 @@ describe("workflow wiring (tripwires)", () => {
     expect(job).toMatch(/git show "\$base:scripts\/ci\/lq\/ratchet\.mjs" > "\$RUNNER_TEMP\/ratchet\.mjs"/);
     expect(job).toMatch(/node "\$LQ_SCRIPT" compare/);
   });
+  it("the merge base's script judges only once it has compare (LQ-WP01's measure-only script cannot refuse every PR)", () => {
+    const job = wf.slice(wf.indexOf("\n  ratchet:"), wf.indexOf("\n  record:"));
+    expect(job).toMatch(/git show "\$base:scripts\/ci\/lq\/ratchet\.mjs" 2>\/dev\/null \| grep -q '\^export function compare\('/);
+    expect(fs.readFileSync(SCRIPT, "utf8")).toMatch(/^export function compare\(/m);
+  });
+  it("the uploaded cargo test log can never carry the private-repo credential", () => {
+    const rust = ci.slice(ci.indexOf("\n  rust:"), ci.indexOf("\n  node:"));
+    const guard = rust.indexOf("name: refuse to keep a test log that carries a credential");
+    const upload = rust.indexOf("name: keep the test log for lq / ratchet");
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(upload);
+    const step = rust.slice(guard, upload);
+    expect(step).toMatch(/grep -q 'x-access-token' cargo-test\.log/);
+    // The token value is matched from a file descriptor, never put on a command line.
+    expect(step).toMatch(/grep -qF -f <\(printf '%s\\n' "\$CHAIN_TOKEN"\) cargo-test\.log/);
+    expect(step).toMatch(/rm -f cargo-test\.log/);
+    expect(step).toMatch(/exit 1/);
+  });
   it("the record job runs only on a push to main and opens a PR rather than pushing to main", () => {
     const job = wf.slice(wf.indexOf("\n  record:"));
     expect(job).toMatch(/if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/);
     expect(job).not.toMatch(/git push[^\n]*\bmain\b/);
     expect(job).toMatch(/gh pr create/);
+  });
+});
+
+// LQ-WP01's measure tests, kept as they landed on feat/v60-lq-wp01-baseline: the head is measured
+// by the same rules as the committed baseline.
+function tmpdir1() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "lq-ratchet-"));
+  tmp.push(d);
+  return d;
+}
+function write(dir, rel, text) {
+  const p = path.join(dir, rel);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, text);
+  return p;
+}
+
+// Shaped like `gh run view --log` output of ci.yml's rust job (job, step and timestamp columns
+// before the libtest line), mixed with a bare local line and the doc-test summary.
+const P = "rust (fmt, clippy, test, audit)\tUNKNOWN STEP\t2026-11-25T04:50:52.4691791Z ";
+const CARGO_OK = [
+  `${P}     Running unittests src/lib.rs (target/debug/deps/citrate_components-0f1)`,
+  `${P}test archive::tests::unpacks ... ok`,
+  `${P}test archive::tests::live_fetch ... ignored, live: needs the network`,
+  `${P}test result: ok. 28 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s`,
+  `${P}     Running unittests src/lib.rs (target/debug/deps/citrate_core_lib-9a2)`,
+  `${P}test fleet_tests::rule3_tripwire_no_silent_peer ... ok`,
+  `${P}test honesty::tests::honest_zero_claim ... ok`,
+  `${P}test result: ok. 3228 passed; 0 failed; 22 ignored; 0 measured; 0 filtered out; finished in 283.39s`,
+  "test result: ok. 706 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 662.40s",
+  `${P}   Doc-tests citrate_components`,
+  `${P}test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`,
+].join("\n");
+
+const VITEST_OK = {
+  numTotalTestSuites: 3,
+  numPassedTestSuites: 3,
+  numFailedTestSuites: 0,
+  numPendingTestSuites: 0,
+  numTotalTests: 6,
+  numPassedTests: 4,
+  numFailedTests: 0,
+  numPendingTests: 1,
+  numTodoTests: 1,
+  success: true,
+  testResults: [
+    {
+      name: "/w/src/a.test.ts",
+      status: "passed",
+      assertionResults: [
+        { fullName: "bridge tripwire: no token crosses", title: "no token crosses", status: "passed" },
+        { fullName: "bridge sim mode", title: "sim mode", status: "passed" },
+        { fullName: "bridge live provider", title: "live provider", status: "skipped" },
+      ],
+    },
+    {
+      name: "/w/scripts/b.test.mjs",
+      status: "passed",
+      assertionResults: [
+        { fullName: "pins agree", title: "pins agree", status: "passed" },
+        { fullName: "pins Tripwire: digest", title: "digest", status: "passed" },
+        { fullName: "pins later", title: "later", status: "todo" },
+      ],
+    },
+  ],
+};
+
+describe("ratchet.mjs measure (LQ-WP01)", () => {
+  it('parses cargo "test result" lines across crates', () => {
+    const r = R.parseCargoLog(CARGO_OK);
+    expect(r.suites).toBe(4);
+    expect(r.passed).toBe(28 + 3228 + 706 + 0);
+    expect(r.failed).toBe(0);
+    // Test names come from the runner's own per-test lines, prefix columns stripped.
+    expect(r.tripwireTests).toEqual(["fleet_tests::rule3_tripwire_no_silent_peer"]);
+  });
+
+  it("parses the vitest json reporter totals", () => {
+    const r = R.parseVitestJson(VITEST_OK);
+    expect(r.passed).toBe(4);
+    // Pending (skipped) and todo are both "not run": the ratchet's skipped axis holds both.
+    expect(r.skipped).toBe(2);
+    expect(r.failed).toBe(0);
+    expect(r.tripwireTests).toEqual(["bridge tripwire: no token crosses", "pins Tripwire: digest"]);
+  });
+
+  it("refuses a log with a failed test as a baseline", () => {
+    const failedCargo = CARGO_OK.replace(
+      "test result: ok. 706 passed; 0 failed;",
+      "test result: FAILED. 705 passed; 1 failed;",
+    );
+    expect(R.parseCargoLog(failedCargo).failed).toBe(1);
+    expect(() => R.buildRatchet({ cargo: R.parseCargoLog(failedCargo), vitest: R.parseVitestJson(VITEST_OK) })).toThrow(
+      /failed/,
+    );
+    const failedVitest = { ...VITEST_OK, numFailedTests: 1, success: false };
+    expect(() => R.buildRatchet({ cargo: R.parseCargoLog(CARGO_OK), vitest: R.parseVitestJson(failedVitest) })).toThrow(
+      /failed/,
+    );
+    // An empty or truncated log is not a count of zero.
+    expect(() => R.buildRatchet({ cargo: R.parseCargoLog("Compiling citrate v0.5.9\n"), vitest: R.parseVitestJson(VITEST_OK) })).toThrow(
+      /no "test result" line/,
+    );
+
+    // The CLI refuses too: exit 1, and no ratchet.json is written.
+    const dir = tmpdir1();
+    const log = write(dir, "cargo.log", failedCargo);
+    const vj = write(dir, "vitest.json", JSON.stringify(VITEST_OK));
+    const out = path.join(dir, "ratchet.json");
+    const res = spawnSync(
+      process.execPath,
+      [SCRIPT, "measure", "--cargo-log", log, "--vitest-json", vj, "--root", dir, "--rev", "a".repeat(40), "--out", out],
+      { encoding: "utf8" },
+    );
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/failed/);
+    expect(fs.existsSync(out)).toBe(false);
+  });
+
+  it("counts #[ignore] separately", () => {
+    const r = R.parseCargoLog(CARGO_OK);
+    // 1 + 22 + 1 ignored, never folded into passed.
+    expect(r.ignored).toBe(24);
+    expect(r.passed).toBe(3962);
+    const withIgnoredOnly = R.parseCargoLog(
+      "test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    );
+    expect(withIgnoredOnly).toMatchObject({ passed: 0, ignored: 5, failed: 0 });
+  });
+
+  it("measures specs, Rule-5 frontmatter and CI gate steps from the tree, and writes schema v1", () => {
+    const dir = tmpdir1();
+    const full = "---\ncreated: 2026-11-26\nbranch: main\nauthor: Larry Klosowski\nstatus: active\n---\n# x\n";
+    write(dir, "docs/a.md", full);
+    write(dir, "docs/sub/b.md", full);
+    write(dir, ".agentile/c.md", "---\ncreated: 2026-11-26\nauthor: x\nstatus: draft\n---\n# no branch\n");
+    write(dir, ".agentile/d.md", "# no frontmatter at all\n");
+    write(dir, "README.md", "# outside docs/ and .agentile/, not counted\n");
+    write(dir, "src-tauri/formal/A.tla", "---- MODULE A ----\n====\n");
+    write(dir, "src-tauri/formal/B.tla", "---- MODULE B ----\n====\n");
+    write(dir, "src-tauri/formal/A.cfg", "\\* EXPECT: ok\nINIT Init\n");
+    write(dir, "src-tauri/formal/A_bug.cfg", "\\* EXPECT: violation Safety\nINIT Init\n");
+    write(dir, "src-tauri/formal/B.cfg", "INIT Init\n");
+    write(
+      dir,
+      ".github/workflows/ci.yml",
+      [
+        "jobs:",
+        "  rust:",
+        "    steps:",
+        "      - uses: actions/checkout@x",
+        "      - name: Authenticate to private federation repos (citrate-chain)",
+        "        run: git config",
+        "      - name: Install Tauri Linux system deps",
+        "        run: |",
+        "          sudo apt-get install -y x",
+        "      - name: fmt",
+        "        run: cargo fmt --all -- --check",
+        "      - name: test",
+        "        run: cargo test --workspace --locked",
+        "  node:",
+        "    steps:",
+        "      - run: npm ci",
+        "      - name: typecheck",
+        "        run: npm run typecheck",
+        "",
+      ].join("\n"),
+    );
+    write(
+      dir,
+      ".github/workflows/merge-gate.yml",
+      "jobs:\n  ci:\n    steps:\n      - name: Wait for every other check on this commit\n        env:\n          X: y\n        run: |\n          echo wait\n",
+    );
+    write(
+      dir,
+      ".github/workflows/eval-check.yml",
+      "jobs:\n  e:\n    steps:\n      - name: Fetch the skill sources\n        run: x\n      - name: Eval check\n        run: node e.mjs\n      - name: Upload the scorecards\n        uses: actions/upload-artifact@x\n",
+    );
+    write(dir, ".github/workflows/other.yml", "jobs:\n  o:\n    steps:\n      - name: not a gate\n        run: x\n");
+
+    const t = R.measureTree(dir);
+    expect(t.specs).toEqual({ tla: 2, tlc_configs_in_ci: 2 });
+    expect(t.frontmatter.docs).toBe(4);
+    expect(t.frontmatter.with).toBe(2);
+    expect(t.frontmatter.missing.sort()).toEqual([".agentile/c.md", ".agentile/d.md"]);
+    // fmt, test, typecheck (ci.yml) + wait (merge-gate) + eval check (eval-check); setup steps
+    // (authenticate, install, fetch, upload) and unnamed steps are not gates.
+    expect(t.ci_steps).toBe(5);
+
+    const r = R.buildRatchet({
+      cargo: R.parseCargoLog(CARGO_OK),
+      vitest: R.parseVitestJson(VITEST_OK),
+      tree: t,
+      rev: "b".repeat(40),
+      measured: "2026-11-26T00:00:00Z",
+    });
+    expect(r).toEqual({
+      version: 1,
+      rev: "b".repeat(40),
+      measured: "2026-11-26T00:00:00Z",
+      tests: { rust: { passed: 3962, ignored: 24 }, vitest: { passed: 4, skipped: 2 } },
+      specs: { tla: 2, tlc_configs_in_ci: 2 },
+      tripwires: { registered: 3, ci_steps: 5 },
+      frontmatter: { docs: 4, with: 2 },
+    });
   });
 });
