@@ -1,8 +1,11 @@
 //! L0-WP02 SEAM-CMDS (planset v060): the command registration, the main-window ACL and the
 //! lib.rs module set, recorded at a826e441 in `tests/fixtures/seams/`.
 //!
-//! L0-WP03 splits `generate_handler!` into per-lane lists and L0-WP04 moves the module tree; both
-//! must keep these snapshots byte-identical. A lane PR that drops a command fails here by name.
+//! L0-WP03 split the `generate_handler!` list into per-lane lists (`src/commands/l<N>.rs`) and
+//! `permissions/main-window.toml` into per-lane ACLs; the registration and ACL snapshots stayed
+//! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 moves the module
+//! tree and must keep these snapshots byte-identical. A lane PR that drops a command fails here
+//! by name.
 //! A fixture changes only in an L0-reviewed PR that says why; record it again with
 //! `node scripts/seams-snapshot.mjs` (`SEAMS_SNAPSHOT_WRITE=1`). A missing fixture fails and prints
 //! `SEAMS_SNAPSHOT_MISSING <path> <hex>` with the exact bytes it would record.
@@ -13,8 +16,6 @@ use std::path::PathBuf;
 
 const BASE: &str = "a826e441";
 const LIB_RS: &str = include_str!("lib.rs");
-const MAIN_WINDOW_TOML: &str = include_str!("../permissions/main-window.toml");
-const MAIN_ID: &str = "identifier = \"main-window-commands\"";
 
 /// The command paths inside `generate_handler![...]`, sorted, with any `crate::` prefix dropped.
 fn registered_paths(src: &str) -> Vec<String> {
@@ -34,6 +35,29 @@ fn registered_paths(src: &str) -> Vec<String> {
         .filter(|s| s.contains("::"))
         .map(|s| s.trim_start_matches("crate::").to_string())
         .collect();
+    out.sort();
+    out
+}
+
+/// The command paths of every lane list in `src` (one or more lane files, or
+/// `commands::registry_source()`), sorted. Each list opens after the accumulator, `LANE_LIST_OPEN`.
+fn lane_list_paths(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (at, _) in src.match_indices(LANE_LIST_OPEN) {
+        let start = at + LANE_LIST_OPEN.len();
+        let Some(len) = src[start..].find("])") else {
+            continue;
+        };
+        out.extend(
+            src[start..start + len]
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or_default())
+                .flat_map(|l| l.split(','))
+                .map(str::trim)
+                .filter(|s| s.contains("::"))
+                .map(|s| s.trim_start_matches("crate::").to_string()),
+        );
+    }
     out.sort();
     out
 }
@@ -148,7 +172,7 @@ fn check_snapshot(name: &str, got: &[String]) {
 
 #[test]
 fn registered_commands_are_unchanged() {
-    let paths = registered_paths(LIB_RS);
+    let paths = lane_list_paths(&crate::commands::registry_source());
     assert!(
         paths.len() > 400,
         "parsed {} commands; the parser is broken",
@@ -159,19 +183,30 @@ fn registered_commands_are_unchanged() {
         paths.len(),
         "a command name is registered twice"
     );
+    // Two parsers, written apart, read the same registry.
+    let mut from_helper = crate::commands::registered_paths();
+    from_helper.sort();
+    assert_eq!(paths, from_helper);
     check_snapshot("commands", &paths);
 }
 
 #[test]
 fn acl_allows_exactly_the_registered_commands() {
-    let acl = acl_commands(MAIN_WINDOW_TOML);
+    let mut acl: Vec<String> = Vec::new();
+    for (id, toml) in crate::commands::lane_acls() {
+        assert!(
+            toml.contains(&format!("identifier = \"{id}\"")),
+            "{id}-commands.toml names its permission"
+        );
+        acl.extend(acl_commands(toml));
+    }
     let allowed: BTreeSet<String> = acl.iter().cloned().collect();
     assert_eq!(
         allowed.len(),
         acl.len(),
-        "main-window.toml lists a command twice"
+        "the lane ACLs list a command twice"
     );
-    let registered = command_names(&registered_paths(LIB_RS));
+    let registered = command_names(&lane_list_paths(&crate::commands::registry_source()));
     let missing: Vec<_> = registered.difference(&allowed).collect();
     let extra: Vec<_> = allowed.difference(&registered).collect();
     assert!(
@@ -182,7 +217,6 @@ fn acl_allows_exactly_the_registered_commands() {
         extra.is_empty(),
         "listed in the ACL but not registered: {extra:?}"
     );
-    assert!(MAIN_WINDOW_TOML.contains(MAIN_ID));
 }
 
 #[test]
@@ -201,20 +235,22 @@ fn lib_mod_set_is_unchanged() {
 
 #[test]
 fn a_dropped_command_is_named() {
-    let src = LIB_RS.replacen("comms::groups_assign_role,", "", 1);
-    let (missing, added) = line_diff(&registered_paths(LIB_RS), &registered_paths(&src));
+    let reg = crate::commands::registry_source();
+    let src = reg.replacen("comms::groups_assign_role,", "", 1);
+    let (missing, added) = line_diff(&lane_list_paths(&reg), &lane_list_paths(&src));
     assert_eq!(missing, vec!["comms::groups_assign_role".to_string()]);
     assert!(added.is_empty());
 }
 
 #[test]
 fn a_repointed_or_added_command_is_named() {
-    let src = LIB_RS.replacen(
+    let reg = crate::commands::registry_source();
+    let src = reg.replacen(
         "comms::groups_assign_role,",
         "comms_v2::groups_assign_role, seams::extra_cmd,",
         1,
     );
-    let (missing, added) = line_diff(&registered_paths(LIB_RS), &registered_paths(&src));
+    let (missing, added) = line_diff(&lane_list_paths(&reg), &lane_list_paths(&src));
     assert_eq!(missing, vec!["comms::groups_assign_role".to_string()]);
     assert_eq!(
         added,
@@ -487,7 +523,7 @@ fn registry_source_sees_every_lane() {
         // A lane macro only appends to the accumulator and hands it to the next macro.
         let src = lane_rs(lane);
         assert!(
-            src.contains("$crate::$next!($($rest)* [$($acc)*"),
+            src.contains("$crate::v60_commands_next!($($rest)* [$($acc)*"),
             "commands/{lane}.rs passes the accumulator on"
         );
         assert!(

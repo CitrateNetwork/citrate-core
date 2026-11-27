@@ -58,8 +58,8 @@ kept inside the tree (`components/src/extract.rs`, 2026-10-04).
 
 `hermes_browser_status`, `hermes_browser_frame`, `hermes_browser_stop`, `hermes_browser_resume`,
 `hermes_browser_attach`, `hermes_browser_detach`, `hermes_browser_origin`, `hermes_browser_decide`
-(`src-tauri/src/browser.rs`). Each runs off the main thread and is listed in
-`permissions/main-window.toml`; pop-outs cannot call any of them.
+(`src-tauri/src/browser.rs`). Each runs off the main thread and is listed in its lane's
+`permissions/l<N>-commands.toml`; pop-outs cannot call any of them.
 
 ## Data sources (Rule 7)
 

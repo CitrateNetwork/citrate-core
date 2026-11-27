@@ -1,0 +1,44 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L7, networking.
+#
+# Only L7 edits this file. It lists exactly the commands `src/commands/l7.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l7-commands"
+description = "Lane L7 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "fleet_probe",
+  "fleet_set_label",
+  "fleet_roster",
+  "fleet_discovery_set",
+  "fleet_discovery_browse",
+  "fleet_pair_create",
+  "fleet_pair_inspect",
+  "fleet_pair_join",
+  "fleet_forget",
+  "fleet_tailscale",
+  "cluster_status",
+  "cluster_join",
+  "cluster_peers",
+  "cluster_share_file",
+  "cluster_leave",
+  "cluster_devices",
+  "cluster_group_seed",
+  "cluster_add_seed",
+  "device_link_request",
+  "device_link_approve",
+  "device_link_reject",
+  "device_links",
+  "device_link_revoke_prepare",
+  "device_link_revoke",
+  "device_link_export",
+  "device_link_import",
+  "device_links_share_offer",
+  "device_links_mark_shared",
+  "device_links_ingest",
+  "cluster_mesh_status",
+  "cluster_mesh_set_enabled",
+]

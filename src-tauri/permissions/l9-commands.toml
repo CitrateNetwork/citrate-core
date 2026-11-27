@@ -1,0 +1,12 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L9, crypto and PQC.
+#
+# Only L9 edits this file. It lists exactly the commands `src/commands/l9.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l9-commands"
+description = "Lane L9 app commands, for the main window only (pop-outs get none)."
+commands.allow = []

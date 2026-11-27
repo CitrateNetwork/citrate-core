@@ -31,17 +31,18 @@ on the allowlist now has a view; a kind added later without one is refused with 
 ## The app-command allowlist (read this before adding a Tauri command)
 
 Tauri allows every app command to every local window until the app defines its own command ACL.
-This branch defines it: `src-tauri/permissions/main-window.toml` lists every command registered in
-`lib.rs`, and only `capabilities/default.json` (the main window) holds that permission. The main
-window keeps exactly the commands it had.
+This branch defined it as one permission, `main-window-commands`. Since L0-WP03 (planset v060) the
+commands are registered per lane: each lane lists its commands in `src-tauri/src/commands/l<N>.rs`
+and allows them in `src-tauri/permissions/l<N>-commands.toml` (permission `l<N>-commands`). Only
+`capabilities/default.json` (the main window) holds the ten lane permissions; together they allow
+exactly the commands the single permission did.
 
-**When you add a command, add it to `generate_handler!` in `lib.rs` and to
-`permissions/main-window.toml`.** `popout_tests.rs` fails if the two lists differ, and it also
-resolves the ACL with Tauri's own resolver to prove no pop-out label can call any app command,
-except `popout_contract_send` from `popout-contract` (`permissions/contract-reader.toml`).
-On 2026-10-04 (branch `hup/n6-web-browse`) the list holds 331 commands, the newest being
-`hermes_checkpoint_diff`; recount with `grep -c '^  "' src-tauri/permissions/main-window.toml`
-rather than trusting this number.
+**When you add a command, add it to your lane's `commands/l<N>.rs` and to its
+`permissions/l<N>-commands.toml`.** `seams_tests.rs` fails if the two lists differ, and
+`popout_tests.rs` resolves the ACL with Tauri's own resolver to prove no pop-out label can call any
+app command, except `popout_contract_send` from `popout-contract` (`permissions/contract-reader.toml`).
+Count the commands with `grep -hc '^  "' src-tauri/permissions/l*-commands.toml` rather than
+trusting a number written here.
 
 ## The message bridge
 

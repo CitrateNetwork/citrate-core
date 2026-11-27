@@ -1,0 +1,50 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L6, connections and marketplace.
+#
+# Only L6 edits this file. It lists exactly the commands `src/commands/l6.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l6-commands"
+description = "Lane L6 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "connection_start",
+  "connection_status",
+  "connection_disconnect",
+  "social_status",
+  "social_start",
+  "social_set_visibility",
+  "social_disconnect",
+  "social_verify_request",
+  "social_verify_approve",
+  "social_verify_forget",
+  "social_resolve",
+  "social_export_binding",
+  "social_ingest_binding",
+  "directory_publish_request",
+  "directory_publish_approve",
+  "directory_unpublish_request",
+  "directory_unpublish_approve",
+  "directory_forget",
+  "directory_lookup",
+  "directory_search",
+  "google_workspace_status",
+  "gsheets_read",
+  "gsheets_append",
+  "gcal_list",
+  "gcal_create",
+  "store_catalog",
+  "store_stage",
+  "store_install",
+  "store_installed",
+  "store_remove",
+  "mcp_servers_list",
+  "mcp_server_save",
+  "mcp_server_remove",
+  "mcp_server_disable",
+  "mcp_server_review",
+  "mcp_server_enable",
+  "mcp_servers_runtime",
+]

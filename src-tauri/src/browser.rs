@@ -180,7 +180,7 @@ pub(crate) fn browser_decide(m: &HermesManager, id: &str, allow: bool) -> Result
 }
 
 // ---------------------------------------------------------------------------
-// Commands (main window only; see permissions/main-window.toml)
+// Commands (main window only; see the lane ACLs, permissions/l<N>-commands.toml)
 // ---------------------------------------------------------------------------
 
 /// **hermes_browser_status** — what the Browser pop-out and the main window's controls show.

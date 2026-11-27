@@ -851,8 +851,8 @@ fn the_run_command_takes_a_confirmation_id_not_a_flag() {
     let sig = &src[start..start + src[start..].find(')').expect("sig end")];
     assert!(!sig.contains("confirmed: bool"), "{sig}");
     assert!(sig.contains("confirm_id: Option<String>"), "{sig}");
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     assert!(lib.contains("escalation::escalation_confirm_prepare"));
     assert!(acl.contains("\"escalation_confirm_prepare\""));
 }

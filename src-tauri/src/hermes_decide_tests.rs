@@ -100,8 +100,8 @@ fn a_bad_report_is_bounded() {
 
 #[test]
 fn the_command_is_async_registered_and_in_the_main_window_acl() {
-    let lib = include_str!("lib.rs");
-    let acl = include_str!("../permissions/main-window.toml");
+    let lib = crate::commands::registry_source();
+    let acl = crate::commands::acl_source();
     let src = include_str!("hermes_decide.rs");
     let invoke = include_str!("../../src/bridge/tauri/invoke.ts");
     let cmd = "hermes_decide_stats";

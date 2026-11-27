@@ -1,0 +1,36 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L5, models, multimodal and LoRA.
+#
+# Only L5 edits this file. It lists exactly the commands `src/commands/l5.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l5-commands"
+description = "Lane L5 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "model_catalog_local",
+  "model_catalog_partials",
+  "model_catalog_search",
+  "model_catalog_download",
+  "model_catalog_select",
+  "model_delete_states",
+  "model_delete",
+  "models_registry_list",
+  "models_registry_register",
+  "media_options",
+  "media_set_settings",
+  "media_generate_image",
+  "media_gallery",
+  "media_read",
+  "media_save_copy",
+  "model_status",
+  "model_download",
+  "model_download_pause",
+  "model_local_options",
+  "model_verify",
+  "model_serve_start",
+  "model_serve_stop",
+  "model_inference_state",
+]

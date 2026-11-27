@@ -1,0 +1,51 @@
+# L0-WP03 (planset v060, L0_INTEGRATION_SEAMS 3.1): the app commands of lane L2, HIC, sandbox and deploy.
+#
+# Only L2 edits this file. It lists exactly the commands `src/commands/l2.rs` registers
+# (`seams_tests` fails when the two differ), and only `capabilities/default.json` (the main
+# window) holds it. Pop-out windows (`capabilities/popout.json`) get no app command at all.
+# Split from the HUP-S5.4 main-window.toml; the ten lane permissions together allow exactly the
+# commands that one did.
+
+[[permission]]
+identifier = "l2-commands"
+description = "Lane L2 app commands, for the main window only (pop-outs get none)."
+commands.allow = [
+  "sign_request",
+  "sign_approve",
+  "sign_and_broadcast",
+  "sign_prepare",
+  "sign_send_prepared",
+  "sign_reject",
+  "contract_deploy",
+  "deploy_gate_submit",
+  "deploy_gate_lookup",
+  "deploy_gate_submit_toolchain",
+  "toolchain_settings_get",
+  "toolchain_settings_set",
+  "deploy_gate_fork_dry_run",
+  "postdeploy_status",
+  "postdeploy_receipt",
+  "postdeploy_verify",
+  "postdeploy_switch_site",
+  "postdeploy_pin_site",
+  "postdeploy_vercel_export",
+  "deploy_record_save",
+  "deploy_records_list",
+  "deploy_record_get",
+  "faucet_status",
+  "faucet_grant",
+  "faucet_revoke",
+  "faucet_request",
+  "faucet_open_challenge",
+  "hermes_shell_pending",
+  "hermes_shell_decide",
+  "hermes_checkpoints",
+  "hermes_undo_step",
+  "hermes_undo_session",
+  "hermes_checkpoint_diff",
+  "hermes_terminal_get",
+  "hermes_terminal_set",
+  "hermes_auto_approve_get",
+  "hermes_auto_approve_set",
+  "hermes_auto_approve_rules",
+]
