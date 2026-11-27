@@ -99,19 +99,57 @@ export function isSessionExpiredError(err: unknown): boolean {
 }
 
 /**
- * The live `/userinfo` claim. When the access token has expired (a 401), renew the session once
- * from the vaulted refresh token (the same silent refresh launch uses) and read again. Any other
- * failure, or a refresh the authority declines, is thrown to the caller unchanged: nothing is
+ * The session state `readLiveClaim` shares across its callers (one per Store): the refresh in
+ * flight, and an epoch that sign-out advances.
+ */
+export interface ClaimSession {
+  refreshing: Promise<AuthStatus> | null;
+  epoch: number;
+}
+
+export function newClaimSession(): ClaimSession {
+  return { refreshing: null, epoch: 0 };
+}
+
+/** The read was overtaken by a sign-out: nothing it returned may be folded. */
+export const SIGNED_OUT_DURING_READ = "auth: signed out while the claim was being read";
+
+/**
+ * The live `/userinfo` claim. When the access token has expired (a 401), renew the session from
+ * the vaulted refresh token (the same silent refresh launch uses) and read again.
+ *  - One refresh at a time: the poll and the focus re-check can both hit the 401, and the
+ *    authority rotates refresh tokens and revokes the grant when a used one is presented again,
+ *    so concurrent callers share the refresh in flight.
+ *  - A sign-out while the refresh runs wins: the refresh may have written a new refresh token
+ *    and session after logout wiped them, so they are wiped again (auth.logout) and the read
+ *    rejects. A sign-out during the read rejects too, so no caller re-signs the member in.
+ * Any other failure, or a refresh the authority declines, is thrown unchanged: nothing is
  * fabricated, and a different subject is refused inside the refresh itself (A3-04).
  */
-export async function readLiveClaim(auth: { userinfo(): Promise<AuthStatus>; refresh(): Promise<AuthStatus> }): Promise<AuthStatus> {
+export async function readLiveClaim(
+  auth: { userinfo(): Promise<AuthStatus>; refresh(): Promise<AuthStatus>; logout(): Promise<void> },
+  session: ClaimSession,
+): Promise<AuthStatus> {
+  const epoch = session.epoch;
+  let claim: AuthStatus;
   try {
-    return await auth.userinfo();
+    claim = await auth.userinfo();
   } catch (err) {
     if (!isSessionExpiredError(err)) throw err;
-    await auth.refresh();
-    return auth.userinfo();
+    if (!session.refreshing) {
+      session.refreshing = auth.refresh().finally(() => {
+        session.refreshing = null;
+      });
+    }
+    await session.refreshing;
+    if (session.epoch !== epoch) {
+      await auth.logout().catch(() => {});
+      throw new Error(SIGNED_OUT_DURING_READ);
+    }
+    claim = await auth.userinfo();
   }
+  if (session.epoch !== epoch) throw new Error(SIGNED_OUT_DURING_READ);
+  return claim;
 }
 
 /** What the banner's button does. */

@@ -6,7 +6,9 @@ import {
   isFreeMember,
   isSessionExpiredError,
   neverHeldMembership,
+  newClaimSession,
   readLiveClaim,
+  SIGNED_OUT_DURING_READ,
   runBannerAction,
   walletLinked,
   walletLinkNeeded,
@@ -73,29 +75,91 @@ describe("readLiveClaim", () => {
   });
 
   it("returns the claim without touching the session when the read works", async () => {
-    const auth = { userinfo: vi.fn(async () => CLAIM), refresh: vi.fn(async () => CLAIM) };
-    await expect(readLiveClaim(auth)).resolves.toEqual(CLAIM);
+    const auth = { userinfo: vi.fn(async () => CLAIM), refresh: vi.fn(async () => CLAIM), logout: vi.fn(async () => {}) };
+    await expect(readLiveClaim(auth, newClaimSession())).resolves.toEqual(CLAIM);
     expect(auth.refresh).not.toHaveBeenCalled();
   });
 
   it("on a 401 refreshes once and reads again", async () => {
     const userinfo = vi.fn<() => Promise<AuthStatus>>().mockRejectedValueOnce("auth: session expired or not authorized — sign in again").mockResolvedValueOnce(CLAIM);
-    const auth = { userinfo, refresh: vi.fn(async () => CLAIM) };
-    await expect(readLiveClaim(auth)).resolves.toEqual(CLAIM);
+    const auth = { userinfo, refresh: vi.fn(async () => CLAIM), logout: vi.fn(async () => {}) };
+    await expect(readLiveClaim(auth, newClaimSession())).resolves.toEqual(CLAIM);
     expect(auth.refresh).toHaveBeenCalledTimes(1);
     expect(userinfo).toHaveBeenCalledTimes(2);
   });
 
   it("any other failure, or a declined refresh, is thrown unchanged", async () => {
-    const offline = { userinfo: vi.fn(async (): Promise<AuthStatus> => { throw new Error("offline"); }), refresh: vi.fn(async () => CLAIM) };
-    await expect(readLiveClaim(offline)).rejects.toThrow("offline");
+    const offline = { userinfo: vi.fn(async (): Promise<AuthStatus> => { throw new Error("offline"); }), refresh: vi.fn(async () => CLAIM), logout: vi.fn(async () => {}) };
+    await expect(readLiveClaim(offline, newClaimSession())).rejects.toThrow("offline");
     expect(offline.refresh).not.toHaveBeenCalled();
     const declined = {
       userinfo: vi.fn(async (): Promise<AuthStatus> => { throw "auth: session expired or not authorized — sign in again"; }),
       refresh: vi.fn(async (): Promise<AuthStatus> => { throw new Error("auth: token exchange failed"); }),
+      logout: vi.fn(async () => {}),
     };
-    await expect(readLiveClaim(declined)).rejects.toThrow("token exchange failed");
+    const session = newClaimSession();
+    await expect(readLiveClaim(declined, session)).rejects.toThrow("token exchange failed");
     expect(declined.userinfo).toHaveBeenCalledTimes(1);
+    expect(session.refreshing).toBeNull(); // a failed refresh does not stick
+  });
+
+  it("concurrent callers that both hit the 401 share ONE refresh (rotated tokens cannot be replayed)", async () => {
+    let expired = true;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const auth = {
+      userinfo: vi.fn(async (): Promise<AuthStatus> => {
+        if (expired) throw "auth: session expired or not authorized — sign in again";
+        return CLAIM;
+      }),
+      refresh: vi.fn(async () => {
+        await gate;
+        expired = false;
+        return CLAIM;
+      }),
+      logout: vi.fn(async () => {}),
+    };
+    const session = newClaimSession();
+    const a = readLiveClaim(auth, session);
+    const b = readLiveClaim(auth, session);
+    await Promise.resolve();
+    release();
+    await expect(Promise.all([a, b])).resolves.toEqual([CLAIM, CLAIM]);
+    expect(auth.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-out during the refresh wins: the session is wiped again and nothing is returned", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const auth = {
+      userinfo: vi.fn(async (): Promise<AuthStatus> => { throw "auth: session expired or not authorized — sign in again"; }),
+      refresh: vi.fn(async () => {
+        await gate;
+        return CLAIM;
+      }),
+      logout: vi.fn(async () => {}),
+    };
+    const session = newClaimSession();
+    const read = readLiveClaim(auth, session);
+    await Promise.resolve();
+    session.epoch++; // authLogout
+    release();
+    await expect(read).rejects.toThrow(SIGNED_OUT_DURING_READ);
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(auth.userinfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-out during a plain read rejects it too", async () => {
+    const session = newClaimSession();
+    const auth = {
+      userinfo: vi.fn(async () => {
+        session.epoch++;
+        return CLAIM;
+      }),
+      refresh: vi.fn(async () => CLAIM),
+      logout: vi.fn(async () => {}),
+    };
+    await expect(readLiveClaim(auth, session)).rejects.toThrow(SIGNED_OUT_DURING_READ);
   });
 });
 

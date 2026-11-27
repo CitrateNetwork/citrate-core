@@ -106,6 +106,8 @@ describe("post-checkout: the banner leaves the lapse and clears once active", ()
     grantState.current = NONE;
     userinfoState.current = NO_TIER;
     session.expired = false;
+    // Each test starts from a clean save: an earlier test's s3 "paying" must not leak in.
+    localStorage.clear();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -148,6 +150,38 @@ describe("post-checkout: the banner leaves the lapse and clears once active", ()
     expect(refreshMock).toHaveBeenCalledTimes(1);
     expect(store.state.entitlement).toBe("active");
     expect(entitlementBanner(store.state).show).toBe(false);
+  });
+
+  it("the poll and the focus re-check both hitting the 401 refresh the session once", async () => {
+    const store = lapsedMember();
+    const off = store.installEntitlementFocusRecheck();
+    await store.renewMembership();
+    session.expired = true;
+    userinfoState.current = COMMERCIAL;
+    // The member comes back from the browser just as the poll ticks.
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(ENTITLEMENT_POLL_MS);
+    expect(refreshMock).toHaveBeenCalledTimes(1);
+    expect(store.state.entitlement).toBe("active");
+    off();
+  });
+
+  it("signing out while a session refresh runs does not sign the member back in", async () => {
+    const store = lapsedMember();
+    session.expired = true;
+    let release: () => void = () => {};
+    refreshMock.mockImplementationOnce(async () => {
+      await new Promise<void>((r) => (release = r));
+      session.expired = false;
+      return COMMERCIAL;
+    });
+    const read = store.refreshEntitlement().catch((e: unknown) => e);
+    await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1));
+    await store.authLogout();
+    release();
+    await read;
+    expect(store.state.signedIn).toBe(false);
+    expect(store.state.entitlement).toBe("lapsed");
   });
 
   it("a read that fails for another reason does not refresh the session and fabricates nothing", async () => {

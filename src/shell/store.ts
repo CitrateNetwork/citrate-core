@@ -38,7 +38,7 @@ import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
-import { neverHeldMembership, readLiveClaim, walletLinked } from "./actions/l3/membership";
+import { neverHeldMembership, newClaimSession, readLiveClaim, walletLinked } from "./actions/l3/membership";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
@@ -889,6 +889,8 @@ export class Store {
   // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
   private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
   private entitlementPollDeadline = 0;
+  /** L3-WP19: the single-flight session refresh and the sign-out epoch readLiveClaim shares. */
+  private claimSession = newClaimSession();
   // FIX 1b: when the last focus/visibility re-check ran (throttle).
   private lastFocusRecheckAt = Number.NEGATIVE_INFINITY;
   provider: ChatProvider | null = null;
@@ -2521,7 +2523,7 @@ export class Store {
   async refreshEntitlement(): Promise<void> {
     // L3-WP19: a 401 (the hour-long access token expired on a node left open) renews the session
     // from the vaulted refresh token and reads again, instead of failing every poll until restart.
-    const st = await readLiveClaim(bridge.auth);
+    const st = await readLiveClaim(bridge.auth, this.claimSession);
     let grant: GrantStatus | null = null;
     const member = st.walletAddr || this.state.walletAddr;
     const claimActive = !!st.tier && !isExpiredClaim(st.expiresAt);
@@ -2532,6 +2534,8 @@ export class Store {
         grant = null; // transient RPC error: fold the claim alone, never fabricate
       }
     }
+    // L3-WP19: signed out while the chain was read: fold nothing (never re-sign the member in).
+    if (!this.state.signedIn) return;
     this.applyAuthStatus(st);
     if (!grant) return;
     const guard = entitlementSafeguardFromChain(this.state, grant);
@@ -2625,6 +2629,8 @@ export class Store {
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
     this.stopEntitlementPoll();
+    // L3-WP19: a claim read or session refresh still in flight must not sign the member back in.
+    this.claimSession.epoch++;
     // core#584: a Billing checkout attempt still checking for a held grant opens nothing after sign-out.
     this.billingAttempt++;
     if (this.state.billingChecking) this.setState({ billingChecking: false });

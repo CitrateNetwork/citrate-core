@@ -4,7 +4,7 @@
 // expectation only together with a reviewed, deliberate change of that case.
 //
 // What WP19 changes on purpose is NOT pinned here (a free member, a checkout waiting on its grant);
-// those are the red tests in ../membershipBanner.test.ts.
+// those are the red tests in ../membershipBanner.test.tsx.
 import { describe, it, expect } from "vitest";
 import { entitlementBanner } from "../../../entitlementBanner";
 import { freshState, type AppState } from "../../../state";
