@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "rev": "567ae074c226310dfa22cb7eaf8cc921496b426e",
+  "measured": "2026-11-27T02:08:17Z",
+  "tests": {
+    "rust": {
+      "passed": 4150,
+      "ignored": 24
+    },
+    "vitest": {
+      "passed": 6025,
+      "skipped": 38
+    }
+  },
+  "specs": {
+    "tla": 15,
+    "tlc_configs_in_ci": 61
+  },
+  "tripwires": {
+    "registered": 250,
+    "ci_steps": 16
+  },
+  "frontmatter": {
+    "docs": 261,
+    "with": 261
+  }
+}

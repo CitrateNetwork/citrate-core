@@ -70,3 +70,59 @@ No new Cargo deps; cargo audit unchanged (0 vulns, pre-existing GTK unmaintained
   fmt/clippy/audit but not yet the federation semgrep / no-stub / no-`.unwrap()`-in-prod /
   test-count-ratchet tripwires that citrate-security CI runs. Adding the class-level
   tripwires is the S7.3/S7.4 hardening scope.
+
+## 2026-11-26: 0.6.0 lane start (LQ-WP01)
+
+Re-measured at the 0.6.0 lane start; everything above stays as written (history is not edited).
+The numbers are the test runners' own counts on ubuntu-latest, never a Mac build or a grep.
+`.agentile/coverage/ratchet.json` (schema v1, `lanes/LQ_NON_REGRESSION_GUARD.md` section 3.1 in
+the 0.6.0 planset) is the machine-readable copy, taken unedited from the `ratchet-json` artifact of
+the measuring run.
+
+- **Lane-start commit:** main `a826e441` (#775). Its own `ci` run on main,
+  [45549119759](https://github.com/CitrateNetwork/citrate-core/actions/runs/45549119759), is the
+  cross-check for the runner counts at exactly that commit.
+- **Measuring run:** `lq ratchet`
+  [45925355813](https://github.com/CitrateNetwork/citrate-core/actions/runs/45925355813) at
+  `567ae074` (PR #786 head: a826e441 plus this WP's script, workflow and frontmatter keys; no
+  product code). The commit that adds ratchet.json changes only this file and ratchet.json, which
+  no runner counts.
+
+### The axes
+
+| Axis | Canonical command (the ratchet) | a826e441 (ci 45549119759) | ratchet.json (567ae074) |
+|---|---|---|---|
+| Rust tests passed | `cargo test --workspace --locked --no-fail-fast`, sum of `passed` over every `test result:` line (23 lines: unit, integration and doc-test targets) | **4150** | **4150** |
+| Rust tests ignored | same log, sum of `ignored` (counted separately, never in passed) | **24** | **24** |
+| Rust tests failed | same log, sum of `failed`; any non-zero refuses the baseline | 0 | 0 |
+| Vitest passed | `npx vitest run --reporter=json`, `numPassedTests` | **6020** | **6025** (+5: `scripts/ci/lq/ratchet.test.mjs`) |
+| Vitest skipped | same file, `numPendingTests + numTodoTests` | **38** | **38** (todo 0) |
+| Formal specs | `ls src-tauri/formal/*.tla \| wc -l` | 15 | **15** |
+| TLC configs in CI | `grep -l 'EXPECT:' src-tauri/formal/*.cfg \| wc -l` (what `tla-models.yml` checks) | 61 | **61** |
+| Tripwire tests | tests the runners executed whose full name contains "tripwire": rust per-test lines 63 + vitest assertion full names 187 | n/a | **250** |
+| CI gate steps | named `run:` steps of `ci.yml`, `merge-gate.yml`, `eval-check.yml`, setup steps (authenticate, install, fetch, upload) excepted: ci 11, merge-gate 3, eval-check 2 | 16 | **16** |
+| Rule-5 frontmatter | Markdown under `docs/` and `.agentile/` whose leading frontmatter has `created`, `branch`, `author` and `status` | 250 of 261 | **261 of 261** |
+
+All of it in one command, as the workflow runs it:
+`node scripts/ci/lq/ratchet.mjs measure --cargo-log <log> --vitest-json <json> --root . --rev <sha> --out ratchet.json`.
+A log with a failed test, or with no `test result:` line, is refused and nothing is written.
+
+### Grep inventory cross-check (not the ratchet)
+
+| Axis | Grep at a826e441 | Runner | Difference |
+|---|---|---|---|
+| Rust tests | line-start `#[test]`/`#[tokio::test]`: src-tauri 3252, kit 791, components 101, templates 33 = 4177 | 4150 + 24 ignored = 4174 | 3 (0.07%): attributes in modules compiled only for macOS or Windows |
+| Rust ignored | line-start `#[ignore`: src-tauri 22, kit 1, components 1 = 24 | 24 | none. (The planset's 38 counted `#[ignore` anywhere in a line, including strings and comments.) |
+| Vitest | 6058 tests at a826e441 | 6020 passed + 38 skipped = 6058 | none; `.each` rows expand at run time, so `it`/`test` block greps undercount |
+| Vitest skipped | 0 `.skip`/`.todo`; 19 `skipIf`/`runIf` guards (live, env or tool gated suites) | 38 | the guards skip whole describe blocks when their env is absent on the runner |
+| Tripwires | 12 `*tripwire*` files; vitest titles with "tripwire" 20 | rust 63, vitest 187 | the runner count matches the full name, so a test inside a `describe("... tripwire")` counts. LQ-WP03's registry (`tripwires.json`) replaces this measure, stricter only |
+| IPC commands | 475 entries in `generate_handler!` (`src-tauri/src/lib.rs`) | n/a | inventory only; `static-ratchets.mjs ipc` is LQ-WP17 |
+
+### What changed to reach these numbers
+
+- The one Markdown file with no frontmatter (`.agentile/BRANCH_CLEANUP_LEDGER_2026-07-28.md`) and
+  ten Hermes planset and evidence files missing `branch` (one also `author`) got the missing keys,
+  marked "backfilled by LQ-WP01"; the branch comes from each file's originating PR. No body text
+  changed. The axis starts at 100%.
+- The tripwire gap noted above (no test-count ratchet in core CI) closes in LQ-WP02 (`lq / ratchet`
+  compares a PR against this file) and LQ-WP03 (the tripwire registry).
