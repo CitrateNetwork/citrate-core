@@ -7567,3 +7567,4 @@ export const store = new Store();
 export function useStore(): AppState {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
+// lane-guard probe for L0-WP01 acceptance; this branch is never merged.
