@@ -703,6 +703,10 @@ describe("compare: the committed floor and removed tests", () => {
 const DIFF_ARGS = ["diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "-M", "-U1"];
 const DIFF_PATHS = ["*.rs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"];
 function gitDiff(before, change) {
+  return gitRepo(before, change).diff;
+}
+// The diff and the head tree it ends at (compare's --root in CI).
+function gitRepo(before, change) {
   const dir = tree(before);
   const git = (...args) => {
     const r = spawnSync("git", ["-c", "user.name=lq", "-c", "user.email=lq@example.invalid", "-c", "commit.gpgsign=false",
@@ -716,7 +720,7 @@ function gitDiff(before, change) {
   change(dir);
   git("add", "-A");
   git("commit", "-qm", "head");
-  return git(...DIFF_ARGS, "HEAD~1", "HEAD", "--", ...DIFF_PATHS);
+  return { diff: git(...DIFF_ARGS, "HEAD~1", "HEAD", "--", ...DIFF_PATHS), dir };
 }
 const RS_TESTS = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn guards_the_bridge() {\n        assert!(true);\n    }\n\n    #[tokio::test]\n    async fn keeps_the_relay() {}\n}\n";
 const TS_TESTS = 'import { it } from "vitest";\n\nit("keeps the probe", () => {\n  expect(1).toBe(1);\n});\n\nit("holds the floor", () => {});\n';
@@ -784,6 +788,73 @@ describe("compare: removed tests from real git diffs", () => {
     // And a test removed after it is still found in the right file.
     const both = gitDiff({ "src/m.test.ts": body }, (d) => fs.writeFileSync(path.join(d, "src/m.test.ts"), "const sql = `\nselect 1;\n`;\n"));
     expect(R.scanDiff(both).removedTests).toEqual(["runs the migration"]);
+  });
+});
+
+// Review of #790 (round 4), reproduced: deleting only the #[test] line and keeping the fn turns
+// the test off without removing its fn line, so the removed-test rule saw nothing, and a filler
+// test kept the count level. A test attribute removed (or added) on its own is a removal (or an
+// addition) of the fn it sits on. Real `git diff -U1` output, as lq-compare.yml builds lq.diff.
+const RS_FILE = "src-tauri/src/bridge_tests.rs";
+const editRs = (d, f) => fs.writeFileSync(path.join(d, RS_FILE), f(fs.readFileSync(path.join(d, RS_FILE), "utf8")));
+const FILLER = "\n#[test]\nfn filler() {}\n";
+
+describe("compare: a test attribute removed or added on its own", () => {
+  it("removing only #[test] from a fn that stays is a removal, even when a filler test keeps the count", () => {
+    const diff = gitDiff({ [RS_FILE]: RS_TESTS }, (d) => editRs(d, (t) => t.replace("    #[test]\n    fn guards", "    fn guards") + FILLER));
+    expect(diff).toMatch(/^-    #\[test\]$/m);
+    expect(diff).toMatch(/^     fn guards_the_bridge\(\) \{$/m);
+    const s = R.scanDiff(diff);
+    expect(s.removedTests).toEqual(["guards_the_bridge"]);
+    expect(s.addedTests).toEqual(["filler"]);
+    const r = R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() });
+    expect(r.ok).toBe(false);
+    expect(r.failures.join("\n")).toMatch(/test removed and not added back: guards_the_bridge/);
+    const adr = tree({ "docs/adr/ADR-bridge.md": "Turns off guards_the_bridge; the fleet suite covers it.\n" });
+    expect(R.compare(doc(), doc(), { root: adr, diff, floor: doc(), labels: ["ratchet-adr"], body: "docs/adr/ADR-bridge.md" }))
+      .toMatchObject({ ok: true, failures: [] });
+  });
+
+  it("removing only #[tokio::test] from an async fn that stays is a removal", () => {
+    const diff = gitDiff({ [RS_FILE]: RS_TESTS }, (d) => editRs(d, (t) => t.replace("    #[tokio::test]\n", "")));
+    expect(diff).toMatch(/^-    #\[tokio::test\]$/m);
+    expect(R.scanDiff(diff)).toMatchObject({ removedTests: ["keeps_the_relay"], addedTests: [] });
+    expect(R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() }).failures.join("\n"))
+      .toMatch(/test removed and not added back: keeps_the_relay/);
+  });
+
+  it("a test attribute added to an unchanged fn is an addition", () => {
+    const before = "#[cfg(test)]\nmod tests {\n    async fn checks_the_seam() {}\n\n    fn checks_the_relay() {}\n}\n";
+    const diff = gitDiff({ [RS_FILE]: before }, (d) => editRs(d, (t) => t.replace("    async fn", "    #[tokio::test]\n    async fn")));
+    expect(diff).toMatch(/^\+    #\[tokio::test\]$/m);
+    expect(diff).toMatch(/^     async fn checks_the_seam\(\) \{\}$/m);
+    expect(R.scanDiff(diff)).toMatchObject({ removedTests: [], addedTests: ["checks_the_seam"] });
+    const plain = gitDiff({ [RS_FILE]: before.replace("async fn checks_the_seam", "fn checks_the_seam") },
+      (d) => editRs(d, (t) => t.replace("    fn checks_the_seam", "    #[test]\n    fn checks_the_seam")));
+    expect(R.scanDiff(plain)).toMatchObject({ removedTests: [], addedTests: ["checks_the_seam"] });
+  });
+
+  it("swapping #[test] for #[tokio::test] on an unchanged fn is removed and added back, so it passes", () => {
+    const diff = gitDiff({ [RS_FILE]: RS_TESTS }, (d) => editRs(d, (t) => t.replace("    #[test]\n    fn guards", "    #[tokio::test]\n    fn guards")));
+    const s = R.scanDiff(diff);
+    expect(s.removedTests).toEqual(["guards_the_bridge"]);
+    expect(s.addedTests).toEqual(["guards_the_bridge"]);
+    expect(R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() })).toMatchObject({ ok: true, failures: [] });
+    // Swapping it for #[ignore] turns the test off: a removal.
+    const off = gitDiff({ [RS_FILE]: RS_TESTS }, (d) => editRs(d, (t) => t.replace("    #[test]\n    fn guards", "    #[ignore = \"needs anvil, #812\"]\n    fn guards")));
+    expect(R.scanDiff(off).removedTests).toEqual(["guards_the_bridge"]);
+  });
+
+  it("a removed #[test] whose fn is outside the diff context: named from the head tree, or by file and line without it", () => {
+    const before = "#[cfg(test)]\nmod tests {\n    #[test]\n    #[ignore = \"needs anvil, #812\"]\n    #[allow(dead_code)]\n    fn slow_bridge() {}\n}\n";
+    const { diff, dir } = gitRepo({ [RS_FILE]: before }, (d) => editRs(d, (t) => t.replace("    #[test]\n", "")));
+    expect(diff).not.toMatch(/fn slow_bridge/);
+    expect(R.scanDiff(diff, { root: dir }).removedTests).toEqual(["slow_bridge"]);
+    expect(R.compare(doc(), doc(), { root: dir, diff, floor: doc() }).failures.join("\n"))
+      .toMatch(/test removed and not added back: slow_bridge/);
+    // No head tree to read: still refused (fail closed), named by the old file and line.
+    expect(R.scanDiff(diff).removedTests).toEqual([`${RS_FILE}:3`]);
+    expect(R.compare(doc(), doc(), { root: tree({}), diff, floor: doc() }).ok).toBe(false);
   });
 });
 
