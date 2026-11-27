@@ -45,7 +45,6 @@ jobs:
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
           MQ_REF: ${{ github.event.merge_group.head_ref }}
-          MQ_BASE: ${{ github.event.merge_group.base_sha }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -55,12 +54,13 @@ jobs:
             pr=$(printf '%s' "$MQ_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p')
             if [ -z "$pr" ]; then echo "::error::unexpected merge-group ref shape"; exit 1; fi
             branch=$(gh api "repos/$REPO/pulls/$pr" --jq .head.ref)
-            base="$MQ_BASE"
           else
             branch="$HEAD_REF"
-            # The PR merge commit: its first parent is the base it merges into.
-            base="HEAD^1"
           fi
+          # pull_request: the PR merge commit, whose first parent is the base it merges into.
+          # merge_group: this PR's own queue entry (one squash or merge commit on the entry ahead
+          # of it), never the group base sha, which would blame it for the PRs queued before it.
+          base="HEAD^1"
           rc=0
           lane=$(bash scripts/cx-ownership-check.sh --lane-of "$branch") || rc=$?
           case "$rc" in
