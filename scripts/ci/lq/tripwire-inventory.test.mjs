@@ -6,6 +6,10 @@
 // listings: `cargo test --workspace --locked -- --list` (stdout and stderr together) and
 // `vitest list --json`. Each case drives the CLI the way CI does and checks both the exit code and
 // the reason, so a missing script cannot pass a refusal case.
+//
+// A Rust test that is still listed but marked #[ignore] does not run in ci.yml, so the CLI also
+// takes `cargo test -- --list --ignored` and counts only tests that run. vitest needs no second
+// listing: `vitest list --json` already leaves out skipped, todo and only-filtered tests.
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -31,9 +35,10 @@ const CARGO_LIST = [
   "ceremony_tests::rule3_tripwire_no_config_can_skip_the_ceremony: test",
   "ceremony_tests::join8_tripwire_catches_evasions: test",
   "ceremony_tests::a_plain_test: test",
+  "ceremony_tests::a_slow_plain_test: test",
   "custody_tests::adv2_wrong_passphrase_no_oracle: test",
   "",
-  "4 tests, 0 benchmarks",
+  "5 tests, 0 benchmarks",
   "     Running unittests src/main.rs (target/debug/deps/citrate_components-1111111111111111)",
   "tests::never_extracts_outside_the_root: test",
   "",
@@ -51,6 +56,22 @@ const CARGO_LIST = [
   "",
   "1 test, 0 benchmarks",
 ].join("\n");
+
+// `cargo test -- --list --ignored`: the same binaries, only the #[ignore] tests.
+const CARGO_IGNORED = [
+  "     Running unittests src/lib.rs (target/debug/deps/citrate_core_kit-0a1b2c3d4e5f6a7b)",
+  "ceremony_tests::a_slow_plain_test: test",
+  "",
+  "1 test, 0 benchmarks",
+  "     Running unittests src/main.rs (target/debug/deps/citrate_components-1111111111111111)",
+  "",
+  "0 tests, 0 benchmarks",
+].join("\n");
+
+// Adds `#[ignore]` to a test in the ignored listing, under the kit lib binary.
+function ignoring(fnPath) {
+  return CARGO_IGNORED.replace("ceremony_tests::a_slow_plain_test: test", `ceremony_tests::a_slow_plain_test: test\n${fnPath}: test`);
+}
 
 const ROOT = "/home/runner/work/citrate-core/citrate-core";
 const VITEST_LIST = [
@@ -87,12 +108,15 @@ function dir() {
   return d;
 }
 
-// Writes the inputs and runs the CLI. `cargo`/`vitest` override the listings; `reg`/`base` are
-// registry objects (base omitted means "first introduction, no base registry").
-function run(cmd, { reg, base, cargo = CARGO_LIST, vitest = VITEST_LIST, labels, extra = [] } = {}) {
+// Writes the inputs and runs the CLI. `cargo`/`ignored`/`vitest` override the listings (`ignored:
+// null` leaves the ignored listing out); `reg`/`base` are registry objects (base omitted means
+// "first introduction, no base registry"); `labels` is the PR's label array, passed as JSON the way
+// CI passes it.
+function run(cmd, { reg, base, cargo = CARGO_LIST, ignored = CARGO_IGNORED, vitest = VITEST_LIST, labels, extra = [] } = {}) {
   const d = dir();
   const files = {
     cargo: path.join(d, "cargo-list.txt"),
+    ignored: path.join(d, "cargo-list-ignored.txt"),
     vitest: path.join(d, "vitest-list.json"),
     reg: path.join(d, "tripwires.json"),
     base: path.join(d, "base-tripwires.json"),
@@ -100,6 +124,10 @@ function run(cmd, { reg, base, cargo = CARGO_LIST, vitest = VITEST_LIST, labels,
   fs.writeFileSync(files.cargo, cargo);
   fs.writeFileSync(files.vitest, JSON.stringify(vitest));
   const args = [SCRIPT, cmd, "--cargo-list", files.cargo, "--vitest-list", files.vitest, "--root", ROOT];
+  if (ignored !== null) {
+    fs.writeFileSync(files.ignored, ignored);
+    args.push("--cargo-ignored", files.ignored);
+  }
   if (reg !== undefined) {
     fs.writeFileSync(files.reg, typeof reg === "string" ? reg : JSON.stringify(reg));
     args.push("--registry", files.reg);
@@ -108,7 +136,7 @@ function run(cmd, { reg, base, cargo = CARGO_LIST, vitest = VITEST_LIST, labels,
     fs.writeFileSync(files.base, JSON.stringify(base));
     args.push("--base-registry", files.base);
   }
-  if (labels !== undefined) args.push("--labels", labels);
+  if (labels !== undefined) args.push("--labels-json", JSON.stringify(labels));
   args.push(...extra);
   const r = spawnSync(process.execPath, args, { encoding: "utf8" });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, text: r.stdout + r.stderr };
@@ -117,7 +145,7 @@ function run(cmd, { reg, base, cargo = CARGO_LIST, vitest = VITEST_LIST, labels,
 const FULL = registry(ALL_TRIPWIRES.map((id) => entry(id)));
 
 describe("parsing the runners' own listings", () => {
-  it("parses cargo --list per test binary, keeps lib and bin units apart, and skips doc-tests", () => {
+  it("parses cargo --list per test binary, keeps lib and bin units apart, skips doc-tests and counts only tests that run", () => {
     const r = run("list");
     expect(r.status).toBe(0);
     const ids = JSON.parse(r.stdout);
@@ -127,6 +155,8 @@ describe("parsing the runners' own listings", () => {
     expect(ids.rust).toContain(R_REMOVED);
     expect(ids.rust).toContain("citrate_core_kit::ceremony_tests::a_plain_test");
     expect(ids.rust.some((id) => id.includes("tripwire_doc"))).toBe(false);
+    expect(ids.rust).not.toContain("citrate_core_kit::ceremony_tests::a_slow_plain_test");
+    expect(ids.rust_ignored).toEqual(["citrate_core_kit::ceremony_tests::a_slow_plain_test"]);
     expect(ids.rust).toHaveLength(7);
     expect(ids.vitest).toContain(V_TELEMETRY);
     expect(ids.vitest).toContain("vitest:src/shell/Header.test.tsx::renders the header");
@@ -141,21 +171,71 @@ describe("parsing the runners' own listings", () => {
     expect(ids.vitest).toContain(V_SYNC);
     expect(ids.vitest).toContain(`${V_SYNC} #2`);
     const reg = registry([...FULL.tripwires, entry(`${V_SYNC} #2`)]);
-    const gone = run("check", { reg, base: reg, labels: "" });
+    const gone = run("check", { reg, base: reg, labels: [] });
     expect(gone.status).toBe(1);
     expect(gone.text).toContain(`missing registered tripwire: ${V_SYNC} #2`);
   });
 
   it("refuses an empty cargo listing instead of reporting every tripwire missing", () => {
-    const r = run("check", { reg: FULL, cargo: "    Finished `test` profile\n", labels: "" });
+    const r = run("check", { reg: FULL, cargo: "    Finished `test` profile\n", labels: [] });
     expect(r.status).toBe(2);
     expect(r.text).toMatch(/no tests in the cargo listing/);
   });
 
   it("refuses an empty vitest listing", () => {
-    const r = run("check", { reg: FULL, vitest: [], labels: "" });
+    const r = run("check", { reg: FULL, vitest: [], labels: [] });
     expect(r.status).toBe(2);
     expect(r.text).toMatch(/no tests in the vitest listing/);
+  });
+
+  it("refuses a run without the ignored listing (an #[ignore]d tripwire would pass unseen)", () => {
+    const r = run("check", { reg: FULL, base: FULL, ignored: null, labels: [] });
+    expect(r.status).toBe(2);
+    expect(r.text).toMatch(/--cargo-ignored is required/);
+  });
+
+  it("refuses an ignored listing that names no test binary (the list step did not run)", () => {
+    const r = run("check", { reg: FULL, base: FULL, ignored: "    Finished `test` profile\n", labels: [] });
+    expect(r.status).toBe(2);
+    expect(r.text).toMatch(/no test binaries in the cargo ignored listing/);
+  });
+
+  it("refuses an ignored test that the full listing does not have (listings from different builds)", () => {
+    const r = run("check", { reg: FULL, base: FULL, ignored: ignoring("ceremony_tests::not_in_the_full_list"), labels: [] });
+    expect(r.status).toBe(2);
+    expect(r.text).toMatch(/ignored listing names a test the full listing does not have/);
+  });
+});
+
+describe("check: a registered tripwire must run", () => {
+  it("a registered tripwire that is still listed but marked #[ignore] fails", () => {
+    const ignored = ignoring("ceremony_tests::rule3_tripwire_no_config_can_skip_the_ceremony");
+    const r = run("check", { reg: FULL, base: FULL, ignored, labels: [] });
+    expect(r.status).toBe(1);
+    expect(r.text).toContain(`registered tripwire is ignored: ${R_CEREMONY}`);
+  });
+
+  it("an #[ignore]d test cannot stand in as a replacement", () => {
+    const NEW = "citrate_core_kit::ceremony_tests::join8_tripwire_catches_more_evasions";
+    const cargo = CARGO_LIST.replace(
+      "ceremony_tests::join8_tripwire_catches_evasions: test",
+      "ceremony_tests::join8_tripwire_catches_more_evasions: test",
+    );
+    const reg = registry([
+      ...FULL.tripwires.map((t) => (t.id === R_EVASIONS ? { ...t, replaced_by: NEW, replacement_evidence: EVIDENCE } : t)),
+      entry(NEW),
+    ]);
+    const ignored = ignoring("ceremony_tests::join8_tripwire_catches_more_evasions");
+    const r = run("check", { reg, base: FULL, cargo, ignored, labels: ["tripwire-replace"] });
+    expect(r.status).toBe(1);
+    expect(r.text).toContain(`replaced_by points to a test that is ignored: ${R_EVASIONS} -> ${NEW}`);
+  });
+
+  it("generate does not register an ignored test", () => {
+    const ignored = ignoring("ceremony_tests::rule3_tripwire_no_config_can_skip_the_ceremony");
+    const r = run("generate", { ignored, extra: ["--since", "a826e441"] });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).tripwires.map((t) => t.id)).not.toContain(R_CEREMONY);
   });
 });
 
@@ -191,21 +271,21 @@ describe("generate", () => {
 
 describe("check: registered tripwires are kept", () => {
   it("passes when every registered tripwire is in the runners' lists", () => {
-    const r = run("check", { reg: FULL, base: FULL, labels: "" });
+    const r = run("check", { reg: FULL, base: FULL, labels: [] });
     expect(r.status).toBe(0);
     expect(r.text).toMatch(/9 registered tripwires present/);
   });
 
   it("a missing registered id fails", () => {
     const cargo = CARGO_LIST.replace("ceremony_tests::rule3_tripwire_no_config_can_skip_the_ceremony: test\n", "");
-    const r = run("check", { reg: FULL, base: FULL, cargo, labels: "" });
+    const r = run("check", { reg: FULL, base: FULL, cargo, labels: [] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`missing registered tripwire: ${R_CEREMONY}`);
   });
 
   it("a missing vitest tripwire fails", () => {
     const vitest = VITEST_LIST.filter((t) => !t.file.endsWith("syncProgress.tripwire.test.tsx"));
-    const r = run("check", { reg: FULL, base: FULL, vitest, labels: "" });
+    const r = run("check", { reg: FULL, base: FULL, vitest, labels: [] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`missing registered tripwire: ${V_SYNC}`);
   });
@@ -215,7 +295,7 @@ describe("check: registered tripwires are kept", () => {
       "ceremony_tests::join8_tripwire_catches_evasions: test",
       "ceremony_tests::join8_tripwire_catches_more_evasions: test",
     );
-    const r = run("check", { reg: FULL, base: FULL, cargo, labels: "" });
+    const r = run("check", { reg: FULL, base: FULL, cargo, labels: [] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`missing registered tripwire: ${R_EVASIONS}`);
   });
@@ -223,19 +303,19 @@ describe("check: registered tripwires are kept", () => {
   it("removing an entry from the registry fails even when the test is gone too", () => {
     const head = registry(FULL.tripwires.filter((t) => t.id !== R_ADV2));
     const cargo = CARGO_LIST.replace("custody_tests::adv2_wrong_passphrase_no_oracle: test\n", "");
-    const r = run("check", { reg: head, base: FULL, cargo, labels: "tripwire-replace" });
+    const r = run("check", { reg: head, base: FULL, cargo, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`registry entry removed: ${R_ADV2}`);
   });
 
   it("a malformed registry is refused", () => {
-    const r = run("check", { reg: registry([{ id: R_CEREMONY, class: "whatever", since: "x", replaced_by: null }]), labels: "" });
+    const r = run("check", { reg: registry([{ id: R_CEREMONY, class: "whatever", since: "x", replaced_by: null }]), labels: [] });
     expect(r.status).toBe(1);
     expect(r.text).toMatch(/class "whatever" is not one of/);
   });
 
   it("a duplicate registry id is refused", () => {
-    const r = run("check", { reg: registry([entry(R_CEREMONY), entry(R_CEREMONY)]), labels: "" });
+    const r = run("check", { reg: registry([entry(R_CEREMONY), entry(R_CEREMONY)]), labels: [] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`duplicate registry id: ${R_CEREMONY}`);
   });
@@ -256,39 +336,39 @@ describe("check: stricter-only replacement", () => {
     ]);
 
   it("a labeled replacement that exists, is registered and links its evidence passes", () => {
-    const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: "chain-touch,tripwire-replace" });
+    const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: ["chain-touch", "tripwire-replace"] });
     expect(r.status).toBe(0);
     expect(r.text).toContain(`replaced: ${R_EVASIONS} -> ${NEW}`);
   });
 
   it("replaced_by pointing to a non-existent test fails", () => {
-    const r = run("check", { reg: replaced(), base: FULL, cargo: CARGO_LIST.replace("ceremony_tests::join8_tripwire_catches_evasions: test\n", ""), labels: "tripwire-replace" });
+    const r = run("check", { reg: replaced(), base: FULL, cargo: CARGO_LIST.replace("ceremony_tests::join8_tripwire_catches_evasions: test\n", ""), labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`replaced_by points to a test that does not exist: ${R_EVASIONS} -> ${NEW}`);
   });
 
   it("a replacement without the tripwire-replace label fails", () => {
-    const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: "chain-touch" });
+    const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: ["chain-touch"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`needs the tripwire-replace label: ${R_EVASIONS}`);
   });
 
   it("a replacement without the weakened-copy evidence link fails", () => {
-    const r = run("check", { reg: replaced({ replacement_evidence: "trust me" }), base: FULL, cargo: renamed, labels: "tripwire-replace" });
+    const r = run("check", { reg: replaced({ replacement_evidence: "trust me" }), base: FULL, cargo: renamed, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`replacement_evidence must link the run or commit where ${NEW} failed against a weakened copy`);
   });
 
   it("a replacement that is not itself registered fails", () => {
     const reg = registry(FULL.tripwires.map((t) => (t.id === R_EVASIONS ? { ...t, replaced_by: NEW, replacement_evidence: EVIDENCE } : t)));
-    const r = run("check", { reg, base: FULL, cargo: renamed, labels: "tripwire-replace" });
+    const r = run("check", { reg, base: FULL, cargo: renamed, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`replacement is not registered: ${NEW}`);
   });
 
   it("a tripwire replaced by itself fails", () => {
     const reg = registry([entry(R_CEREMONY, { replaced_by: R_CEREMONY, replacement_evidence: EVIDENCE })]);
-    const r = run("check", { reg, labels: "tripwire-replace" });
+    const r = run("check", { reg, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`${R_CEREMONY} is replaced by itself`);
   });
@@ -298,7 +378,7 @@ describe("check: stricter-only replacement", () => {
       entry(R_CEREMONY, { replaced_by: R_EVASIONS, replacement_evidence: EVIDENCE }),
       entry(R_EVASIONS, { replaced_by: R_CEREMONY, replacement_evidence: EVIDENCE }),
     ]);
-    const r = run("check", { reg, labels: "tripwire-replace" });
+    const r = run("check", { reg, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toMatch(/replacement cycle/);
   });
@@ -310,9 +390,78 @@ describe("check: stricter-only replacement", () => {
       ...base.tripwires.map((t) => (t.id === R_EVASIONS ? { ...t, replaced_by: other } : t)),
       entry(other),
     ]);
-    const r = run("check", { reg: head, base, cargo: renamed, labels: "tripwire-replace" });
+    const r = run("check", { reg: head, base, cargo: renamed, labels: ["tripwire-replace"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`replaced_by changed for ${R_EVASIONS}`);
+  });
+
+  describe("successive replacements (A -> B, then B -> C)", () => {
+    const B = "citrate_core_kit::ceremony_tests::join8_tripwire_catches_more_evasions";
+    const C = "citrate_core_kit::ceremony_tests::join8_tripwire_catches_every_evasion";
+    const listing = (fn) => CARGO_LIST.replace("ceremony_tests::join8_tripwire_catches_evasions: test", `ceremony_tests::${fn}: test`);
+    const aToB = registry([
+      ...FULL.tripwires.map((t) => (t.id === R_EVASIONS ? { ...t, replaced_by: B, replacement_evidence: EVIDENCE } : t)),
+      entry(B, { class: "ceremony" }),
+    ]);
+    const bToC = registry([
+      ...aToB.tripwires.map((t) => (t.id === B ? { ...t, replaced_by: C, replacement_evidence: EVIDENCE } : t)),
+      entry(C, { class: "ceremony" }),
+    ]);
+
+    it("retiring B for a stricter C passes with only C listed, and A keeps its pointer to B", () => {
+      const r = run("check", { reg: bToC, base: aToB, cargo: listing("join8_tripwire_catches_every_evasion"), labels: ["tripwire-replace"] });
+      expect(r.status).toBe(0);
+      expect(r.text).toContain(`replaced: ${B} -> ${C}`);
+    });
+
+    it("the new edge B -> C still needs the tripwire-replace label", () => {
+      const r = run("check", { reg: bToC, base: aToB, cargo: listing("join8_tripwire_catches_every_evasion"), labels: [] });
+      expect(r.status).toBe(1);
+      expect(r.text).toContain(`needs the tripwire-replace label: ${B} -> ${C}`);
+      expect(r.text).not.toContain(`needs the tripwire-replace label: ${R_EVASIONS}`);
+    });
+
+    it("a chain whose end is not listed fails and names the whole chain", () => {
+      const r = run("check", { reg: bToC, base: aToB, cargo: CARGO_LIST.replace("ceremony_tests::join8_tripwire_catches_evasions: test\n", ""), labels: ["tripwire-replace"] });
+      expect(r.status).toBe(1);
+      expect(r.text).toContain(`replaced_by points to a test that does not exist: ${R_EVASIONS} -> ${B} -> ${C}`);
+    });
+
+    it("a chain through an unregistered id fails", () => {
+      const D = "citrate_core_kit::ceremony_tests::a_plain_test";
+      const head = registry(aToB.tripwires.map((t) => (t.id === B ? { ...t, replaced_by: D, replacement_evidence: EVIDENCE } : t)));
+      const r = run("check", { reg: head, base: aToB, cargo: listing("a_plain_test_two"), labels: ["tripwire-replace"] });
+      expect(r.status).toBe(1);
+      expect(r.text).toContain(`replacement is not registered: ${D}`);
+    });
+  });
+
+  describe("labels are matched exactly", () => {
+    it("one label whose name contains a comma and tripwire-replace is not the label", () => {
+      const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: ["needs,tripwire-replace"] });
+      expect(r.status).toBe(1);
+      expect(r.text).toContain(`needs the tripwire-replace label: ${R_EVASIONS}`);
+    });
+
+    it("a label with surrounding spaces is not the label", () => {
+      const r = run("check", { reg: replaced(), base: FULL, cargo: renamed, labels: [" tripwire-replace "] });
+      expect(r.status).toBe(1);
+      expect(r.text).toContain(`needs the tripwire-replace label: ${R_EVASIONS}`);
+    });
+
+    it("the comma-separated --labels form is gone (usage error)", () => {
+      const r = run("check", { reg: FULL, base: FULL, extra: ["--labels", "tripwire-replace"] });
+      expect(r.status).toBe(2);
+      expect(r.text).toMatch(/unknown option --labels/);
+    });
+
+    it("labels that are not a JSON array of strings are a usage error", () => {
+      for (const bad of ["tripwire-replace", "{\"a\":1}", "[1]"]) {
+        const r = run("check", { reg: FULL, base: FULL, extra: ["--labels-json", bad] });
+        expect(r.status, bad).toBe(2);
+        expect(r.text).toMatch(/--labels-json must be a JSON array of label names/);
+      }
+    });
   });
 
   it("in a merge group (no labels available) the label rule is left to the PR check, the rest still holds", () => {
@@ -328,13 +477,13 @@ describe("check: unregistered tripwire-named tests", () => {
   const SMALL = registry(ALL_TRIPWIRES.filter((id) => id !== R_DARK).map((id) => entry(id)));
 
   it("a new tripwire-named test that is not registered is reported (warn)", () => {
-    const r = run("check", { reg: SMALL, base: SMALL, labels: "" });
+    const r = run("check", { reg: SMALL, base: SMALL, labels: [] });
     expect(r.status).toBe(0);
     expect(r.text).toContain(`warning: unregistered tripwire: ${R_DARK}`);
   });
 
   it("fails with --strict-unregistered (the setting after WP close)", () => {
-    const r = run("check", { reg: SMALL, base: SMALL, labels: "", extra: ["--strict-unregistered"] });
+    const r = run("check", { reg: SMALL, base: SMALL, labels: [], extra: ["--strict-unregistered"] });
     expect(r.status).toBe(1);
     expect(r.text).toContain(`unregistered tripwire: ${R_DARK}`);
   });
@@ -358,15 +507,67 @@ describe("count and usage", () => {
     expect(r.stdout + r.stderr).toMatch(/usage: tripwire-inventory\.mjs/);
   });
 
-  it("check without --labels or --no-labels is a usage error (CI must say which)", () => {
+  it("check without --labels-json or --no-labels is a usage error (CI must say which)", () => {
     const r = run("check", { reg: FULL });
     expect(r.status).toBe(2);
-    expect(r.text).toMatch(/check needs --labels/);
+    expect(r.text).toMatch(/check needs --labels-json/);
   });
 
   it("check without a registry is a usage error", () => {
-    const r = run("check", { labels: "" });
+    const r = run("check", { labels: [] });
     expect(r.status).toBe(2);
     expect(r.text).toMatch(/--registry is required/);
+  });
+});
+
+// The workflow that feeds the CLI: PR code (build scripts, test binaries) never runs next to the
+// private-repo credential, Rust tests that are #[ignore]d are listed separately, and the PR's
+// labels reach the CLI as the JSON array GitHub gives.
+describe("lq-tripwires.yml", () => {
+  const WORKFLOW = fs.readFileSync(path.join(here, "..", "..", "..", ".github", "workflows", "lq-tripwires.yml"), "utf8");
+  const lines = WORKFLOW.split("\n").filter((l) => !/^\s*#/.test(l));
+  // Steps are the "      - " items under a job's steps: key.
+  const steps = [];
+  for (const l of lines) {
+    if (/^ {6}- /.test(l)) steps.push([l]);
+    else if (steps.length && /^ {7,}\S/.test(l)) steps[steps.length - 1].push(l);
+    else if (/^ {0,4}\S/.test(l)) steps.push(null);
+  }
+  const blocks = steps.filter(Boolean).map((b) => b.join("\n"));
+  const SECRET = "secrets.CITRATE_CHAIN_READ_TOKEN";
+
+  it("maps the private-repo token into one step only, the one that runs cargo fetch and nothing else", () => {
+    expect(lines.join("\n").split(SECRET)).toHaveLength(2);
+    const withToken = blocks.filter((b) => b.includes(SECRET));
+    expect(withToken).toHaveLength(1);
+    expect(withToken[0]).toMatch(/cargo fetch --locked/);
+    expect(withToken[0]).not.toMatch(/cargo (test|build|run)/);
+  });
+
+  it("never writes the token into a git config file", () => {
+    expect(WORKFLOW).not.toMatch(/git config --global/);
+    expect(WORKFLOW).toMatch(/GIT_CONFIG_COUNT/);
+  });
+
+  it("checks for a credential on disk before any PR code runs", () => {
+    const i = blocks.findIndex((b) => /x-access-token/.test(b) && /refusing/.test(b) && !b.includes(SECRET));
+    const firstTest = blocks.findIndex((b) => /cargo test/.test(b));
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(i).toBeLessThan(firstTest);
+  });
+
+  it("lists Rust tests offline, and lists the #[ignore]d ones separately", () => {
+    const tests = blocks.filter((b) => /cargo test/.test(b));
+    expect(tests.length).toBeGreaterThanOrEqual(2);
+    for (const b of tests) expect(b).toMatch(/cargo test --workspace --locked --offline/);
+    expect(tests.some((b) => /-- --list --ignored/.test(b))).toBe(true);
+  });
+
+  it("passes the ignored listing and the label JSON to the check", () => {
+    const check = blocks.find((b) => /tripwire-inventory\.mjs/.test(b) && /\bcheck\b/.test(b));
+    expect(check).toBeDefined();
+    expect(check).toMatch(/--cargo-ignored/);
+    expect(check).toMatch(/--labels-json "\$LABELS_JSON"/);
+    expect(check).not.toMatch(/\.join\(/);
   });
 });
