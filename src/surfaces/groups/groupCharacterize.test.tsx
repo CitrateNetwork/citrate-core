@@ -269,7 +269,8 @@ describe("L4 characterization: what is never shown, and Hermes", () => {
     const bindingBody = SOCIAL_BINDING_MSG_PREFIX + JSON.stringify({ network: "discord", handle: "dana", address: DANA, nonce: "n", signature: "0x00" });
     const linkBody = DEVICE_LINKS_MSG_PREFIX + "{}";
     const marked = "\u0001(a structure line from a newer app)";
-    expect(SOCIAL_BINDING_MSG_PREFIX).toBe("cbind1:");
+    // Both shipped prefixes start with U+0001 (domains.ts holds the byte itself, not an escape).
+    expect(SOCIAL_BINDING_MSG_PREFIX).toBe("\u0001cbind1:");
     expect(DEVICE_LINKS_MSG_PREFIX).toBe("\u0001cdlink1:");
     const messages = [msg("1", DANA, bindingBody, 1), msg("2", DANA, linkBody, 2), msg("3", DANA, marked, 3), msg("4", DANA, "hello", 4)];
     expect(threadModel(messages).map((t) => t.text)).toEqual(["hello"]);
