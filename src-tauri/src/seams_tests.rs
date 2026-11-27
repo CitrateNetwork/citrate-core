@@ -690,3 +690,210 @@ fn registry_source_sees_every_lane() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// L0-WP04: the per-lane module tree and start-up hooks (`src/lanes/l<N>/{mod.rs,hooks.rs}`),
+// L0_INTEGRATION_SEAMS section 3.2. A lane adds a module, a plugin, a setup step or a quit step in
+// its own files; lib.rs calls `crate::lanes::{plugins_all, setup_all, on_exit_all}` once each, at
+// points that keep the existing start-up and quit order. These read the sources, so a hook that
+// moves ahead of the single-instance plugin or the network gate fails by name.
+// ---------------------------------------------------------------------------------------------
+
+/// The three hook phases, in the order a launch runs them. The compiler checks each hook's
+/// signature (lanes/mod.rs takes it as a typed function pointer); this checks the name and shape.
+const HOOK_PHASES: [&str; 3] = ["plugins", "setup", "on_exit"];
+
+/// lib.rs with every `//` comment dropped, so a comment that names a call never counts as one.
+fn lib_code() -> String {
+    LIB_RS
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(at) => &l[..at],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The body of `run()`: from its signature to the next top-level item.
+fn run_body(code: &str) -> &str {
+    let start = code
+        .find("pub fn run() {")
+        .expect("lib.rs has pub fn run()");
+    let len = code[start..].find("\n}\n").expect("end of run()");
+    &code[start..start + len]
+}
+
+/// The setup closure: from `.setup(|app| {` to the invoke handler that follows it.
+fn setup_body(run: &str) -> &str {
+    let start = run
+        .find(".setup(|app| {")
+        .expect("run() has the setup closure");
+    let len = run[start..]
+        .find(".invoke_handler(")
+        .expect("the invoke handler follows the setup closure");
+    &run[start..start + len]
+}
+
+/// Byte offsets of every occurrence of `needle` in `hay`.
+fn offsets(hay: &str, needle: &str) -> Vec<usize> {
+    hay.match_indices(needle).map(|(at, _)| at).collect()
+}
+
+#[test]
+fn single_instance_is_first_plugin() {
+    let code = lib_code();
+    let run = run_body(&code);
+    let builder = run
+        .find("tauri::Builder::default()")
+        .expect("run() builds the app with tauri::Builder::default()");
+    let plugins = offsets(&run[builder..], ".plugin(");
+    assert!(
+        plugins.len() >= 2,
+        "run() registers its plugins on the builder"
+    );
+    assert!(
+        run[builder + plugins[0]..].starts_with(".plugin(tauri_plugin_single_instance::init("),
+        "tauri requires tauri_plugin_single_instance to be the first plugin registered"
+    );
+    assert_eq!(
+        code.matches("tauri_plugin_single_instance::init(").count(),
+        1,
+        "single-instance is registered once"
+    );
+}
+
+#[test]
+fn lane_plugins_follow_existing_plugins() {
+    let code = lib_code();
+    let run = run_body(&code);
+    let calls = offsets(run, "crate::lanes::plugins_all(builder)");
+    assert_eq!(
+        calls.len(),
+        1,
+        "run() calls lanes::plugins_all(builder) once"
+    );
+    let last_plugin = *offsets(run, ".plugin(")
+        .last()
+        .expect("run() registers plugins");
+    let setup = run.find(".setup(|app| {").expect("setup closure");
+    assert!(
+        last_plugin < calls[0] && calls[0] < setup,
+        "the lane plugins come after every existing .plugin( and before .setup"
+    );
+    // lib.rs registers no plugin after the lanes': a new plugin goes in a lane's hooks.rs.
+    assert!(
+        !run[calls[0]..].contains(".plugin("),
+        "no .plugin( after lanes::plugins_all in lib.rs"
+    );
+}
+
+#[test]
+fn lane_setup_runs_after_network_gate() {
+    let code = lib_code();
+    let setup = setup_body(run_body(&code));
+    let calls = offsets(setup, "crate::lanes::setup_all(app)?;");
+    assert_eq!(
+        calls.len(),
+        1,
+        "the setup closure calls lanes::setup_all(app)? once"
+    );
+    for gate in [
+        "network_profile::install_network_gate();",
+        "network_profile::install_payouts_gate();",
+    ] {
+        let at = setup
+            .find(gate)
+            .unwrap_or_else(|| panic!("the setup closure runs {gate}"));
+        assert!(at < calls[0], "lane setup hooks run after {gate}");
+    }
+    // Last: the existing setup body runs in full, then the lanes, then the closure returns.
+    let after = &setup[calls[0] + "crate::lanes::setup_all(app)?;".len()..];
+    assert!(
+        after.trim_start().starts_with("Ok(())"),
+        "lanes::setup_all is the last step of the setup closure"
+    );
+}
+
+#[test]
+fn lane_exit_hooks_run_after_sidecar_teardown() {
+    let code = lib_code();
+    let run = run_body(&code);
+    let handler = run
+        .find(".run(|app_handle, event| {")
+        .expect("run() has the run-event handler");
+    let events = &run[handler..];
+    let calls = offsets(events, "crate::lanes::on_exit_all(app_handle);");
+    assert_eq!(
+        calls.len(),
+        1,
+        "the run-event handler calls lanes::on_exit_all once"
+    );
+    let teardown = events
+        .find("shutdown_all_sidecars(app_handle);")
+        .expect("the run-event handler stops the sidecars");
+    assert!(
+        teardown < calls[0],
+        "lane quit hooks run after the existing sidecar teardown"
+    );
+}
+
+#[test]
+fn lane_tree_has_every_lane() {
+    assert!(
+        LIB_RS.lines().any(|l| l == "mod lanes;"),
+        "lib.rs declares mod lanes"
+    );
+    let dir = tauri_dir().join("src/lanes");
+    let mut got: BTreeSet<String> = BTreeSet::new();
+    for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("src-tauri/src/lanes: {e}")) {
+        let entry = entry.expect("entry");
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.path().is_dir() {
+            got.insert(name);
+        } else {
+            assert_eq!(
+                name, "mod.rs",
+                "src/lanes holds mod.rs and the lane folders only"
+            );
+        }
+    }
+    let want: BTreeSet<String> = LANES.iter().map(|l| l.to_string()).collect();
+    assert_eq!(got, want, "src/lanes holds exactly the ten lane folders");
+
+    let modrs = read_rel("src/lanes/mod.rs");
+    for lane in LANES {
+        assert!(
+            modrs.contains(&format!("pub(crate) mod {lane};")),
+            "lanes/mod.rs declares pub(crate) mod {lane}"
+        );
+        assert!(
+            read_rel(&format!("src/lanes/{lane}/mod.rs")).contains("pub(crate) mod hooks;"),
+            "lanes/{lane}/mod.rs declares its hooks module"
+        );
+        let hooks = read_rel(&format!("src/lanes/{lane}/hooks.rs"));
+        for phase in HOOK_PHASES {
+            assert_eq!(
+                hooks
+                    .matches(&format!("pub(crate) fn {phase}<R: Runtime>("))
+                    .count(),
+                1,
+                "lanes/{lane}/hooks.rs defines {phase} once, generic over the runtime"
+            );
+        }
+    }
+    // Each phase calls l0..l9 in that order, each lane's own hook (never another lane's).
+    for phase in HOOK_PHASES {
+        let mut last = 0;
+        for lane in LANES {
+            let row = format!("(\"{lane}\", {lane}::hooks::{phase})");
+            let at = offsets(&modrs, &row);
+            assert_eq!(at.len(), 1, "lanes/mod.rs calls {row} once");
+            assert!(
+                at[0] > last,
+                "lanes/mod.rs calls the {phase} hooks in lane order at {lane}"
+            );
+            last = at[0];
+        }
+    }
+}
