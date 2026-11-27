@@ -1,13 +1,17 @@
 #!/usr/bin/env node
-// created: 2026-11-26 | branch: feat/v60-lq-wp01-baseline
+// created: 2026-11-26 | branch: feat/v60-lq-wp01-baseline, feat/v60-lq-wp02-ratchet-job
 // author: Larry Klosowski (LQ lane, 0.6.0)
 // status: active
 //
 // LQ-WP01: the coverage ratchet's numbers are the test runners' own counts, never a grep.
+// LQ-WP02: `compare` is the check `lq / ratchet` (Rule 2): a head is measured by the same rules
+// and compared with the merge base's .agentile/coverage/ratchet.json.
 //
 //   node scripts/ci/lq/ratchet.mjs cargo-counts --cargo-log <file> --cargo-exit <code> --out <file>
 //   node scripts/ci/lq/ratchet.mjs measure (--cargo-counts <file> | --cargo-log <file> --cargo-exit <code>)
 //        --vitest-json <file> [--root <repo>] [--rev <sha>] [--out <ratchet.json>]
+//   node scripts/ci/lq/ratchet.mjs compare --base <ratchet.json|none> --head <measured.json>
+//        [--root <repo>] [--diff <unified diff>] [--labels-json '["a","b"]'] [--pr-body <file>]
 //
 // `cargo-counts` runs in the job that ran the tests and turns its log plus cargo's own exit status
 // into validated counts; that small file, not the raw test output, is what leaves the job. A raw
@@ -23,16 +27,20 @@
 //           numPendingTests + numTodoTests).
 //   tree    src-tauri/formal/*.tla; the configs TLC runs in CI, from the tree's own runner
 //           (src-tauri/formal/tlc_expect.py discover_specs + plan, as `--all` in
-//           tla-models.yml calls them; 0 when either is absent or the plan has an error); Markdown under docs/ and .agentile/ with all four Rule-5 keys
-//           (created, branch, author, status) in a leading frontmatter block; the named `run:`
-//           steps of the required gate workflows (ci.yml, merge-gate.yml, eval-check.yml),
-//           setup steps excepted.
-//   tripwires  until the LQ-WP03 registry (.agentile/coverage/tripwires.json) exists,
-//           `registered` is the number of tests the runners executed whose full name contains
-//           "tripwire" (rust per-test lines plus vitest assertion full names).
+//           tla-models.yml calls them; 0 when either is absent or the plan has an error); Markdown
+//           under docs/ and .agentile/ with all four Rule-5 keys (created, branch, author, status)
+//           in a leading frontmatter block; the named `run:` steps of the required gate workflows
+//           (ci.yml, merge-gate.yml, eval-check.yml), setup steps excepted.
+//   tripwires  the live (not replaced) entries of the LQ-WP03 registry
+//           (.agentile/coverage/tripwires.json) once it exists; until then the number of tests the
+//           runners executed whose full name contains "tripwire" (rust per-test lines plus vitest
+//           assertion full names).
+//   compare the merge base's ratchet.json, the head's committed ratchet.json (the floor), the PR
+//           diff, and the PR's labels and body.
 //
-// Exit codes: 0 written, 1 refused (a failed test, a non-zero cargo exit, a target with no summary
-// line, a bad reporter or counts file), 2 usage. A refused run writes nothing: a red run is never a baseline.
+// Exit codes: 0 written or passed, 1 refused (a failed test, a non-zero cargo exit, a target with
+// no summary line, a bad reporter or counts file, a ratchet rule), 2 usage. A refused measure
+// writes nothing: a red run is never a baseline.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -241,9 +249,19 @@ export function measureTree(root) {
     const p = path.join(root, ".github", "workflows", wf);
     if (fs.existsSync(p)) ciSteps += countGateSteps(fs.readFileSync(p, "utf8"));
   }
+  // The LQ-WP03 registry, once it exists: its live (not replaced) entries. A registry that is
+  // present but unreadable is a refusal, never a silent fall back to the runner count.
+  let registered = null;
+  const regPath = path.join(root, ".agentile", "coverage", "tripwires.json");
+  if (fs.existsSync(regPath)) {
+    const reg = JSON.parse(fs.readFileSync(regPath, "utf8"));
+    if (!Array.isArray(reg?.tripwires)) throw new Error(".agentile/coverage/tripwires.json has no tripwires array");
+    registered = reg.tripwires.filter((t) => !t?.replaced_by).length;
+  }
   return {
     specs: { tla, tlc_configs_in_ci: tlc.configs },
     tlc_plan_errors: tlc.errors,
+    tripwires_registered: registered,
     frontmatter: { docs: docs.length, with: docs.length - missing.length, missing },
     ci_steps: ciSteps,
   };
@@ -266,9 +284,333 @@ export function buildRatchet({ cargo, vitest, tree, rev, measured }) {
       vitest: { passed: vitest.passed, skipped: vitest.skipped },
     },
     specs: { tla: t.specs.tla, tlc_configs_in_ci: t.specs.tlc_configs_in_ci },
-    tripwires: { registered: cargo.tripwireTests.length + vitest.tripwireTests.length, ci_steps: t.ci_steps },
+    tripwires: {
+      registered: t.tripwires_registered ?? cargo.tripwireTests.length + vitest.tripwireTests.length,
+      ci_steps: t.ci_steps,
+    },
     frontmatter: { docs: t.frontmatter.docs, with: t.frontmatter.with },
   };
+}
+
+// ---- LQ-WP02: compare (the check `lq / ratchet`) ----
+//
+// Rules:
+// - No ratcheted axis may go down. A decrease passes only with the `ratchet-adr` label AND a
+//   docs/adr/<file>.md linked in the PR body that exists in the head and names the axis and
+//   every test the diff removes.
+// - The committed floor (the head's .agentile/coverage/ratchet.json) is ratcheted the same way:
+//   a head that lowers an axis in it is a decrease under the same rule, and a head that deletes
+//   it is refused. An accepted measured decrease must lower the floor to the measured count (or
+//   less) in the same PR; otherwise every later PR, the record PR included, is refused on that
+//   axis. More generally the floor is never above the head's measured count on any axis, ADR or
+//   not: a PR cannot raise ratchet.json past what its own tree measures.
+// - A test the diff removes and does not add back (in any file of the diff) needs the same label
+//   and ADR whatever the counts say: the floor only advances when the record PR lands, so the
+//   totals alone can hide a deletion. A rename counts as a removal of the old name, and a test
+//   attribute deleted from a fn that stays (`#[test]` off, the fn kept) as a removal of that fn.
+// - A focused test (it/test/describe/suite .only) fails anywhere in the tree or the diff.
+// - A new #[ignore] or it/test/describe .skip, .todo, .skipIf needs a reason and an issue link,
+//   on its line or in the comment line above it.
+// - No baseline at the merge base (before LQ-WP01 lands ratchet.json) is said out loud; the
+//   diff and tree rules still apply.
+// - Base, head and floor are schema-checked before any rule reads them (ratchetErrors): each is a
+//   plain object whose every ratcheted axis is a count. One that is not (false, 0, "", [], {}, an
+//   axis missing, not JSON) is refused, label or not; a floor that slipped through would be the
+//   next merge base and refuse every later PR.
+// - Removed and added test names cancel one for one (by name; a file-qualified identity with
+//   explicit move pairing is LQ-WP17).
+// - Labels are exact names from one JSON array (--labels-json); a name is never split on commas.
+export const AXES = [
+  "tests.rust.passed", "tests.vitest.passed",
+  "specs.tla", "specs.tlc_configs_in_ci",
+  "tripwires.registered", "tripwires.ci_steps",
+];
+const ISSUE = /(?:^|[^\w&[])#\d+\b|github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+/;
+// A call, not a mention: `it.only(`, `describe.only.each(`; a test title that names it.only is not one.
+const FOCUS = /\b(?:it|test|describe|suite)\.only\s*(?:\(|\.each\b)/;
+const SKIPS = /\b(?:it|test|describe|suite)\.(?:skip|todo|skipIf)\s*(?:\(|\.each\b)/;
+const JS_EXT = /\.(?:[cm]?js|jsx|tsx?)$/;
+const isComment = (l) => /^\s*(?:\/\/|\/?\*)/.test(l);
+// A reason is an issue link plus some words: "needs anvil, #812", "(https://github.com/o/r/issues/812) live only".
+const hasReason = (c) => ISSUE.test(c) && /[A-Za-z]{3,}/.test(c.replace(ISSUE, ""));
+const commentOf = (l) => { const i = l.search(/\/\/|\/\*/); return i >= 0 ? l.slice(i) : ""; };
+
+const get = (d, k) => k.split(".").reduce((o, s) => (o == null ? undefined : o[s]), d);
+const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
+function walk(dir, keep, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (e.name === "node_modules" || e.name === ".git" || e.name === "target") continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p, keep, out);
+    else if (e.isFile() && keep(e.name)) out.push(p);
+  }
+  return out;
+}
+
+// Added focused / ignored / skipped tests and the names of removed and added tests, from a
+// unified diff. A rust test is a `fn` under a #[test] or #[tokio::test] attribute on the same side
+// of the diff (old side: removed and context lines; new side: added and context lines), so a fn
+// renamed under an unchanged attribute line is a removal of the old name and an addition of the new.
+// A test attribute removed (or added) on its own is a removal (or an addition) of the fn under it,
+// even when that fn line is unchanged context: deleting only `#[test]` turns the test off.
+const TEST_ATTR = /^\s*#\[(?:tokio::)?test\b/;
+const RS_FN = /\bfn (\w+)/;
+const JS_TEST = /(?<![.\w$])(?:it|test)(?:\.each\([^)]*\))?\(\s*(["'`])(.+?)\1/;
+//
+// Each side has its own path: a removed line belongs to the `--- a/<path>` file and an added line
+// to the `+++ b/<path>` file, so a deleted file (`+++ /dev/null`) still reports every test it
+// removes, and a new file (`--- /dev/null`) is scanned at its new path. Inside a hunk (by the
+// line counts in its `@@` header) a line that reads `--- x` or `+++ x` is content, not a header.
+const diffPath = (s, prefix) => {
+  let p = s.replace(/\t.*$/, "");
+  if (p.length > 1 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+  if (p === "/dev/null") return "";
+  return p.startsWith(prefix) ? p.slice(prefix.length) : p;
+};
+// One side's pending test attribute: `pending` while the attribute run continues, `changed` when a
+// test attribute in the run is a change line on this side, `at` its old-side line (for a name).
+const freshSide = () => ({ pending: false, changed: false, at: 0 });
+// Feeds one line to a side; returns the fn name when the line completes a test this side records
+// (the fn line is a change line, or a test attribute above it is).
+function sideStep(st, text, isChange, oldLine) {
+  if (TEST_ATTR.test(text)) {
+    if (!st.pending) Object.assign(st, freshSide(), { pending: true });
+    if (isChange && !st.changed) Object.assign(st, { changed: true, at: oldLine });
+    return null;
+  }
+  if (st.pending && RS_FN.test(text)) {
+    const record = isChange || st.changed;
+    Object.assign(st, freshSide());
+    return record ? text.match(RS_FN)[1] : null;
+  }
+  if (st.pending && /^\s*(?:#\[|\/\/)/.test(text)) return null;
+  Object.assign(st, freshSide());
+  return null;
+}
+// The fn under a test attribute whose run outlives the hunk, from the head tree: the lines after
+// a hunk are unchanged, so the head file there reads as the old one did. Null when the file is
+// not a regular file under root.
+function fnAfter(root, file, fromLine) {
+  if (!root || !file) return null;
+  const abs = path.resolve(root, file);
+  const rel = path.relative(path.resolve(root), abs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  try { if (!fs.lstatSync(abs).isFile()) return null; } catch { return null; }
+  const lines = (read(abs) || "").split("\n");
+  const st = { pending: true, changed: true, at: 0 };
+  for (let i = Math.max(0, fromLine - 1); i < lines.length && st.pending; i++) {
+    const name = sideStep(st, lines[i], false, 0);
+    if (name) return name;
+  }
+  return null;
+}
+// root: the head tree (compare's --root), used only to name a fn the diff context cuts off.
+export function scanDiff(diff, { root } = {}) {
+  const out = { focused: [], unreasoned: [], removedTests: [], addedTests: [] };
+  let oldFile = "", newFile = "", line = 0, oldLine = 0, prev = "", inHunk = false;
+  let oldSide = freshSide(), newSide = freshSide();
+  let oldLeft = 0, newLeft = 0; // lines of the current hunk still to come on each side
+  // A hunk ended with a changed test attribute still pending on a side: its fn is past the
+  // context. Name it from the head tree; a removal that cannot be named is still a removal (by the
+  // old file and line), so the rule fails closed.
+  const endHunk = () => {
+    if (inHunk && oldSide.pending && oldSide.changed && oldFile.endsWith(".rs")) {
+      out.removedTests.push(fnAfter(root, newFile, line) || `${oldFile}:${oldSide.at}`);
+    }
+    if (inHunk && newSide.pending && newSide.changed && newFile.endsWith(".rs")) {
+      const name = fnAfter(root, newFile, line);
+      if (name) out.addedTests.push(name);
+    }
+    inHunk = false; oldSide = freshSide(); newSide = freshSide();
+  };
+  for (const raw of (diff || "").split("\n")) {
+    // A file header always ends the hunk before it: no content line starts with "d".
+    if (inHunk && oldLeft === 0 && newLeft === 0) endHunk();
+    if (raw.startsWith("diff --git ")) { endHunk(); oldFile = newFile = ""; oldLeft = newLeft = 0; continue; }
+    if (oldLeft === 0 && newLeft === 0) {
+      if (raw.startsWith("--- ")) { oldFile = diffPath(raw.slice(4), "a/"); continue; }
+      if (raw.startsWith("+++ ")) { newFile = diffPath(raw.slice(4), "b/"); continue; }
+    }
+    const h = raw.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (h) {
+      endHunk();
+      oldLeft = h[2] === undefined ? 1 : +h[2];
+      newLeft = h[4] === undefined ? 1 : +h[4];
+      oldLine = +h[1]; line = +h[3]; prev = ""; inHunk = true;
+      continue;
+    }
+    const tag = raw[0], text = raw.slice(1);
+    if (tag !== "+" && tag !== " " && tag !== "-") continue;
+    if (tag !== "+") oldLeft = Math.max(0, oldLeft - 1);
+    if (tag !== "-") newLeft = Math.max(0, newLeft - 1);
+    if (tag !== "+" && oldFile.endsWith(".rs")) {
+      const name = sideStep(oldSide, text, tag === "-", oldLine);
+      if (name) out.removedTests.push(name);
+    }
+    if (tag !== "-" && newFile.endsWith(".rs")) {
+      const name = sideStep(newSide, text, tag === "+", oldLine);
+      if (name) out.addedTests.push(name);
+    }
+    if (tag !== "+") oldLine += 1;
+    const file = tag === "-" ? oldFile : newFile;
+    const t = JS_EXT.test(file) && tag !== " " && !isComment(text) && text.match(JS_TEST);
+    if (t) (tag === "-" ? out.removedTests : out.addedTests).push(t[2]);
+    if (tag === "-") continue;
+    if (tag === "+") {
+      const at = `${file}:${line}`;
+      const ok = (m) => hasReason(commentOf(text)) || (isComment(prev) && hasReason(prev)) || m;
+      if (file.endsWith(".rs") && /^\s*#\[ignore\b/.test(text)) {
+        const m = text.match(/#\[ignore\s*=\s*"([^"]*)"/);
+        if (!ok(Boolean(m && hasReason(m[1])))) out.unreasoned.push(`${at}: ${text.trim()}`);
+      } else if (JS_EXT.test(file) && !isComment(text)) {
+        if (FOCUS.test(text)) out.focused.push(`${at}: ${text.trim()}`);
+        else if (SKIPS.test(text) && !ok(false)) out.unreasoned.push(`${at}: ${text.trim()}`);
+      }
+    }
+    prev = text; line += 1;
+  }
+  if (inHunk) endHunk();
+  return out;
+}
+
+export function scanTreeForFocus(root) {
+  const hits = [];
+  for (const dir of ["src", "scripts"]) {
+    for (const f of walk(path.join(root, dir), (n) => /\.(?:test|spec)\.(?:[cm]?js|jsx|tsx?)$/.test(n))) {
+      (read(f) || "").split("\n").forEach((l, i) => {
+        if (!isComment(l) && FOCUS.test(l)) hits.push(`${path.relative(root, f).split(path.sep).join("/")}:${i + 1}`);
+      });
+    }
+  }
+  return hits;
+}
+
+export const FLOOR_FILE = ".agentile/coverage/ratchet.json";
+// Every ratcheted value, higher is better: the AXES, and frontmatter as minus the count of docs
+// without it (a doc added without frontmatter is a decrease; a doc removed is not).
+const RATCHETED = [
+  ...AXES.map((k) => ({ axis: k, val: (d) => get(d, k), show: (v) => v })),
+  { axis: "frontmatter", val: (d) => (d?.frontmatter ? d.frontmatter.with - d.frontmatter.docs : undefined), show: (v) => -v },
+];
+const num = (v) => typeof v === "number" && Number.isFinite(v);
+const count = (v) => Number.isInteger(v) && v >= 0;
+
+// A file that exists but is not JSON (compare's CLI passes this for it, so the reason reaches the
+// failure message rather than reading as "absent").
+export class Unreadable {
+  constructor(reason) { this.reason = reason; }
+}
+const shape = (v) => (v === null ? "null" : Array.isArray(v) ? "an array" : typeof v === "string" ? `the string ${JSON.stringify(v)}` : `${typeof v} ${String(v)}`);
+
+// The schema compare relies on, checked before any rule reads a value: a plain object whose every
+// ratcheted axis is a count, and frontmatter { docs, with } with with <= docs. Anything else
+// (false, 0, "", [], {}, an axis missing) is not a ratchet: a truthiness or a missing-axis skip
+// would otherwise pass every rule, and a floor that passed that way is the next merge base.
+export function ratchetErrors(d) {
+  if (d instanceof Unreadable) return [d.reason];
+  if (d === null || typeof d !== "object" || Array.isArray(d)) return [`it is ${shape(d)}, not an object`];
+  const errs = [];
+  for (const k of AXES) {
+    const v = get(d, k);
+    if (!count(v)) errs.push(`${k} is ${v === undefined ? "missing" : shape(v)}, not a count`);
+  }
+  const fm = d.frontmatter;
+  if (fm === null || typeof fm !== "object" || Array.isArray(fm)) errs.push("frontmatter is missing or not an object");
+  else if (!count(fm.docs) || !count(fm.with)) errs.push("frontmatter.docs and frontmatter.with are not both counts");
+  else if (fm.with > fm.docs) errs.push(`frontmatter.with (${fm.with}) is more than frontmatter.docs (${fm.docs})`);
+  return errs;
+}
+
+// base: the merge base's ratchet.json, null when it has none (before LQ-WP01). head: the measured
+// head. floor: the head's committed ratchet.json, null when the head has none, or left out
+// (undefined) to skip the floor rules; the CLI always supplies it from --root. Each one that is
+// given is schema-checked first, and one that is not a ratchet is a refusal, label or not.
+export function compare(base, head, { root = ".", diff = "", labels = [], body = "", floor } = {}) {
+  const failures = [], notes = [];
+  const scan = scanDiff(diff, { root });
+  const decreases = []; // { axis, msg }
+  const bad = (what, d) => {
+    const e = ratchetErrors(d);
+    if (e.length) failures.push(`${what} is not a ratchet (${e.join("; ")}); fails closed`);
+    return e.length > 0;
+  };
+  const baseBad = base !== null && base !== undefined && bad(`the merge base ${FLOOR_FILE.split("/").pop()}`, base);
+  const headBad = bad("the measured head", head);
+  // A floor that is present but malformed is refused whether or not the base has one yet: it is
+  // the next PR's merge base.
+  const floorOk = floor !== undefined && floor !== null && !bad(`${FLOOR_FILE} in the head`, floor);
+  if (base === null || base === undefined) {
+    notes.push("no ratchet.json at the merge base (LQ-WP01 not landed yet): axis comparison skipped; diff and tree rules still apply");
+  } else if (!baseBad && !headBad) {
+    if (floor === null) failures.push(`${FLOOR_FILE} is missing or unreadable in the head; the floor is never deleted`);
+    for (const { axis, val, show } of RATCHETED) {
+      const b = val(base), h = val(head), f = floorOk ? val(floor) : undefined;
+      if (!num(b)) continue;
+      if (!num(h) || h < b) {
+        decreases.push({
+          axis,
+          msg: axis === "frontmatter"
+            ? `frontmatter: docs without frontmatter ${show(b)} -> ${show(h)} (+${show(h) - show(b)})`
+            : `${axis} decreased ${b} -> ${h} (${h - b})`,
+        });
+      }
+      if (floorOk && f < b) {
+        decreases.push({ axis, msg: `${FLOOR_FILE} lowers ${axis} ${show(b)} -> ${show(f)} (${axis === "frontmatter" ? "+" : ""}${show(f) - show(b)})` });
+      }
+    }
+  }
+  // The floor is never above what the head measures, on any axis, label or not: the next PR and
+  // the record PR are judged against it, so a floor the tree does not reach refuses all of them.
+  // A measured decrease (accepted or not) must lower the floor in the same PR for the same reason.
+  if (floorOk && !headBad) {
+    for (const { axis, val, show } of RATCHETED) {
+      const b = base && !baseBad ? val(base) : undefined, h = val(head), f = val(floor);
+      if (!num(f) || !num(h) || f <= h) continue;
+      if (num(b) && h < b) {
+        const target = axis === "frontmatter" ? `${show(h)} or more docs without frontmatter` : `${h} or less`;
+        failures.push(`${axis}: an accepted decrease must lower ${FLOOR_FILE} to ${target} in the same PR (it records ${show(f)}), or every later PR is refused on this axis`);
+      } else if (axis === "frontmatter") {
+        failures.push(`frontmatter: ${FLOOR_FILE} records ${show(f)} docs without frontmatter, below the ${show(h)} this head measures; a floor the tree does not reach refuses every later PR, the record PR included`);
+      } else {
+        failures.push(`${axis}: ${FLOOR_FILE} records ${show(f)}, above the ${show(h)} this head measures; a floor the tree does not reach refuses every later PR, the record PR included`);
+      }
+    }
+  }
+  // One for one: each added test cancels one removal of the same name, so two removals of a name
+  // and one addition leave one removal.
+  const added = new Map();
+  for (const n of scan.addedTests) added.set(n, (added.get(n) ?? 0) + 1);
+  const gone = [];
+  for (const n of scan.removedTests) {
+    if (added.get(n) > 0) added.set(n, added.get(n) - 1);
+    else if (!gone.includes(n)) gone.push(n);
+  }
+  const needs = [...decreases.map((d) => d.msg), ...gone.map((n) => `test removed and not added back: ${n}`)];
+  if (needs.length) {
+    const names = [...new Set(decreases.map((d) => d.axis)), ...gone];
+    let accepted = null;
+    if (labels.includes("ratchet-adr")) {
+      const refs = [...new Set([...(body || "").matchAll(/docs\/adr\/([A-Za-z0-9_-][\w.-]*\.md)\b/g)].map((m) => `docs/adr/${m[1]}`))];
+      if (!refs.length) failures.push("ratchet-adr is set but no docs/adr/<file>.md linked in the PR body");
+      const why = [];
+      for (const ref of refs) {
+        const text = read(path.join(root, ref));
+        if (text == null) { why.push(`${ref} does not exist in the head`); continue; }
+        const missing = names.filter((n) => !text.includes(n));
+        if (missing.length) why.push(`${ref} does not name: ${missing.join(", ")}`);
+        else { accepted = ref; break; }
+      }
+      if (!accepted) failures.push(...why);
+    }
+    if (accepted) notes.push(...needs.map((d) => `${d}: accepted by ${accepted}`));
+    else failures.push(...needs.map((d) => `${d}; needs label ratchet-adr and a linked docs/adr/<file>.md naming the axis and each removed test`));
+  }
+  for (const f of scan.focused) failures.push(`focused test added (never allowed): ${f}`);
+  for (const f of scanTreeForFocus(root)) failures.push(`focused test in the tree (never allowed): ${f}`);
+  for (const f of scan.unreasoned) failures.push(`ignored/skipped test without a reason and an issue link: ${f}`);
+  return { ok: failures.length === 0, failures, notes };
 }
 
 function usage(msg) {
@@ -276,7 +618,9 @@ function usage(msg) {
   process.stderr.write(
     "usage: ratchet.mjs cargo-counts --cargo-log <file> --cargo-exit <code> --out <file>\n" +
       "       ratchet.mjs measure (--cargo-counts <file> | --cargo-log <file> --cargo-exit <code>)\n" +
-      "                           --vitest-json <file> [--root <repo>] [--rev <sha>] [--out <file>]\n",
+      "                           --vitest-json <file> [--root <repo>] [--rev <sha>] [--out <file>]\n" +
+      "       ratchet.mjs compare --base <file|none> --head <file> [--root <repo>] [--diff <file>]\n" +
+      "                           [--labels-json '[\"a\",\"b\"]'] [--pr-body <file>]\n",
   );
   process.exit(2);
 }
@@ -284,11 +628,56 @@ function usage(msg) {
 const OPTIONS = {
   "cargo-counts": ["cargo-log", "cargo-exit", "out"],
   measure: ["cargo-counts", "cargo-log", "cargo-exit", "vitest-json", "root", "rev", "out"],
+  compare: ["base", "head", "root", "diff", "labels-json", "pr-body"],
 };
 
 function refuse(e) {
   process.stderr.write(`ratchet: refused: ${e.message}\n`);
   process.exit(1);
+}
+
+// Exact label names from one JSON array. Never split a string: a label name may itself contain a
+// comma, so "needs review,ratchet-adr" is one label and not ratchet-adr.
+function parseLabels(text) {
+  if (text === undefined) return [];
+  let v;
+  try { v = JSON.parse(text); } catch { v = undefined; }
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) usage("--labels-json must be a JSON array of label names");
+  return v;
+}
+
+function runCompare(opt) {
+  if (!opt.base || !opt.head) usage("compare needs --base <file|none> and --head <file>");
+  const labels = parseLabels(opt["labels-json"]);
+  const root = opt.root || ".";
+  // Absent is null (base: only by `--base none`); present but not JSON is Unreadable. Either way
+  // compare's schema check decides, so false, 0, "" and [] are refusals, never "no file".
+  const json = (p, absent) => {
+    const text = read(p);
+    if (text === null) return absent;
+    try {
+      const v = JSON.parse(text);
+      return v === null ? new Unreadable(`${p} holds null`) : v;
+    } catch (e) {
+      return new Unreadable(`${p} is not JSON (${e.message})`);
+    }
+  };
+  const head = json(opt.head, new Unreadable(`${opt.head} is not readable`));
+  const base = opt.base === "none" ? null : json(opt.base, new Unreadable(`${opt.base} is not readable`));
+  // The head's committed floor, from the tree being judged: absent is null (refused once the base
+  // has a floor), and present but malformed is refused always.
+  const floor = json(path.join(root, FLOOR_FILE), null);
+  const r = compare(base, head, {
+    root,
+    floor,
+    diff: opt.diff ? read(opt.diff) || "" : "",
+    labels,
+    body: opt["pr-body"] ? read(opt["pr-body"]) || "" : "",
+  });
+  for (const n of r.notes) process.stdout.write(`ratchet: note: ${n}\n`);
+  for (const f of r.failures) process.stdout.write(`::error title=lq / ratchet::${f}\n`);
+  process.stdout.write(r.ok ? "ratchet: pass\n" : `ratchet: refused (${r.failures.length})\n`);
+  return r.ok ? 0 : 1;
 }
 
 function main(argv) {
@@ -321,6 +710,11 @@ function main(argv) {
       `cargo-counts: ${counts.suites} targets, ${counts.passed} passed, ${counts.ignored} ignored, ` +
         `${counts.tripwireTests.length} tripwire tests\n`,
     );
+    return;
+  }
+
+  if (cmd === "compare") {
+    process.exitCode = runCompare(opt);
     return;
   }
 
