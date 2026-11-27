@@ -1,5 +1,6 @@
 ---
 created: 2026-09-11
+branch: feat/hermes-p3-model-register (PR #38; backfilled by LQ-WP01 2026-11-26)
 author: Claude Fable 5
 status: active
 sprint: sprint-hermes-p3-headline
