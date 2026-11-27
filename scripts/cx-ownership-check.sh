@@ -16,6 +16,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The checkout whose diff is judged. lane-guard runs the base's copy of this script and map from a
+# temp dir (so a PR cannot change the rules it is judged by) and points this at the PR checkout.
+DIFF_ROOT="${CX_DIFF_ROOT:-$REPO_ROOT}"
 MAP_NAME=cx
 MAP="$REPO_ROOT/.agentile/cx-ownership.map"
 V60_LANES=()
@@ -48,7 +51,7 @@ load_v60() {
   local l pat
   [[ -f "$MAP" ]] || { echo "missing $MAP" >&2; return 2; }
   V60_LANES=(); V60_RES=()
-  while read -r l pat; do
+  while read -r l pat || [[ -n "${l:-}" ]]; do # '||': keep a last row with no trailing newline
     [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
     V60_LANES+=("$l"); V60_RES+=("^$(glob_to_ere "$pat")\$")
   done < "$MAP"
@@ -96,7 +99,7 @@ file_allowed() {
     [[ ",$(v60_owner "$file")," == *",$lane,"* ]]
     return
   fi
-  while read -r l pat; do
+  while read -r l pat || [[ -n "${l:-}" ]]; do
     [[ -z "${l:-}" || "${l:0:1}" == "#" ]] && continue
     if [[ "$l" == "$lane" || "$l" == "*" ]]; then
       # shellcheck disable=SC2053
@@ -191,16 +194,22 @@ main() {
   if [[ "${1:-}" == "--map" ]]; then use_map "${2:?--map needs cx or v60}"; shift 2; fi
   local lane="${1:?usage: cx-ownership-check.sh [--map cx|v60] <lane> [base-ref] | --lane-of <branch> | --selftest}"
   local base="${2:-origin/main}"
-  local changed offenders=()
+  local f list offenders=() changed=()
+  # -z: paths arrive raw and NUL-delimited (no C-quoting of non-ASCII names, no newline splitting).
   # --no-renames: a rename lists both paths, so moving another lane's file out still names it.
-  changed="$(cd "$REPO_ROOT" && git diff --no-renames --name-only "${base}...HEAD" 2>/dev/null || git diff --no-renames --name-only "$base" 2>/dev/null)"
-  [[ -z "$changed" ]] && { echo "no changes vs $base — nothing to check"; return 0; }
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
+  list="$(mktemp)"
+  if ! (cd "$DIFF_ROOT" && { git diff -z --no-renames --name-only "${base}...HEAD" >"$list" 2>/dev/null ||
+    git diff -z --no-renames --name-only "$base" >"$list" 2>/dev/null; }); then
+    rm -f "$list"; echo "cannot diff against '$base' in $DIFF_ROOT" >&2; return 2
+  fi
+  while IFS= read -r -d '' f; do if [[ -n "$f" ]]; then changed+=("$f"); fi; done <"$list"
+  rm -f "$list"
+  [[ ${#changed[@]} -eq 0 ]] && { echo "no changes vs $base — nothing to check"; return 0; }
+  for f in "${changed[@]}"; do
     if ! file_allowed "$lane" "$f"; then
       if [[ "$MAP_NAME" == v60 ]]; then offenders+=("$f (owner: $(v60_owner "$f"))"); else offenders+=("$f"); fi
     fi
-  done <<< "$changed"
+  done
   if [[ ${#offenders[@]} -gt 0 ]]; then
     echo "OWNERSHIP VIOLATION — lane '$lane' touched files it does not own (race risk):" >&2
     printf '  %s\n' "${offenders[@]}" >&2
@@ -211,6 +220,7 @@ main() {
     fi
     return 1
   fi
-  echo "ownership OK — lane '$lane' diff vs $base is within its owned set (${changed//$'\n'/, })"
+  local IFS=,
+  echo "ownership OK — lane '$lane' diff vs $base is within its owned set (${changed[*]})"
 }
 main "$@"

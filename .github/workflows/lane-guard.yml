@@ -6,8 +6,9 @@
 # its lane owns in .agentile/v60-ownership.map. Other branches pass with a notice; a feat/v60-*
 # branch with any other shape fails. merge-gate's `ci` waits on this check like every other one.
 #
-# Untrusted input: the branch name and the changed paths. Refs reach the shell only through env,
-# are validated by `--lane-of` before use, and workflow commands are paused while paths print.
+# Untrusted input: the branch name, the changed paths, and the PR's own copy of the map and checker.
+# Refs reach the shell only through env and are validated by `--lane-of` before use; workflow
+# commands are paused while paths print; the map and checker that decide are read from the base.
 name: lane-guard
 
 on:
@@ -61,8 +62,23 @@ jobs:
           # merge_group: this PR's own queue entry (one squash or merge commit on the entry ahead
           # of it), never the group base sha, which would blame it for the PRs queued before it.
           base="HEAD^1"
+          # The rules come from the base, never from the PR: a lane PR that edits the map or the
+          # checker is judged by the versions it would replace. Only the first PR that adds the v60
+          # policy (base has none yet) is judged by its own copy.
+          policy="$RUNNER_TEMP/lane-policy"
+          if git cat-file -e "$base:.agentile/v60-ownership.map" 2>/dev/null &&
+            git cat-file -e "$base:scripts/cx-ownership-check.sh" 2>/dev/null; then
+            mkdir -p "$policy/scripts" "$policy/.agentile"
+            git show "$base:scripts/cx-ownership-check.sh" >"$policy/scripts/cx-ownership-check.sh"
+            git show "$base:.agentile/v60-ownership.map" >"$policy/.agentile/v60-ownership.map"
+            echo "policy: map and checker from the base commit"
+          else
+            policy="$PWD"
+            echo "::notice::bootstrap: the base has no v60 policy yet, so this PR's own map and checker apply"
+          fi
+          check="$policy/scripts/cx-ownership-check.sh"
           rc=0
-          lane=$(bash scripts/cx-ownership-check.sh --lane-of "$branch") || rc=$?
+          lane=$(bash "$check" --lane-of "$branch") || rc=$?
           case "$rc" in
             0) ;;
             1) echo "Not a v60 lane branch: lane-guard does not apply."; exit 0 ;;
@@ -71,5 +87,5 @@ jobs:
           echo "lane: $lane"
           pause="$(openssl rand -hex 16)"
           echo "::stop-commands::$pause"
-          bash scripts/cx-ownership-check.sh --map v60 "$lane" "$base"
+          CX_DIFF_ROOT="$PWD" bash "$check" --map v60 "$lane" "$base"
           echo "::$pause::"
