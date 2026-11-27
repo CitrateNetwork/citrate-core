@@ -963,3 +963,6 @@ fn a_partial_from_a_different_file_completed_by_the_next_source_is_quarantined_n
     assert!(!matches!(mgr.status(), ModelStatus::Ready));
     assert!(!is_file_ready(&dir, MODEL_FILE));
 }
+
+// L5-WP01 L5-PINS characterization (registry ci/characterization.d/l5.json).
+include!("lanes/l5/characterization/onboarding_pins_tests.rs");

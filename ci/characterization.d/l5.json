@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "owner": "L5",
+  "base": "a826e441",
+  "about": "L5-WP01 characterization suites for lane L5 (models, multimodal, LoRA), planset v060 L5 section 4. Each suite pins one surface as it is at citrate-core a826e441 before an L5 work package changes it: the onboarding model pins, the llama-server argv, the Hugging Face catalog, the Settings local model card, the adapter gate's notes, the media routes and voice. The L5 PR that changes a pinned behavior replaces the test with a stricter one in a separate commit that says why, and names the suite id here (supersededBy lists the WP that will). LQ runs every suite here on every merge-queue group (npm run test:characterization selects the vitest ones; the cargo ones by filter). 'protected' lists the existing suites on the same surfaces: never deleted, their test count never drops, and the named tests stay declared. registry.characterization.test.ts checks all of it.",
+  "suites": [
+    {
+      "id": "L5-PINS",
+      "lane": "L5",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_l5_onboarding_pins::",
+      "files": ["src-tauri/src/lanes/l5/characterization/onboarding_pins_tests.rs"],
+      "includedBy": "src-tauri/src/model_tests.rs",
+      "covers": ["src-tauri/src/model.rs", "src/shell/localModels.ts"],
+      "pins": "the two onboarding models (#767): Gemma 4 E4B and E2B Q4_0 file, size, sha256, Hugging Face repo and commit, the Citrate vanity redirect on the default only, no Citrate mirror yet, and the source order (redirect, then Hugging Face at the pinned commit)",
+      "tests": ["onboarding_pins_are_unchanged"]
+    },
+    {
+      "id": "L5-ARGV",
+      "lane": "L5",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_l5_serve_argv::",
+      "files": ["src-tauri/src/lanes/l5/characterization/serve_argv_tests.rs"],
+      "includedBy": "src-tauri/src/serve_tests.rs",
+      "covers": ["src-tauri/src/serve.rs", "src-tauri/src/serve_plan.rs"],
+      "pins": "the llama-server argv: -m, loopback host, port, --ctx-size (8192 before sizing), --jinja, --reasoning-format deepseek, --no-webui, --no-slots, then -ngl only when planned and --lora last only when an adapter is set; no --mmproj",
+      "tests": ["default_argv_has_no_mmproj_and_keeps_jinja"],
+      "supersededBy": ["L5-WP07"]
+    },
+    {
+      "id": "L5-CATALOG",
+      "lane": "L5",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_l5_catalog::",
+      "files": ["src-tauri/src/lanes/l5/characterization/catalog_today_tests.rs"],
+      "includedBy": "src-tauri/src/model_catalog_tests.rs",
+      "covers": ["src-tauri/src/model_catalog.rs"],
+      "pins": "the Models screen catalog resolves Hugging Face search and download-by-id at main, not a commit (E3), and lists every .gguf with an LFS oid as a model, including the mmproj projector and the draft model (E4)",
+      "tests": ["catalog_resolves_at_main_today", "catalog_lists_mmproj_as_a_model_today"],
+      "supersededBy": ["L5-WP03"]
+    },
+    {
+      "id": "L5-MEDIA",
+      "lane": "L5",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_l5_media::",
+      "files": ["src-tauri/src/lanes/l5/characterization/media_routes_tests.rs"],
+      "includedBy": "src-tauri/src/media_tests.rs",
+      "covers": ["src-tauri/src/media.rs"],
+      "pins": "the tier rows (T0 and unknown: nothing local; T1: local image; T2: local image and video) with video unavailable on every tier, and the remote image route reading the legacy ai.rs provider (Settings > AI providers), not the D-11 BYOK keys (E18)",
+      "tests": ["tier_caps_rows", "remote_route_is_legacy_ai_provider"],
+      "supersededBy": ["L5-WP10"]
+    },
+    {
+      "id": "L5-CARD",
+      "lane": "L5",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l5/characterization/localModelCard.characterization.test.tsx"],
+      "covers": ["src/surfaces/Models.tsx", "src/onboarding/LocalModelControls.tsx"],
+      "pins": "the Settings local model card: its six state words (Not downloaded, Downloading n%, Paused at n%, Verifying, Download stopped, Ready) and the ready line naming the pinned SHA-256 (E12)",
+      "tests": ["local_model_card_shows_six_states_with_todays_words", "ready_card_says_verified_against_pinned_sha256"]
+    },
+    {
+      "id": "L5-ADAPTERS",
+      "lane": "L5",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l5/characterization/adapters.characterization.test.tsx"],
+      "covers": ["src/fl/Adapters.tsx"],
+      "pins": "the adapter gate says LoRAFactory download is not built (the gate takes a local file) and shows the Scorecards needed card that sends the member to scripts/eval-tools.mjs (E13)",
+      "tests": ["notes_lorafactory_download_is_not_built", "scorecards_needed_card_names_the_eval_scripts"],
+      "supersededBy": ["L5-WP16", "L5-WP17"]
+    },
+    {
+      "id": "L5-VOICE",
+      "lane": "L5",
+      "runner": "vitest",
+      "files": [
+        "src/shell/actions/l5/characterization/speech.characterization.test.ts",
+        "src/shell/actions/l5/characterization/dictation.characterization.test.ts"
+      ],
+      "covers": ["src/agent/speech.ts", "src/agent/dictation.ts", "src/shell/state.ts"],
+      "pins": "read-aloud is off by default; without speechSynthesis the engine is unsupported and speaks nothing; without Web Speech recognition dictation is unsupported and start does nothing (E19)",
+      "tests": [
+        "read_aloud_is_off_by_default",
+        "speech_without_synthesis_is_unsupported_and_speaks_nothing",
+        "dictation_is_unsupported_without_web_speech"
+      ],
+      "supersededBy": ["L5-WP11", "L5-WP12"]
+    },
+    {
+      "id": "L5-REGISTRY",
+      "lane": "L5",
+      "runner": "vitest",
+      "files": ["src/shell/actions/l5/characterization/registry.characterization.test.ts"],
+      "covers": ["ci/characterization.d/l5.json"],
+      "pins": "this registry lists exactly the L5 surfaces; each suite file declares exactly the tests listed for it; each cargo file is included where the registry says; each protected suite keeps its count and named tests",
+      "tests": [
+        "registry_lists_every_l5_surface_once",
+        "every_listed_test_is_declared_and_every_declared_test_is_listed",
+        "cargo_suites_are_compiled_in_where_the_registry_says",
+        "protected_suites_keep_their_counts_and_named_tests",
+        "declaration_checks_ignore_commented_out_tests"
+      ]
+    }
+  ],
+  "protected": [
+    { "runner": "cargo", "file": "src-tauri/src/model_tests.rs", "count": 28, "tests": [] },
+    {
+      "runner": "cargo",
+      "file": "src-tauri/src/model_dl_tests.rs",
+      "count": 34,
+      "tests": [
+        "sources_are_the_mirror_then_the_vanity_redirect_then_hugging_face_at_a_pinned_revision",
+        "a_new_process_resumes_the_part_from_its_exact_size_and_verifies",
+        "a_part_left_for_a_different_pin_is_discarded_and_restarted_from_zero",
+        "a_disk_without_room_is_refused_before_any_byte_with_a_clear_message",
+        "wrong_bytes_from_a_source_fail_verify_and_one_clean_retry_from_zero_heals_it"
+      ]
+    },
+    { "runner": "cargo", "file": "src-tauri/src/model_catalog_tests.rs", "count": 20, "tests": ["github_releases_requires_a_sha256_sidecar"] },
+    { "runner": "cargo", "file": "src-tauri/src/serve_tests.rs", "count": 28, "tests": ["spawn_args_are_the_grounded_llama_server_cli"] },
+    { "runner": "cargo", "file": "src-tauri/src/serve_plan_tests.rs", "count": 20, "tests": [] },
+    { "runner": "cargo", "file": "src-tauri/src/hf_auth_tests.rs", "count": 23, "tests": [] },
+    { "runner": "cargo", "file": "src-tauri/src/fl_rounds_tests.rs", "count": 63, "tests": [] },
+    { "runner": "cargo", "file": "src-tauri/src/media_tests.rs", "count": 22, "tests": [] },
+    { "runner": "vitest", "file": "src/shell/localModels.test.ts", "count": 4, "tests": [] },
+    { "runner": "vitest", "file": "src/surfaces/settingsModels.test.tsx", "count": 2, "tests": [] },
+    { "runner": "vitest", "file": "src/onboarding/modelDownloadStates.test.tsx", "count": 9, "tests": [] },
+    { "runner": "vitest", "file": "src/fl/adapters.test.tsx", "count": 13, "tests": [] },
+    { "runner": "vitest", "file": "src/agent/speech.test.ts", "count": 10, "tests": [] },
+    { "runner": "vitest", "file": "src/agent/dictation.test.ts", "count": 8, "tests": [] }
+  ]
+}
