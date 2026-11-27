@@ -138,7 +138,11 @@ mod lq_ch5_hermes_spec_env_keyless {
                 let out = crate::hermes::cloud::inherited_key_vars(
                     [(spelled.clone(), "x".to_string())].into_iter(),
                 );
-                assert_eq!(out, [spelled.clone()], "{spelled} would be inherited");
+                assert_eq!(
+                    out,
+                    std::slice::from_ref(&spelled),
+                    "{spelled} would be inherited"
+                );
             }
         }
         for p in VENDOR_PREFIXES {

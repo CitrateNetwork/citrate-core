@@ -570,5 +570,5 @@ pub fn start(proxy: Arc<ModelProxy>) -> std::io::Result<u16> {
 mod tests {
     include!("model_proxy_http_tests.rs");
     // L1-WP01 CH-6 characterization (LQ registry).
-    include!("lq/proxy_paths_characterize_tests.rs");
+    include!("lanes/l1/characterization/proxy_paths_characterize_tests.rs");
 }

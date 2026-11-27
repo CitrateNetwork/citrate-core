@@ -391,9 +391,3 @@ impl ApprovalInbox {
         close
     }
 }
-
-// L1-WP01 CH-9 characterization (LQ registry).
-#[cfg(test)]
-mod lq_characterize {
-    include!("lq/approvals_once_ttl_tests.rs");
-}

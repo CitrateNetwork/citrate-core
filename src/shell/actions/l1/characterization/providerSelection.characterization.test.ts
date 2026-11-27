@@ -23,7 +23,7 @@ const statusMock = vi.fn(async () => {
   return { running: h.running, skills: 0, pendingApprovals: 0 };
 });
 
-vi.mock("../../bridge", () => ({
+vi.mock("../../../../bridge", () => ({
   bindSimHost: () => {},
   bridge: {
     mode: "tauri",
@@ -50,9 +50,9 @@ vi.mock("../../bridge", () => ({
     escalation: { endpoints: async () => [] },
   },
 }));
-vi.mock("../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
+vi.mock("../../../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
 
-import { Store } from "../../shell/store";
+import { Store } from "../../../../shell/store";
 
 const CLOUD: Cloud = { providerId: "openai", model: "gpt-x" };
 

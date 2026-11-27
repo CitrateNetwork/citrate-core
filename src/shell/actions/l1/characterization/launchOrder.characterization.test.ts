@@ -7,7 +7,7 @@
 // auto-starts at launch) adds its step through the L0 seam after syncHermesTerminal and names CH-2.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("../../bridge", () => ({
+vi.mock("../../../../bridge", () => ({
   bindSimHost: () => {},
   bridge: {
     mode: "tauri",
@@ -30,14 +30,14 @@ vi.mock("../../bridge", () => ({
     wallet: { deviceId: async () => null },
   },
 }));
-vi.mock("../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
-vi.mock("../../shell/slices/hermesSetup", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../shell/slices/hermesSetup")>()),
+vi.mock("../../../../bridge/mode", () => ({ BRIDGE_MODE: "tauri", assertSimAllowed: () => {} }));
+vi.mock("../../../../shell/slices/hermesSetup", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../shell/slices/hermesSetup")>()),
   runHermesSelfCheck: async () => ({ items: [], missingRequired: 0, firstRunDefaults: [], install: null, complete: true, error: null, checkedAt: null }),
   setupNotice: () => null,
 }));
 
-import { Store } from "../../shell/store";
+import { Store } from "../../../../shell/store";
 
 // Everything else start() kicks off is stubbed, so only the order of the three steps is observed.
 const STUBBED = [

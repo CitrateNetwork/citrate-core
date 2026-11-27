@@ -1,4 +1,6 @@
-// L1-WP01 CH-10 (characterization, citrate-core a826e441). Included into `hermes_headless::tests`.
+// L1-WP01 CH-10 (characterization, citrate-core a826e441). Included into `hermes::tests`
+// (lane L1's module; hermes_headless.rs is L0's), so it reaches the dispatcher only through its
+// public API.
 //
 // Pins today's headless dispatcher rule (hermes_headless.rs module doc): a core-hosted call on a
 // session the view is not watching is answered here only when it is one of the two read tools
@@ -8,7 +10,7 @@
 // proposal, so the refusal is the dispatcher's, not the backend's.
 
 mod lq_ch10_headless_never_approves {
-    use super::*;
+    use crate::hermes_headless::*;
     use crate::node_mcp_protocol::{NodeBackend, ProposedSignature, RpcRead};
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};

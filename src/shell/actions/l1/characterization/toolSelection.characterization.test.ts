@@ -8,7 +8,7 @@
 // expected names are today's output, including its oddities (for example widget_create ranking
 // first for a node status question). WP17 (tool search, compact prompt) changes this and names CH-4.
 import { describe, it, expect } from "vitest";
-import { AGENT_TOOLS, TOOL_SCHEMA_CEILING, selectToolSchemas } from "../../agent/harness";
+import { AGENT_TOOLS, TOOL_SCHEMA_CEILING, selectToolSchemas } from "../../../../agent/harness";
 
 const CORPUS: { request: string; used: string[]; names: string[] }[] = [
   {

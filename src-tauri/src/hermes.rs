@@ -2912,7 +2912,9 @@ mod session_tests {
 mod tests {
     include!("hermes_tests.rs");
     // L1-WP01 CH-5 characterization (LQ registry).
-    include!("lq/hermes_spec_env_keyless_tests.rs");
+    include!("lanes/l1/characterization/hermes_spec_env_keyless_tests.rs");
+    // L1-WP01 CH-10 characterization (LQ registry): the headless dispatcher, through its public API.
+    include!("lanes/l1/characterization/headless_never_approves_tests.rs");
 }
 
 #[cfg(test)]

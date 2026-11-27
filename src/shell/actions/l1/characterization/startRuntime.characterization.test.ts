@@ -8,10 +8,10 @@
 // adapter or a runtime that is not attached never reaches core. WP08 (auto-start at launch)
 // reuses this path and names CH-3.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { bridge } from "../../bridge";
-import { agentSlice, startRuntime, RUNTIME_OPTIONS } from "../../shell/slices/agent";
-import { hermesRunningSlice } from "../../shell/slices/hermesRunning";
-import type { FlTrajectoryStatus } from "../../bridge/domains";
+import { bridge } from "../../../../bridge";
+import { agentSlice, startRuntime, RUNTIME_OPTIONS } from "../../../../shell/slices/agent";
+import { hermesRunningSlice } from "../../../../shell/slices/hermesRunning";
+import type { FlTrajectoryStatus } from "../../../../bridge/domains";
 
 const traj: FlTrajectoryStatus = { settings: { enabled: false, changedAtMs: null }, recordedFiles: 0, datasets: 0, appliesOnRestart: true, loadError: null };
 

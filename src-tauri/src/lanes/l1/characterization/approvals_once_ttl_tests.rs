@@ -1,5 +1,6 @@
 // L1-WP01 CH-9 (characterization, citrate-core a826e441). Included into
-// `node_mcp_approvals::lq_characterize`.
+// `node_mcp::tests` (lane L1's module; node_mcp_approvals.rs is L0's), so it reaches the inbox only
+// through its public API.
 //
 // Pins today's approval inbox properties (node_mcp_approvals.rs module doc): a request is decided
 // at most once, a client sees and cancels only its own requests, a pending request expires at

@@ -405,6 +405,4 @@ pub fn spawn(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     include!("hermes_headless_tests.rs");
-    // L1-WP01 CH-10 characterization (LQ registry).
-    include!("lq/headless_never_approves_tests.rs");
 }
