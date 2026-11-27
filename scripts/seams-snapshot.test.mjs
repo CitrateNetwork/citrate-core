@@ -2,7 +2,7 @@
 // cases), never writes outside the fixture directories, and ci/characterization.json (the manifest
 // LQ runs on every merge group) names suites that exist.
 import { describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
@@ -73,6 +73,25 @@ describe("seams snapshot helper", () => {
     expect(existsSync(join(root, "fixtures/seams/z.json"))).toBe(false);
   });
 
+  it("never writes through a symlinked fixture or a symlinked parent directory", () => {
+    const env = { SEAMS_SNAPSHOT_WRITE: "1" };
+    // A symlinked parent: fixtures -> outside, so fixtures/seams/s.json would land in outside/.
+    const a = mkdtempSync(join(tmpdir(), "seams-"));
+    mkdirSync(join(a, "outside"));
+    symlinkSync(join(a, "outside"), join(a, "fixtures"));
+    expect(() => checkSnapshot("fixtures/seams/s.json", methods, { root: a, env })).toThrow(/symlink/);
+    expect(() => inputFixture("fixtures/seams/i.json", () => ({}), { root: a, env })).toThrow(/symlink/);
+    expect(existsSync(join(a, "outside/seams"))).toBe(false);
+    // A symlinked fixture file: fixtures/seams/t.json -> outside/t.json.
+    const b = mkdtempSync(join(tmpdir(), "seams-"));
+    mkdirSync(join(b, "outside"));
+    mkdirSync(join(b, "fixtures/seams"), { recursive: true });
+    symlinkSync(join(b, "outside/t.json"), join(b, "fixtures/seams/t.json"));
+    expect(() => checkSnapshot("fixtures/seams/t.json", methods, { root: b, env })).toThrow(/symlink/);
+    expect(() => inputFixture("fixtures/seams/t.json", () => ({}), { root: b, env })).toThrow(/symlink/);
+    expect(existsSync(join(b, "outside/t.json"))).toBe(false);
+  });
+
   it("decode refuses a path outside the fixture directories", () => {
     const hex = Buffer.from("x\n").toString("hex");
     expect(() => decodeLog(`${MISSING_MARK} ../../etc/x.json ${hex}`)).toThrow(/refusing/);
@@ -104,5 +123,24 @@ describe("ci/characterization.json (the LQ manifest)", () => {
         expect(lib, `lib.rs declares mod ${mod}`).toMatch(new RegExp(`^mod ${mod};$`, "m"));
       }
     }
+  });
+});
+
+describe(".gitleaks.toml (the netKey exception)", () => {
+  // The fixtures' netKey is the public r1007 genesis hash. A 64-hex value is also the shape of a
+  // raw private key, so the exception must pin that literal hash, never a 64-hex character class.
+  const R1007_GENESIS = "0xcf68634502b4fca1e977ac8dd35aa006bb40c04208d5cd55f1c2b508bba96631";
+  it("pins the literal r1007 genesis hash, and it is the only netKey the fixtures hold", () => {
+    const toml = readFileSync(join(ROOT, ".gitleaks.toml"), "utf8");
+    const entry = toml.split("[[allowlists]]").find((e) => e.includes("netKey"));
+    expect(entry).toBeDefined();
+    expect(entry).toContain(R1007_GENESIS);
+    expect(entry).not.toMatch(/\[0-9a-f\]\{64\}/);
+    const keys = new Set();
+    for (const f of readdirSync(join(ROOT, "fixtures/seams"))) {
+      const text = readFileSync(join(ROOT, "fixtures/seams", f), "utf8");
+      for (const m of text.matchAll(/"netKey": "(0x[0-9a-f]+)"/g)) keys.add(m[1]);
+    }
+    expect([...keys]).toEqual([R1007_GENESIS]);
   });
 });
