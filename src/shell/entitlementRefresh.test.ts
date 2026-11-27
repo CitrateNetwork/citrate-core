@@ -340,7 +340,7 @@ describe("activating state (FIX 1c)", () => {
 
   it("banner: a plain lapse stays the red lapsed banner with a Renew CTA", () => {
     // L3-WP19: "plain lapse" now names its evidence, a grant from a past membership, and no checkout.
-    const b = entitlementBanner({ ...lapsedMember().state, hasGrant: true, membershipActivating: false });
+    const b = entitlementBanner({ ...lapsedMember().state, hasGrant: true, s3: "settled", membershipCheckoutAt: null, membershipActivating: false });
     expect(b.tone).toBe("danger");
     expect(b.text).toMatch(/Membership lapsed/);
     expect(b.cta).toBe(true);
