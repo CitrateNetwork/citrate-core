@@ -30,18 +30,18 @@ jobs:
     # secret CITRATE_CHAIN_READ_TOKEN (fine-grained PAT, Contents:read on
     # citrate-chain; or a deploy key). Fetch via the system git so the insteadOf
     # credential is honored.
+    #
+    # The token is NOT a job env and is never written to a git config file: a job env reaches
+    # every step, the PR's own build scripts and tests included. It is mapped into the one step
+    # that fetches the crates (`cargo fetch` runs no build script and no test), as an in-process
+    # git config (GIT_CONFIG_*), the way LQ-WP01's lq-ratchet.yml does. Everything after that
+    # step builds offline, and a check refuses to go on if a credential is left on disk.
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      # secrets can't be referenced in a step `if:`, so map it into env first.
-      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ env.CHAIN_TOKEN != '' }}
-        run: |
-          git config --global \
-            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
-            "https://github.com/"
+        with:
+          persist-credentials: false
       # Pinned (2026-11-12): floating `stable` moved to 1.100, whose new clippy lint and build-dir
       # layout broke every PR at once. Bump this version only in a reviewed PR that runs fmt,
       # clippy and the tests on the new toolchain.
@@ -49,44 +49,58 @@ jobs:
         with:
           toolchain: "1.99.1"
           components: rustfmt, clippy
+      # For scripts/ci/lq/ratchet.mjs cargo-counts after the tests (LQ-WP02).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
       - name: Install Tauri Linux system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Fetch the private crates (cargo fetch --locked; the only step with the token)
+        env:
+          CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CHAIN_TOKEN}" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${CHAIN_TOKEN}@github.com/.insteadOf"
+            export GIT_CONFIG_VALUE_0="https://github.com/"
+          fi
+          cargo fetch --locked > /dev/null 2>&1 || { echo "cargo fetch --locked failed (output withheld: it can carry the credential)" >&2; exit 1; }
+      - name: No credential left on disk for the PR's build scripts and tests
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          if grep -rIlq 'x-access-token' "$HOME/.gitconfig" "$cargo_home/git" 2>/dev/null; then
+            echo "a git credential is on disk after cargo fetch; refusing to run PR code next to it" >&2
+            exit 1
+          fi
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # LQ-WP02: --no-fail-fast so every crate reports, and the log is kept for lq / ratchet (the
-      # runner's own count). `shell: bash` adds pipefail, so a failing test still fails this step.
+        run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      # LQ-WP02: --no-fail-fast so every crate reports. The raw log stays in this job's log; only
+      # the validated counts (scripts/ci/lq/ratchet.mjs cargo-counts, from the log plus cargo's own
+      # exit status) leave the job, for lq / ratchet. A red, partial or truncated run writes no
+      # counts file, and this step fails with cargo's exit status.
       - name: test
         shell: bash
-        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee cargo-test.log
-      # GitHub masks secrets only in the live log, not in an uploaded artifact. This job carries
-      # the private-repo credential (the insteadOf URL above), so a log that names it is deleted
-      # and the step fails; lq / ratchet then fails closed on the missing log. The token value is
-      # matched from a file descriptor (printf is a builtin), never put on a command line.
-      - name: refuse to keep a test log that carries a credential
-        if: ${{ !cancelled() }}
-        shell: bash
         run: |
-          [ -f cargo-test.log ] || exit 0
-          leak=0
-          grep -q 'x-access-token' cargo-test.log && leak=1
-          if [ -n "${CHAIN_TOKEN:-}" ] && grep -qF -f <(printf '%s\n' "$CHAIN_TOKEN") cargo-test.log; then leak=1; fi
-          if [ "$leak" = 1 ]; then
-            echo "::error title=lq / ratchet::cargo-test.log names the private-repo credential; not keeping it"
-            rm -f cargo-test.log
-            exit 1
-          fi
-      - name: keep the test log for lq / ratchet
-        if: ${{ !cancelled() }}
+          # GitHub's `bash -e` would stop at a failing cargo: turn -e off so its status is kept.
+          set +e -uo pipefail
+          cargo test --workspace --locked --offline --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/cargo-test.log"
+          code=${PIPESTATUS[0]}
+          node scripts/ci/lq/ratchet.mjs cargo-counts --cargo-log "$RUNNER_TEMP/cargo-test.log" \
+            --cargo-exit "$code" --out "$RUNNER_TEMP/cargo-counts.json" || exit 1
+          exit "$code"
+      - name: Upload the validated cargo counts for lq / ratchet
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: lq-cargo-test-log
-          path: cargo-test.log
-          if-no-files-found: warn
+          name: lq-cargo-counts
+          path: ${{ runner.temp }}/cargo-counts.json
+          if-no-files-found: error
           overwrite: true
           retention-days: 14
       - name: audit
@@ -185,8 +199,8 @@ jobs:
 
   # LQ-WP02 (0.6.0, lane LQ): the test-count ratchet, check `lq / ratchet` (Rule 2). It runs after
   # rust and node even when they fail, because a skipped required check counts as passed; it then
-  # fails closed on the missing or red runner output. The write permissions are for its `record`
-  # job only, which runs on a push to main; the `ratchet` job drops to read.
+  # fails closed on their results and on the missing or red runner output. The write permissions
+  # are for its `record` job only, which runs on a push to main; the `ratchet` job drops to read.
   lq:
     needs: [rust, node]
     if: ${{ !cancelled() }}
@@ -194,3 +208,6 @@ jobs:
       contents: write
       pull-requests: write
     uses: ./.github/workflows/lq-compare.yml
+    with:
+      rust_result: ${{ needs.rust.result }}
+      node_result: ${{ needs.node.result }}

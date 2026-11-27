@@ -302,7 +302,8 @@ export function buildRatchet({ cargo, vitest, tree, rev, measured }) {
 //   a head that lowers an axis in it is a decrease under the same rule, and a head that deletes
 //   it is refused. An accepted measured decrease must lower the floor to the measured count (or
 //   less) in the same PR; otherwise every later PR, the record PR included, is refused on that
-//   axis.
+//   axis. More generally the floor is never above the head's measured count on any axis, ADR or
+//   not: a PR cannot raise ratchet.json past what its own tree measures.
 // - A test the diff removes and does not add back (in any file of the diff) needs the same label
 //   and ADR whatever the counts say: the floor only advances when the record PR lands, so the
 //   totals alone can hide a deletion. A rename counts as a removal of the old name.
@@ -347,9 +348,21 @@ function walk(dir, keep, out = []) {
 const TEST_ATTR = /^\s*#\[(?:tokio::)?test\b/;
 const RS_FN = /\bfn (\w+)/;
 const JS_TEST = /(?<![.\w$])(?:it|test)(?:\.each\([^)]*\))?\(\s*(["'`])(.+?)\1/;
+//
+// Each side has its own path: a removed line belongs to the `--- a/<path>` file and an added line
+// to the `+++ b/<path>` file, so a deleted file (`+++ /dev/null`) still reports every test it
+// removes, and a new file (`--- /dev/null`) is scanned at its new path. Inside a hunk (by the
+// line counts in its `@@` header) a line that reads `--- x` or `+++ x` is content, not a header.
+const diffPath = (s, prefix) => {
+  let p = s.replace(/\t.*$/, "");
+  if (p.length > 1 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+  if (p === "/dev/null") return "";
+  return p.startsWith(prefix) ? p.slice(prefix.length) : p;
+};
 export function scanDiff(diff) {
   const out = { focused: [], unreasoned: [], removedTests: [], addedTests: [] };
-  let file = "", line = 0, prev = "", oldAttr = false, newAttr = false;
+  let oldFile = "", newFile = "", line = 0, prev = "", oldAttr = false, newAttr = false;
+  let oldLeft = 0, newLeft = 0; // lines of the current hunk still to come on each side
   // Tracks a pending test attribute on one side; returns the fn name when this line completes it.
   const step = (pending, text) => {
     if (TEST_ATTR.test(text)) return [true, null];
@@ -358,30 +371,41 @@ export function scanDiff(diff) {
     return [false, null];
   };
   for (const raw of (diff || "").split("\n")) {
-    if (raw.startsWith("+++ ")) { file = raw.slice(4).replace(/^b\//, ""); oldAttr = newAttr = false; continue; }
-    if (raw.startsWith("--- ") || raw.startsWith("diff --git")) continue;
-    const h = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (h) { line = +h[1]; prev = ""; oldAttr = newAttr = false; continue; }
+    // A file header always ends the hunk before it: no content line starts with "d".
+    if (raw.startsWith("diff --git ")) { oldFile = newFile = ""; oldLeft = newLeft = 0; oldAttr = newAttr = false; continue; }
+    if (oldLeft === 0 && newLeft === 0) {
+      if (raw.startsWith("--- ")) { oldFile = diffPath(raw.slice(4), "a/"); oldAttr = false; continue; }
+      if (raw.startsWith("+++ ")) { newFile = diffPath(raw.slice(4), "b/"); newAttr = false; continue; }
+    }
+    const h = raw.match(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (h) {
+      oldLeft = h[1] === undefined ? 1 : +h[1];
+      newLeft = h[3] === undefined ? 1 : +h[3];
+      line = +h[2]; prev = ""; oldAttr = newAttr = false;
+      continue;
+    }
     const tag = raw[0], text = raw.slice(1);
     if (tag !== "+" && tag !== " " && tag !== "-") continue;
-    const rs = file.endsWith(".rs");
-    if (rs && tag !== "+") {
+    if (tag !== "+") oldLeft = Math.max(0, oldLeft - 1);
+    if (tag !== "-") newLeft = Math.max(0, newLeft - 1);
+    if (tag !== "+" && oldFile.endsWith(".rs")) {
       const [p, name] = step(oldAttr, text);
       oldAttr = p;
       if (name && tag === "-") out.removedTests.push(name);
     }
-    if (rs && tag !== "-") {
+    if (tag !== "-" && newFile.endsWith(".rs")) {
       const [p, name] = step(newAttr, text);
       newAttr = p;
       if (name && tag === "+") out.addedTests.push(name);
     }
+    const file = tag === "-" ? oldFile : newFile;
     const t = JS_EXT.test(file) && tag !== " " && !isComment(text) && text.match(JS_TEST);
     if (t) (tag === "-" ? out.removedTests : out.addedTests).push(t[2]);
     if (tag === "-") continue;
     if (tag === "+") {
       const at = `${file}:${line}`;
       const ok = (m) => hasReason(commentOf(text)) || (isComment(prev) && hasReason(prev)) || m;
-      if (rs && /^\s*#\[ignore\b/.test(text)) {
+      if (file.endsWith(".rs") && /^\s*#\[ignore\b/.test(text)) {
         const m = text.match(/#\[ignore\s*=\s*"([^"]*)"/);
         if (!ok(Boolean(m && hasReason(m[1])))) out.unreasoned.push(`${at}: ${text.trim()}`);
       } else if (JS_EXT.test(file) && !isComment(text)) {
@@ -435,14 +459,26 @@ export function compare(base, head, { root = ".", diff = "", labels = [], body =
             ? `frontmatter: docs without frontmatter ${show(b)} -> ${show(h)} (+${show(h) - show(b)})`
             : `${axis} decreased ${b} -> ${h} (${h - b})`,
         });
-        // Accepted or not, a measured decrease the floor does not follow refuses every later PR.
-        if (floor && num(h) && !(num(f) && f <= h)) {
-          const target = axis === "frontmatter" ? `${show(h)} or more docs without frontmatter` : `${h} or less`;
-          failures.push(`${axis}: an accepted decrease must lower ${FLOOR_FILE} to ${target} in the same PR (it records ${num(f) ? show(f) : f}), or every later PR is refused on this axis`);
-        }
       }
       if (floor && (!num(f) || f < b)) {
         decreases.push({ axis, msg: `${FLOOR_FILE} lowers ${axis} ${show(b)} -> ${num(f) ? show(f) : f}${num(f) ? ` (${axis === "frontmatter" ? "+" : ""}${show(f) - show(b)})` : ""}` });
+      }
+    }
+  }
+  // The floor is never above what the head measures, on any axis, label or not: the next PR and
+  // the record PR are judged against it, so a floor the tree does not reach refuses all of them.
+  // A measured decrease (accepted or not) must lower the floor in the same PR for the same reason.
+  if (floor) {
+    for (const { axis, val, show } of RATCHETED) {
+      const b = base ? val(base) : undefined, h = val(head), f = val(floor);
+      if (!num(f) || !num(h) || f <= h) continue;
+      if (num(b) && h < b) {
+        const target = axis === "frontmatter" ? `${show(h)} or more docs without frontmatter` : `${h} or less`;
+        failures.push(`${axis}: an accepted decrease must lower ${FLOOR_FILE} to ${target} in the same PR (it records ${show(f)}), or every later PR is refused on this axis`);
+      } else if (axis === "frontmatter") {
+        failures.push(`frontmatter: ${FLOOR_FILE} records ${show(f)} docs without frontmatter, below the ${show(h)} this head measures; a floor the tree does not reach refuses every later PR, the record PR included`);
+      } else {
+        failures.push(`${axis}: ${FLOOR_FILE} records ${show(f)}, above the ${show(h)} this head measures; a floor the tree does not reach refuses every later PR, the record PR included`);
       }
     }
   }

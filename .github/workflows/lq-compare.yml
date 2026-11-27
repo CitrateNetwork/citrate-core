@@ -6,9 +6,11 @@
 #
 # Called from ci.yml as job `lq`, after its rust and node jobs, so the check reads `lq / ratchet`
 # and runs on every pull_request, merge_group and push to main that ci.yml runs on. It counts the
-# runner's own output (the rust job's cargo test log and the node job's vitest json report, both
-# uploaded by ci.yml) and the tree, and compares that with .agentile/coverage/ratchet.json at the
-# merge base. Rules and exit codes: scripts/ci/lq/ratchet.mjs.
+# runners' own output (the rust job's validated cargo-counts.json, from its test log and cargo's
+# exit status, and the node job's vitest json report, both uploaded by ci.yml; the raw cargo log
+# never leaves the rust job) and the tree, by LQ-WP01's measure rules, and compares that with
+# .agentile/coverage/ratchet.json at the merge base. Rules and exit codes: scripts/ci/lq/ratchet.mjs.
+# LQ-WP01's lq-ratchet.yml stays the standalone measuring workflow for a new baseline.
 #
 # A decrease passes only with the `ratchet-adr` label and a docs/adr/<file>.md linked in the PR
 # body that names the axis and each removed test. The same rule covers lowering the committed
@@ -20,7 +22,16 @@
 name: lq
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      rust_result:
+        description: needs.rust.result of the calling ci.yml run
+        type: string
+        required: true
+      node_result:
+        description: needs.node.result of the calling ci.yml run
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -36,6 +47,16 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      # A rust or node job that did not succeed (a test binary that aborted, a cancelled or
+      # skipped job) is a refusal before any artifact is read.
+      - name: the rust and node jobs succeeded
+        env:
+          RUST_RESULT: ${{ inputs.rust_result }}
+          NODE_RESULT: ${{ inputs.node_result }}
+        run: |
+          if [ "$RUST_RESULT" = success ] && [ "$NODE_RESULT" = success ]; then exit 0; fi
+          echo "::error title=lq / ratchet::rust job $RUST_RESULT, node job $NODE_RESULT; the ratchet counts only a green run"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -43,10 +64,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: runner output from the rust job
+      - name: validated counts from the rust job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: lq-cargo-test-log
+          name: lq-cargo-counts
           path: lq-artifacts
       - name: runner output from the node job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -93,7 +114,9 @@ jobs:
             echo "::warning title=lq / ratchet::no .agentile/coverage/ratchet.json at $base (LQ-WP01 not landed): axis comparison skipped, diff and tree rules still run"
             echo "LQ_BASE_FILE=none" >> "$GITHUB_ENV"
           fi
-          git diff --no-color -U1 "$base" HEAD -- '*.rs' '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' > lq.diff
+          # Explicit prefixes and rename detection, whatever the runner's git config says: the
+          # removed-test rule reads each side's path from the --- a/ and +++ b/ headers.
+          git diff --no-color --src-prefix=a/ --dst-prefix=b/ -M -U1 "$base" HEAD -- '*.rs' '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' > lq.diff
           # Whose labels and body count: the PR itself, or each PR in the group or push. The queue
           # branch GitHub builds for a group names its PR (gh-readonly-queue/<base>/pr-<N>-<sha>);
           # squash subjects end in (#N); merge-commit subjects start "Merge pull request #N ".
@@ -121,7 +144,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
           node "$LQ_SCRIPT" measure --root . \
-            --cargo-log lq-artifacts/cargo-test.log --vitest-json lq-artifacts/vitest.json \
+            --cargo-counts lq-artifacts/cargo-counts.json --vitest-json lq-artifacts/vitest.json \
             --rev "$HEAD_SHA" --out lq-head.json
           cat lq-head.json
       - name: compare with the merge base

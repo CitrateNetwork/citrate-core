@@ -10,8 +10,9 @@ name: lq ratchet
 # writes no ratchet.json (scripts/ci/lq/ratchet.mjs refuses it). The cargo job publishes only
 # validated counts (`cargo-counts`), never the raw test output.
 #
-# LQ-WP02 adds the compare step (`lq / ratchet`, required on main and in the merge queue). Until
-# then this workflow only measures, on the paths that change what it measures with.
+# The compare check `lq / ratchet` (LQ-WP02) is lq-compare.yml, called from ci.yml as job `lq` on
+# the counts ci.yml's own rust and node jobs publish. This workflow only measures, on the paths
+# that change what it measures with, and on demand for a new baseline.
 
 on:
   workflow_dispatch:
