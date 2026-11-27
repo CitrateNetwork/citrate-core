@@ -83,29 +83,43 @@ the measuring run.
   [45549119759](https://github.com/CitrateNetwork/citrate-core/actions/runs/45549119759), is the
   cross-check for the runner counts at exactly that commit.
 - **Measuring run:** `lq ratchet`
-  [45925355813](https://github.com/CitrateNetwork/citrate-core/actions/runs/45925355813) at
-  `567ae074` (PR #786 head: a826e441 plus this WP's script, workflow and frontmatter keys; no
-  product code). The commit that adds ratchet.json changes only this file and ratchet.json, which
-  no runner counts.
+  [45998054187](https://github.com/CitrateNetwork/citrate-core/actions/runs/45998054187) at
+  `af8d6277` (PR #786 head after review round 1: a826e441 plus this WP's script, tests, workflow
+  and frontmatter keys; no product code). The commit that adds ratchet.json changes only this file
+  and ratchet.json, which no runner counts. (The first measuring run, 45925355813 at `567ae074`,
+  gave the same numbers except vitest 6025; it was superseded when review of PR #786 found three
+  gaps, fixed in `af8d6277`: the token's scope, partial cargo logs and the TLC config count.)
 
 ### The axes
 
-| Axis | Canonical command (the ratchet) | a826e441 (ci 45549119759) | ratchet.json (567ae074) |
+| Axis | Canonical command (the ratchet) | a826e441 (ci 45549119759) | ratchet.json (af8d6277) |
 |---|---|---|---|
-| Rust tests passed | `cargo test --workspace --locked --no-fail-fast`, sum of `passed` over every `test result:` line (23 lines: unit, integration and doc-test targets) | **4150** | **4150** |
+| Rust tests passed | `cargo test --workspace --locked --no-fail-fast`, sum of `passed` over every `test result:` line (23 lines: unit, integration and doc-test targets). Every target cargo starts (`Running`, `Doc-tests`) must have its summary line, and cargo must exit 0 | **4150** | **4150** |
 | Rust tests ignored | same log, sum of `ignored` (counted separately, never in passed) | **24** | **24** |
 | Rust tests failed | same log, sum of `failed`; any non-zero refuses the baseline | 0 | 0 |
-| Vitest passed | `npx vitest run --reporter=json`, `numPassedTests` | **6020** | **6025** (+5: `scripts/ci/lq/ratchet.test.mjs`) |
+| Vitest passed | `npx vitest run --reporter=json`, `numPassedTests` | **6020** | **6032** (+12: `scripts/ci/lq/ratchet.test.mjs`) |
 | Vitest skipped | same file, `numPendingTests + numTodoTests` | **38** | **38** (todo 0) |
 | Formal specs | `ls src-tauri/formal/*.tla \| wc -l` | 15 | **15** |
-| TLC configs in CI | `grep -l 'EXPECT:' src-tauri/formal/*.cfg \| wc -l` (what `tla-models.yml` checks) | 61 | **61** |
+| TLC configs in CI | the configs `src-tauri/formal/tlc_expect.py` plans for `--all` (its own `discover_specs` and `plan`, as `tla-models.yml` runs it; an orphan config or an invalid EXPECT value adds nothing, and a plan error counts 0 because the runner stops before TLC). Grep cross-check: `grep -l 'EXPECT:' src-tauri/formal/*.cfg \| wc -l` | 61 (grep) | **61** (SidecarSupervisor 39, AppExitCoordinator 22) |
 | Tripwire tests | tests the runners executed whose full name contains "tripwire": rust per-test lines 63 + vitest assertion full names 187 | n/a | **250** |
 | CI gate steps | named `run:` steps of `ci.yml`, `merge-gate.yml`, `eval-check.yml`, setup steps (authenticate, install, fetch, upload) excepted: ci 11, merge-gate 3, eval-check 2 | 16 | **16** |
 | Rule-5 frontmatter | Markdown under `docs/` and `.agentile/` whose leading frontmatter has `created`, `branch`, `author` and `status` | 250 of 261 | **261 of 261** |
 
-All of it in one command, as the workflow runs it:
-`node scripts/ci/lq/ratchet.mjs measure --cargo-log <log> --vitest-json <json> --root . --rev <sha> --out ratchet.json`.
-A log with a failed test, or with no `test result:` line, is refused and nothing is written.
+As the workflow runs it (`.github/workflows/lq-ratchet.yml`):
+
+1. In the job that ran the tests:
+   `node scripts/ci/lq/ratchet.mjs cargo-counts --cargo-log <log> --cargo-exit <cargo's exit status> --out cargo-counts.json`.
+   Only this validated counts file leaves the job, never the raw test output.
+2. `node scripts/ci/lq/ratchet.mjs measure --cargo-counts cargo-counts.json --vitest-json <json> --root . --rev <sha> --out ratchet.json`.
+
+A standalone caller with a raw log passes `--cargo-log <log> --cargo-exit <code>` instead of
+`--cargo-counts`; a log without its exit status is a usage error. A failed test, a non-zero exit,
+a target with no summary line (a test binary that aborted), an empty log or a failed vitest run is
+refused, and nothing is written.
+
+The private-repo read token reaches only the `cargo fetch --locked` step, as an in-process git
+config; it is not a job env, is never written to a git config file, and a step checks no
+credential is on disk before the PR's build scripts and tests run.
 
 ### Grep inventory cross-check (not the ratchet)
 

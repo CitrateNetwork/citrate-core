@@ -193,4 +193,4 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: ./.github/workflows/lq-ratchet.yml
+    uses: ./.github/workflows/lq-compare.yml

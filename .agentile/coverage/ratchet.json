@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "rev": "567ae074c226310dfa22cb7eaf8cc921496b426e",
-  "measured": "2026-11-27T02:08:17Z",
+  "rev": "af8d6277a79267dde05a9ddafa33d8f044b2cd23",
+  "measured": "2026-11-27T12:38:20Z",
   "tests": {
     "rust": {
       "passed": 4150,
       "ignored": 24
     },
     "vitest": {
-      "passed": 6025,
+      "passed": 6032,
       "skipped": 38
     }
   },

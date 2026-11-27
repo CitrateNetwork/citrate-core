@@ -1,0 +1,185 @@
+# created: 2026-11-26 | branch: feat/v60-lq-wp02-ratchet-job
+# author: Claude Opus 5.5 (LQ-WP02 worker) for Larry Klosowski
+# status: active
+#
+# LQ-WP02 (0.6.0 planset, lane LQ): the test-count ratchet, Rule 2.
+#
+# Called from ci.yml as job `lq`, after its rust and node jobs, so the check reads `lq / ratchet`
+# and runs on every pull_request, merge_group and push to main that ci.yml runs on. It counts the
+# runner's own output (the rust job's cargo test log and the node job's vitest json report, both
+# uploaded by ci.yml) and the tree, and compares that with .agentile/coverage/ratchet.json at the
+# merge base. Rules and exit codes: scripts/ci/lq/ratchet.mjs.
+#
+# A decrease passes only with the `ratchet-adr` label and a docs/adr/<file>.md linked in the PR
+# body that names the axis and each removed test. The same rule covers lowering the committed
+# .agentile/coverage/ratchet.json in the head (deleting it is refused) and removing a test the
+# diff does not add back, whatever the counts. An accepted decrease lowers ratchet.json to the
+# measured count in the same PR, so the next PR and the record PR are not refused on that axis.
+# The labels and body are read from the API at
+# run time (so a re-run after labelling sees the label) and reach the script only as files.
+name: lq
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ratchet:
+    name: ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Reads only: this job runs the PR's own script. It fails closed: a missing artifact, an
+    # unreadable base or a red test run is a refusal, never a skip.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: runner output from the rust job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-cargo-test-log
+          path: lq-artifacts
+      - name: runner output from the node job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-vitest-json
+          path: lq-artifacts
+      - name: merge base, diff and PR context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            # HEAD is the PR's merge commit; its first parent is the base branch tip.
+            pull_request) base=$(git rev-parse HEAD^1) ;;
+            merge_group) base="$MQ_BASE" ;;
+            *) base="${PUSH_BEFORE:-}"
+               if [ -z "$base" ] || [ "$base" = "$zero" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+                 base=$(git rev-parse HEAD~1)
+               fi ;;
+          esac
+          echo "merge base: $base"
+          # The rules that judge a PR are the merge base's, once they exist there: a PR cannot
+          # loosen the ratchet that judges it (changes to the script apply from the next PR on).
+          # LQ-WP01's script is measure-only, so the base's script judges only once it exports
+          # compare; before that the head's script does (the bootstrap case).
+          if git show "$base:scripts/ci/lq/ratchet.mjs" 2>/dev/null | grep -q '^export function compare('; then
+            git show "$base:scripts/ci/lq/ratchet.mjs" > "$RUNNER_TEMP/ratchet.mjs"
+            echo "LQ_SCRIPT=$RUNNER_TEMP/ratchet.mjs" >> "$GITHUB_ENV"
+            echo "rules: scripts/ci/lq/ratchet.mjs at the merge base"
+          else
+            echo "LQ_SCRIPT=scripts/ci/lq/ratchet.mjs" >> "$GITHUB_ENV"
+            echo "rules: scripts/ci/lq/ratchet.mjs at the head (no compare at the merge base yet)"
+          fi
+          if git cat-file -e "$base:.agentile/coverage/ratchet.json" 2>/dev/null; then
+            git show "$base:.agentile/coverage/ratchet.json" > lq-base.json
+            echo "LQ_BASE_FILE=lq-base.json" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=lq / ratchet::no .agentile/coverage/ratchet.json at $base (LQ-WP01 not landed): axis comparison skipped, diff and tree rules still run"
+            echo "LQ_BASE_FILE=none" >> "$GITHUB_ENV"
+          fi
+          git diff --no-color -U1 "$base" HEAD -- '*.rs' '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' > lq.diff
+          # Whose labels and body count: the PR itself, or each PR in the group or push. The queue
+          # branch GitHub builds for a group names its PR (gh-readonly-queue/<base>/pr-<N>-<sha>);
+          # squash subjects end in (#N); merge-commit subjects start "Merge pull request #N ".
+          # Subjects are author-written, so this only widens what an ADR may cite; the
+          # pull_request run is the gate a PR has to pass first.
+          if [ "$EVENT" = pull_request ]; then
+            prs="$PR_NUMBER"
+          else
+            prs=$( {
+              printf '%s\n' "$GITHUB_REF" | sed -nE 's#^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+$#\1#p'
+              git log --format=%s "$base..HEAD" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p; s/^Merge pull request #([0-9]+) .*/\1/p'
+            } | sort -un | tr '\n' ' ')
+          fi
+          : > lq-body.md
+          : > lq-labels.txt
+          for n in $prs; do
+            gh api "repos/$REPO/pulls/$n" > lq-pr.json
+            jq -r '.body // ""' lq-pr.json >> lq-body.md
+            echo >> lq-body.md
+            jq -r '.labels[].name' lq-pr.json >> lq-labels.txt
+          done
+          echo "PRs considered: ${prs:-none}"
+      - name: measure the head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          node "$LQ_SCRIPT" measure --root . \
+            --cargo-log lq-artifacts/cargo-test.log --vitest-json lq-artifacts/vitest.json \
+            --rev "$HEAD_SHA" --out lq-head.json
+          cat lq-head.json
+      - name: compare with the merge base
+        run: |
+          node "$LQ_SCRIPT" compare --root . --base "$LQ_BASE_FILE" --head lq-head.json \
+            --diff lq.diff --labels "$(paste -sd, lq-labels.txt)" --pr-body lq-body.md
+      - name: keep the measurement
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lq-ratchet-measured
+          path: lq-head.json
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+
+  # On a push to main only: when the counted axes moved, put the measured ratchet.json on a
+  # bot/lq-ratchet-<sha12> branch and open a PR for it. Never a push to main.
+  record:
+    name: record
+    needs: ratchet
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-ratchet-measured
+          path: lq-measured
+      - name: open the ratchet.json PR when the axes moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          f=.agentile/coverage/ratchet.json
+          same() { node -e 'const fs=require("fs");const s=(p)=>{const d=JSON.parse(fs.readFileSync(p,"utf8"));delete d.rev;delete d.measured;return JSON.stringify(d)};process.exit(s(process.argv[1])===s(process.argv[2])?0:1)' "$1" "$2"; }
+          if [ -f "$f" ] && same "$f" lq-measured/lq-head.json; then
+            echo "ratchet.json already matches main; nothing to record."
+            exit 0
+          fi
+          short=${GITHUB_SHA::12}
+          branch="bot/lq-ratchet-$short"
+          mkdir -p "$(dirname "$f")"
+          cp lq-measured/lq-head.json "$f"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$f"
+          git commit -s -m "chore(lq): ratchet.json measured at main $short"
+          if ! git push origin "HEAD:refs/heads/$branch"; then
+            echo "::warning title=lq / record::could not push $branch; the measured file is the lq-ratchet-measured artifact of this run"
+            exit 0
+          fi
+          if ! gh pr create --base main --head "$branch" \
+              --title "chore(lq): ratchet.json at main $short" \
+              --body "LQ-WP02 record job: the counted axes at main $short (run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Human-reviewed at sprint close."; then
+            echo "::warning title=lq / record::branch $branch holds the measured ratchet.json, but no PR was opened (this repo's Actions setting may not allow Actions to create PRs)"
+          fi
