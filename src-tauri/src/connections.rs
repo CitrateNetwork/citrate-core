@@ -1536,4 +1536,7 @@ mod tests {
         vault.put(&slot(Service::HuggingFace), &mut bytes).unwrap();
         assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
     }
+
+    // 0.6.0 L6-WP02: the lane's characterization suite (test-only; see the file).
+    include!("lanes/l6/characterization/connections_char_tests.rs");
 }
