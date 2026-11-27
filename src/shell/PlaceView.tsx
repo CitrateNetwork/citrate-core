@@ -83,7 +83,8 @@ export function NotAvailableYet({ route, title, body, action }: { route: string;
   );
 }
 
-function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
+/** Exported for the L0-WP02 route characterization (src/shell/seams/routes.characterization.test.tsx). */
+export function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
   switch (route) {
     case "hermes/chat":
       return <Dashboard store={store} s={s} />;

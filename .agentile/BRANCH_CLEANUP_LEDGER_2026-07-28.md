@@ -1,3 +1,10 @@
+---
+created: 2026-07-28
+branch: main (restored by 1692f9a3; original branch not recorded; backfilled by LQ-WP01 2026-11-26)
+author: Larry Klosowski (backfilled by LQ-WP01 2026-11-26; original author not recorded)
+status: archived
+---
+
 # Branch cleanup ledger — 2026-07-28
 
 Deleted local (and where noted, remote) branches during the post-#102 sprawl
