@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "owner": "L8",
+  "base": "a826e441",
+  "about": "L8-WP01 characterization suites for lane L8 (Train together, federated learning), planset v060 L8 section 4. Each suite pins today's FL behavior at citrate-core a826e441 before an L8 work package changes it: the network state reads (PatronageLedger totalUnits only, FRL rounds inferred from WorkMarket, the today phase), the join and open refusals while payouts are dark, the PatronageLedger-only training reads, the Rust payouts gate on WorkMarket writes and FRL commit/finalize, and the collector safety tests by name. A later L8 PR that changes a pinned behavior replaces the test with a stricter one in a separate commit that says why and names the suite id (supersededBy lists the WPs allowed to). 'protected' is the FL honesty list handed to LQ: never deleted, the test count never drops, the named tests stay declared, and each is replaced only by the stricter test docs/fl/CHARACTERIZATION.md names. When LQ-WP12 (the shared regression suite runner) lands, LQ runs every suite here by this registry on every merge-queue group (npm run test:characterization selects the vitest ones; the cargo one by filter); until then nothing reads this registry in CI, and CI runs the suites inside the full cargo and vitest suites. flRegistry.characterization.test.ts checks all of it.",
+  "suites": [
+    {
+      "id": "L8-TODAY",
+      "lane": "L8",
+      "runner": "vitest",
+      "files": ["src/fl/fl.characterization.test.tsx"],
+      "covers": ["src/fl/networkState.ts", "src/fl/Matches.tsx", "src/fl/roundDraft.ts"],
+      "pins": "the FL network state as the webview derives it today: PatronageLedger is read with totalUnits() only (one eth_call, the pinned selector) and FRL rounds are inferred from WorkMarket being absent (networkState.ts:153-168); the phase is 'today' without WorkMarket (phaseFor :116-125); joinIntent and openIntent refuse first while payouts are not open, with the required words (Matches.tsx:50-53, roundDraft.ts:300-306)",
+      "tests": [
+        "today_patronage_reads_unchanged",
+        "today_frl_rounds_inferred_from_workmarket",
+        "today_phase_today_without_workmarket",
+        "today_join_refused_while_dark",
+        "today_open_refused_while_dark"
+      ],
+      "supersededBy": ["L8-WP12", "L8-WP13", "L8-WP16", "L8-WP17"]
+    },
+    {
+      "id": "L8-RUST",
+      "lane": "L8",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "lq_l8_fl::",
+      "files": ["src-tauri/src/fl_characterization_tests.rs"],
+      "includedBy": "src-tauri/src/fl_payouts_tests.rs",
+      "covers": ["src-tauri/src/training.rs", "kit/src/payouts_gate.rs", "src-tauri/network/profiles.json", "src-tauri/src/fl_collect_tests.rs"],
+      "pins": "training_status and training_reward read PatronageLedger only (roundMergedHash for rounds 1, 2, ... by their keccak round keys, units, pendingDividendOf at the book's PatronageLedger), their blocking bodies (training_status_sync :191, training_reward_sync :222) are source-pinned to the ledger from patronage_ledger()? and those reads alone, and no training write command exists (training.rs:1-7, commands :182, :211); the kit payouts gate under the shipped r1007 profile refuses every WorkMarket write while dark and lets FederatedRoundLedger commitRound and finalize through without a code read (it reads the gate, edits nothing); the eight collector safety tests stay declared by name in fl_collect_tests.rs, live (at module scope, under #[test], never #[ignore]d, #[should_panic] or cfg'd out, and the file carries no cfg but cfg(test), no inner attribute, no allow(unnameable_test_items), no block comment and no mod), and that file stays compiled in: fl_collect.rs includes it in its column-0 #[cfg(test)] mod tests with no other attribute, and lib.rs declares mod fl_collect with no cfg",
+      "tests": [
+        "today_training_status_reads_patronage_only",
+        "payouts_gate_refuses_workmarket_writes_while_dark",
+        "payouts_gate_passes_frl_commit_and_finalize",
+        "collector_safety_tests_stay_declared",
+        "collector_check_rejects_an_ignored_or_cfgd_out_test",
+        "collector_check_rejects_a_test_in_a_cfgd_out_module",
+        "host_check_rejects_a_cfgd_out_test_module",
+        "collector_check_rejects_a_nested_or_inverted_test"
+      ],
+      "supersededBy": ["L8-WP12", "L8-WP17"]
+    },
+    {
+      "id": "L8-REGISTRY",
+      "lane": "L8",
+      "runner": "vitest",
+      "files": ["src/fl/flRegistry.characterization.test.ts"],
+      "covers": ["ci/characterization.d/l8.json", "docs/fl/CHARACTERIZATION.md"],
+      "pins": "this registry lists exactly the L8 suites; each suite file declares exactly the tests listed for it; the cargo file is included where the registry says; each protected suite keeps its count and named tests, and a Rust test under #[ignore], #[should_panic], a cfg_attr or a cfg other than cfg(test), or nested in a block that is not a module (a fn body, a closure, an impl, a const block), counts as lost, as does any such attribute, an unnameable_test_items, an unbalanced brace, an inner #![...] or a mod item anywhere in a protected or pinned Rust file (a cfg'd enclosing module; the L8-RUST suite's own opening mod aside); each protected Rust file stays compiled in (its host's column-0 #[cfg(test)] mod tests includes it, and lib.rs declares the host module with no cfg), and so does the L8-RUST file (a top-level include in a protected file, opening with its mod); no protected or L8 vitest file skips, focuses or inverts a test or a describe block (.skip, .only, .todo, .skipIf, .runIf, .fails, an x-prefix, a skip option); docs/fl/CHARACTERIZATION.md names every pinned and protected test with the WP allowed to replace it",
+      "tests": [
+        "registry_lists_every_l8_suite_once",
+        "every_listed_test_is_declared_and_every_declared_test_is_listed",
+        "cargo_suite_is_compiled_in_where_the_registry_says",
+        "protected_suites_keep_their_counts_and_named_tests",
+        "no_pinned_or_protected_cargo_test_is_disabled",
+        "characterization_doc_names_every_pinned_test",
+        "protected_cargo_files_are_compiled_in",
+        "no_protected_or_l8_vitest_suite_is_skipped",
+        "declaration_checks_ignore_commented_out_tests",
+        "cargo_checks_reject_an_ignored_or_cfgd_out_test",
+        "cargo_checks_reject_a_test_in_a_cfgd_out_module",
+        "host_checks_reject_a_cfgd_out_test_module",
+        "cargo_checks_reject_a_nested_or_inverted_test",
+        "vitest_checks_reject_a_skipped_or_focused_describe"
+      ]
+    }
+  ],
+  "protected": [
+    {
+      "runner": "vitest",
+      "file": "src/surfaces/alfSurfaceHonesty.test.tsx",
+      "count": 6,
+      "tests": [
+        "shows the workbench with an honest 'activating soon' seam and never fakes a round",
+        "points ownership at the web portal (node = workbench, web = trophy case)",
+        "shows the real node status, honestly (sync line / synced height), never a fabricated block or a %",
+        "a signed-in non-member gets an honest prompt, not the workbench",
+        "shows the ALF tab for an ALF member, and never as a sidebar place",
+        "hides the ALF tab for a non-member"
+      ],
+      "supersededBy": ["L8-WP16"]
+    },
+    {
+      "runner": "vitest",
+      "file": "src/fl/flFoundation.test.tsx",
+      "count": 49,
+      "tests": ["pins the three block-0 ledgers and not WorkMarket, FLRoundVerifier or DatasetRegistry"]
+    },
+    {
+      "runner": "vitest",
+      "file": "src/surfaces/node/nodeTabs.test.tsx",
+      "count": 32,
+      "tests": ["pin and round rewards are not live"],
+      "supersededBy": ["L8-WP16"]
+    },
+    {
+      "runner": "cargo",
+      "file": "src-tauri/src/fl_rounds_tests.rs",
+      "host": "src-tauri/src/fl_rounds.rs",
+      "count": 63,
+      "tests": ["start_records_the_authorization_and_says_no_training_ran"],
+      "supersededBy": ["L8-WP10"]
+    },
+    {
+      "runner": "cargo",
+      "file": "src-tauri/src/network_profile_payouts_tests.rs",
+      "host": "src-tauri/src/network_profile.rs",
+      "count": 8,
+      "tests": ["r1007_ships_with_payouts_dark", "no_other_profile_opens_payouts"]
+    },
+    {
+      "runner": "cargo",
+      "file": "src-tauri/src/fl_payouts_tests.rs",
+      "host": "src-tauri/src/fl_payouts.rs",
+      "count": 3,
+      "tests": ["the_shipped_network_reports_payouts_dark_without_reading_the_chain"]
+    },
+    {
+      "runner": "cargo",
+      "file": "src-tauri/src/fl_collect_tests.rs",
+      "host": "src-tauri/src/fl_collect.rs",
+      "count": 27,
+      "tests": [
+        "a_page_robots_disallows_is_refused",
+        "no_robots_txt_and_no_license_is_not_permission",
+        "denied_and_private_hosts_are_refused_before_any_fetch",
+        "a_429_or_403_stops_the_run_and_nothing_more_is_fetched",
+        "robots_is_checked_again_at_run_time",
+        "an_approved_run_writes_provenance_through_the_store_and_records_the_scan",
+        "bypass_closure_the_store_is_out_of_reach_of_the_agents_file_tools",
+        "every_fetch_is_pinned_to_the_one_vetted_answer_and_a_rebinding_answer_is_never_used"
+      ]
+    }
+  ]
+}
