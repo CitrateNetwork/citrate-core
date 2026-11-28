@@ -18,6 +18,9 @@ use citrate_core_kit::custody::is_backend_reserved_slot;
 const ALLOWED_WRITES: &[(&str, &str)] = &[
     // The OAuth token exchange seals the connection record.
     ("connections.rs", "&slot(service)"),
+    // L6-WP06: the MCP remote-server token records and DCR registrations (`connection-mcp-*`,
+    // `connection-dcr-*`); `mcp_auth/store.rs::seal` refuses any other prefix.
+    ("store.rs", "slot_name"),
     // The OIDC refresh token.
     ("oidc.rs", "REFRESH_SLOT"),
     // The wallet keystore (create and import).
@@ -156,6 +159,12 @@ fn every_backend_slot_is_refused_on_the_invoke_path() {
         let slot = crate::social::keyring_slot(network);
         assert!(is_backend_reserved_slot(&slot), "{slot} must be reserved");
     }
+    assert!(is_backend_reserved_slot(
+        &crate::connections::mcp_auth::store::token_slot("linear").unwrap()
+    ));
+    assert!(is_backend_reserved_slot(
+        &crate::connections::mcp_auth::registration::dcr_slot("https://mcp.stripe.com")
+    ));
     assert!(is_backend_reserved_slot(
         citrate_core_kit::oidc::REFRESH_SLOT
     ));

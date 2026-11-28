@@ -34,6 +34,8 @@ use super::Service;
 
 pub use providers::provider_setup;
 pub(crate) use providers::setup_for;
+// L6-WP06: the GitHub MCP server uses the same OAuth App through the relay.
+pub(crate) use providers::GITHUB_CLIENT_ID;
 
 /// How a provider's OAuth client is set up (lanes/L6 section 3.2, frozen).
 #[derive(Debug, Clone, PartialEq, Eq)]
