@@ -10,9 +10,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { store } from "../store";
 import * as l4ChatHistory from "../actions/l4/chatHistory";
+import * as l3Auth from "../actions/l3/auth";
 
 // Every export of a lane module becomes a pass-through spy, so a test can stub one and check the call.
 vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+
+vi.mock("../actions/l3/auth", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
@@ -41,6 +47,22 @@ const ROWS: Row[] = [
   { method: "openChat", target: l4ChatHistory.openChat, args: ["t-delegate-1"] },
   { method: "forgetChat", target: l4ChatHistory.forgetChat, args: ["t-delegate-2"] },
   { method: "forgetAllChats", target: l4ChatHistory.forgetAllChats, args: [] },
+  // 07b: store.ts "CORE-A3 auth" -> src/shell/actions/l3/auth.ts (lane L3).
+  { method: "refreshAuth", target: l3Auth.refreshAuth, args: [] },
+  { method: "resumeSession", target: l3Auth.resumeSession, args: [] },
+  { method: "applyAuthStatus", target: l3Auth.applyAuthStatus, args: [{ signedIn: false, tier: null, org: null, role: null, kycStatus: null }] },
+  { method: "authLogin", target: l3Auth.authLogin, args: [] },
+  { method: "cancelSignIn", target: l3Auth.cancelSignIn, args: [] },
+  { method: "authUserinfo", target: l3Auth.authUserinfo, args: [] },
+  { method: "refreshEntitlement", target: l3Auth.refreshEntitlement, args: [] },
+  { method: "startEntitlementPoll", target: l3Auth.startEntitlementPoll, args: [] },
+  { method: "entitlementPollActive", target: l3Auth.entitlementPollActive, args: [] },
+  { method: "stopEntitlementPoll", target: l3Auth.stopEntitlementPoll, args: [] },
+  { method: "entitlementPollTick", target: l3Auth.entitlementPollTick, args: [] },
+  { method: "installEntitlementFocusRecheck", target: l3Auth.installEntitlementFocusRecheck, args: [] },
+  { method: "recheckEntitlementOnFocus", target: l3Auth.recheckEntitlementOnFocus, args: [] },
+  { method: "authLogout", target: l3Auth.authLogout, args: [] },
+  { method: "kycStart", target: l3Auth.kycStart, args: [] },
 ];
 
 afterEach(() => {
