@@ -248,6 +248,14 @@ mod invoke_secret_scan_tests;
 // module set; the seam refactors (L0-WP03, WP04) keep it byte-identical.
 #[cfg(test)]
 mod seams_tests;
+// L0-WP09 (planset v060): the feature-flag table (release/flags.json) and the sign-off record
+// check that gates a flag. Build gates: only tests read them.
+#[cfg(test)]
+mod flags;
+#[cfg(test)]
+mod flags_tests;
+#[cfg(test)]
+mod signoff;
 // Every in-process vault write targets a slot the kit's invoke-path custody_put cannot address
 // (citrate-core no longer registers custody_put; citrate-quorum, which shares the kit, may).
 #[cfg(test)]

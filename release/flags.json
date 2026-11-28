@@ -1,0 +1,9 @@
+{
+  "$comment": [
+    "L0-WP09 feature-flag table (planset 2026-11-07-v060, lanes/L0_INTEGRATION_SEAMS.md section 5). One row per build-time flag: a bool const marked with a '// @flag' line right above it.",
+    "default is the const's value in the code. signoff names the record a true value needs: release/signoffs/<id>.json, verified against release/signoffs/signers.json and the packet copy <id>_SIGNOFF_PACKET.md (owner and security lead, EIP-191). gate names a test in the flag's file that gates a change. Every row has at least one.",
+    "src-tauri/src/flags_tests.rs ties this table to the code both ways and runs the sign-off check; src/shell/flags.gen.ts is generated from it by scripts/gen-flags.mjs. A flag never defaults on a feature whose data source does not exist (Rule 1).",
+    "A sign-off record for a security-sensitive item holds only a hash of a private packet, never the findings."
+  ],
+  "flags": []
+}

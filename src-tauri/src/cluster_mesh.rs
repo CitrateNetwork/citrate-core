@@ -28,12 +28,14 @@ use serde::{Deserialize, Serialize};
 /// for those roles in `release/signoffs/signers.json`, and the packet copy committed beside the
 /// record hashes to the signed sha256. The test `signed_flag_requires_signoff_record` fails the
 /// build otherwise.
+// @flag
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
 /// The bundled daemon serves every group from one process (citrate-cluster HUP-S8.4, on main since
 /// #11). V60 MESH-1: `true`, because the pinned `cluster-daemon` rev is in
 /// [`MULTI_GROUP_DAEMON_REVS`]. On its own this turns nothing on: the mesh default also needs
 /// [`TRANSPORT_SIGNED_OFF`].
+// @flag
 pub(crate) const MULTI_GROUP_DAEMON: bool = true;
 
 /// V60 MESH-1: the citrate-cluster revs checked to serve every group from one daemon process. The
