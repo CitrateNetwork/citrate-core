@@ -12,8 +12,9 @@
 //  - the two command bodies (training_status_sync :191, training_reward_sync :222) build their
 //    own RpcClient::citrate(), so no test transport reaches them; their source is pinned instead:
 //    the ledger only from patronage_ledger()?, and no chain read beyond the helpers tested here;
-//  - the eight collector safety tests in fl_collect_tests.rs stay declared by name, live: under
-//    #[test], never #[ignore]d, cfg'd out or behind a cfg_attr; and the file stays compiled in:
+//  - the eight collector safety tests in fl_collect_tests.rs stay declared by name, live: at
+//    module scope, under #[test], never #[ignore]d, #[should_panic], cfg'd out or behind a
+//    cfg_attr; and the file stays compiled in:
 //    fl_collect.rs includes it in its column-0 #[cfg(test)] mod tests with no other attribute,
 //    and lib.rs declares mod fl_collect with no cfg. (This suite cannot see its own host chain
 //    cfg'd out, since it would not run; flRegistry.characterization.test.ts checks that one.)
@@ -257,9 +258,14 @@ mod lq_l8_fl {
 
         // No training write command: crediting waits on @rule8 and gateSec, and the V5 stubs
         // (training_start, training_contribute, training_claim) are gone.
+        // GATED is the module doc's statement (training.rs:5): no code returns it, since no write
+        // command exists to refuse. NO_LEDGER is patronage_ledger()'s refusal, pinned below where it
+        // is returned; the shipped book never reaches it. A WP that adds a write path asserts its
+        // refusal on the value the code returns.
         let src = include_str!("training.rs");
-        assert!(src.contains(GATED));
-        assert!(src.contains(NO_LEDGER));
+        let mut module_doc = src.lines().take_while(|l| l.starts_with("//!"));
+        assert!(module_doc.any(|l| l.contains(GATED)));
+        assert_eq!(src.matches(NO_LEDGER).count(), 1);
         assert_eq!(src.matches("#[tauri::command]").count(), 2);
         assert!(src.contains("pub async fn training_status("));
         assert!(src.contains("pub async fn training_reward("));
@@ -290,6 +296,8 @@ mod lq_l8_fl {
         let ledger_fn = fn_body(prod, "fn patronage_ledger() ");
         let book_read = "let a = crate::addresses::patronage_ledger();";
         assert!(ledger_fn.contains(book_read));
+        let refusal = format!("return Err(\"{NO_LEDGER}\".to_string());");
+        assert!(ledger_fn.contains(&refusal));
         assert_eq!(prod.matches(": [u8; 4] = [").count(), 3);
         let uses: Vec<&str> = prod.lines().filter(|l| l.starts_with("use ")).collect();
         let want_uses = [
