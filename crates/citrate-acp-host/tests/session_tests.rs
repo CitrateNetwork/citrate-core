@@ -488,7 +488,12 @@ fn relative_command_is_refused_before_spawn() {
     let mut sp = spec();
     sp.command = PathBuf::from("acp-test-agent");
     let err = h
-        .start(SessionStart { spec: sp, env: vec![], cwd: tmp("rel"), mcp_servers: vec![] })
+        .start(SessionStart {
+            spec: sp,
+            env: vec![],
+            cwd: tmp("rel"),
+            mcp_servers: vec![],
+        })
         .err()
         .expect("refused");
     assert!(err.reason.contains("absolute"), "{}", err.reason);
