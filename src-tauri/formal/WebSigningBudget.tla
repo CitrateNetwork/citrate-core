@@ -413,7 +413,7 @@ RevokeAll ==
                                  s \in {x \in Slots : budget[x].live /\ ~budget[x].revoked}}
     /\ UNCHANGED <<clock, ledger, resv, records, signed, req, lock, taint, down, cnt, deployed>>
 
-\* B-3 grant (ADR-2026-11-27 D4): one HIC-1 ceremony, the member's personal_sign over the
+\* B-3 grant (ADR-2026-11-27 D3): one HIC-1 ceremony, the member's personal_sign over the
 \* terms, opens a new generation of the session's budget. The terms name the target set,
 \* chosen from the contracts this wallet deployed from a READY gate record, never empty. A
 \* grant never widens a live budget; a later deploy is not covered until a new grant.
@@ -472,7 +472,7 @@ WriteAheadFail ==
     /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
     /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down, deployed>>
 
-\* B-3: request_call_budgeted (ADR-2026-11-27 D7), the same shape as Decide under the same
+\* B-3: request_call_budgeted (ADR-2026-11-27 D5), the same shape as Decide under the same
 \* budget lock. Eligible: debit one op, reserve the worst-case gas, and write the decision
 \* record (which carries the request) in one atomic write, then go on to Sign. Not
 \* eligible: an HIC-1 pending ceremony. WriteBehind mutant: the record is not written here.
@@ -690,7 +690,7 @@ BudgetMonotone ==
         /\ deployed \subseteq deployed' ]_vars
 
 -----------------------------------------------------------------------------
-(* B-3 invariants (ADR-2026-11-27 D9). Each has a mutant config that breaks it.  *)
+(* B-3 invariants (ADR-2026-11-27 D8). Each has a mutant config that breaks it.  *)
 
 \* No contract creation is ever auto-signed: every 40204 publish is a per-deploy ceremony.
 NoCreationAutoSigned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.to # "create"

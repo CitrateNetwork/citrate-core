@@ -313,6 +313,115 @@ its guard went undetected; the SIWE config now has 3 nonces and M23 covers that 
 - **A-8 lock naming.** D8 says concurrent requests serialize "on the ceremony lock"; D4 says a
   dedicated budget lock, not the pending-map lock. The model uses the dedicated budget lock.
 
+# WebSigningBudget, B-3 budgeted contract calls (L2-WP06a)
+
+The B-3 extension of `WebSigningBudget.tla` for the **proposed**
+`docs/adr/ADR-2026-11-27-rule3-amendment-2-budgeted-contract-calls.md` (D8). It models a design,
+not code: nothing in the tree calls a B-3 budget, the ADR's sign-off block is open, and every
+transaction is still HIC-1. The wiring (L2-WP06b) may not merge before these configs are green
+and every mutant below is caught.
+
+## Files
+
+- `WebSigningBudget.tla`: the one model, extended in place so the closed list lives in one
+  module. New: constants `Sessions`, `Contracts`, `Chains`, `CallValues`, `Gas`, `Selectors`,
+  `CallMaxOps`, `CallTTL`, `GasCap`, `MaxDeploys`, `B3Mutant`; variable `deployed`; actions
+  `RequestCall`, `GrantCall`, `DeployOwn`, `DecideCall`, `CallWriteAheadFail`. `Sign` and
+  `Return` are shared with B-1 and B-2.
+- `WebSigningBudgetB3.tla`: `EXTENDS WebSigningBudget` and nothing else. It exists so
+  `tlc_expect.py --all` (CI) picks up the small B-3 configs without the five pre-B-3 configs,
+  which take about 33 minutes together and keep running through `scripts/run-tlc.sh` and
+  `WebSigningBudget_mutants.py`.
+- `WebSigningBudgetB3.cfg` (green): B-3 requests only, every request adversarial.
+- `WebSigningBudgetB3_Mixed.cfg` (green): SIWE, x402, a generic `Tx` and B-3 requests together
+  at tiny bounds, with `FallThroughLive`; it also covers the B-1/B-2 actions for the action
+  coverage check.
+- `WebSigningBudgetB3_Mut*.cfg`: one broken B-3 guard each, selected by `B3Mutant`.
+- `WebSigningBudgetB3_ReachCallSigned.cfg`: witness that a call is auto-signed at all.
+
+The five pre-B-3 configs set `Sessions = {}` and `Contracts = {}`, so no B-3 action is enabled
+there and their state spaces are the pre-B-3 ones (checked below).
+
+## Invariants and the mutant that breaks each
+
+| Invariant | Statement | Mutant (`B3Mutant`) |
+|---|---|---|
+| `NoCreationAutoSigned` | no auto-signed call is a creation | `SignsCreation` (the broken Next that signs a creation); `Covers` (the dormant `SessionBudget::covers` wired as it stands) |
+| `NoValueAutoSigned` | no auto-signed call carries value | `SignsValue` |
+| `OnlyOwnDeployedTargets` | the target is in the budget's granted set, which holds only contracts this wallet deployed | `ForeignTarget` (no target check); `GrantForeign` (a grant may name a foreign contract) |
+| `ChainPinned` | 40204 only | `AnyChain` |
+| `NoRawAckAutoSigned` | no raw-ack calldata | `RawAck` |
+| `NoDelegationAutoSigned` | no approval, permit, transfer, role, upgrade or governance selector | `Delegation` |
+| `SessionBound` | the attested session is the one whose budget paid | `ForeignSession` |
+| `GasCapped` | reserved worst-case gas per budget generation within the cap | `NoGasCap` |
+| `NeverExceedsCaps` | `max_ops` per generation (`SlotMax`), with the B-1/B-2 caps as before | `NoOpsCap` |
+| `TaintDowngrade` | a tainted session never auto-signs a call (no exemption) | `TaintIgnored` (at decide and at sign) |
+| `RecordBeforeSignature` | the record is written first and, for a call, carries the exact call | `WriteBehind` |
+| `OnlyClosedList`, `ExpiredInert`, `RevokeImmediate`, `NoFalseNegative`, `NoDrop`, `BudgetMonotone`, `FallThroughLive` | as in the B-1/B-2 section, now over B-3 too; `BudgetMonotone` adds: a generation's targets never change, `deployed` only grows | (B-1/B-2 mutants M01, M13 to M22) |
+
+## Run results
+
+`python3 src-tauri/formal/tlc_expect.py WebSigningBudgetB3 --markdown`, TLC2 Version 2.19 of
+08 August 2024 (rev 5a47802), tla2tools.jar v1.7.4 (SHA-256 `936a2620...0e88`), Temurin 21, on
+the Linux build host pinned to 4 cores (`taskset -c 0-3`, like the CI runner): **16 of 16
+configs match their EXPECT line**, every action taken in a green config, frame lint clean,
+2 min 12 s wall clock. CI (`tla models`) gives the same verdicts and state counts.
+
+| Config | Expected | TLC result | Distinct states | Depth |
+|---|---|---|---|---|
+| `WebSigningBudgetB3` | no error | no error | 466,860 | 21 |
+| `WebSigningBudgetB3_Mixed` (with `FallThroughLive`) | no error | no error | 106,536 | 16 |
+| `WebSigningBudgetB3_MutAnyChain` | violated `ChainPinned` | violated `ChainPinned` | 7,606 | 8 |
+| `WebSigningBudgetB3_MutCovers` | violated `NoCreationAutoSigned` | violated `NoCreationAutoSigned` | 3,818 | 6 |
+| `WebSigningBudgetB3_MutDelegation` | violated `NoDelegationAutoSigned` | violated `NoDelegationAutoSigned` | 3,793 | 6 |
+| `WebSigningBudgetB3_MutForeignSession` | violated `SessionBound` | violated `SessionBound` | 18,690 | 7 |
+| `WebSigningBudgetB3_MutForeignTarget` | violated `OnlyOwnDeployedTargets` | violated `OnlyOwnDeployedTargets` | 6,177 | 7 |
+| `WebSigningBudgetB3_MutGrantForeign` | violated `OnlyOwnDeployedTargets` | violated `OnlyOwnDeployedTargets` | 5,803 | 7 |
+| `WebSigningBudgetB3_MutNoGasCap` | violated `GasCapped` | violated `GasCapped` | 35,882 | 9 |
+| `WebSigningBudgetB3_MutNoOpsCap` | violated `NeverExceedsCaps` | violated `NeverExceedsCaps` | 34,782 | 9 |
+| `WebSigningBudgetB3_MutRawAck` | violated `NoRawAckAutoSigned` | violated `NoRawAckAutoSigned` | 6,976 | 8 |
+| `WebSigningBudgetB3_MutSignsCreation` | violated `NoCreationAutoSigned` | violated `NoCreationAutoSigned` | 3,879 | 7 |
+| `WebSigningBudgetB3_MutSignsValue` | violated `NoValueAutoSigned` | violated `NoValueAutoSigned` | 5,518 | 7 |
+| `WebSigningBudgetB3_MutTaintIgnored` | violated `TaintDowngrade` | violated `TaintDowngrade` | 6,825 | 8 |
+| `WebSigningBudgetB3_MutWriteBehind` | violated `RecordBeforeSignature` | violated `RecordBeforeSignature` | 7,233 | 8 |
+| `WebSigningBudgetB3_ReachCallSigned` | violated `W_NoCallAutoSigned` | violated `W_NoCallAutoSigned` | 6,561 | 8 |
+
+Counterexample state counts vary a little between runs (TLC workers race to the first
+violation); the verdicts do not.
+
+**Red first (L2-WP06a).** The first commit of core#844 had the call path check only what
+`SessionBudget::covers` checks. Against it the green configs failed: `WebSigningBudgetB3`
+with `OnlyOwnDeployedTargets` violated, `WebSigningBudgetB3_Mixed` with `NoCreationAutoSigned`
+violated (CI run 46109206356). The green commit adds the checks (CI run 46109449077).
+
+**Non-regression of the pre-B-3 configs.** With the B-3 constants off, the state space is the
+same as before the extension: `WebSigningBudget.cfg` 37,916,870 states generated, 7,828,872
+distinct, depth 21, no error (identical to the 2026-09-30 row above).
+`WebSigningBudget_mutants.py`: 23 of 23 mutants still caught, each by its target, with every
+patch anchor unchanged.
+
+## Abstractions (what the B-3 part does not prove)
+
+- **One extra defect per request.** `RequestCall` raises any target (own, foreign, or a
+  creation) at any gas, plus at most one of: another origin, another chain, value, raw-ack
+  calldata, an approval-class selector. This loses no behaviour that matters: every B-3 check
+  is a conjunct over one field, so a request with two defects is refused whenever either
+  single-defect request is, and a refused request only adds one pending HIC-1 ceremony, the
+  same successor as a single-defect refusal. It cuts the green config by more than an order of
+  magnitude.
+- Selector classes and the granted function list are one abstract value (`"plain"` is granted
+  and not excluded, `"approve"` stands for every other class); the list in ADR D2 #7 and the
+  function list of D2 #6 are unit and property test obligations for WP06b, as are ABI decoding,
+  the code-hash pin (D2 #5), the no-standing-approval check (D2 #12) and the call simulation of
+  O-6, which read chain state per request.
+- Gas is one worst-case number per call. Fee markets, nonce assignment, broadcast and mining
+  are not modelled; ADR D7 says what the records show for each.
+- One wallet. Sessions stand for principals; cross-wallet isolation is not here.
+- Voiding on session end, envelope revoke, an HIC level raise, a wallet change or a code-hash
+  change is modelled only as `Revoke` and `RevokeAll`.
+- The grant's `personal_sign` over the terms (ADR D3) is the HIC-1 member action `GrantCall`;
+  the signature itself is not modelled.
+
 # DeployGate (HUP-S6.4)
 
 Model of the D-4 deploy gate (`src/deploy_gate.rs`, `src/contract_deploy.rs`).
