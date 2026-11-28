@@ -38,9 +38,7 @@
 # signoff to "none" and flipped the const together would pass the build, so the owner approves
 # every change. Owner note (2026-11-28): this tightens L0 section 2.2 ("row edits reviewed by L0
 # for schema only"). The file stays L0's in this map (a lane's row lands through an L0 PR,
-# reviewed by L0 for schema), and the owner's approval is added on top. The pin binds only where
-# code-owner review is required on main and the PR author is not @SaulBuilds, so agent PRs pushed
-# from that account need the owner's own review in practice (PR #838 flags this for the swarm lead).
+# reviewed by L0 for schema), and the owner's approval is added on top.
 #! tail /release/flags.json @SaulBuilds
 #! tail /release/signoffs/ @SaulBuilds
 

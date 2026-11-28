@@ -1,3 +1,7 @@
+// created: 2026-11-28 | branch: feat/v60-l0-wp09-flags
+// author: Larry Klosowski (L0 lane, L0-WP09; Claude Opus 5.5)
+// status: active
+//
 // L0-WP09: src/shell/flags.gen.ts is generated from release/flags.json (scripts/gen-flags.mjs), so
 // the webview and the Rust consts read one table, and src/shell/flags.ts exports flag(id) over it
 // (L0_INTEGRATION_SEAMS 3.7). cargo test ties the table to the consts
