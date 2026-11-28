@@ -454,7 +454,6 @@ fn public_pkce_mode_sends_verifier_only() {
 #[test]
 fn not_configured_reason_names_the_missing_registration() {
     for (id, provider, name) in [
-        ("notion", "notion", "Notion"),
         ("gdrive", "google", "Google"),
         ("gsheets", "google", "Google"),
         ("gcal", "google", "Google"),
@@ -470,23 +469,28 @@ fn not_configured_reason_names_the_missing_registration() {
         assert!(!reason.contains('\u{2014}'), "no em-dash: {reason}");
     }
     assert!(provider_setup("github").and_then(|s| s.reason).is_none());
+    // L6-WP06 (lead, 2026-11-28): Notion's public integration id is compiled in.
+    let notion = provider_setup("notion").expect("notion");
+    assert!(notion.configured && notion.reason.is_none());
+    assert_eq!(notion.client_id, Some(super::providers::NOTION_CLIENT_ID));
     assert!(provider_setup("slack").is_none());
 
-    // With v2 on and no dev file, only GitHub is configured; with v2 off, none is.
+    // With v2 on and no dev file, only GitHub and Notion are configured; with v2 off, none is.
     let (mgr, logs) = relay_mgr();
     for svc in ALL_SERVICES {
-        assert_eq!(mgr.is_configured(svc), svc == Service::GitHub, "{svc:?}");
+        let want = matches!(svc, Service::GitHub | Service::Notion);
+        assert_eq!(mgr.is_configured(svc), want, "{svc:?}");
     }
     let vault = fresh_vault();
     let err = mgr
-        .connect_with(Service::Notion, &vault, None, |_| panic!("no browser"))
+        .connect_with(Service::GoogleDrive, &vault, None, |_| panic!("no browser"))
         .unwrap_err();
     assert_eq!(err, ConnError::NotConfigured);
     assert!(logs
         .lock()
         .unwrap()
         .iter()
-        .any(|l| l.starts_with("connections: notion not configured:") && l.contains("Notion")));
+        .any(|l| l.starts_with("connections: gdrive not configured:") && l.contains("Google")));
     let off = ConnectionManager::new(Box::new(NoNetwork), tmp("nodev").join("none"));
     assert!(ALL_SERVICES.iter().all(|s| !off.is_configured(*s)));
 }
@@ -1030,7 +1034,7 @@ fn the_revoke_attempt_is_recorded_before_the_slot_is_cleared() {
 
 #[test]
 fn providers_without_a_revoke_endpoint_disconnect_locally_without_a_call() {
-    // Notion has no relay revoke row; with no dev file and v2 on it is not even configured.
+    // Notion has no relay revoke row: disconnect is local only.
     let (mgr, logs) = relay_mgr();
     let vault = fresh_vault();
     record_json(

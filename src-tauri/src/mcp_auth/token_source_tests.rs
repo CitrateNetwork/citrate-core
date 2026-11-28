@@ -57,6 +57,7 @@ fn seed(
         expires_at,
         connected_at: 1,
         needs_refresh: false,
+        missing_scopes: vec![],
     };
     store::write(v, &rec).unwrap();
 }
@@ -502,6 +503,7 @@ fn seed_github(v: &CustodyVault, expires_at: Option<u64>) {
         expires_at,
         connected_at: 1,
         needs_refresh: false,
+        missing_scopes: vec![],
     };
     store::write(v, &rec).unwrap();
 }
@@ -582,6 +584,7 @@ fn connected(id: &str) -> Connected {
         client_kind: "relay",
         scope: None,
         missing_scopes: vec![],
+        limited: false,
     }
 }
 
