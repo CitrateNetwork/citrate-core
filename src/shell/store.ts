@@ -10,6 +10,13 @@
 // =====================================================================
 import { expireOpenProposal, newThreadId, type ThreadParent } from "./slices/chatHistory";
 import * as l4ChatHistory from "./actions/l4/chatHistory";
+import * as l3Auth from "./actions/l3/auth";
+import { entitlementSafeguardFromChain } from "./actions/l3/auth";
+import { isGrantOnChain } from "./grantReads";
+// L0-WP07b: these helpers moved out of this file (to actions/l3/auth.ts and grantReads.ts); every
+// name is still exported here.
+export { deriveIdentityFromEmail, ENTITLEMENT_POLL_MAX_MS, ENTITLEMENT_POLL_MS, entitlementSafeguardFromChain, FOCUS_RECHECK_MIN_MS, isExpiredClaim, membershipActivatingFromChain } from "./actions/l3/auth";
+export { isGrantOnChain, VALIDATOR_STAKE_REQUIREMENT_WEI } from "./grantReads";
 import { bindStoreInternals } from "./storeInternals";
 import { dataClassProblem, newProposalId } from "../agent/workerProposal";
 import { BLANK_DRAFT, draftProblems, setRoundDraft, type RoundDraft } from "../fl/roundDraft";
@@ -40,7 +47,7 @@ import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
 import { agentEffectKey, broadcastFailure } from "./broadcastOutcome";
-import { neverHeldMembership, newClaimSession, readLiveClaim, walletLinked } from "./actions/l3/membership";
+import { neverHeldMembership, newClaimSession, walletLinked } from "./actions/l3/membership";
 export { broadcastFailure };
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ASK_FIRST_NO_LOCAL_LABEL, LOCAL_ONLY_LABEL, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, AGENT_TOOLS, TurnStopped } from "../agent/harness";
@@ -185,34 +192,6 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
 /**
- * A3-03 — is an entitlement `expiresAt` claim in the past (or anomalous)?
- * - ABSENT (null/undefined/empty) → NOT expired: the authority legitimately may
- *   not send an expiry; the hard id_token `exp` gate in Rust still bounds the
- *   session.
- * - PRESENT but UNPARSEABLE → treated as EXPIRED (fail-closed): a malformed
- *   expiry on a T1 gating surface is an anomaly, not a licence to keep the tier.
- * - PRESENT + in the past → expired.
- * Accepts an ISO date/datetime OR a unix-epoch numeric string. The authority nests
- * the entitlement expiry as epoch-MILLISECONDS (citrate-identity: `new Date(row).
- * getTime()`), and the Rust seam forwards it verbatim as a digit string — so a bare
- * `Number(x) * 1000` (assuming seconds) mis-scaled a real ms expiry to ~year 58000
- * and NEVER expired. Disambiguate by magnitude: a value already in ms range
- * (>= 1e12, i.e. any time after 2001) is used as-is; a smaller value is seconds.
- */
-export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
-  if (!expiresAt) return false;
-  let ms: number;
-  if (/^\d+$/.test(expiresAt)) {
-    const n = Number(expiresAt);
-    ms = n >= 1e12 ? n : n * 1000; // ms already vs unix-seconds
-  } else {
-    ms = Date.parse(expiresAt); // ISO date/datetime
-  }
-  if (!Number.isFinite(ms)) return true; // fail-closed on an unparseable value
-  return ms < Date.now();
-}
-
-/**
  * CORE-D3.C — has the S3 checkout entitlement actually landed?
  *
  * The onboarding "Pay" step advances ONLY when `/userinfo` shows the REAL grant
@@ -230,55 +209,6 @@ export function isPaidEntitlementActive(st: { tier: string; entitlement: string 
   // (rank > free) with an ACTIVE entitlement counts as the grant having landed.
   if (rank === undefined || rank <= RANK.free) return false;
   return st.entitlement === "active";
-}
-
-/**
- * BC-1.3 — the validator stake requirement in wei (== 32,000 SALT == 32000e18).
- * A granted member's `MembershipStakeVault.attributedStake(member)` reads at least
- * this. Kept as a BigInt so the comparison never loses precision (a 32k-SALT grant
- * far exceeds JS's safe integer range).
- */
-export const VALIDATOR_STAKE_REQUIREMENT_WEI = 32000n * 10n ** 18n;
-
-/**
- * BC-1.3 — is the 32,000-SALT membership grant GENUINELY on-chain?
- *
- * The S5 grant leg settles ONLY when the member holds the SBT AND at least the
- * validator stake requirement is attributable to them on chain (Rule 1 — read from
- * chain, never a fabricated settlement).
- *
- * THE VAULT IS THE ANSWER AGAIN (M-2, citrate-chain #141). This gate has been
- * widened twice, both times because the model moved the principal somewhere the
- * gate could not see:
- *   - ADR 2026-07-27 funded the member's OWN EOA, so a just-granted member held
- *     the 32k as NATIVE balance and the vault read 0 — added `nativeBalanceWei`;
- *   - after they self-bonded it moved to the registry — added `bondedStakeWei`.
- * Settling on the vault alone left a correctly-granted member polling "still
- * settling" forever (the 2026-07-28 stall): working, indistinguishable from broken.
- *
- * Under M-2 the principal has exactly ONE home again — the member's MemberBond
- * escrow — and the vault attributes it at GRANT time and keeps attributing it. So
- * `attributedStake` is durable across the whole lifecycle and both extra legs go.
- *
- * They would in fact be WRONG to keep. The registry leg stays 0 from the grant
- * until the member runs the activation ceremony, which can be days; the native leg
- * never fills at all, because M-2 sends the member only ~0.05 SALT of gas. Keeping
- * either would be reading a number that no longer carries the meaning it did.
- *
- * `hasSbt` remains a hard precondition.
- *
- * Wei values are decimal strings parsed as BigInt so a value beyond JS number range
- * is exact. A malformed value fails closed — never a fabricated grant.
- */
-export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean }): boolean {
-  if (!g.hasSbt) return false;
-  let staked: bigint;
-  try {
-    staked = BigInt(g.attributedStakeWei);
-  } catch {
-    return false; // fail-closed on an unparseable value — never fabricate a grant
-  }
-  return staked >= VALIDATOR_STAKE_REQUIREMENT_WEI;
 }
 
 /**
@@ -420,77 +350,6 @@ export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
   };
 }
 
-/**
- * Membership-renew SAFEGUARD (Luke, 2026-09-11). A paid member reopened the app and
- * was wrongly shown "renew": the `/userinfo` entitlement re-check on reopen came back
- * THIN for their session (signed in, but no tier claim), so `applyAuthStatus` folded
- * `tier:free + entitlement:lapsed` — even though their on-chain membership SBT and
- * staked grant were fully present. The on-chain SBT is the AUTHORITATIVE membership
- * proof (the `/userinfo` entitlement is a *derived mirror* of it, per
- * citrate-identity/src/entitlements.ts), so a real member must never be pushed to
- * renew because of a transient claim.
- *
- * Returns a patch restoring an ACTIVE paid membership from the on-chain grant, or
- * `null`. Regression guards (all must hold):
- *  - the current entitlement is `lapsed` — nothing to correct otherwise;
- *  - the lapse is NOT from an explicit PAST expiry (`isExpiredClaim(authExpiresAt)`):
- *    a genuinely elapsed year is a REAL lapse and MUST still show renew — this only
- *    rescues the missing/thin-claim case;
- *  - the grant is genuinely on chain AND the SBT is minted (`isGrantOnChain && hasSbt`)
- *    — a live 40204 read, never a client assertion, so a never-paid free account
- *    (no SBT) is never elevated.
- * The restored tier is the paid-member baseline `commercial` (rank > free); a
- * commercial.kyc upgrade still arrives from the next live claim.
- */
-export function entitlementSafeguardFromChain(
-  st: { tier: string; entitlement: string; authExpiresAt: string | null },
-  g: GrantStatus,
-): Partial<AppState> | null {
-  if (st.entitlement !== "lapsed") return null;
-  if (isExpiredClaim(st.authExpiresAt)) return null; // a real expiry — honor the lapse
-  if (!isGrantOnChain(g) || !g.hasSbt) return null; // no on-chain membership proof
-  return { tier: "commercial", entitlement: "active" };
-}
-
-/**
- * v0.5.0-rc.5 FIX 1c: is the member's grant visibly IN FLIGHT on chain while the
- * `/userinfo` tier claim has not caught up?
- *
- * True when the entitlement reads `lapsed` WITHOUT a genuine past expiry, the full
- * on-chain proof (`isGrantOnChain && hasSbt`) is NOT yet there (that case is
- * `entitlementSafeguardFromChain`, which restores `active`), but the chain already
- * shows part of the grant: the member SBT is minted or stake is attributed. The banner
- * then says "activating" instead of the red lapse.
- *
- * Honesty (Rule 1): this never unlocks anything. It only changes the banner from
- * "lapsed" to a neutral notice; `active` still needs the claim or the full chain proof.
- * A malformed stake value fails closed (false).
- */
-export function membershipActivatingFromChain(
-  st: { entitlement: string; authExpiresAt: string | null },
-  g: { attributedStakeWei: string; hasSbt: boolean },
-): boolean {
-  if (st.entitlement !== "lapsed") return false;
-  if (isExpiredClaim(st.authExpiresAt)) return false; // a real expiry is a real lapse
-  if (isGrantOnChain(g) && g.hasSbt) return false; // full proof: the safeguard restores active
-  if (g.hasSbt) return true;
-  try {
-    return BigInt(g.attributedStakeWei) > 0n;
-  } catch {
-    return false;
-  }
-}
-
-/** FIX 1a: the post-checkout entitlement poll cadence. */
-export const ENTITLEMENT_POLL_MS = 10_000;
-/**
- * FIX 1a: the poll's bound. Must outlast one 10-minute core-membership grant reconcile
- * (`/api/cron/reconcile-grants`), so a grant the webhook missed is still picked up.
- */
-export const ENTITLEMENT_POLL_MAX_MS = 15 * 60_000;
-/** FIX 1b: at most one focus/visibility entitlement re-check per 30 s. */
-export const FOCUS_RECHECK_MIN_MS = 30_000;
-
 
 /**
  * W3.3 — render mem hits as plain text the agent feeds back to the model. Honest
@@ -500,22 +359,6 @@ export const FOCUS_RECHECK_MIN_MS = 30_000;
  */
 // HUP-S3.1: passages + citations for knowledge tenants (src/agent/knowledgeSearch.ts).
 export { formatMemoryHits };
-
-/**
- * Derive a display name + initials from an email local-part. The authority
- * issues NO display-name claim, so `larry@citrate.ai` → { name: "Larry",
- * initials: "LA" } and `ada.lovelace@x.io` → { name: "Ada Lovelace", initials:
- * "AL" }. Used by applyAuthStatus to render a real signed-in user's identity;
- * exported so the derivation is unit-tested independently of the auth plumbing.
- */
-export function deriveIdentityFromEmail(email: string): { name: string; initials: string } {
-  const local = email.split("@")[0];
-  const words = local.split(/[._+-]+/).filter(Boolean);
-  const name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") || email;
-  const fromWords = words.length > 1 ? words.map((w) => w.charAt(0)).join("") : local.slice(0, 2);
-  const initials = (fromWords || local.slice(0, 2)).slice(0, 2).toUpperCase();
-  return { name, initials };
-}
 
 /**
  * Q-A.2/Q-B.2 — convert the REAL streamed node log lines (bridge `NodeLogLine`:
@@ -823,6 +666,23 @@ export interface StoreInternals {
   readonly threadParents: Map<string, ThreadParent>;
   /** 07a: Store.chatSwitchBlocked (private). */
   chatSwitchBlocked(): string | null;
+  /** 07b: Store.applyAuthStatus (private), the claim fold (actions/l3/auth.ts). */
+  applyAuthStatus: Store["applyAuthStatus"];
+  /** 07b: Store.reconcileOnboardingFromChain (private). */
+  reconcileOnboardingFromChain(): Promise<void>;
+  /** 07b: Store.entitlementPollTick (private). */
+  entitlementPollTick(): Promise<void>;
+  /** 07b: Store.recheckEntitlementOnFocus (private). */
+  recheckEntitlementOnFocus(): Promise<void>;
+  /** 07b: FIX 1a, the post-checkout entitlement poll (timer + deadline). */
+  entitlementPollTimer: ReturnType<typeof setTimeout> | null;
+  entitlementPollDeadline: number;
+  /** 07b: L3-WP19, the single-flight session refresh and the sign-out epoch. */
+  readonly claimSession: Store["claimSession"];
+  /** 07b: FIX 1b, when the last focus/visibility re-check ran. */
+  lastFocusRecheckAt: number;
+  /** 07b: core#584, the current Settings Billing checkout attempt. */
+  billingAttempt: number;
 }
 
 export class Store {
@@ -943,6 +803,37 @@ export class Store {
         return self.threadParents;
       },
       chatSwitchBlocked: () => self.chatSwitchBlocked(),
+      applyAuthStatus: (st) => self.applyAuthStatus(st),
+      reconcileOnboardingFromChain: () => self.reconcileOnboardingFromChain(),
+      entitlementPollTick: () => self.entitlementPollTick(),
+      recheckEntitlementOnFocus: () => self.recheckEntitlementOnFocus(),
+      get entitlementPollTimer() {
+        return self.entitlementPollTimer;
+      },
+      set entitlementPollTimer(t) {
+        self.entitlementPollTimer = t;
+      },
+      get entitlementPollDeadline() {
+        return self.entitlementPollDeadline;
+      },
+      set entitlementPollDeadline(ms) {
+        self.entitlementPollDeadline = ms;
+      },
+      get claimSession() {
+        return self.claimSession;
+      },
+      get lastFocusRecheckAt() {
+        return self.lastFocusRecheckAt;
+      },
+      set lastFocusRecheckAt(ms) {
+        self.lastFocusRecheckAt = ms;
+      },
+      get billingAttempt() {
+        return self.billingAttempt;
+      },
+      set billingAttempt(n) {
+        self.billingAttempt = n;
+      },
     });
     this.state = loadState();
     this.snap = this.state;
@@ -1635,59 +1526,15 @@ export class Store {
   }
 
   // ---------- CORE-A3 auth (real OIDC in Tauri; sim persona in web-dev) ----
-  /**
-   * Pull the live claim-derived auth status from the bridge and fold it into the
-   * entitlement engine (tier/org/role/entitlement) + the KYC S2 state. In a
-   * Tauri build this reads the real /userinfo entitlement claim; in web-dev it
-   * reads the sim persona. Never throws — an unavailable/failed read leaves the
-   * prior state untouched (honest).
-   */
-  async refreshAuth(): Promise<void> {
-    try {
-      const st = await bridge.auth.status();
-      this.applyAuthStatus(st);
-    } catch {
-      /* honest no-op: the auth domain reported unavailable / not signed in */
-    }
+  // L0-WP07b: the auth actions live in actions/l3/auth.ts (lane L3); these are one-line delegates.
+  /** Pull the live claim-derived auth status and fold it in; never throws (actions/l3/auth.ts). */
+  refreshAuth(): Promise<void> {
+    return l3Auth.refreshAuth(this);
   }
 
-  /**
-   * Re-establish the signed-in session on LAUNCH from the vaulted OIDC refresh
-   * token (A3), so a restart keeps the paid tier instead of dropping the member to
-   * signed-out → public/free. `bridge.auth.status()` reads only the in-memory
-   * session, which is empty on a fresh process; `bridge.auth.refresh()` silently
-   * mints a fresh session from the refresh token sealed in the custody vault. That
-   * read REQUIRES an unlocked vault (the token is a custody slot), so this must run
-   * AFTER `custodyEnsureUnlocked`. A never-signed-in user (no token) or a declined
-   * refresh fails gracefully and stays honestly signed out. After a successful
-   * refresh we re-check the LIVE entitlement (`authUserinfo`) — the federation RP
-   * rule — so the current tier (e.g. a just-raised membership) is folded, not a
-   * stale claim.
-   */
-  async resumeSession(): Promise<void> {
-    let refreshed = false;
-    try {
-      const st = await bridge.auth.refresh();
-      this.applyAuthStatus(st);
-      refreshed = true;
-    } catch {
-      // No vaulted refresh token (never signed in) or the refresh was declined —
-      // stay signed out honestly rather than fabricate a session.
-    }
-    // Live /userinfo re-check once the session is back, so the freshest entitlement
-    // (tier/expiry) is folded. Skipped when there is no session to re-check.
-    // WRAPPED: a rejection here must not skip the chain reconcile below. These are
-    // independent — the grant is a permissionless chain read that does not need a
-    // live session, and letting an auth hiccup suppress it is exactly how a paid
-    // member stays stranded (observed 2026-08-05).
-    try {
-      if (refreshed) await this.authUserinfo();
-      else await this.refreshAuth();
-    } catch {
-      /* honest no-op: entitlement display may lag; the chain read below still runs */
-    }
-    // The onboarding step state is LOCAL; the grant is on CHAIN. Re-sync them.
-    await this.reconcileOnboardingFromChain();
+  /** Re-establish the signed-in session on launch from the vaulted OIDC refresh token (actions/l3/auth.ts). */
+  resumeSession(): Promise<void> {
+    return l3Auth.resumeSession(this);
   }
 
   /**
@@ -2374,7 +2221,7 @@ export class Store {
     }
   }
 
-  /** Fold a claim-derived AuthStatus into AppState (the entitlement engine). */
+  /** Fold a claim-derived AuthStatus into AppState, the entitlement engine (actions/l3/auth.ts). */
   private applyAuthStatus(st: {
     signedIn: boolean;
     sub?: string | null;
@@ -2386,261 +2233,65 @@ export class Store {
     kycStatus: string | null;
     expiresAt?: string | null;
   }): void {
-    if (!st.signedIn) return;
-    const patch: Partial<AppState> = {};
-    // Fold the REAL identity so no prototype persona ever surfaces to a signed-in
-    // user (Rule 1). The authority issues no display-name claim, so derive a
-    // display name + initials from the email local part.
-    patch.signedIn = true;
-    patch.authSub = st.sub ?? null;
-    patch.authEmail = st.email ?? null;
-    if (st.email) {
-      const d = deriveIdentityFromEmail(st.email);
-      patch.authName = d.name;
-      patch.authInitials = d.initials;
-    }
-    // Q-A.4b item 10 — fold the REAL wallet only from a genuine wallet_address
-    // claim, and RECORD that provenance. A signed-in user with no wallet claim
-    // keeps walletFromClaim=false, so the S4 onboarding card shows "—"/pending
-    // rather than the fabricated persona `makeAddr` hash (Rule 1).
-    if (st.walletAddr) {
-      patch.walletAddr = st.walletAddr;
-      patch.walletFromClaim = true;
-    } else {
-      patch.walletFromClaim = false;
-    }
-    // BC-6.3: fold the REAL entitlement expiry verbatim (the Settings billing card
-    // renders THIS, an honest "—" when absent — never a hardcoded date). Folded in
-    // every branch below, including the expired one (it explains WHY the tier
-    // lapsed). `??` normalizes undefined → null.
-    patch.authExpiresAt = st.expiresAt ?? null;
-    // A3-03: enforce the entitlement expiry at the DECISION point — a claim whose
-    // `expiresAt` is in the past is downgraded to the free tier + lapsed, so no
-    // gated surface stays unlocked on a stale claim. A valid future expiry keeps
-    // the claimed tier and marks the entitlement active.
-    if (isExpiredClaim(st.expiresAt)) {
-      patch.tier = "free";
-      patch.entitlement = "lapsed";
-    } else if (st.tier) {
-      patch.tier = st.tier;
-      patch.entitlement = "active";
-      patch.membershipActivating = false; // the claim landed: nothing left to activate
-      patch.membershipCheckoutAt = null; // L3-WP19: and no checkout left waiting
-    } else {
-      // Signed in but the authority granted NO tier — fail closed to free so an
-      // ungranted session can never inherit a prior session's persisted paid
-      // tier (tier/entitlement are persisted keys).
-      patch.tier = "free";
-      patch.entitlement = "lapsed";
-    }
-    patch.org = st.org;
-    // The authority may omit the citrate_role claim for a plain member; a
-    // signed-in paid account is a "member" by default (never the persona's role).
-    patch.citrateRole = st.role || "member";
-    // ALF cooperative membership is a CLAIM (DGX_HANDOFF §4.3): alf_member is a
-    // citrate_role minted by the authority, never tier-derived. Gates the ALF surface.
-    patch.alfMember = patch.citrateRole === "alf_member";
-    // KYC claim → the S2 seam's five states (none/pending/verified/failed/review).
-    if (st.kycStatus === "verified") patch.s2 = "verified";
-    else if (st.kycStatus === "pending") patch.s2 = "pending";
-    else if (st.kycStatus === "failed") patch.s2 = "failed";
-    else if (st.kycStatus === "review") patch.s2 = "review";
-    this.setState(patch);
+    return l3Auth.applyAuthStatus(this, st);
   }
 
-  /** Run the real loopback-PKCE sign-in (Tauri), then fold in the claim. */
-  async authLogin(): Promise<void> {
-    const st = await bridge.auth.login();
-    this.applyAuthStatus(st);
-    // The login result may carry only id_token claims (no email/wallet). Fold
-    // the live /userinfo immediately so the real identity (email/wallet/tier)
-    // is complete on the first render — never a persona fallback for a signed-in
-    // user. Best-effort: keep the login-folded state if /userinfo is unavailable.
-    try {
-      await this.authUserinfo();
-    } catch {
-      /* honest no-op — the login-folded claim stands */
-    }
-    this.save();
+  /** Run the real loopback-PKCE sign-in (Tauri), then fold in the claim (actions/l3/auth.ts). */
+  authLogin(): Promise<void> {
+    return l3Auth.authLogin(this);
   }
 
-  /**
-   * rc.5 FIX 2: abort the in-flight browser sign-in (Cancel while "Waiting for your
-   * browser"). The pending `authLogin` then rejects with "sign-in cancelled". Never
-   * throws: a failed cancel leaves the 300 s callback timeout as the backstop.
-   */
-  async cancelSignIn(): Promise<void> {
-    try {
-      await bridge.auth.cancelLogin();
-    } catch {
-      /* honest no-op: the Rust wait still ends at its timeout */
-    }
+  /** rc.5 FIX 2: abort the in-flight browser sign-in; never throws (actions/l3/auth.ts). */
+  cancelSignIn(): Promise<void> {
+    return l3Auth.cancelSignIn(this);
   }
 
-  /** Live /userinfo entitlement re-check, folded into the entitlement engine. */
-  async authUserinfo(): Promise<void> {
-    const st = await bridge.auth.userinfo();
-    this.applyAuthStatus(st);
+  /** Live /userinfo entitlement re-check, folded into the entitlement engine (actions/l3/auth.ts). */
+  authUserinfo(): Promise<void> {
+    return l3Auth.authUserinfo(this);
   }
 
-  /**
-   * v0.5.0-rc.5 FIX 1: re-read the entitlement from BOTH sources and fold them in one
-   * synchronous step (no lapsed flash between the claim and the chain read):
-   *  - the live `/userinfo` claim (`applyAuthStatus`);
-   *  - while the claim does not read active, the on-chain grant (Tauri, with a wallet):
-   *    the full proof restores `active` via `entitlementSafeguardFromChain` (the same
-   *    rule the launch reconcile uses); partial evidence marks "activating".
-   * A chain read failure folds the claim alone (honest). Throws only if `/userinfo`
-   * itself fails, so callers decide whether that is fatal.
-   */
-  async refreshEntitlement(): Promise<void> {
-    // L3-WP19: a 401 (the hour-long access token expired on a node left open) renews the session
-    // from the vaulted refresh token and reads again, instead of failing every poll until restart.
-    const st = await readLiveClaim(bridge.auth, this.claimSession);
-    let grant: GrantStatus | null = null;
-    const member = st.walletAddr || this.state.walletAddr;
-    const claimActive = !!st.tier && !isExpiredClaim(st.expiresAt);
-    if (BRIDGE_MODE === "tauri" && member && !claimActive) {
-      try {
-        grant = await bridge.membership.grantStatus(member);
-      } catch {
-        grant = null; // transient RPC error: fold the claim alone, never fabricate
-      }
-    }
-    // L3-WP19: signed out while the chain was read: fold nothing (never re-sign the member in).
-    if (!this.state.signedIn) return;
-    this.applyAuthStatus(st);
-    if (!grant) return;
-    const guard = entitlementSafeguardFromChain(this.state, grant);
-    if (guard) {
-      this.setState({ ...guard, membershipActivating: false });
-      this.save();
-      return;
-    }
-    const activating = membershipActivatingFromChain(this.state, grant);
-    if (activating !== this.state.membershipActivating) this.setState({ membershipActivating: activating });
+  /** v0.5.0-rc.5 FIX 1: re-read the entitlement from the claim and the chain in one step (actions/l3/auth.ts). */
+  refreshEntitlement(): Promise<void> {
+    return l3Auth.refreshEntitlement(this);
   }
 
-  /**
-   * FIX 1a: after a membership checkout opens (from ANY entry point: onboarding S3,
-   * Settings renew, the lapsed banner), poll the entitlement every ~10 s until it reads
-   * active, for at most ~15 min. Single instance: a second checkout only extends the
-   * window. Cancelled on sign-out. Tauri only (the sim has no server to wait for).
-   */
+  /** FIX 1a: poll the entitlement after a membership checkout opens (actions/l3/auth.ts). */
   startEntitlementPoll(): void {
-    if (BRIDGE_MODE !== "tauri") return;
-    this.entitlementPollDeadline = Date.now() + ENTITLEMENT_POLL_MAX_MS;
-    if (this.entitlementPollTimer) return;
-    this.entitlementPollTimer = setTimeout(() => void this.entitlementPollTick(), ENTITLEMENT_POLL_MS);
+    return l3Auth.startEntitlementPoll(this);
   }
 
-  /** FIX 1a: is the post-checkout entitlement poll running? */
+  /** FIX 1a: is the post-checkout entitlement poll running (actions/l3/auth.ts)? */
   entitlementPollActive(): boolean {
-    return this.entitlementPollTimer !== null;
+    return l3Auth.entitlementPollActive(this);
   }
 
-  /** FIX 1a: cancel the post-checkout entitlement poll (sign-out). */
+  /** FIX 1a: cancel the post-checkout entitlement poll, on sign-out (actions/l3/auth.ts). */
   stopEntitlementPoll(): void {
-    if (this.entitlementPollTimer) clearTimeout(this.entitlementPollTimer);
-    this.entitlementPollTimer = null;
+    return l3Auth.stopEntitlementPoll(this);
   }
 
-  private async entitlementPollTick(): Promise<void> {
-    if (!this.state.signedIn) {
-      this.stopEntitlementPoll();
-      return;
-    }
-    try {
-      await this.refreshEntitlement();
-    } catch {
-      /* transient: keep polling until the bound; never fabricate */
-    }
-    // Cancelled (sign-out) while the read was in flight.
-    if (this.entitlementPollTimer === null || !this.state.signedIn) {
-      this.entitlementPollTimer = null;
-      return;
-    }
-    const done = this.state.entitlement === "active" && !this.state.membershipActivating;
-    if (done || Date.now() >= this.entitlementPollDeadline) {
-      this.entitlementPollTimer = null;
-      return;
-    }
-    this.entitlementPollTimer = setTimeout(() => void this.entitlementPollTick(), ENTITLEMENT_POLL_MS);
+  private entitlementPollTick(): Promise<void> {
+    return l3Auth.entitlementPollTick(this);
   }
 
-  /**
-   * FIX 1b: re-check the entitlement when the window regains focus or becomes visible
-   * (the member coming back from the browser checkout). Throttled to one re-check per
-   * 30 s and only while signed in. Returns a function that removes the listeners.
-   */
+  /** FIX 1b: re-check the entitlement on focus or visibility; returns the remover (actions/l3/auth.ts). */
   installEntitlementFocusRecheck(): () => void {
-    if (typeof window === "undefined" || typeof document === "undefined") return () => {};
-    const onFocus = () => void this.recheckEntitlementOnFocus();
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") void this.recheckEntitlementOnFocus();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
+    return l3Auth.installEntitlementFocusRecheck(this);
   }
 
-  private async recheckEntitlementOnFocus(): Promise<void> {
-    if (!this.state.signedIn) return;
-    const now = Date.now();
-    if (now - this.lastFocusRecheckAt < FOCUS_RECHECK_MIN_MS) return;
-    this.lastFocusRecheckAt = now;
-    try {
-      await this.refreshEntitlement();
-    } catch {
-      /* honest no-op: the last folded entitlement stands */
-    }
+  private recheckEntitlementOnFocus(): Promise<void> {
+    return l3Auth.recheckEntitlementOnFocus(this);
   }
 
-  /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
-  async authLogout(): Promise<void> {
-    this.stopEntitlementPoll();
-    // L3-WP19: a claim read or session refresh still in flight must not sign the member back in.
-    this.claimSession.epoch++;
-    // core#584: a Billing checkout attempt still checking for a held grant opens nothing after sign-out.
-    this.billingAttempt++;
-    if (this.state.billingChecking) this.setState({ billingChecking: false });
-    await bridge.auth.logout();
-    this.setState({
-      tier: "free",
-      // Coherent free/no-membership state — matches the expired-claim path
-      // (tier:free + entitlement:lapsed); leaving a prior "active" would render a
-      // false membership badge on a signed-out/free account (Rule 1).
-      entitlement: "lapsed",
-      citrateRole: "member",
-      membershipActivating: false,
-      membershipCheckoutAt: null,
-      alfMember: false, // clear the ALF flag on sign-out — a signed-out account is not an ALF member (Rule 1)
-      org: null,
-      signedIn: false,
-      authSub: null,
-      authEmail: null,
-      authName: null,
-      authInitials: null,
-      walletFromClaim: false,
-    });
-    this.save();
+  /** Sign out: revoke, clear the vault slot, wipe the session, then reset (actions/l3/auth.ts). */
+  authLogout(): Promise<void> {
+    return l3Auth.authLogout(this);
   }
 
-  /** Open KYC in the browser; S2 status then arrives via userinfo polling. */
-  async kycStart(): Promise<void> {
-    // Same hazard as "Manage account", but on the compliance path: `kyc_start`
-    // opened a BARE authority URL, and the authority resolves identity from the
-    // BROWSER's cookie. A member whose browser held a different Citrate session
-    // was sent to verify THAT account — the exact failure seen 2026-08-06, where a
-    // test member's KYC opened the admin's already-verified account.
-    //
-    // Route it through the identity-aware opener so we at least hint the intended
-    // account and say plainly whose page this is. A server-side authenticated
-    // hand-off is the real fix (see handoffs/IDENTITY_ACCOUNT_HANDOFF_2026-08-06).
-    await this.openAuthorityPage("https://auth.citrate.ai/kyc/start", "identity verification");
+  /** Open KYC in the browser; the S2 status then arrives through userinfo (actions/l3/auth.ts). */
+  kycStart(): Promise<void> {
+    return l3Auth.kycStart(this);
   }
 
   /**
