@@ -20,7 +20,7 @@ function files(dir: string): string[] {
 const ALLOWED: Record<string, string> = {
   "privacy/joinFunnel.ts": "owns setTelemetryConsent and the consent patch",
   "privacy/JoinStepsNote.tsx": "a prop type",
-  "shell/state.ts": "the AppState type and its default (off)",
+  "shell/state/l3.ts": "the AppState type and its default (off), and its persisted scope (moved from shell/state.ts by L0-WP06)",
   "bridge/types.ts": "the AppConfig type and its default (off)",
   "bridge/domains.ts": "the bridge domain map",
   "bridge/cx.ts": "the bridge domain map",

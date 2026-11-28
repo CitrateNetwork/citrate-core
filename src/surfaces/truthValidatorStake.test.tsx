@@ -330,7 +330,9 @@ describe("#348 review — §1 Rewards words", () => {
     expect(AGENT_SYSTEM_PROMPT.toLowerCase()).not.toMatch(/\bearning/);
     expect(JSON.stringify(AGENT_TOOLS).toLowerCase()).not.toContain("earnings");
     expect(greeting(PERSONAS.p2).text.toLowerCase()).not.toContain("earnings");
-    for (const f of ["src/components/AgentChat.tsx", "src/shell/store.ts", "src/agent/harness.ts", "src/shell/state.ts"]) {
+    // L0-WP06: AppState's defaults live in the per-lane parts under src/shell/state/.
+    const stateParts = ["core", "persona", ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `l${n}`)].map((p) => `src/shell/state/${p}.ts`);
+    for (const f of ["src/components/AgentChat.tsx", "src/shell/store.ts", "src/agent/harness.ts", "src/shell/state.ts", ...stateParts]) {
       const lits = stringLiterals(f).toLowerCase();
       expect(lits, f).not.toMatch(/\bearnings\b/);
       expect(lits, f).not.toContain("keep accruing");
