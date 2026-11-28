@@ -2884,6 +2884,12 @@ pub async fn hermes_session_stop(
 #[path = "hermes_cloud.rs"]
 pub mod cloud;
 
+// L1-WP14a (v060): one owner-only home per ACP agent, its keyless launch environment, sign-out and
+// removal. Declared here (an L1 file) until the L0-WP04 lane module tree lands; it then moves to
+// `lanes/l1/mod.rs` unchanged.
+#[path = "agent_auth.rs"]
+pub mod agent_auth;
+
 // HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
 #[path = "hermes_personas.rs"]
 pub mod personas;
