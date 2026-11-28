@@ -414,7 +414,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if req.path != CHAT_PATH && req.path != RESPONSES_PATH {
+    if ![CHAT_PATH, RESPONSES_PATH, MESSAGES_PATH].contains(&req.path.as_str()) {
         return write_json(
             out,
             404,
@@ -428,7 +428,12 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "method", "message": "POST only"}}),
         );
     }
-    let Some((token, route)) = bearer(req).and_then(|b| proxy.route_for(b).map(|r| (b, r))) else {
+    let presented = if req.path == MESSAGES_PATH {
+        messages::route_token(req)
+    } else {
+        bearer(req)
+    };
+    let Some((token, route)) = presented.and_then(|b| proxy.route_for(b).map(|r| (b, r))) else {
         return write_json(out, 401, &error_body(&ProxyError::Unauthorized));
     };
     let body: Value = match serde_json::from_slice(&req.body) {
@@ -441,6 +446,10 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             )
         }
     };
+    if req.path == MESSAGES_PATH {
+        let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
+        return messages::serve(proxy, req, token, &route.model, &body, conversation, out);
+    }
     if req.path == RESPONSES_PATH {
         let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
         return responses::serve(proxy, token, &route.model, &body, conversation, out);
