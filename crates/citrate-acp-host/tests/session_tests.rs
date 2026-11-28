@@ -547,3 +547,16 @@ fn route_token_rides_only_in_the_route_env_and_never_in_a_frame() {
         assert!(r.err().expect("refused").reason.contains("credential"));
     }
 }
+
+#[test]
+fn shutdown_through_a_shared_handle_kills_the_agent() {
+    // Core keeps sessions behind Arc (one registry, many callers); sign-out and removal stop them
+    // through a shared handle.
+    let (h, _) = host();
+    let s = Arc::new(start_in(&h, &tmp("shutdown"), vec![], vec![]));
+    let other = s.clone();
+    let pid = s.pid();
+    s.shutdown();
+    assert!(wait_dead(pid, Duration::from_secs(5)));
+    assert!(other.prompt(text("updates 1")).is_err(), "a stopped session takes no turn");
+}
