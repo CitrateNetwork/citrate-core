@@ -22,6 +22,15 @@ use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+// 0.6.0 L6-WP05: the OAuth client v2 (provider registry, relay mode, refresh, revoke). Declared
+// here rather than in lib.rs (L0's file) so the lane stays inside its own files; its path is the
+// lane's `src-tauri/src/oauth_client/`. L0 may hoist it to the crate root without changing it.
+// L6-WP05 stack: the registry and the relay client land before the connect flow uses them; the
+// dead-code allowance goes when the refresh and revoke PR wires the last of them.
+#[allow(dead_code, unused_imports)]
+#[path = "oauth_client/mod.rs"]
+pub(crate) mod oauth_client;
+
 /// The loopback callback the single-use listener binds — and the `redirect_uri`
 /// registered for the providers that accept a plaintext-http loopback (GitHub,
 /// Google's Desktop-app client type). See {@link Service::redirect_uri}.
@@ -324,6 +333,10 @@ pub enum ConnError {
     Vault,
     /// The service id from the UI is not one of github/gdrive/notion.
     UnknownService,
+    /// L6-WP05: the relay needs a signed-in member and there is no live Citrate session.
+    NotSignedIn,
+    /// L6-WP05: the relay answered 429.
+    RateLimited,
 }
 
 impl std::fmt::Display for ConnError {
@@ -337,6 +350,8 @@ impl std::fmt::Display for ConnError {
             ConnError::TokenExchange => "the provider rejected the authorization code",
             ConnError::Vault => "the secure vault is locked or unavailable",
             ConnError::UnknownService => "unknown service",
+            ConnError::NotSignedIn => "Sign in to Citrate to connect",
+            ConnError::RateLimited => "the Citrate relay is busy; try again in a minute",
         };
         f.write_str(s)
     }
