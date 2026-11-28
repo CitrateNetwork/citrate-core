@@ -13,8 +13,9 @@
 //! client id and secret (the `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` pair the Drive service
 //! already uses). Until one is configured, [`google_workspace_status`] says so and the UI keeps
 //! Connect disabled with that reason. Until the member connects, every call here answers "not
-//! connected" without touching the network. An expired token is never sent (the member is asked
-//! to reconnect; this build has no refresh-token flow).
+//! connected" without touching the network. An expired token is never sent: L6-WP05 refreshes it
+//! once before use when a refresh token is sealed (`ConnectionManager::fresh_access_token`), and
+//! otherwise the member is asked to reconnect.
 //!
 //! Writes (append, create) are member actions in the app: Journal > Schedule lists Calendar
 //! events and adds one, and Journal > Sheets reads a range and adds rows. Hermes reaches the same
@@ -571,8 +572,15 @@ fn with_client<T>(
 ) -> Result<T, String> {
     let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(app)
         .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+    let conns = tauri::Manager::try_state::<crate::connections::ConnectionState>(app)
+        .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+    let auth = tauri::Manager::try_state::<crate::oidc::AuthState>(app)
+        .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+    // L6-WP05: an expired token is refreshed once (through the Citrate relay in relay mode)
+    // before it is sent; a token that cannot be refreshed reads as not connected.
+    let relay = crate::connections::oauth_client::relay::AuthorityRelay::new(&auth.0, &custody.0);
     let token = |s: Service| -> Option<zeroize::Zeroizing<String>> {
-        crate::connections::sealed_access_token(s, &custody.0)
+        conns.0.fresh_access_token(s, &custody.0, Some(&relay)).ok()
     };
     let http = crate::oidc::UreqClient;
     let client = GoogleClient {

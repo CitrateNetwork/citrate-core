@@ -3,9 +3,6 @@
 // payload or a log line). The provider and the relay are test seams (Rule 1: a TEST seam, never
 // a live socket presented as real); the vault runs headless over an in-memory keyring; the
 // listener tests use a real loopback socket on an OS-assigned port.
-//
-// L6-WP05 stack, part 2: the registry, the relay exchange, the debug-only dev file, OAuth state
-// and declined consent. Refresh and revoke tests arrive with that code (part 3).
 
 use super::relay::{self, RelayError, RelayOp, RelayTransport};
 use super::*;
@@ -236,6 +233,8 @@ fn release_build_ignores_dev_file() {
     for (name, file) in [
         ("providers.rs", include_str!("providers.rs")),
         ("relay.rs", include_str!("relay.rs")),
+        ("refresh.rs", include_str!("refresh.rs")),
+        ("revoke.rs", include_str!("revoke.rs")),
     ] {
         assert!(!file.contains("std::fs"), "{name} reads a file");
         assert!(
@@ -547,6 +546,12 @@ fn token_record_shape_unchanged_for_existing_slots() {
             .as_str(),
         "FIXTURE-WP05-OLD-AT"
     );
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, None)
+            .unwrap()
+            .as_str(),
+        "FIXTURE-WP05-OLD-AT"
+    );
 
     // A record WP05 writes has the same keys.
     let relay = FakeRelay::answering(vec![
@@ -632,6 +637,12 @@ fn long_and_pat_shaped_tokens_store_seal_unseal_and_redact_unchanged() {
         assert_eq!(rec["refresh_token"].as_str(), Some(refresh.as_str()));
         assert_eq!(
             sealed_access_token(Service::GitHub, &vault)
+                .unwrap()
+                .as_str(),
+            tok
+        );
+        assert_eq!(
+            mgr.fresh_access_token(Service::GitHub, &vault, None)
                 .unwrap()
                 .as_str(),
             tok
@@ -753,6 +764,310 @@ fn denied_consent_ends_the_flow_cleanly_and_nothing_is_connected() {
 }
 
 // ---------------------------------------------------------------------------
+// 05b: refresh
+// ---------------------------------------------------------------------------
+
+fn seal_expiring(vault: &CustodyVault, expires_at: u64, refresh: Option<&str>) {
+    record_json(
+        Service::GitHub,
+        vault,
+        serde_json::json!({
+            "access_token": "FIXTURE-WP05-AT-OLD",
+            "refresh_token": refresh,
+            "token_type": "bearer",
+            "scope": "repo",
+            "expires_at": expires_at,
+            "connected_at": 1_700_000_000u64,
+        }),
+    );
+}
+
+#[test]
+fn expired_token_triggers_refresh_before_use() {
+    let (mgr, logs) = relay_mgr();
+    let vault = fresh_vault();
+    seal_expiring(&vault, 1, Some("FIXTURE-WP05-RT-OLD"));
+    assert!(
+        sealed_access_token(Service::GitHub, &vault).is_none(),
+        "the expired token is never sent as is"
+    );
+    let relay = FakeRelay::answering(vec![Ok(
+        r#"{"access_token":"FIXTURE-WP05-AT-NEW","expires_in":28800,"refresh_token":"FIXTURE-WP05-RT-NEW"}"#
+            .to_string(),
+    )]);
+    let tok = mgr
+        .fresh_access_token(Service::GitHub, &vault, Some(&relay))
+        .expect("refreshed");
+    assert_eq!(tok.as_str(), "FIXTURE-WP05-AT-NEW");
+    let calls = relay.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, RelayOp::Refresh);
+    assert_eq!(
+        body_keys(&calls[0].2),
+        BTreeSet::from(["refresh_token".to_string()])
+    );
+    assert!(calls[0].2.contains("FIXTURE-WP05-RT-OLD"));
+    // connected_at and scope survive a refresh that does not restate them.
+    let rec = sealed(Service::GitHub, &vault);
+    assert_eq!(rec["connected_at"], 1_700_000_000u64);
+    assert_eq!(rec["scope"], "repo");
+    // A valid token is returned without another call.
+    mgr.fresh_access_token(Service::GitHub, &vault, Some(&relay))
+        .unwrap();
+    assert_eq!(relay.calls().len(), 1);
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l == "connections: github token refreshed via relay"));
+}
+
+#[test]
+fn refresh_rotates_both_tokens_atomically() {
+    let (mgr, _logs) = relay_mgr();
+    let vault = fresh_vault();
+    seal_expiring(&vault, 1, Some("FIXTURE-WP05-RT-1"));
+    let relay = FakeRelay::answering(vec![
+        Ok(r#"{"access_token":"FIXTURE-WP05-AT-2","refresh_token":"FIXTURE-WP05-RT-2","expires_in":0}"#.to_string()),
+        Ok(r#"{"access_token":"FIXTURE-WP05-AT-3","refresh_token":"FIXTURE-WP05-RT-3","expires_in":3600}"#.to_string()),
+    ]);
+    // The first refresh hands back an already-expired token: refreshed once, then reauth.
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, Some(&relay))
+            .unwrap_err(),
+        ConnError::ReauthRequired
+    );
+    // Both tokens rotated in the one record.
+    let rec = sealed(Service::GitHub, &vault);
+    assert_eq!(rec["access_token"], "FIXTURE-WP05-AT-2");
+    assert_eq!(rec["refresh_token"], "FIXTURE-WP05-RT-2");
+    // The next use sends the NEW refresh token; the old one is never reused.
+    let tok = mgr
+        .fresh_access_token(Service::GitHub, &vault, Some(&relay))
+        .unwrap();
+    assert_eq!(tok.as_str(), "FIXTURE-WP05-AT-3");
+    let calls = relay.calls();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].2.contains("FIXTURE-WP05-RT-1"));
+    assert!(calls[1].2.contains("FIXTURE-WP05-RT-2"));
+    assert!(!calls[1].2.contains("FIXTURE-WP05-RT-1"));
+    assert_eq!(
+        sealed(Service::GitHub, &vault)["refresh_token"],
+        "FIXTURE-WP05-RT-3"
+    );
+}
+
+#[test]
+fn refresh_once_then_reauth_required() {
+    let (mgr, logs) = relay_mgr();
+    let vault = fresh_vault();
+    seal_expiring(&vault, 1, Some("FIXTURE-WP05-RT-OLD"));
+    let relay = FakeRelay::answering(vec![Err(RelayError::Rejected(400))]);
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, Some(&relay))
+            .unwrap_err(),
+        ConnError::ReauthRequired
+    );
+    assert_eq!(relay.calls().len(), 1, "exactly one refresh attempt");
+    // The record is left as it was (the member reconnects); nothing was half-written.
+    assert_eq!(
+        sealed(Service::GitHub, &vault)["access_token"],
+        "FIXTURE-WP05-AT-OLD"
+    );
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.starts_with("connections: github refresh via relay failed")));
+
+    // No refresh token sealed: reauth with no call at all.
+    seal_expiring(&vault, 1, None);
+    let none = FakeRelay::default();
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, Some(&none))
+            .unwrap_err(),
+        ConnError::ReauthRequired
+    );
+    assert!(none.calls().is_empty());
+
+    // Signed out of Citrate: says so, and the relay is not called without a session.
+    seal_expiring(&vault, 1, Some("FIXTURE-WP05-RT-OLD"));
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, None)
+            .unwrap_err(),
+        ConnError::NotSignedIn
+    );
+    // A locked vault is never forced open.
+    vault.lock();
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, Some(&none))
+            .unwrap_err(),
+        ConnError::Vault
+    );
+}
+
+#[test]
+fn a_token_inside_the_skew_with_nothing_to_refresh_with_stays_usable() {
+    let (mgr, _logs) = relay_mgr();
+    let vault = fresh_vault();
+    seal_expiring(&vault, now_unix() + 30, None);
+    assert_eq!(
+        mgr.fresh_access_token(Service::GitHub, &vault, None)
+            .unwrap()
+            .as_str(),
+        "FIXTURE-WP05-AT-OLD"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 05b: revoke
+// ---------------------------------------------------------------------------
+
+fn connect_github(mgr: &ConnectionManager, vault: &CustodyVault) {
+    let relay = FakeRelay::answering(vec![Ok(
+        r#"{"access_token":"FIXTURE-WP05-AT","token_type":"bearer","scope":"repo,read:org"}"#
+            .to_string(),
+    )]);
+    mgr.exchange_with_plan(
+        Service::GitHub,
+        &github_plan(),
+        vault,
+        "c",
+        "v",
+        Some(&relay),
+    )
+    .unwrap();
+}
+
+#[test]
+fn revoke_path_calls_the_relay_then_clears_the_slot() {
+    let (mgr, logs) = relay_mgr();
+    let vault = fresh_vault();
+    connect_github(&mgr, &vault);
+    let relay = FakeRelay::answering(vec![Ok(
+        r#"{"revoked":true,"upstream_status":204}"#.to_string()
+    )]);
+    connection_disconnect_with(&mgr, &vault, Some(&relay), "github".to_string())
+        .expect("a confirmed revoke disconnects cleanly");
+    let calls = relay.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        (calls[0].0.as_str(), calls[0].1),
+        ("github", RelayOp::Revoke)
+    );
+    assert_eq!(
+        body_keys(&calls[0].2),
+        BTreeSet::from(["token".to_string()])
+    );
+    assert!(calls[0].2.contains("FIXTURE-WP05-AT"));
+    assert!(
+        vault.custody_get(&slot(Service::GitHub)).is_err(),
+        "slot cleared"
+    );
+    assert!(mgr.status(&vault).iter().all(|s| !s.connected));
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("github disconnect: revoked at the provider")));
+}
+
+#[test]
+fn revoke_clears_slot_even_if_provider_revocation_fails() {
+    for failure in [
+        Err(RelayError::Rejected(502)),
+        Err(RelayError::Network),
+        Err(RelayError::NotSignedIn),
+        Ok(r#"{"error":"provider_rejected","revoked":false,"upstream_status":404}"#.to_string()),
+    ] {
+        let (mgr, _logs) = relay_mgr();
+        let vault = fresh_vault();
+        connect_github(&mgr, &vault);
+        let relay = FakeRelay::answering(vec![failure]);
+        let msg = connection_disconnect_with(&mgr, &vault, Some(&relay), "github".to_string())
+            .expect_err("a failed revoke is reported");
+        assert!(msg.starts_with("Disconnected on this device"), "{msg}");
+        assert!(
+            msg.contains("GitHub did not confirm it revoked access"),
+            "{msg}"
+        );
+        assert!(!msg.contains('\u{2014}'), "no em-dash: {msg}");
+        assert!(!msg.contains(MARK), "{msg}");
+        assert!(
+            vault.custody_get(&slot(Service::GitHub)).is_err(),
+            "slot cleared anyway"
+        );
+        assert!(mgr.status(&vault).iter().all(|s| !s.connected));
+    }
+}
+
+#[test]
+fn the_revoke_attempt_is_recorded_before_the_slot_is_cleared() {
+    let vault = Arc::new(fresh_vault());
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let (sink_vault, sink_seen) = (vault.clone(), seen.clone());
+    let mgr = ConnectionManager::new(Box::new(NoNetwork), tmp("nodev").join("none"))
+        .with_v2(true)
+        .with_log(Box::new(move |line: &str| {
+            let present = sink_vault.custody_get(&slot(Service::GitHub)).is_ok();
+            sink_seen.lock().unwrap().push((line.to_string(), present));
+        }));
+    connect_github(&mgr, &vault);
+    let relay = FakeRelay::answering(vec![Err(RelayError::Rejected(502))]);
+    let outcome = mgr
+        .disconnect_with(Service::GitHub, &vault, Some(&relay))
+        .unwrap();
+    assert!(matches!(outcome, revoke::RevokeOutcome::Failed(_)));
+    let seen = seen.lock().unwrap().clone();
+    let (line, present) = seen
+        .iter()
+        .find(|(l, _)| l.contains("github disconnect"))
+        .expect("the attempt is recorded");
+    assert!(line.contains("revoke failed"), "{line}");
+    assert!(*present, "recorded while the slot still existed");
+    assert!(vault.custody_get(&slot(Service::GitHub)).is_err());
+}
+
+#[test]
+fn providers_without_a_revoke_endpoint_disconnect_locally_without_a_call() {
+    // Notion has no relay revoke row; with no dev file and v2 on it is not even configured.
+    let (mgr, logs) = relay_mgr();
+    let vault = fresh_vault();
+    record_json(
+        Service::Notion,
+        &vault,
+        serde_json::json!({"access_token": "FIXTURE-WP05-NOTION", "connected_at": 1u64}),
+    );
+    let relay = FakeRelay::default();
+    connection_disconnect_with(&mgr, &vault, Some(&relay), "notion".to_string()).unwrap();
+    assert!(relay.calls().is_empty());
+    assert!(vault.custody_get(&slot(Service::Notion)).is_err());
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("notion disconnect: no revoke path")));
+    // Nothing stored: still fine, still cleared.
+    connection_disconnect_with(&mgr, &vault, Some(&relay), "github".to_string()).unwrap();
+    assert!(relay.calls().is_empty());
+}
+
+#[test]
+fn a_locked_vault_refuses_disconnect_without_calling_anyone() {
+    let (mgr, _logs) = relay_mgr();
+    let vault = fresh_vault();
+    connect_github(&mgr, &vault);
+    vault.lock();
+    let relay = FakeRelay::default();
+    assert_eq!(
+        mgr.disconnect_with(Service::GitHub, &vault, Some(&relay))
+            .unwrap_err(),
+        ConnError::Vault
+    );
+    assert!(relay.calls().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // No token or secret in an IPC payload or a log line
 // ---------------------------------------------------------------------------
 
@@ -768,8 +1083,12 @@ fn no_token_or_secret_reaches_an_ipc_payload_or_a_log_line() {
     let provider = Arc::new(Provider::default());
     {
         let mut a = provider.answers.lock().unwrap();
-        // Sheets exchange (dev file).
-        a.push_back(Ok(r#"{"access_token":"FIXTURE-WP05-G-AT","refresh_token":"FIXTURE-WP05-G-RT","expires_in":3600,"scope":"spreadsheets"}"#.to_string()));
+        // Sheets exchange (dev file), then a refresh, then the revoke.
+        a.push_back(Ok(r#"{"access_token":"FIXTURE-WP05-G-AT","refresh_token":"FIXTURE-WP05-G-RT","expires_in":0,"scope":"spreadsheets"}"#.to_string()));
+        a.push_back(Ok(
+            r#"{"access_token":"FIXTURE-WP05-G-AT2","expires_in":3600}"#.to_string(),
+        ));
+        a.push_back(Ok(String::new()));
     }
     let mgr = ConnectionManager::new(Box::new(ProviderHttp(provider.clone())), dev.clone())
         .with_v2(true)
@@ -777,10 +1096,12 @@ fn no_token_or_secret_reaches_an_ipc_payload_or_a_log_line() {
     let vault = fresh_vault();
     let mut payloads: Vec<String> = Vec::new();
 
-    // GitHub through the relay: connect, then a failed exchange.
+    // GitHub through the relay: connect, a failed exchange, a refresh with no refresh token,
+    // a failed revoke.
     let relay = FakeRelay::answering(vec![
         Ok(r#"{"access_token":"FIXTURE-WP05-AT","refresh_token":"FIXTURE-WP05-RT","expires_in":3600}"#.to_string()),
         Err(RelayError::Rejected(400)),
+        Err(RelayError::Rejected(502)),
     ]);
     let st = mgr
         .exchange_with_plan(
@@ -809,7 +1130,7 @@ fn no_token_or_secret_reaches_an_ipc_payload_or_a_log_line() {
     payloads.push(err.to_string());
     payloads.push(serde_json::to_string(&mgr.status(&vault)).unwrap());
 
-    // Google Sheets through the dev file.
+    // Google Sheets through the dev file: exchange, refresh, revoke.
     let plan = mgr.plan(Service::GoogleSheets).unwrap();
     let st = mgr
         .exchange_with_plan(
@@ -822,16 +1143,42 @@ fn no_token_or_secret_reaches_an_ipc_payload_or_a_log_line() {
         )
         .unwrap();
     payloads.push(serde_json::to_string(&st).unwrap());
+    let tok = mgr
+        .fresh_access_token(Service::GoogleSheets, &vault, None)
+        .unwrap();
+    assert_eq!(tok.as_str(), "FIXTURE-WP05-G-AT2");
+    payloads.push(
+        connection_disconnect_with(&mgr, &vault, None, "gsheets".to_string())
+            .err()
+            .unwrap_or_default(),
+    );
+    payloads.push(
+        connection_disconnect_with(&mgr, &vault, Some(&relay), "github".to_string())
+            .err()
+            .unwrap_or_default(),
+    );
     payloads.push(serde_json::to_string(&mgr.status(&vault)).unwrap());
-    assert_eq!(provider.posts.lock().unwrap().len(), 1);
+
+    // The Google revoke went to Google's endpoint with the refresh token alone.
+    let posts = provider.posts.lock().unwrap().clone();
+    assert_eq!(posts.len(), 3);
+    assert_eq!(posts[2].0, "https://oauth2.googleapis.com/revoke");
+    assert_eq!(
+        posts[2].1,
+        vec![("token".to_string(), "FIXTURE-WP05-G-RT".to_string())]
+    );
 
     let logs = logs.lock().unwrap().clone();
-    assert!(logs.len() >= 3, "{logs:?}");
+    assert!(logs.len() >= 6, "{logs:?}");
     for text in payloads.iter().chain(logs.iter()) {
         assert!(!text.contains(MARK), "credential leaked: {text}");
         assert!(!text.contains("client_secret"), "{text}");
         assert!(!text.to_ascii_lowercase().contains("bearer "), "{text}");
     }
+    // The member was told the GitHub revoke failed.
+    assert!(payloads
+        .iter()
+        .any(|p| p.contains("GitHub did not confirm")));
     let _ = std::fs::remove_file(&dev);
 }
 
@@ -848,6 +1195,8 @@ fn the_command_surface_still_returns_only_claim_free_types() {
         include_str!("mod.rs"),
         include_str!("providers.rs"),
         include_str!("relay.rs"),
+        include_str!("refresh.rs"),
+        include_str!("revoke.rs"),
     ] {
         // An attribute on a line of its own (a doc comment may name it).
         assert!(!module.lines().any(|l| l.trim() == "#[tauri::command]"));

@@ -25,9 +25,6 @@ use zeroize::Zeroizing;
 // 0.6.0 L6-WP05: the OAuth client v2 (provider registry, relay mode, refresh, revoke). Declared
 // here rather than in lib.rs (L0's file) so the lane stays inside its own files; its path is the
 // lane's `src-tauri/src/oauth_client/`. L0 may hoist it to the crate root without changing it.
-// L6-WP05 stack: the relay's refresh and revoke bodies are used from part 3 (refresh and revoke);
-// the dead-code allowance goes there.
-#[allow(dead_code)]
 #[path = "oauth_client/mod.rs"]
 pub(crate) mod oauth_client;
 
@@ -343,6 +340,10 @@ pub enum ConnError {
     NotSignedIn,
     /// L6-WP05: the relay answered 429.
     RateLimited,
+    /// L6-WP05: the stored token has expired and could not be refreshed; connect again.
+    ReauthRequired,
+    /// L6-WP05: no token is stored for this service.
+    NotConnected,
 }
 
 impl std::fmt::Display for ConnError {
@@ -361,6 +362,8 @@ impl std::fmt::Display for ConnError {
             }
             ConnError::NotSignedIn => "Sign in to Citrate to connect",
             ConnError::RateLimited => "the Citrate relay is busy; try again in a minute",
+            ConnError::ReauthRequired => "the connection expired; connect it again",
+            ConnError::NotConnected => "not connected",
         };
         f.write_str(s)
     }
@@ -793,6 +796,23 @@ pub struct ConnectionStatus {
 // The connection manager + its Tauri state
 // ---------------------------------------------------------------------------
 
+/// The whole sealed record, read back in-process for refresh and revoke (L6-WP05). The same
+/// JSON `StoredConnection` writes, so a record written before WP05 reads unchanged.
+#[derive(Deserialize)]
+struct SealedRecord {
+    access_token: SecretString,
+    #[serde(default)]
+    refresh_token: Option<SecretString>,
+    #[serde(default)]
+    token_type: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    expires_at: Option<u64>,
+    #[serde(default)]
+    connected_at: Option<u64>,
+}
+
 /// How this run reaches a service's OAuth client (L6-WP05). Never holds a secret outside the
 /// debug-only `DevFile` arm.
 enum ClientPlan {
@@ -818,6 +838,22 @@ impl ClientPlan {
             ClientPlan::DevFile(c) => &c.client_id,
             ClientPlan::PublicPkce { client_id } | ClientPlan::Relay { client_id, .. } => client_id,
         }
+    }
+
+    /// The form a direct refresh posts to the provider's token endpoint (`DevFile` and
+    /// `PublicPkce`; a relay refresh sends only the refresh token, see `oauth_client::relay`).
+    fn direct_refresh_params(&self, refresh_token: &str) -> Vec<(&'static str, String)> {
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))] // only the dev file adds a field
+        let mut params = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.to_string()),
+            ("client_id", self.client_id().to_string()),
+        ];
+        #[cfg(debug_assertions)]
+        if let ClientPlan::DevFile(c) = self {
+            params.push(("client_secret", c.client_secret.to_string()));
+        }
+        params
     }
 
     /// The mode name for a log line (never a credential).
@@ -850,6 +886,8 @@ pub struct ConnectionManager {
     /// a release build reports `NotConfigured`. On: the compiled provider registry applies.
     v2: bool,
     log: LogSink,
+    /// Serializes refreshes so a rotated refresh token is never sent twice.
+    refresh_lock: std::sync::Mutex<()>,
 }
 
 impl ConnectionManager {
@@ -862,6 +900,7 @@ impl ConnectionManager {
             creds_path,
             v2: false,
             log: stderr_log(),
+            refresh_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -872,6 +911,7 @@ impl ConnectionManager {
             http,
             v2: false,
             log: stderr_log(),
+            refresh_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -1034,7 +1074,7 @@ impl ConnectionManager {
                 // No secret: `token_exchange_params` drops the empty value.
                 let params = token_exchange_params(service, client_id, "", code, verifier);
                 self.post_provider_form(service.token_endpoint(), &params)
-                    .and_then(|body| self.seal_token_response(service, &body, vault))
+                    .and_then(|body| self.seal_token_response(service, &body, vault, None))
             }
             ClientPlan::Relay { provider, .. } => {
                 let relay = relay.ok_or(ConnError::NotSignedIn)?;
@@ -1042,7 +1082,7 @@ impl ConnectionManager {
                 relay
                     .post(provider, oauth_client::relay::RelayOp::Token, &req)
                     .map_err(|e| e.into_conn(ConnError::TokenExchange))
-                    .and_then(|body| self.seal_token_response(service, &body, vault))
+                    .and_then(|body| self.seal_token_response(service, &body, vault, None))
             }
         };
         match &out {
@@ -1082,7 +1122,7 @@ impl ConnectionManager {
             verifier,
         );
         let body = self.post_provider_form(service.token_endpoint(), &params)?;
-        self.seal_token_response(service, &body, vault)
+        self.seal_token_response(service, &body, vault, None)
     }
 
     /// POST a form to a provider endpoint; the body (it holds tokens) comes back in a wiping
@@ -1100,25 +1140,38 @@ impl ConnectionManager {
     }
 
     /// Parse a provider token response and seal it as the service's record, in one vault put.
-    /// No length or shape is assumed of any token.
+    /// `prior` (a refresh) keeps the first `connected_at`, and the old refresh token and scope
+    /// when the provider did not send new ones. No length or shape is assumed of any token.
     fn seal_token_response(
         &self,
         service: Service,
         body: &str,
         vault: &CustodyVault,
+        prior: Option<&SealedRecord>,
     ) -> std::result::Result<ConnectionStatus, ConnError> {
         let tok: TokenResponse =
             serde_json::from_str(body).map_err(|_| ConnError::TokenExchange)?;
         if tok.access_token.expose().is_empty() {
             return Err(ConnError::TokenExchange);
         }
-        let connected_at = now_unix();
-        let expires_at = tok.expires_in.map(|e| connected_at.saturating_add(e));
-        let scope = tok.scope.clone();
+        let now = now_unix();
+        let connected_at = prior.and_then(|p| p.connected_at).unwrap_or(now);
+        let expires_at = tok.expires_in.map(|e| now.saturating_add(e));
+        let scope = tok
+            .scope
+            .clone()
+            .or_else(|| prior.and_then(|p| p.scope.clone()));
         let record = StoredConnection {
             access_token: tok.access_token.expose(),
-            refresh_token: tok.refresh_token.as_ref().map(SecretString::expose),
-            token_type: tok.token_type.as_deref(),
+            refresh_token: tok
+                .refresh_token
+                .as_ref()
+                .or_else(|| prior.and_then(|p| p.refresh_token.as_ref()))
+                .map(SecretString::expose),
+            token_type: tok
+                .token_type
+                .as_deref()
+                .or_else(|| prior.and_then(|p| p.token_type.as_deref())),
             scope: scope.as_deref(),
             expires_at,
             connected_at,
@@ -1165,16 +1218,15 @@ impl ConnectionManager {
             .collect()
     }
 
-    /// Forget a service's token (clear the vault slot). Idempotent-ish: a missing
-    /// slot is not an error worth surfacing differently.
+    /// Forget a service's token with no relay transport (a relay-mode revoke is then recorded
+    /// as failed). See [`Self::disconnect_with`]; the command passes the member's session.
+    #[cfg(test)]
     pub fn disconnect(
         &self,
         service: Service,
         vault: &CustodyVault,
     ) -> std::result::Result<(), ConnError> {
-        vault
-            .clear_slot(&slot(service))
-            .map_err(|_| ConnError::Vault)
+        self.disconnect_with(service, vault, None).map(|_| ())
     }
 }
 
@@ -1250,7 +1302,9 @@ pub fn connection_status_sync(
     Ok(state.0.status(&custody.0))
 }
 
-/// `connection_disconnect` — forget a service's sealed token.
+/// `connection_disconnect` — revoke at the provider where that is supported, then forget the
+/// sealed token. L6-WP05: the slot is cleared on the member's request even when the revoke
+/// fails; the command then returns an error that says so.
 #[tauri::command]
 pub async fn connection_disconnect(
     app_h: tauri::AppHandle,
@@ -1262,7 +1316,9 @@ pub async fn connection_disconnect(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        connection_disconnect_sync(st0, st1, service)
+        let st2 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        connection_disconnect_sync(st0, st1, st2, service)
     })
     .await
 }
@@ -1271,13 +1327,28 @@ pub async fn connection_disconnect(
 pub fn connection_disconnect_sync(
     state: State<'_, ConnectionState>,
     custody: State<'_, crate::custody::CustodyState>,
+    auth: State<'_, crate::oidc::AuthState>,
+    service: String,
+) -> std::result::Result<(), String> {
+    let relay = oauth_client::relay::AuthorityRelay::new(&auth.0, &custody.0);
+    connection_disconnect_with(&state.0, &custody.0, Some(&relay), service)
+}
+
+/// The disconnect body: revoke, record, clear, and report a failed revoke honestly.
+fn connection_disconnect_with(
+    mgr: &ConnectionManager,
+    vault: &CustodyVault,
+    relay: Option<&dyn oauth_client::relay::RelayTransport>,
     service: String,
 ) -> std::result::Result<(), String> {
     let svc = Service::from_id(&service).ok_or_else(|| ConnError::UnknownService.to_string())?;
-    state
-        .0
-        .disconnect(svc, &custody.0)
-        .map_err(|e| e.to_string())
+    let outcome = mgr
+        .disconnect_with(svc, vault, relay)
+        .map_err(|e| e.to_string())?;
+    match outcome.member_message(svc) {
+        Some(msg) => Err(msg),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

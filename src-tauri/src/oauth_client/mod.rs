@@ -19,12 +19,18 @@
 //! `social.rs`), the relay endpoints of lanes/L6 section 3.1 as built in citrate-identity
 //! (`src/oauth-relay/routes.ts`, `docs/OAUTH_RELAY.md`), and the custody vault slot
 //! `connection-<id>`.
+//!
+//! Refresh ([`refresh`]) and revoke ([`revoke`]) are methods on the connection manager.
 
 mod providers;
+pub(crate) mod refresh;
 pub(crate) mod relay;
+pub(crate) mod revoke;
 
 #[cfg(test)]
 mod tests;
+
+use super::Service;
 
 pub use providers::provider_setup;
 pub(crate) use providers::setup_for;
@@ -75,4 +81,11 @@ pub(crate) fn connections_v2_enabled() -> bool {
         return true;
     }
     CONNECTIONS_V2
+}
+
+/// Whether the provider's relay row has a revocation endpoint (citrate-identity
+/// `src/oauth-relay/providers.ts`: GitHub yes, Notion no). A service without one is
+/// disconnected locally and the grant stays listed at the provider.
+pub(crate) fn relay_revokes(service: Service) -> bool {
+    matches!(service, Service::GitHub)
 }

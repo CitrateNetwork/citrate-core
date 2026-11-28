@@ -88,10 +88,12 @@ export function Connections({ store }: SurfaceProps) {
     try {
       if (connected) await bridge.connections.disconnect(svc);
       else await bridge.connections.start(svc);
-      await loadMcp();
     } catch (e) {
-      store.toast("Couldn't update the connection — " + (e instanceof Error ? e.message : String(e)));
+      // L6-WP05: a disconnect whose provider revoke failed still removed the token here; the
+      // message says so, and the reload below shows the row disconnected.
+      store.toast("Couldn't update the connection: " + (e instanceof Error ? e.message : String(e)));
     } finally {
+      await loadMcp();
       setMcpBusy(null);
     }
   };
