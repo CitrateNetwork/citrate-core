@@ -91,6 +91,8 @@ fn classical_tunnel_never_classifies_as_pq() {
         PqState::Missing,
         PqState::Refused("peer has no pq-session protocol".into()),
     ];
+    // A refusal keeps the peer's reason (shown per link once the daemon reports it, WP12).
+    assert!(matches!(&not_pq[1], PqState::Refused(r) if r.contains("pq-session")));
     for link in LinkKind::ALL {
         for pq in &not_pq {
             assert_ne!(

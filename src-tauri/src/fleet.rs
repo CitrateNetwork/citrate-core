@@ -553,6 +553,13 @@ fn primary_lan_ip() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
+/// The pairing listener: every interface, a port the OS picks (the answering side still drops
+/// peers [`peer_allowed`] refuses). One place, so the characterization suite pins it (L7-WP01) and
+/// L7-WP03 changes it to the fixed port on private addresses.
+pub(crate) fn bind_pairing_listener() -> Result<TcpListener, String> {
+    TcpListener::bind("0.0.0.0:0").map_err(|e| format!("pairing listener: {e}"))
+}
+
 // ---- runtime state + commands ---------------------------------------------------------------
 
 struct Runtime {
@@ -802,8 +809,7 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
             *port
         }
         _ => {
-            let listener =
-                TcpListener::bind("0.0.0.0:0").map_err(|e| format!("pairing listener: {e}"))?;
+            let listener = bind_pairing_listener()?;
             let port = listener.local_addr().map_err(|e| e.to_string())?.port();
             let running = Arc::new(AtomicBool::new(true));
             let ctx = Arc::new(PairCtx {
