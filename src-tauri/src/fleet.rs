@@ -43,6 +43,11 @@ use crate::fleet_pairing::{
 };
 use crate::fleet_tailscale::{GuidanceStep, Reach, TailscaleReport};
 
+/// L7 networking (`src-tauri/src/net/`, L7-WP01): declared here, in an L7 file, until L0's per-lane
+/// module tree (L0-WP04) gives it a lane home.
+#[path = "net/mod.rs"]
+pub(crate) mod net;
+
 /// The local fleet roster, in the app data dir.
 pub const ROSTER_FILE: &str = "fleet.json";
 /// Most devices the local roster keeps.

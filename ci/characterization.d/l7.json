@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "owner": "L7",
+  "base": "ee5ff874",
+  "about": "L7-WP01 characterization suites for lane L7 (Networking), planset v060 lanes/L7_NETWORKING.md section 4, L7-WP01. Each suite pins today's networking behavior before an L7 work package changes the code around it. A later L7 PR that changes a pinned behavior names the suite and test it supersedes and replaces the assertion only with a stricter one, in a commit that says why. LQ is to run every suite here on every merge-queue group; until then the suites run in the ordinary cargo and vitest jobs. char_suite_is_listed_for_lq fails when this file and the L7-CH-1 suite file stop naming the same tests.",
+  "suites": [
+    {
+      "id": "L7-CH-1",
+      "lane": "L7",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "fleet::net::characterization_tests::",
+      "files": ["src-tauri/src/net/characterization_tests.rs"],
+      "covers": [
+        "src-tauri/src/cluster_mesh.rs",
+        "src-tauri/src/cluster.rs",
+        "src-tauri/src/fleet.rs",
+        "src-tauri/src/fleet_pairing.rs",
+        "src-tauri/src/fleet_tailscale.rs",
+        "src/surfaces/AddMachineSheet.tsx"
+      ],
+      "tests": [
+        "char_mesh_needs_operator_env_today",
+        "char_default_listen_is_all_interfaces_4211",
+        "char_pairing_listener_binds_an_ephemeral_port",
+        "char_pairing_key_is_new_each_run",
+        "char_used_tokens_are_forgotten_by_a_new_issuer",
+        "char_hints_refuse_public_loopback_metadata",
+        "char_tailscale_only_runs_status_json",
+        "char_mesh_gate_text_matches_ts",
+        "char_suite_is_listed_for_lq"
+      ],
+      "pins": "with no CITRATE_CLUSTER_LISTEN the mesh is off and the operator env always wins; the default listen is all interfaces on 4211; the pairing listener binds every interface on an OS-picked port; the pairing key is new every run and a new issuer forgets used and outstanding tokens; pairing hints refuse public, loopback and cloud metadata addresses; the Tailscale CLI is only asked `status --json`; mesh-only actions answer the same MESH_NOT_AVAILABLE words in core and in the Add-a-machine sheet",
+      "keepsGreen": ["src-tauri/src/fleet_tests.rs", "src-tauri/src/fleet_pairing_tests.rs", "src-tauri/src/fleet_tailscale_tests.rs", "src-tauri/src/cluster_tests.rs"],
+      "supersededBy": ["L7-WP02", "L7-WP03", "L7-WP10", "L7-WP11"]
+    },
+    {
+      "id": "L7-CH-2",
+      "lane": "L7",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "cluster_mesh::tests::",
+      "files": ["src-tauri/src/cluster_mesh.rs"],
+      "covers": ["src-tauri/src/cluster_mesh.rs", "release/signoffs/CL-S4.json", "release/components.json"],
+      "tests": [
+        "todays_build_changes_nothing_the_operator_env_or_off",
+        "signed_flag_requires_signoff_record",
+        "default_on_needs_both_preconditions_and_respects_the_member",
+        "the_member_is_told_why_in_plain_words",
+        "the_multi_group_flag_matches_the_bundled_daemon"
+      ],
+      "pins": "the mesh policy and its sign-off gate (existing tests, kept): TRANSPORT_SIGNED_OFF may be true only with a verifying CL-S4 record, the default needs both preconditions and respects the member's off switch, the member is told why in plain words, and the multi-group flag matches the bundled daemon rev",
+      "keepsGreen": ["src-tauri/src/cluster_mesh.rs"],
+      "supersededBy": ["L7-WP10", "L7-WP11", "L7-WP22"]
+    },
+    {
+      "id": "L7-CH-3",
+      "lane": "L7",
+      "runner": "vitest",
+      "files": ["src/surfaces/meshSwitch.char.test.ts"],
+      "covers": ["src/surfaces/meshSwitch.ts"],
+      "tests": [
+        "char_unloaded_status_is_unusable",
+        "char_unsigned_build_cannot_be_changed",
+        "char_operator_setting_cannot_be_changed",
+        "char_signed_build_offers_the_member_switch"
+      ],
+      "pins": "the member's mesh switch model for no status, an unsigned build, an operator setting and a signed build",
+      "keepsGreen": ["src/surfaces/meshSwitch.test.ts"],
+      "supersededBy": ["L7-WP11"]
+    }
+  ],
+  "supersedesByWp": {
+    "L7-WP02": ["L7-CH-1"],
+    "L7-WP03": ["L7-CH-1"],
+    "L7-WP10": ["L7-CH-1", "L7-CH-2"],
+    "L7-WP11": ["L7-CH-1", "L7-CH-2", "L7-CH-3"],
+    "L7-WP22": ["L7-CH-2"]
+  }
+}
