@@ -286,7 +286,9 @@ const RETIRED_RUNNER = /^(macos-1[0-4](-.*)?|ubuntu-(18|20)\.04(-.*)?)$/;
 // step that signs, notarizes or publishes is skipped in a dry run, and the dry-run-only steps read
 // no secret but the job's own GITHUB_TOKEN.
 const DRY_RUN_ENV = "DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}";
-const PUBLISHES = /tauri-apps\/tauri-action|gh release (create|edit|upload|delete)|secrets\.(TAURI_SIGNING|APPLE_|KEYCHAIN)/;
+// A step that loads from the citrate-release vault (the `release` environment's 1Password service
+// account) or reads what it loaded is a signing step too.
+const PUBLISHES = /tauri-apps\/tauri-action|gh release (create|edit|upload|delete)|secrets\.(TAURI_SIGNING|APPLE_|KEYCHAIN|OP_SERVICE_ACCOUNT_TOKEN)|1password\/load-secrets-action|op:\/\/citrate-release\/|steps\.op\.outputs\./;
 export function dryRunGuardErrors(text) {
   const errors = [];
   if (!text.includes(DRY_RUN_ENV)) errors.push(`release.yml must set job env ${DRY_RUN_ENV}`);
