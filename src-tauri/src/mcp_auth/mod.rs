@@ -37,8 +37,10 @@
 pub(crate) mod discovery;
 pub(crate) mod flow;
 pub(crate) mod http;
+pub(crate) mod migration;
 pub(crate) mod registration;
 pub(crate) mod store;
+pub(crate) mod token_source;
 
 #[cfg(test)]
 mod discovery_tests;
@@ -50,6 +52,8 @@ mod flow_tests;
 mod http_tests;
 #[cfg(test)]
 mod registration_tests;
+#[cfg(test)]
+mod token_source_tests;
 
 // @flag MCP_REMOTE_AUTH
 /// The MCP remote authorization flag (lanes/L6 WP06). Off until a release build has a recorded
