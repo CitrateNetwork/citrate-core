@@ -240,17 +240,37 @@ TermsOf(s) == IF s \in CallSlots THEN budget[s].targets ELSE {}
 \* Mutant switch: the guard holds, or the mutant config breaks exactly this guard.
 Broken(m) == B3Mutant = m
 
-\* B-3 eligibility, first cut: exactly what the dormant SessionBudget::covers (ADR-2026-08-29)
-\* checks: origin, kind, chain, ops left, not expired. RED: the B-3 configs expect more.
+\* The dormant SessionBudget::covers (ADR-2026-08-29): origin, kind, chain, ops left, not
+\* expired. Kept as mutant "Covers": wired as it stands, it would auto-sign a creation.
 CallCovers(rq) ==
     /\ rq.att = rq.sess
     /\ rq.chain = "c40204"
     /\ CallBudgetLiveIgnoringCount(CallSlot(rq.sess))
     /\ budget[CallSlot(rq.sess)].used < CallMaxOps
 
+\* A creation is never covered; any other target must be in the budget's granted set.
+CallTargetOk(rq) ==
+    IF rq.to = "create"
+    THEN Broken("SignsCreation")
+    ELSE rq.to \in budget[CallSlot(rq.sess)].targets \/ Broken("ForeignTarget")
+
+\* ADR-2026-11-27 D2: every B-3 check that carries a modelled safety property.
+CallChecks(rq) ==
+    LET s == CallSlot(rq.sess) IN
+    /\ rq.att = rq.sess \/ Broken("ForeignSession")       \* D2 #1 core-attested session origin
+    /\ rq.chain = "c40204" \/ Broken("AnyChain")          \* D2 #2 chain pinned
+    /\ rq.value = 0 \/ Broken("SignsValue")               \* D2 #3 value 0
+    /\ CallTargetOk(rq)                                   \* D2 #4-5 no creation, own targets
+    /\ rq.decoded \/ Broken("RawAck")                     \* D2 #6 decodable, never raw-ack
+    /\ rq.sel = "plain" \/ Broken("Delegation")           \* D2 #7 no approval/permit/role
+    /\ CallBudgetLiveIgnoringCount(s)                     \* D2 #8 live, not revoked, unexpired
+    /\ budget[s].used < CallMaxOps \/ Broken("NoOpsCap")  \* D2 #9 max_ops
+    /\ CallGas(rq.sess, budget[s].gen) + rq.gas <= GasCap \/ Broken("NoGasCap") \* D2 #10
+    /\ TaintOk(rq)                                        \* D2 #11 strict taint
+
 CallEligible(rq) ==
     /\ rq.kind = "BudgetedCall"
-    /\ CallCovers(rq)
+    /\ IF Broken("Covers") THEN CallCovers(rq) ELSE CallChecks(rq)
 
 -----------------------------------------------------------------------------
 TypeOK ==
