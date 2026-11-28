@@ -28,5 +28,6 @@ pub mod fetch;
 pub mod install;
 pub mod key;
 pub mod manifest;
+pub mod mcp_subregistry;
 pub mod platform;
 pub mod policy;

@@ -29,3 +29,9 @@ l0-wp03 src-tauri/src/hermes_terminal_tests.rs
 l0-wp03 src-tauri/src/model_delete_tests.rs
 l0-wp03 src-tauri/src/store_catalog_tests.rs
 l0-wp03 src/fl/datasetBridge.test.ts
+
+# L0-WP01d components mount point for lane L6 (lanes/L6_CONNECTIONS_MARKETPLACE.md 2: L6 owns
+# components/src/mcp_subregistry.rs, but the `pub mod` line that mounts it is in L2's lib.rs).
+# One line in lib.rs and the L6 module file as an empty registration point; L6-WP08a (#848) fills it.
+l0-wp01d components/src/lib.rs
+l0-wp01d components/src/mcp_subregistry.rs
