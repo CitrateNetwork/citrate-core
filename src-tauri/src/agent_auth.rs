@@ -889,6 +889,8 @@ pub fn sign_out_at(
     id: &str,
 ) -> Result<HomeStatus, AuthError> {
     let id = locked_agent(id)?;
+    // L1-WP03c: the agent's running sessions stop before its routes and home go.
+    crate::hermes::agent_runtime::close_agent_sessions(id.as_str());
     homes.sign_out_agent(&id, proxy)?;
     Ok(homes.home_status(&id))
 }
@@ -899,7 +901,10 @@ pub fn remove_at(
     proxy: Option<&ModelProxy>,
     id: &str,
 ) -> Result<bool, AuthError> {
-    homes.remove_agent_dir(&locked_agent(id)?, proxy)
+    let id = locked_agent(id)?;
+    // L1-WP03c: the agent's running sessions stop before its routes and folder go.
+    crate::hermes::agent_runtime::close_agent_sessions(id.as_str());
+    homes.remove_agent_dir(&id, proxy)
 }
 
 fn homes_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<AgentHomes, String> {
