@@ -480,3 +480,16 @@ fn session_new_auth_required_keeps_the_agents_auth_methods() {
     let methods = &err.initialize.expect("initialize answered")["authMethods"];
     assert_eq!(methods[0]["id"], "agent-login");
 }
+
+#[test]
+fn relative_command_is_refused_before_spawn() {
+    // The agent's PATH is whatever Core passes, so a bare name could resolve to anything there.
+    let (h, _) = host();
+    let mut sp = spec();
+    sp.command = PathBuf::from("acp-test-agent");
+    let err = h
+        .start(SessionStart { spec: sp, env: vec![], cwd: tmp("rel"), mcp_servers: vec![] })
+        .err()
+        .expect("refused");
+    assert!(err.reason.contains("absolute"), "{}", err.reason);
+}
