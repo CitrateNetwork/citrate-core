@@ -227,8 +227,11 @@ l2 docs/adr/ADR-2026-11-27-*.md
 
 # --- L3 Shell, onboarding, nav, notifications (L3 section 2.1; cx s7 cohesion rows). ---
 # src/data/seed.ts: COACH_STEPS lines only. Settings.tsx: shell plus account, keys, privacy, app.
-# places.ts and PlaceView.tsx stay L0 until L0-WP08 lands the route registry (see the L0 rows).
+# places.ts and PlaceView.tsx: L3 since L0-WP08 (the route registry, src/shell/routes/registry.ts,
+# stays L0). A lane adds a screen in its own src/shell/routes/l<N>.tsx, not in these two files.
 l3 src/App.tsx
+l3 src/shell/places.ts
+l3 src/shell/PlaceView.tsx
 l3 src/onboarding/**
 l3 src/shell/Chrome.tsx
 l3 src/shell/Sidebar.tsx
@@ -498,8 +501,6 @@ l0 src/shell/store.ts
 l0 src/shell/slices/registry.ts
 l0 src/shell/slices/createSlice.ts
 l0 src/shell/routes/registry.ts
-l0 src/shell/places.ts
-l0 src/shell/PlaceView.tsx
 l0 release/flags.json
 l0 release/budgets.json
 l0 release/components.json

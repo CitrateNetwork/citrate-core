@@ -195,6 +195,8 @@
 
 # l3
 /src/App.tsx @CitrateNetwork/maintainers
+/src/shell/places.ts @CitrateNetwork/maintainers
+/src/shell/PlaceView.tsx @CitrateNetwork/maintainers
 /src/onboarding/** @CitrateNetwork/maintainers
 /src/shell/Chrome.tsx @CitrateNetwork/maintainers
 /src/shell/Sidebar.tsx @CitrateNetwork/maintainers
@@ -480,8 +482,6 @@
 /src/shell/slices/registry.ts @CitrateNetwork/maintainers
 /src/shell/slices/createSlice.ts @CitrateNetwork/maintainers
 /src/shell/routes/registry.ts @CitrateNetwork/maintainers
-/src/shell/places.ts @CitrateNetwork/maintainers
-/src/shell/PlaceView.tsx @CitrateNetwork/maintainers
 /release/flags.json @CitrateNetwork/maintainers
 /release/budgets.json @CitrateNetwork/maintainers
 /release/components.json @CitrateNetwork/maintainers

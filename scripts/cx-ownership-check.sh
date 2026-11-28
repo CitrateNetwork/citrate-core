@@ -238,7 +238,10 @@ selftest() {
   check pass l9 src-tauri/src/pqc_seal.rs
   check pass lq scripts/ci/lq/chain-touch.mjs
   check fail l0 .agentile/coverage/TRIPWIRES.md  # LQ's, inside L0's coverage dir
-  check fail l3 src/shell/places.ts              # L0 until WP08 lands the route registry
+  check pass l3 src/shell/places.ts              # L3 since WP08 (the route registry)
+  check fail l0 src/shell/PlaceView.tsx
+  check pass l0 src/shell/routes/registry.ts     # the registry stays L0
+  check fail l3 src/shell/routes/l6.tsx          # a lane route file is its own lane's
   check fail l0 src-tauri/addresses/40204.json   # frozen: no lane branch may touch it
   check fail l1 .agentile/v60-ownership.map      # only L0 edits the map
   check pass l0 .agentile/v60-seams.allow        # the seam allowlist is L0's (fallback row)

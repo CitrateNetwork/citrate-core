@@ -262,6 +262,69 @@ export function resolveRoute(input: string): Redirect | null {
 /** Every string the hash router accepts. */
 export const ROUTABLE: string[] = [...CANONICAL_ROUTES, ...Object.keys(LEGACY_ROUTES), ...Object.keys(PREFIX_ROUTES)];
 
+/**
+ * The built-in tables as this module declares them, before any lane registration (L0-WP08). The
+ * SEAM-ROUTES characterization records these, so a route a lane registers never changes a fixture.
+ */
+export const BUILTIN_CANONICAL_ROUTES: readonly string[] = Object.freeze([...CANONICAL_ROUTES]);
+export const BUILTIN_ROUTABLE: readonly string[] = Object.freeze([...ROUTABLE]);
+
+/** Every route a built-in sub-tab strip holds, and each of their parents below a place
+ *  ("node/storage", "node/storage/files", "groups/rounds", …). */
+const SUB_STRIP_ROUTES: ReadonlySet<string> = (() => {
+  const out = new Set<string>();
+  for (const p of PLACES) {
+    for (const t of p.tabs) {
+      if (!t.sub) continue;
+      for (const r of [t.route, ...t.sub.map((st) => st.route)]) {
+        const segs = r.split("/");
+        for (let i = 2; i <= segs.length; i++) out.add(segs.slice(0, i).join("/"));
+      }
+    }
+  }
+  return out;
+})();
+
+/** The built-in sub-tab strip route a route sits under ("node/storage" for "node/storage/x"), or
+ *  null. A registered route there would show as a top-level tab, outside that strip, so the
+ *  registry refuses it. */
+export function subStripOf(route: string): string | null {
+  const segs = route.split("/");
+  for (let i = segs.length - 1; i >= 2; i--) {
+    const prefix = segs.slice(0, i).join("/");
+    if (SUB_STRIP_ROUTES.has(prefix)) return prefix;
+  }
+  return null;
+}
+
+/** A tab's place in its strip: built-in tabs are 10, 20, 30, … in PLACES order. */
+const TAB_ORDER = new Map<PlaceTab, number>();
+for (const p of PLACES) p.tabs.forEach((t, i) => TAB_ORDER.set(t, (i + 1) * 10));
+
+/**
+ * L0-WP08: add a route a lane registered. Only src/shell/routes/registry.ts calls this, after it
+ * refused anything built-in, taken or malformed. With a tab, the tab joins its place's strip after
+ * every tab of lower or equal order; without one, the route is a hidden leaf of its place. Either
+ * way it becomes canonical and routable, and its register (charter unless the lane says
+ * instrument) is recorded for registerFor. The arrays and records here change in place, so every
+ * importer (the sidebar, the hash router, App.tsx's register) sees the route.
+ */
+export function extendPlaces(route: string, place: PlaceId, tab?: { label: string; order: number }, register: Register = "charter"): void {
+  const p = PLACES.find((x) => x.id === place);
+  if (!p) throw new Error(`no place "${place}"`);
+  REGISTER_BY_ROUTE[route] = register;
+  if (tab) {
+    const t: PlaceTab = { label: tab.label, route };
+    const at = p.tabs.findIndex((x) => (TAB_ORDER.get(x) ?? 0) > tab.order);
+    TAB_ORDER.set(t, tab.order);
+    p.tabs.splice(at < 0 ? p.tabs.length : at, 0, t);
+  } else {
+    HIDDEN_ROUTES[route] = place;
+  }
+  CANONICAL_ROUTES.push(route);
+  ROUTABLE.push(route);
+}
+
 export interface Location {
   place: PlaceId;
   /** The active tab's default route (null for a hidden leaf). */
@@ -299,7 +362,9 @@ export function sectionFor(allowed: readonly string[], requested: string): strin
 }
 
 // Instrument = dark live telemetry; Charter = light civic/document (from the design's REG map).
-const REGISTER_BY_ROUTE: Record<string, "instrument" | "charter"> = {
+export type Register = "instrument" | "charter";
+export const REGISTERS: readonly Register[] = Object.freeze(["instrument", "charter"]);
+const REGISTER_BY_ROUTE: Record<string, Register> = {
   "hermes/chat": "instrument",
   "hermes/journal": "charter",
   "hermes/work": "charter",
@@ -335,6 +400,6 @@ const REGISTER_BY_ROUTE: Record<string, "instrument" | "charter"> = {
   "settings/work": "charter",
 };
 
-export function registerFor(route: string): "instrument" | "charter" {
+export function registerFor(route: string): Register {
   return REGISTER_BY_ROUTE[locate(route).route] ?? "charter";
 }
