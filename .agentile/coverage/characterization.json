@@ -1,0 +1,159 @@
+{
+  "$comment": [
+    "LQ-WP12 surface map (planset 2026-11-07-v060, lanes/LQ_NON_REGRESSION_GUARD.md sections 3.1 and LQ-WP12). Schema v1 is frozen; 'package' on a cargo suite is optional (default citrate-core).",
+    "Read by scripts/ci/lq/regression-suite.mjs (check lq / regression-suite, .github/workflows/lq-regression.yml). 'suites' are the existing suites that characterize each surface at lane start (core a826e441); lq / regression-suite runs them with every suite in ci/characterization.json and ci/characterization.d/*.json on every PR and merge group.",
+    "Characterization first: a product-lane PR (feat/v60-l<N>-*) that changes a non-test file matching a surface's 'paths' fails unless a suite in the merge base's ci/ registries lists that file in its 'covers'. The suites below do not count for that rule: they are what exists, not the lane's characterization of the change it is about to make.",
+    "Not in this map: Formal (every TLC config, LQ-WP09, tla-models.yml) and Agent quality (eval-check.yml and eval/results/SCORECARD.md T0 rows). Both run in their own workflows."
+  ],
+  "version": 1,
+  "surfaces": [
+    {
+      "surface": "harness-provider-selection",
+      "owner_lane": "L1",
+      "paths": ["src/agent/harness.ts", "src/agent/modelRouter.ts", "src/agent/modelRouterSources.ts", "src-tauri/src/chat_route.rs", "src-tauri/src/provider_preferred.rs", "src-tauri/src/provider_guard.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/agent/harness.test.ts" },
+        { "runner": "vitest", "file": "src/agent/harness.retire.test.ts" },
+        { "runner": "vitest", "file": "src/agent/modelRouter.test.ts" },
+        { "runner": "vitest", "file": "src/agent/modelRouterCloud.test.ts" },
+        { "runner": "vitest", "file": "src/agent/modelRouterSources.test.ts" },
+        { "runner": "cargo", "filter": "chat_route::tests::" },
+        { "runner": "cargo", "filter": "provider_preferred::tests::" },
+        { "runner": "cargo", "filter": "provider_guard::tests::" },
+        { "runner": "cargo", "filter": "provider_tripwire_tests::" }
+      ]
+    },
+    {
+      "surface": "hermes-start-sessions",
+      "owner_lane": "L1",
+      "paths": ["src-tauri/src/hermes.rs", "src-tauri/src/hermes_mcp.rs", "src-tauri/src/node_mcp.rs", "src-tauri/src/node_mcp_hermes.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/shell/slices/hermesStartInFlightWrite.test.tsx" },
+        { "runner": "cargo", "filter": "hermes::tests::" },
+        { "runner": "cargo", "filter": "hermes_mcp::tests::" },
+        { "runner": "cargo", "filter": "node_mcp_hermes::tests::" },
+        { "runner": "cargo", "filter": "node_mcp::tests::" }
+      ]
+    },
+    {
+      "surface": "approval-cards-hic",
+      "owner_lane": "L2",
+      "paths": ["src/agent/approvalCards.ts", "src-tauri/src/hermes_mcp_cards.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/agent/approvalCards.test.ts" },
+        { "runner": "vitest", "file": "src/agent/approvalCards.shell.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/approvalCards.render.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/hicApproval.test.ts" },
+        { "runner": "vitest", "file": "src/shell/agentToolGates.test.ts" },
+        { "runner": "vitest", "file": "src/shell/shellRunApproval.store.test.ts" },
+        { "runner": "vitest", "file": "src/a11y/approvalDialogs.a11y.test.tsx" },
+        { "runner": "cargo", "filter": "hermes::mcp_cards::tests::" }
+      ]
+    },
+    {
+      "surface": "deploy-gate",
+      "owner_lane": "L2",
+      "paths": ["src-tauri/src/deploy_gate.rs", "src-tauri/src/deploy_gate_toolchain.rs", "src-tauri/src/fork_dry_run.rs", "src/agent/deployGate.ts", "src/agent/deployClaims.ts", "src/shell/DeployGateCard.tsx"],
+      "suites": [
+        { "runner": "vitest", "file": "src/agent/deployGate.test.ts" },
+        { "runner": "vitest", "file": "src/agent/deployClaims.test.ts" },
+        { "runner": "vitest", "file": "src/shell/deployGate.store.test.ts" },
+        { "runner": "vitest", "file": "src/shell/deployGateCard.render.test.tsx" },
+        { "runner": "cargo", "filter": "deploy_gate::tests::" },
+        { "runner": "cargo", "filter": "deploy_gate_toolchain::tests::" },
+        { "runner": "cargo", "filter": "fork_dry_run::tests::" }
+      ]
+    },
+    {
+      "surface": "forced-update-gate",
+      "owner_lane": "L3",
+      "paths": ["src/shell/UpdateBanner.tsx", "src/shell/updater.ts", "src-tauri/src/update_policy*.rs", "src-tauri/src/update_drain.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/shell/updateGate.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/updatePolicy.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/updater.test.ts" },
+        { "runner": "cargo", "filter": "update_policy::tests::" },
+        { "runner": "cargo", "filter": "update_drain::tests::" },
+        { "runner": "cargo", "filter": "upgrade_updater_feed_tests::" }
+      ]
+    },
+    {
+      "surface": "network-compat-gate",
+      "owner_lane": "L3",
+      "paths": ["src/shell/NetworkCompatGate.tsx", "src/shell/networkCompat.ts", "src-tauri/src/network_profile.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/shell/networkCompatGate.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/r1006ProfileGate.test.tsx" },
+        { "runner": "vitest", "file": "src/shell/incompleteProfileStartup.test.tsx" },
+        { "runner": "cargo", "filter": "network_profile::tests::" },
+        { "runner": "cargo", "filter": "upgrade_r1007_tests::" }
+      ]
+    },
+    {
+      "surface": "onboarding-flow",
+      "owner_lane": "L3",
+      "paths": ["src/onboarding/**"],
+      "suites": [
+        { "runner": "vitest", "file": "src/onboarding/onboardingHonesty.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/freeNodeFirst.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/modelStep.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/modelDownloadStates.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/s3PollDeadEnd.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/s3GrantDelayed.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/agentIdentityStep.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/personaStep.test.tsx" },
+        { "runner": "vitest", "file": "src/onboarding/moneypathGoldens.test.ts" }
+      ]
+    },
+    {
+      "surface": "mls-join-roles",
+      "owner_lane": "L4",
+      "paths": ["src-tauri/src/comms.rs", "src-tauri/src/invites.rs"],
+      "suites": [
+        { "runner": "cargo", "filter": "comms::tests::" },
+        { "runner": "cargo", "filter": "invites::tests::" }
+      ]
+    },
+    {
+      "surface": "model-download-sha",
+      "owner_lane": "L5",
+      "paths": ["src-tauri/src/model.rs", "src-tauri/src/model_catalog.rs", "src-tauri/src/store_catalog.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/shell/modelDownloadFlow.test.ts" },
+        { "runner": "cargo", "filter": "model::tests::" },
+        { "runner": "cargo", "filter": "model_catalog::tests::" },
+        { "runner": "cargo", "filter": "store_catalog::tests::" }
+      ]
+    },
+    {
+      "surface": "mcp-review-dry-run",
+      "owner_lane": "L6",
+      "paths": ["src-tauri/src/mcp_servers.rs", "src/surfaces/mcpServers.ts", "src/surfaces/McpServersPanel.tsx", "src/surfaces/mcpRuntime.ts"],
+      "suites": [
+        { "runner": "vitest", "file": "src/surfaces/mcpServers.test.tsx" },
+        { "runner": "vitest", "file": "src/surfaces/mcpRuntime.test.ts" },
+        { "runner": "cargo", "filter": "mcp_servers::tests::" }
+      ]
+    },
+    {
+      "surface": "custody-vault-ceremony",
+      "owner_lane": "owner",
+      "paths": ["kit/src/custody.rs", "kit/src/ceremony.rs", "kit/src/ceremony/**", "kit/src/submitted_log.rs", "kit/src/payouts_gate.rs", "kit/src/siwe.rs"],
+      "suites": [
+        { "runner": "vitest", "file": "src/bridge/custody.test.ts" },
+        { "runner": "cargo", "package": "citrate-core-kit", "filter": "custody::tests::" },
+        { "runner": "cargo", "package": "citrate-core-kit", "filter": "ceremony::tests::" },
+        { "runner": "cargo", "package": "citrate-core-kit", "filter": "submitted_log::tests::" },
+        { "runner": "cargo", "package": "citrate-core-kit", "filter": "payouts_gate::tests::" },
+        { "runner": "cargo", "package": "citrate-core-kit", "filter": "siwe::tests::" },
+        { "runner": "cargo", "filter": "moneypath_e2e_tests::" }
+      ]
+    },
+    {
+      "surface": "fleet-pairing",
+      "owner_lane": "L7",
+      "paths": ["src-tauri/src/fleet.rs", "src-tauri/src/fleet_pairing.rs", "src-tauri/src/fleet_mdns.rs", "src-tauri/src/fleet_tailscale.rs"],
+      "suites": [{ "runner": "cargo", "filter": "fleet::tests::" }]
+    }
+  ]
+}
