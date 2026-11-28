@@ -26,7 +26,7 @@ describe("slice registry", () => {
 
   it("register_rejects_an_id_outside_its_lane", () => {
     expect(() => registerSlice({ id: uniq("l3.checklist"), lane: "L4", slice: createSlice({ a: 1 }) })).toThrow(/must start with "l4\."/);
-    expect(() => registerSlice({ id: uniq("l4."), lane: "L4", slice: createSlice({ a: 1 }) })).toThrow(/must start with "l4\."/);
+    expect(() => registerSlice({ id: "l4.", lane: "L4", slice: createSlice({ a: 1 }) })).toThrow(/must start with "l4\."/);
     expect(() => registerSlice({ id: uniq("l4.x"), lane: "L10" as SliceRegistration<object>["lane"], slice: createSlice({ a: 1 }) })).toThrow(/lane/);
   });
 

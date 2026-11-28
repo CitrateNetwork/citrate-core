@@ -37,3 +37,37 @@ A surface then does `const s = useModels()` and calls `modelsActions.refresh()`.
 
 `createSlice` mirrors the app's `useSyncExternalStore` reactivity; `get()` is a stable reference
 between `set()`s (getSnapshot stability). See `createSlice.test.ts`.
+
+## 0.6.0: the slice registry (L0-WP06)
+
+From 0.6.0 every new piece of lane state is a slice registered in
+[`registry.ts`](registry.ts); none goes into `AppState`. `AppState` itself is composed from one
+part per lane (`../state/core.ts`, `../state/l1.ts` .. `l9.ts`), which hold the legacy fields only.
+
+```ts
+// src/shell/slices/groupHistory.ts   (owned by L4)
+import { createSlice } from "./createSlice";
+import { registerSlice } from "./registry";
+
+export const groupHistory = registerSlice({
+  id: "l4.groupHistory",          // l<N>.<name>, unique
+  lane: "L4",
+  slice: createSlice({ threads: [] as string[], open: null as string | null }),
+  sealed: true,                   // D16: sealed state never uses webview storage
+});
+```
+
+The rules `registerSlice` enforces (it throws and registers nothing otherwise):
+
+- the id starts with the lane (`l4.` for L4) and is not registered yet;
+- `persist.storageKey` is `citrate-core.v60.<name>` (a-z, 0-9, `.`, `_`, `-`) and no other slice
+  uses it; `persist.keys` are fields of the slice, and only they are written or restored;
+- `sealed: true` with a `persist` block is refused ("sealed slices persist through the sealed
+  store only"). Any value other than `false` or absent counts as sealed.
+
+A persisted slice is restored at registration and written on every change. `device` scope uses
+the key as given; `network` scope keys the entry by genesis (`<key>@<genesis>`), so a value read
+on one network is never restored on another. A saved value replaces a default only when it is of
+the same JSON kind (a `null` default takes a string, number or boolean). The registry's storage
+entry is listed in `../persistScope.test.ts`.
+
