@@ -5,5 +5,3 @@
 //! `commands/l6.rs`. Modules that predate 0.6.0 keep their `mod` line in lib.rs.
 
 pub(crate) mod hooks;
-// L6-WP07: the Marketplace MCP catalog (verified brand servers pinned in the binary).
-pub(crate) mod mcp_catalog;

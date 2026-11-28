@@ -66,9 +66,6 @@ macro_rules! v60_commands_l6 {
             mcp_servers::mcp_server_review,
             mcp_servers::mcp_server_enable,
             mcp_servers::mcp_servers_runtime,
-            // L6-WP07: the Marketplace MCP catalog. The verified brand servers pinned in the binary;
-            // the signed section says "signing key not issued" until the key ceremony.
-            lanes::l6::mcp_catalog::mcp_catalog_list,
         ])
     };
 }

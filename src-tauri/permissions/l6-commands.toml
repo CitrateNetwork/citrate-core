@@ -47,5 +47,4 @@ commands.allow = [
   "mcp_server_review",
   "mcp_server_enable",
   "mcp_servers_runtime",
-  "mcp_catalog_list",
 ]
