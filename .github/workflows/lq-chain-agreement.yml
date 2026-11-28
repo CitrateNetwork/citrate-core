@@ -1,0 +1,265 @@
+# created: 2026-11-28 | branch: feat/v60-lq-wp07-chain-agreement
+# author: Larry Klosowski (LQ lane, LQ-WP07; Claude Opus 5.5)
+# status: active
+#
+# lq / chain-agreement (LQ-WP07, planset 2026-11-07-v060 lanes/LQ_NON_REGRESSION_GUARD.md): the
+# pinned citrate-node bytes agree with the live r1007 network (chain 40204, genesis
+# 0xcf68634502b4...6631) on Linux x86_64 and aarch64, and the two arches agree with each other.
+# lq / chain-touch (release/chain-touch.json agreement_workflow) accepts a green run of this exact
+# file on a chain-touch PR's head, so a change to this file lands in its own PR first.
+#
+# Each leg (GitHub-hosted, never an owner machine, never the app binary): stage the runtime-deps
+# asset release/components.json pins for citrate-node on that triple, checked against its sha256
+# pin; cold-start it with scripts/e2e/cold-sync.py, bounded (5000 blocks, a sample every 1000),
+# expecting the cut's consensus fingerprint (release/network-cut.json); run the wrong-genesis case
+# (must be refused by the endpoint and the node); then scripts/ci/lq/chain-agreement.mjs summarize
+# writes agreement-<arch>.json ("agreement to height N", never "sync complete"). The final job
+# compares the arches' block hashes at every common sampled height.
+#
+# When it runs: on a pull_request labelled chain-touch, or one that changes this guard itself (so a
+# change to the guard is proven by the guard); on workflow_dispatch and workflow_call always. On any
+# other PR and on merge_group the final job passes with a notice: the agreement gate for a merge is
+# lq / chain-touch on the PR head, which needs this check green there. Not part 1: a macOS leg and
+# the chain state-digest compare (LQ-WP07 part 2).
+#
+# Untrusted input: PR labels, inputs and verdict text reach scripts only through env or files,
+# inputs are shape-checked, and no secret is used (the node asset is a public release download
+# with the job token). The judging scripts (chain-agreement.mjs, component-pins.mjs it imports for
+# the pins, cold-sync.py) are the base branch tip's copies, unpacked by the scope job, which runs no
+# PR code; the head supplies only data (pins, profile, network cut). The r1007 chain id and genesis
+# are constants in the script, so a head that moves them is refused by rules it did not write.
+name: lq-chain-agreement
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "Bounded run: pass once past this height"
+        required: false
+        default: "5000"
+      every:
+        description: "Sample the agreeing chain every K-th height (at least 3 samples are required)"
+        required: false
+        default: "1000"
+  workflow_call:
+    inputs:
+      blocks:
+        type: string
+        required: false
+        default: "5000"
+      every:
+        type: string
+        required: false
+        default: "1000"
+
+permissions: {}
+
+concurrency:
+  group: lq-chain-agreement-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: lq / chain-agreement scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+      why: ${{ steps.scope.outputs.why }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide, and unpack the judging scripts
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          run=true why="$EVENT"
+          base=HEAD
+          if [ "$EVENT" = merge_group ]; then
+            run=false why="merge group: lq / chain-touch requires this check green on each chain-touch PR head"
+          elif [ "$EVENT" = pull_request ]; then
+            base="$PR_BASE"
+            if printf '%s' "$LABELS_JSON" | jq -e 'index("chain-touch") != null' > /dev/null; then
+              why="label chain-touch"
+            elif git diff --name-only "$base...HEAD" | grep -qxE '\.github/workflows/lq-chain-agreement\.yml|scripts/ci/lq/chain-agreement(\.test)?\.mjs'; then
+              why="this PR changes the agreement guard"
+            else
+              run=false why="not a chain-touch PR and the guard is unchanged"
+            fi
+          fi
+          T="$RUNNER_TEMP/trusted"
+          mkdir -p "$T"
+          files=(scripts/ci/lq/chain-agreement.mjs scripts/component-pins.mjs scripts/e2e/cold-sync.py)
+          if git cat-file -e "$base:scripts/ci/lq/chain-agreement.mjs" 2>/dev/null; then
+            git archive "$base" "${files[@]}" | tar -x -C "$T"
+            echo "judging scripts from $(git rev-parse --short=12 "$base")"
+          else
+            echo "chain-agreement.mjs is new in this change; the head's copies judge it (bootstrap)"
+            tar -c "${files[@]}" | tar -x -C "$T"
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "why=$why" >> "$GITHUB_OUTPUT"
+          echo "lq / chain-agreement: run=$run ($why)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lq-agreement-trusted
+          path: ${{ runner.temp }}/trusted
+          if-no-files-found: error
+          retention-days: 3
+
+  leg:
+    name: lq chain-agreement leg (linux ${{ matrix.arch }})
+    needs: scope
+    if: ${{ needs.scope.outputs.run == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+      IN_BLOCKS: ${{ inputs.blocks || '5000' }}
+      IN_EVERY: ${{ inputs.every || '1000' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lq-agreement-trusted
+          path: ${{ runner.temp }}/trusted
+      - name: Inputs, paths and the pinned node asset for this triple
+        id: plan
+        run: |
+          set -euo pipefail
+          [[ "$IN_BLOCKS" =~ ^[1-9][0-9]{0,6}$ && "$IN_EVERY" =~ ^[1-9][0-9]{0,6}$ ]] \
+            || { echo "::error::blocks and every must be positive integers"; exit 1; }
+          T="$RUNNER_TEMP/trusted"
+          # cold-sync.py reads src-tauri/ next to itself: the head's data, the base's rules.
+          ln -s "$GITHUB_WORKSPACE/src-tauri" "$T/src-tauri"
+          echo "T=$T" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/agreement" >> "$GITHUB_ENV"
+          # plan prints only shape-checked values (asset name, 64-hex, 40-hex, 0x+32-hex).
+          node "$T/scripts/ci/lq/chain-agreement.mjs" plan --root "$GITHUB_WORKSPACE" --arch "$ARCH" | tee -a "$GITHUB_OUTPUT"
+      - name: Stage the runtime-deps node asset, checked against its pin
+        id: node
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+          PIN: ${{ steps.plan.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/node-asset" && mkdir -p "$DL"
+          gh release download runtime-deps -R "$GITHUB_REPOSITORY" -p "$ASSET" -D "$DL" --clobber
+          digest="$(sha256sum "$DL/$ASSET" | cut -d' ' -f1)"
+          [ "$digest" = "$PIN" ] || { echo "::error::$ASSET sha256 $digest is not the pin $PIN"; exit 1; }
+          chmod 755 "$DL/$ASSET"
+          echo "bin=$DL/$ASSET" >> "$GITHUB_OUTPUT"
+          echo "### $ARCH: \`$ASSET\` sha256 \`$digest\` (= the citrate-node pin)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Cold sync against r1007 (bounded), then the wrong-genesis case
+        env:
+          NODE_BIN: ${{ steps.node.outputs.bin }}
+          PIN: ${{ steps.plan.outputs.sha256 }}
+          FP: ${{ steps.plan.outputs.fingerprint }}
+        run: |
+          # GitHub's default shell is `bash -e`: -e off, so a refusal (exit 1) of the wrong-genesis
+          # case does not end the step. The verdicts are judged by summarize below; an exit code
+          # alone is never the evidence.
+          set +e -uo pipefail
+          mkdir -p "$OUT"
+          python3 -I "$T/scripts/e2e/cold-sync.py" --profiles src-tauri/network/profiles.json \
+            --node-bin "$NODE_BIN" --expect-sha256 "$PIN" --expect-fingerprint "$FP" \
+            --blocks "$IN_BLOCKS" --every "$IN_EVERY" --timeout 60m --out "$OUT/positive"
+          echo "positive exit $?"
+          node "$T/scripts/ci/lq/chain-agreement.mjs" wrong-genesis --root "$GITHUB_WORKSPACE" \
+            --profiles src-tauri/network/profiles.json --out "$OUT" || exit 1
+          python3 -I "$T/scripts/e2e/cold-sync.py" --profile "$OUT/wrong-profile.json" --address-book "$OUT/wrong-book.json" \
+            --node-bin "$NODE_BIN" --blocks 100 --timeout 5m --out "$OUT/negative"
+          echo "negative exit $? (a refusal is 1)"
+          exit 0
+      - name: agreement-${{ matrix.arch }}.json
+        env:
+          PIN: ${{ steps.plan.outputs.sha256 }}
+          FP: ${{ steps.plan.outputs.fingerprint }}
+          REV: ${{ steps.plan.outputs.rev }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node "$T/scripts/ci/lq/chain-agreement.mjs" summarize --verdict "$OUT/positive/verdict.json" \
+            --negative "$OUT/negative/verdict.json" --arch "$ARCH" --rev "$REV" \
+            --expect-sha256 "$PIN" --expect-fingerprint "$FP" --run "$RUN_URL" --out "$OUT/agreement-$ARCH.json"
+          { echo '```json'; cat "$OUT/agreement-$ARCH.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: lq-agreement-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/agreement/agreement-*.json
+            ${{ runner.temp }}/agreement/*/verdict.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  chain-agreement:
+    name: lq / chain-agreement
+    needs: [scope, leg]
+    # Always reports (a skipped required check reads as passed): it fails closed on any leg that
+    # did not succeed and on a missing summary.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Scope
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          RUN: ${{ needs.scope.outputs.run }}
+          WHY: ${{ needs.scope.outputs.why }}
+          LEGS: ${{ needs.leg.result }}
+        run: |
+          [ "$SCOPE" = success ] || { echo "::error title=lq / chain-agreement::scope job $SCOPE"; exit 1; }
+          if [ "$RUN" != true ]; then
+            echo "::notice title=lq / chain-agreement::not run: $WHY"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          [ "$LEGS" = success ] || { echo "::error title=lq / chain-agreement::an agreement leg did not succeed ($LEGS)"; exit 1; }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ env.SKIP != '1' }}
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ env.SKIP != '1' }}
+        with:
+          pattern: lq-agreement-*
+          path: ${{ runner.temp }}/in
+      - name: Cross-arch compare
+        if: ${{ env.SKIP != '1' }}
+        run: |
+          set -euo pipefail
+          in="$RUNNER_TEMP/in"
+          node "$in/lq-agreement-trusted/scripts/ci/lq/chain-agreement.mjs" compare --out "$RUNNER_TEMP/agreement.json" \
+            "$in/lq-agreement-x86_64/agreement-x86_64.json" "$in/lq-agreement-aarch64/agreement-aarch64.json"
+          { echo '### lq / chain-agreement'; echo '```json'; cat "$RUNNER_TEMP/agreement.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
