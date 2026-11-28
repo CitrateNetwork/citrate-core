@@ -67,7 +67,7 @@
       "id": "SEAM-ROUTES-REG",
       "lane": "L0",
       "runner": "vitest",
-      "files": ["src/shell/routes/registry.test.ts"],
+      "files": ["src/shell/routes/registry.test.ts", "src/shell/routes/bootstrap.test.tsx"],
       "covers": ["src/shell/PlaceView.tsx", "src/shell/places.ts", "src/shell/routes/**"]
     },
     {

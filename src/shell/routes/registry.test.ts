@@ -38,13 +38,15 @@ describe("L0-WP08 route registry", () => {
   });
 
   it("registered_route_is_routable", () => {
-    // The Gherkin scenario: L6 registers marketplace/mcp; the member opens #/marketplace/mcp.
-    registerSurfaces([decl("marketplace/mcp", "L6", { tab: { place: "store", label: "MCP", order: 30 } })]);
-    expect(ROUTABLE).toContain("marketplace/mcp");
-    expect(ROUTES).toContain("marketplace/mcp"); // the list App.tsx's hash handler accepts
-    expect(CANONICAL_ROUTES).toContain("marketplace/mcp");
-    expect(resolveRoute("#/marketplace/mcp")).toEqual({ route: "marketplace/mcp" });
-    expect(locate("marketplace/mcp")).toEqual({ place: "store", tab: "marketplace/mcp", sub: null, route: "marketplace/mcp" });
+    // The Gherkin scenario's shape: a lane registers marketplace/<x>; the member opens #/marketplace/<x>.
+    // Every route here carries wp08, so it never collides with one a real lane file registers
+    // (this suite loads every routes/l<N>.tsx through PlaceView; bootstrap.test.tsx has the Gherkin's).
+    registerSurfaces([decl("marketplace/wp08-mcp", "L6", { tab: { place: "store", label: "WP08 MCP", order: 30 } })]);
+    expect(ROUTABLE).toContain("marketplace/wp08-mcp");
+    expect(ROUTES).toContain("marketplace/wp08-mcp"); // the list App.tsx's hash handler accepts
+    expect(CANONICAL_ROUTES).toContain("marketplace/wp08-mcp");
+    expect(resolveRoute("#/marketplace/wp08-mcp")).toEqual({ route: "marketplace/wp08-mcp" });
+    expect(locate("marketplace/wp08-mcp")).toEqual({ place: "store", tab: "marketplace/wp08-mcp", sub: null, route: "marketplace/wp08-mcp" });
     // A route with no tab is a hidden leaf of the place its first segment names.
     registerSurfaces([decl("groups/wp08-hidden", "L4")]);
     expect(locate("groups/wp08-hidden")).toEqual({ place: "groups", tab: null, sub: null, route: "groups/wp08-hidden" });
@@ -64,11 +66,14 @@ describe("L0-WP08 route registry", () => {
   });
 
   it("a_registered_surface_renders_in_place_view", () => {
-    registerSurfaces([decl("node/wp08-render", "L7", { tab: { place: "node", label: "Lane test", order: 25 } })]);
+    registerSurfaces([decl("node/wp08-render", "L7", { tab: { place: "node", label: "WP08 lane test", order: 25 } })]);
     const s = { ...freshState("p1"), stage: "done" as const, route: "node/wp08-render" };
     const html = renderToStaticMarkup(createElement(PlaceView, { store, s }));
     expect(html).toContain('data-lane-surface="node/wp08-render"');
-    expect(placeTabs(html)).toEqual(["Status", "Services", "Lane test", "Storage", "Rewards", "Advanced"]);
+    // Order 25 sits between the second (20) and third (30) built-in tabs; a tab a real lane file
+    // registers may sit anywhere, so only the built-in tabs and this one are compared.
+    const mine = ["Status", "Services", "WP08 lane test", "Storage", "Rewards", "Advanced"];
+    expect(placeTabs(html).filter((l) => mine.includes(l))).toEqual(mine);
   });
 
   it("refuses_a_malformed_declaration_and_registers_nothing", () => {
@@ -86,6 +91,7 @@ describe("L0-WP08 route registry", () => {
       ["tab", decl("store/wp08-first", "L6", { tab: { place: "store", label: "X", order: 5 } })],
       ["tab", decl("store/wp08-nan", "L6", { tab: { place: "store", label: "X", order: Number.NaN } })],
       ["tab", decl("store/wp08-label", "L6", { tab: { place: "store", label: " ", order: 30 } })],
+      ["tab", decl("store/wp08-same", "L6", { tab: { place: "store", label: " apps ", order: 30 } })],
       ["render", { ...decl("store/wp08-render", "L6"), render: "nope" as never }],
     ];
     const before = ROUTABLE.length;
@@ -93,6 +99,9 @@ describe("L0-WP08 route registry", () => {
       // The bad one is second, so a refusal also proves the good first one was not kept.
       expect(() => registerSurfaces([decl(`store/wp08-ok-${ROUTABLE.length}`, "L6"), d]), `${why}: ${d.route}`).toThrow();
     }
+    // Two tabs of one batch with one label in one place.
+    const twin = (route: string, label: string, order: number) => decl(route, "L6", { tab: { place: "store", label, order } });
+    expect(() => registerSurfaces([twin("store/wp08-t1", "WP08 twin", 30), twin("store/wp08-t2", "wp08 twin", 40)])).toThrow(/already has a tab "WP08 twin"/);
     expect(ROUTABLE.length).toBe(before);
   });
 

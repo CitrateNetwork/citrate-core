@@ -10,6 +10,7 @@ import { Sidebar } from "./Sidebar";
 import { store } from "./store";
 import { freshState, type AppState } from "./state";
 import { locate } from "./places";
+import { registeredRoutes } from "./routes/registry";
 
 function at(route: string, patch: Partial<AppState> = {}): AppState {
   const s = freshState("p1");
@@ -27,11 +28,15 @@ const html = (route: string, patch: Partial<AppState> = {}) =>
     </WagmiProvider>,
   );
 
-/** The labels of a rendered tab strip, in order. */
+/** Routes a lane registered in its src/shell/routes/l<N>.tsx (L0-WP08). This suite pins the
+ *  built-in strips, so their tabs are left out; the lane's own tests pin them. */
+const LANE_ROUTES = new Set(registeredRoutes());
+
+/** The labels of a rendered tab strip's built-in tabs, in order. */
 function tabs(markup: string, list: "place-tabs" | "place-subtabs"): string[] {
   const m = markup.match(new RegExp(`<div[^>]*data-testid="${list}"[^>]*>(.*?)</div>`));
   if (!m) return [];
-  return [...m[1].matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((x) => x[1]);
+  return [...m[1].matchAll(/<button[^>]*data-route="([^"]*)"[^>]*>([^<]*)<\/button>/g)].filter((x) => !LANE_ROUTES.has(x[1])).map((x) => x[2]);
 }
 
 /** The selected tab labels in the place strip and the sub-tab strip (surfaces' own tabs are ignored). */
