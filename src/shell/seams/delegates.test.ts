@@ -131,7 +131,9 @@ const ROWS: Row[] = [
   { method: "patchRoundDraft", target: l8Proposals.patchRoundDraft, args: ["d-delegate-1", { state: "declined" }] },
   { method: "openRoundDraft", target: l8Proposals.openRoundDraft, args: ["d-delegate-2"] },
   { method: "declineRoundDraft", target: l8Proposals.declineRoundDraft, args: ["d-delegate-3"] },
-];afterEach(() => {
+];
+
+afterEach(() => {
   vi.clearAllMocks();
 });
 
