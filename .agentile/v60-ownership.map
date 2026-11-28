@@ -159,7 +159,7 @@ l9 src/shell/routes/l9.tsx
 l9 ci/characterization.d/l9.json
 
 # --- L1 Agent runtime (L1 section 3.1; cx s6 agent rows). hermes.rs: build_spec env area. ---
-l1 acp-host/**
+l1 crates/citrate-acp-host/**
 l1 src-tauri/src/agent_runtime_ipc*.rs
 l1 src-tauri/src/mcp_gateway*.rs
 l1 src-tauri/src/model_proxy*.rs

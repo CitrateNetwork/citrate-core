@@ -128,7 +128,7 @@
 /ci/characterization.d/l9.json @CitrateNetwork/maintainers
 
 # l1
-/acp-host/** @CitrateNetwork/maintainers
+/crates/citrate-acp-host/** @CitrateNetwork/maintainers
 /src-tauri/src/agent_runtime_ipc*.rs @CitrateNetwork/maintainers
 /src-tauri/src/mcp_gateway*.rs @CitrateNetwork/maintainers
 /src-tauri/src/model_proxy*.rs @CitrateNetwork/maintainers
