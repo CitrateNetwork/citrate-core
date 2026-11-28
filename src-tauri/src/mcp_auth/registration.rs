@@ -1,16 +1,15 @@
-//! Client registration (L6-WP06 step 2). Order (lanes/L6 WP06, owner brief 2026-11-28):
+//! Client registration (L6-WP06 step 2), in the MCP authorization specification 2025-11-25 order
+//! ("Client Registration Approaches"; lead decision 2026-11-28):
 //!
-//! 1. CIMD, only when the authorization server advertises `client_id_metadata_document_supported`
-//!    and accepts a public client at its token endpoint (`none`, or no list). The client id is
-//!    [`super::CIMD_CLIENT_ID`]. Hugging Face advertises CIMD but lists only secret-based methods
-//!    (matrix quirk 5), so it falls to DCR.
-//! 2. Dynamic client registration (RFC 7591), only when `registration_endpoint` is present.
-//!    Registered once per issuer, sealed in `connection-dcr-<issuer hash>`, reused after.
-//! 3. A fixed pre-registered client whose secret is in the Citrate relay (rows below).
+//! 1. A pre-registered client, when Citrate has a configured fixed row for the server's issuer
+//!    (rows below; the secret is in the Citrate relay, only the public id is compiled in).
+//! 2. CIMD, when the authorization server advertises `client_id_metadata_document_supported`. The
+//!    client id is [`super::CIMD_CLIENT_ID`].
+//! 3. Dynamic client registration (RFC 7591), when `registration_endpoint` is present. Registered
+//!    once per issuer, sealed in `connection-dcr-<issuer hash>`, reused after.
 //!
-//! The MCP specification 2025-11-25 lists pre-registered first; Citrate puts it last because a
-//! fixed row costs an owner registration and a relay secret, and CIMD or DCR need neither. A row
-//! is used only for an issuer that offers neither (matrix: Slack, GitHub, Google, Asana, HubSpot).
+//! A fixed row without a compiled client id is skipped; if nothing else applies its reason is
+//! reported.
 
 use super::discovery::{issuers_match, AsMetadata};
 use super::http::{self, McpHttp, Request};
@@ -33,10 +32,13 @@ pub(crate) struct FixedClient {
     pub redirect_uri: &'static str,
     /// Why `client_id` is `None`, naming the missing registration.
     pub reason: Option<&'static str>,
-    /// Endpoints for an issuer that publishes no metadata (GitHub: matrix row, from GitHub's docs;
-    /// PKCE S256 per GitHub's OAuth docs). `None` when the issuer publishes its metadata.
+    /// Endpoints for an issuer that publishes no RFC 8414 metadata. `None` when the issuer
+    /// publishes its metadata.
     pub static_endpoints: Option<(&'static str, &'static str)>,
 }
+
+/// The Slack Core app's public OAuth client id (lead, 2026-11-28).
+pub(crate) const SLACK_CLIENT_ID: &str = "12717982880023.12719622703127";
 
 /// The fixed rows (provider matrix 2026-11-28; lanes/L6 WP13 for GitHub).
 pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
@@ -46,6 +48,9 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
         client_id: Some(crate::connections::oauth_client::GITHUB_CLIENT_ID),
         redirect_uri: LOOPBACK_REDIRECT,
         reason: None,
+        // Endpoints from GitHub's docs: github.com publishes no RFC 8414 metadata. GitHub OAuth Apps
+        // support PKCE S256. The token exchange goes through the relay's `github` row. To be
+        // proven live by the cutover sign-in.
         static_endpoints: Some((
             "https://github.com/login/oauth/authorize",
             "https://github.com/login/oauth/access_token",
@@ -54,12 +59,11 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
     FixedClient {
         provider: "slack",
         issuer: "https://mcp.slack.com",
-        client_id: None,
+        // The Slack Core app (app id A0CM5JALP3R) OAuth client id: public, it is in every
+        // authorize URL. Its secret is in the relay's `slack` row (oauth.v2.user.access).
+        client_id: Some(SLACK_CLIENT_ID),
         redirect_uri: crate::connections::HOSTED_REDIRECT_URI,
-        reason: Some(
-            "the Slack app (A0CM5JALP3R) client id is not compiled in yet and its secret is not \
-             in the relay (runbook card sl-core)",
-        ),
+        reason: None,
         static_endpoints: None,
     },
     FixedClient {
@@ -67,9 +71,12 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
         issuer: "https://mcp.notion.com",
         client_id: None,
         redirect_uri: crate::connections::HOSTED_REDIRECT_URI,
+        // Not the Notion Core integration id: that client lives at api.notion.com (the native
+        // connector, `oauth_client::providers`), and the relay's `notion` row exchanges there.
+        // mcp.notion.com is its own authorization server and offers CIMD, which is used.
         reason: Some(
-            "the Notion public integration's client id is not registered for release builds \
-             (Notion's MCP server offers CIMD, which is used instead)",
+            "Notion's MCP authorization server (mcp.notion.com) has no Citrate pre-registered \
+             client; it offers CIMD, which is used",
         ),
         static_endpoints: None,
     },
@@ -108,21 +115,17 @@ pub(crate) enum Choice {
 
 /// Pick the path from the metadata alone (no network).
 pub(crate) fn choose(meta: &AsMetadata) -> Result<Choice, McpAuthError> {
-    let public_ok = meta
-        .token_auth_methods
-        .as_ref()
-        .is_none_or(|m| m.iter().any(|x| x == "none"));
-    if meta.cimd_supported && public_ok {
+    let row = fixed_for(&meta.issuer);
+    if let Some(row) = row.filter(|r| r.client_id.is_some()) {
+        return Ok(Choice::Fixed(row));
+    }
+    if meta.cimd_supported {
         return Ok(Choice::Cimd);
     }
     if meta.registration_endpoint.is_some() {
         return Ok(Choice::Dcr);
     }
-    if meta.cimd_supported {
-        return Ok(Choice::Cimd);
-    }
-    match fixed_for(&meta.issuer) {
-        Some(row) if row.client_id.is_some() => Ok(Choice::Fixed(row)),
+    match row {
         Some(row) => Err(McpAuthError::NotConfigured(
             row.reason.unwrap_or("no client id"),
         )),
