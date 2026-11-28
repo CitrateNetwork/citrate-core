@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cargoLockPackages, checkIntake, fedRepo, federationPins, npmLockPackages, sourceOrigin } from "./dep-intake.mjs";
+import { cargoLockPackages, cargoPathCrates, checkIntake, fedRepo, federationPins, npmLockPackages, sourceOrigin } from "./dep-intake.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -99,6 +99,13 @@ describe("lockfile package sets", () => {
     const lock = `${cargoLock([["citrate-core"], ["serde", REG]])}checksum = "abc"\ndependencies = [\n "serde_derive",\n]\n\n[[patch.unused]]\nname = "x"\nversion = "0.1.0"\nsource = "${REG}"\n\n[metadata]\n"checksum a 1.0 (${REG})" = "abc"\n`;
     expect([...cargoLockPackages(lock).keys()]).toEqual(["cargo:serde"]);
     expect(() => cargoLockPackages(`${baseCargo}name = "twice"\n`)).toThrow(/repeats name/);
+  });
+
+  it("a row may name a vendored path crate (no source): vendored third-party code is not first party", () => {
+    const lock = cargoLock([["citrate-core"], ["serde", REG], ["vendored-foo"]]);
+    expect([...cargoPathCrates(lock)]).toEqual(["cargo:citrate-core", "cargo:vendored-foo"]);
+    const r = checkIntake({ intake: { rows: [row(["cargo:vendored-foo"], { origins: [] })] }, base: { cargo: cargoLockPackages(lock), npm: new Map() }, head: { cargo: cargoLockPackages(lock), cargoPath: cargoPathCrates(lock), npm: new Map() }, ciYml: CI_OK, today: "2026-11-27" });
+    expect(r).toEqual([]);
   });
 
   it("an unreadable Cargo.lock exits 2 from the command line", () => {

@@ -19,5 +19,9 @@ landed by L0 in a dependency PR (at most one a day, so `Cargo.lock` changes stay
 crate from a federation repo also needs its `[[drift]]` entry in `citrate-federation/manifest.toml`
 first (Rule 12) and stays on the federation rev.
 
+Vendored third-party code is not first party. A crate copied in from elsewhere (into `crates/` or any
+other path dependency) has no lockfile source, so the intake check cannot tell it from a lane crate;
+it still needs a row in `release/dep-intake.json` with its licence and supply-chain review.
+
 Ownership: `crates/**` falls to L0 in `.agentile/v60-ownership.map` until a seam PR assigns a crate
 to its lane.

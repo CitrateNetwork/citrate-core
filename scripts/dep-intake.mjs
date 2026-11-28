@@ -11,8 +11,11 @@
 // from a source origin the base did not use for that name (a crates.io crate swapped for a git
 // fork; an npm tarball from another host or another registry package); a version bump on the same
 // origin is not new (cargo audit and review cover it). Workspace and path crates (crates/*,
-// src-tauri, kit, ...) and linked npm workspace packages are first party and need no row. Without
-// --base nothing counts as new (scheduled runs), and the checks below still run:
+// src-tauri, kit, ...) and linked npm workspace packages are first party and need no row; vendored
+// third-party code copied into the repo (a path crate with no source) is not first party and still
+// needs a row, which review enforces (the lockfile cannot tell it apart). Cargo.lock is read only in
+// cargo's emitted grammar: any other line (a hand-formatted lock that --locked would still accept)
+// exits 2. Without --base nothing counts as new (scheduled runs), and the checks below still run:
 //   - each row has lane (L0..L9, LQ), wp, reason, licence, reviewer, a supply_chain review
 //     {skill: "supply-chain-risk-auditor", result: "pass" | "pass-with-notes", notes}, and origins:
 //     the reviewed source origins, which must hold every origin its deps come from (so a reviewed
@@ -46,17 +49,57 @@ const HEX40 = /^[0-9a-f]{40}$/;
 class Usage extends Error {}
 const text = (v) => typeof v === "string" && v.trim() !== "";
 
+// Every line shape cargo writes to Cargo.lock (any other line is a hand edit cargo --locked would
+// still accept as the same resolve, so the reader refuses it rather than misread it).
+const LOCK_FIELD = /^(name|version|source|checksum) = "([^"\\]*)"$/;
+
+/** Cargo.lock [[package]] entries as {name, source?}. Throws (exit 2) on any line outside cargo's emitted grammar. */
+function cargoLockEntries(lockText) {
+  const entries = [];
+  let section = "top"; // top | package | patch | metadata | deps
+  let cur = null;
+  lockText.split("\n").forEach((line, i) => {
+    const bad = (why) => new Usage(`Cargo.lock line ${i + 1} is outside cargo's lockfile grammar${why}: ${JSON.stringify(line.slice(0, 80))}`);
+    let m;
+    if (section === "deps") {
+      if (line === "]") section = "package";
+      else if (!/^ "[^"\\]*",$/.test(line)) throw bad(" (in dependencies)");
+    } else if (line === "") {
+      // blank lines separate entries
+    } else if (line === "[[package]]" || line === "[[patch.unused]]") {
+      section = line === "[[package]]" ? "package" : "patch";
+      entries.push((cur = { at: i + 1, package: section === "package" }));
+    } else if (line === "[metadata]") {
+      section = "metadata";
+    } else if (section === "top" && entries.length === 0 && (/^#/.test(line) || /^version = \d+$/.test(line))) {
+      // the @generated comments and the lockfile format version
+    } else if (section === "metadata" && /^"[^"\\]*" = "[^"\\]*"$/.test(line)) {
+      // v1 checksums
+    } else if ((section === "package" || section === "patch") && (m = LOCK_FIELD.exec(line))) {
+      if (m[1] in cur) throw bad(` (the entry repeats ${m[1]})`);
+      cur[m[1]] = m[2];
+    } else if (section === "package" && line === "dependencies = [") {
+      section = "deps";
+    } else throw bad("");
+  });
+  if (section === "deps") throw new Usage("Cargo.lock ends inside a dependencies list");
+  for (const e of entries) if (!e.name) throw new Usage(`Cargo.lock: the entry at line ${e.at} has no name`);
+  return entries.filter((e) => e.package);
+}
+
+/** Workspace and path crates (no source): names a row may still list, for vendored third-party code. */
+export function cargoPathCrates(lockText) {
+  return new Set(cargoLockEntries(lockText).filter((e) => !e.source).map((e) => `cargo:${e.name}`));
+}
+
 /** Third-party Cargo.lock packages: "cargo:<name>" -> Set of sources. */
-export function cargoLockPackages(text) {
+export function cargoLockPackages(lockText) {
   const pkgs = new Map();
-  for (const block of text.split(/^\[\[package\]\]$/m).slice(1)) {
-    const name = /^name = "([^"]+)"$/m.exec(block)?.[1];
-    const source = /^source = "([^"]+)"$/m.exec(block)?.[1];
-    if (!name) throw new Usage("Cargo.lock: a [[package]] has no name");
-    if (!source) continue;
-    const key = `cargo:${name}`;
+  for (const e of cargoLockEntries(lockText)) {
+    if (!e.source) continue;
+    const key = `cargo:${e.name}`;
     if (!pkgs.has(key)) pkgs.set(key, new Set());
-    pkgs.get(key).add(source);
+    pkgs.get(key).add(e.source);
   }
   return pkgs;
 }
@@ -127,7 +170,9 @@ export function federationPins(componentsJson) {
   const pins = new Map();
   for (const c of Array.isArray(componentsJson?.components) ? componentsJson.components : []) {
     const repo = /^CitrateNetwork\/([^/]+)$/i.exec(c?.source?.repo ?? "")?.[1].toLowerCase();
-    if (repo && HEX40.test(c?.federation?.rev ?? "")) pins.set(repo, c.federation.rev);
+    if (!repo || !HEX40.test(c?.federation?.rev ?? "")) continue;
+    if (pins.has(repo)) throw new Usage(`release/components.json records ${repo} more than once with a federation.rev; one component per repo`);
+    pins.set(repo, c.federation.rev);
   }
   return pins;
 }
@@ -137,7 +182,7 @@ export function checkIntake({ intake, base, head, ciYml, today, pins = new Map()
   const errors = [];
   const rows = Array.isArray(intake?.rows) ? intake.rows : [];
   if (!Array.isArray(intake?.rows)) errors.push("release/dep-intake.json has no rows[]");
-  const present = new Set([...head.cargo.keys(), ...head.npm.keys()]);
+  const present = new Set([...head.cargo.keys(), ...head.npm.keys(), ...(head.cargoPath ?? [])]);
   const sourcesOf = (d) => head.cargo.get(d) ?? head.npm.get(d) ?? new Set();
 
   const listed = new Map();
@@ -232,7 +277,8 @@ function main(argv) {
   // git show reads a leading "-" as an option (for example --output=<file>).
   if (opt.base !== null && !/^[0-9A-Za-z_][0-9A-Za-z_./~^@{}-]*$/.test(opt.base)) throw new Usage(`--base must be a git revision, got ${opt.base}`);
   const repo = path.resolve(opt.repo);
-  const head = { cargo: cargoLockPackages(read(path.join(repo, "Cargo.lock"))), npm: npmLockPackages(read(path.join(repo, "package-lock.json"))) };
+  const lockText = read(path.join(repo, "Cargo.lock"));
+  const head = { cargo: cargoLockPackages(lockText), cargoPath: cargoPathCrates(lockText), npm: npmLockPackages(read(path.join(repo, "package-lock.json"))) };
   const base = opt.base
     ? { cargo: cargoLockPackages(atRev(repo, opt.base, "Cargo.lock")), npm: npmLockPackages(atRev(repo, opt.base, "package-lock.json") || '{"packages":{}}') }
     : head;
