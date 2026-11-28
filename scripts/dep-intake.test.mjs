@@ -144,7 +144,7 @@ describe("dep intake", () => {
     expect(check({ cargo: acp, base: acp, rows: [reviewed] })).toEqual([]);
     const FORK = "git+https://github.com/someone/acp.git";
     const forked = cargoLock([["citrate-core"], ["serde", REG], ["acp", `${FORK}#abc`]]);
-    expect(check({ cargo: forked, base: acp, rows: [reviewed] })).toEqual([expect.stringMatching(new RegExp(`cargo:acp: source ${FORK.replace(/[.+]/g, "\\$&")} is not in .*origins`))]);
+    expect(check({ cargo: forked, base: acp, rows: [reviewed] })).toEqual([expect.stringContaining(`cargo:acp: source ${FORK} is not in release/dep-intake.json rows[0] origins`)]);
     expect(check({ cargo: forked, base: acp, rows: [row(["cargo:acp"], { origins: [FORK] })] })).toEqual([]);
   });
 
@@ -213,7 +213,7 @@ describe("dep intake", () => {
     const on = cargoLock([["citrate-core"], ["serde", REG], ["citrate-wallet-core", `${CHAIN}?rev=${REV}#${REV}`]]);
     expect(check({ cargo: on, base: on, pins })).toEqual([]);
     const moved = cargoLock([["citrate-core"], ["serde", REG], ["citrate-wallet-core", `${CHAIN}?rev=${other}#${other}`], ["citrate-commd", `${CHAIN}?rev=${other}#${other}`]]);
-    expect(check({ cargo: moved, base: moved, pins })).toEqual([expect.stringMatching(new RegExp(`citrate-chain: crate rev ${other} is not the federation pin ${REV}`))]);
+    expect(check({ cargo: moved, base: moved, pins })).toEqual([expect.stringContaining(`citrate-chain: crate rev ${other} is not the federation pin ${REV}`)]);
     // No component records the repo: the check proves one rev only (an accepted edge, in the script header).
     expect(check({ cargo: moved, base: moved })).toEqual([]);
   });
