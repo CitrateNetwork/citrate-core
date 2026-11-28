@@ -28,6 +28,11 @@ use zeroize::Zeroizing;
 #[path = "oauth_client/mod.rs"]
 pub(crate) mod oauth_client;
 
+// 0.6.0 L6-WP06: MCP remote-server authorization, declared here for the same reason (its path is
+// the lane's `src-tauri/src/mcp_auth/`). It reuses this file's PKCE, state and loopback pieces.
+#[path = "mcp_auth/mod.rs"]
+pub(crate) mod mcp_auth;
+
 /// The loopback callback the single-use listener binds — and the `redirect_uri`
 /// registered for the providers that accept a plaintext-http loopback (GitHub,
 /// Google's Desktop-app client type). See {@link Service::redirect_uri}.
