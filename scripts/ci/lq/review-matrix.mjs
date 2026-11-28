@@ -68,15 +68,15 @@ const PROD_CODE = /\.(rs|ts|tsx|js|jsx|mjs|cjs|py|sh|sol)$/;
 export const MATRIX = [
   { id: "every-pr", skills: ["differential-review"], always: true },
   { id: "config", skills: ["sharp-edges", "insecure-defaults"],
-    paths: ["src/shell/state.ts", "src/shell/state/**", "**/tauri.conf.json", "src-tauri/capabilities/**", "src-tauri/permissions/**", "src-tauri/config/**", "**/*flags*.json", "**/*flags*.ts", "**/*feature_flags*"] },
+    paths: ["src/shell/state.ts", "src/shell/state/**", "**/tauri.conf.json", "src-tauri/capabilities/**", "src-tauri/permissions/**", "src-tauri/config/**", "**/*flags*.json", "**/*flags*.ts", "**/*feature_flags*", "**/.gitattributes"] },
   { id: "dependency", skills: ["supply-chain-risk-auditor"],
     paths: ["**/Cargo.toml", "**/Cargo.lock", "**/package.json", "**/package-lock.json", "**/npm-shrinkwrap.json", "release/components.json", "src-tauri/runtime-deps.sha256", "**/requirements*.txt", "**/.cargo/config*"] },
   { id: "workflow", skills: ["agentic-actions-auditor"], paths: [".github/workflows/**", ".github/actions/**"] },
   { id: "crypto", skills: ["constant-time-analysis", "zeroize-audit"],
-    paths: ["kit/src/custody*", "**/secret.rs", "**/secret_*.rs", "**/siwe*", "**/eip712*", "**/*keychain*", "**/*mls*", "**/*pqc*", "**/updater*sign*", "**/*signing*", "**/*crypto*"], prod: true },
+    paths: ["kit/src/custody*", "kit/src/custody*/**", "**/*custody*", "**/*wallet_key*", "**/sign.rs", "**/signer*", "**/secret.rs", "**/secret_*.rs", "**/siwe*", "**/eip712*", "**/*keychain*", "**/*mls*", "**/*pqc*", "**/updater*sign*", "**/*signing*", "**/*crypto*"], prod: true },
   { id: "contracts", skills: ["entry-point-analyzer", "building-secure-contracts", "spec-to-code-compliance"], paths: ["contracts/**", "**/*.sol"] },
   { id: "money-authz-state", skills: ["property-based-testing", "mutation-testing"], mutation: true,
-    paths: ["kit/src/ceremony*", "kit/src/custody*", "**/*payout*", "**/*moneypath*", "**/*grant*", "**/*approval*", "**/*_gate.rs", "**/*Gate.ts", "**/*Gate.tsx", "**/*authz*", "**/*entitlement*", "**/*budget*", "**/*state_machine*", "**/*parser*", "**/*parse.rs"], prod: true },
+    paths: ["kit/src/ceremony*", "kit/src/ceremony*/**", "kit/src/custody*", "kit/src/custody*/**", "**/*custody*", "**/*ceremony*", "**/*wallet*", "**/*transfer*", "**/*reward*", "**/*price*", "**/*payout*", "**/*moneypath*", "**/*grant*", "**/*approval*", "**/*_gate.rs", "**/*Gate.ts", "**/*Gate.tsx", "**/*authz*", "**/*entitlement*", "**/*budget*", "**/*state_machine*", "**/*parser*", "**/*parse.rs"], prod: true },
   { id: "production-code", skills: ["semgrep", "codeql"], prodCode: true },
   { id: "protocol", skills: ["spec-to-code-compliance"], paths: ["**/*acp*", "**/*mcp*", "**/*oauth*", "**/*cimd*", "**/*hic*"], prod: true },
   { id: "large-surface", skills: ["audit-context-building"], minLines: 1000 },
@@ -111,6 +111,13 @@ export function requiredSkills(files, opts = {}) {
 }
 
 // "static-analysis:codeql", "trailofbits/Sharp-Edges " -> "codeql", "sharp-edges".
+// A plugin-scoped skill also counts for its plugin: "building-secure-contracts:solana-vulnerability-scanner"
+// satisfies the matrix's "building-secure-contracts" (the plugin has no skill of that bare name).
+export function skillNames(s) {
+  const parts = String(s).trim().replace(/^[`*_]+|[`*_]+$/g, "").split(/[:/]/).map((x) => x.trim().toLowerCase());
+  return parts.length > 1 ? [normalizeSkill(s), parts[0]] : [normalizeSkill(s)];
+}
+
 export function normalizeSkill(s) {
   return String(s).trim().replace(/^[`*_]+|[`*_]+$/g, "").split(/[:/]/).pop().trim().toLowerCase();
 }
@@ -137,11 +144,10 @@ export function parseReviewRecord(body) {
       if (!cur) continue;
       lastKey = key;
       const v = m[2].trim();
-      if (key === "skills") cur.skills.push(...v.split(",").map(normalizeSkill).filter((s) => s && !PLACEHOLDER.test(s)));
+      if (key === "skills") cur.skills.push(...v.split(",").flatMap(skillNames).filter((s) => s && !PLACEHOLDER.test(s)));
       else cur[key] = PLACEHOLDER.test(v) ? "" : v;
     } else if (cur && lastKey === "skills" && /^\s+[-*+]\s+\S/.test(raw)) {
-      const s = normalizeSkill(raw.replace(/^\s+[-*+]\s+/, ""));
-      if (s && !PLACEHOLDER.test(s)) cur.skills.push(s);
+      for (const s of skillNames(raw.replace(/^\s+[-*+]\s+/, ""))) if (s && !PLACEHOLDER.test(s)) cur.skills.push(s);
     } else if (cur && lastKey && lastKey !== "skills" && /^\s+\S/.test(raw) && cur[lastKey]) {
       cur[lastKey] += ` ${raw.trim()}`;
     } else if (raw.trim() === "") {
@@ -171,7 +177,7 @@ export function evaluate({ files, body, title = "", labels = [], changedLines = 
   const ctx = new Map();
   for (const b of blocks) {
     if (!b.context) continue;
-    const k = b.context.trim().toLowerCase();
+    const k = b.context.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
     if (ctx.has(k)) errors.push(`reviewers not independent: two review blocks carry the same context id '${clean(b.context).slice(0, 80)}'`);
     ctx.set(k, b);
   }
@@ -181,9 +187,12 @@ export function evaluate({ files, body, title = "", labels = [], changedLines = 
     const campaigns = blocks.map((b) => b.mutation).filter(Boolean);
     if (!campaigns.length) errors.push("money, authz or state-machine path changed: the review record needs a mutation campaign (mutation: generated N, killed N, surviving N, and why)");
     for (const c of campaigns) {
-      const m = /surviv\w*\s*[:=]?\s*(\d+)/i.exec(c);
-      if (!m) errors.push(`mutation campaign does not state its surviving count: '${clean(c).slice(0, 120)}'`);
-      else if (Number(m[1]) > 0) errors.push(`mutation campaign has ${m[1]} surviving mutant(s) on a money, authz or state-machine path: kill them before merge`);
+      const counts = (word) => [...c.matchAll(new RegExp(`${word}\\w*\\s*[:=]?\\s*(\\d+)`, "gi"))].map((m) => Number(m[1]));
+      const [gen, kill, surv] = [counts("generat"), counts("kill"), counts("surviv")];
+      if (gen.length !== 1 || kill.length !== 1 || surv.length !== 1) errors.push(`mutation campaign must state generated N, killed N and surviving N once each: '${clean(c).slice(0, 120)}'`);
+      else if (gen[0] !== kill[0] + surv[0]) errors.push(`mutation campaign counts do not add up (generated ${gen[0]} != killed ${kill[0]} + surviving ${surv[0]})`);
+      else if (gen[0] === 0) errors.push("mutation campaign generated no mutants");
+      if (surv.some((n) => n > 0)) errors.push(`mutation campaign has ${Math.max(...surv)} surviving mutant(s) on a money, authz or state-machine path: kill them before merge`);
     }
   }
   return { ok: errors.length === 0, errors, required, blocks };
@@ -205,6 +214,9 @@ export function diffOf(root, base, head = "HEAD") {
     const [a, d] = l.split("\t");
     if (/^\d+$/.test(a)) changedLines += Number(a);
     if (/^\d+$/.test(d)) changedLines += Number(d);
+    // '-' is a binary file or a -diff attribute (which a PR's own .gitattributes can set): its size
+    // is unknown, so it counts as a large surface (fail closed).
+    if (a === "-" || d === "-") changedLines += 1000;
   }
   return { mergeBase: mb, files, changedLines };
 }

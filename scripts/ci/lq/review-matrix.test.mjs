@@ -146,6 +146,20 @@ describe("review record rules", () => {
     expect(bad.ok).toBe(false);
     expect(bad.errors.join("\n")).toMatch(/surviving/);
   });
+  it("review fixes (#866 records): campaign counts, ceremony dirs, plugin prefix, lookalike context ids", () => {
+    const skills = ["differential-review", "property-based-testing", "mutation-testing", "semgrep", "codeql"];
+    const ev = (mutation) => evaluate({ files: ["kit/src/ceremony.rs"], body: two(skills, ["differential-review"], { a: { mutation } }) });
+    expect(ev("surviving 0").errors.join("\n")).toMatch(/generated N, killed N and surviving N/);
+    expect(ev("generated 40, killed 30, surviving 0").errors.join("\n")).toMatch(/do not add up/);
+    expect(ev("generated 4, killed 4, surviving 0; pass 2 surviving 4").ok).toBe(false);
+    expect(skillsFor(["kit/src/ceremony/anchor.rs"])).toEqual(expect.arrayContaining(["mutation-testing"]));
+    expect(skillsFor(["src-tauri/src/transfer.rs"])).toEqual(expect.arrayContaining(["mutation-testing"]));
+    expect(skillsFor([".gitattributes"])).toEqual(expect.arrayContaining(["sharp-edges"]));
+    const sol = ["differential-review", "entry-point-analyzer", "building-secure-contracts:solana-vulnerability-scanner", "spec-to-code-compliance"];
+    expect(evaluate({ files: ["contracts/README.md"], body: two(sol) }).errors).toEqual([]);
+    const lookalike = body(block({ reviewer: "a", context: "agent-1", skills: ["differential-review"] }), block({ reviewer: "b", context: "agent-1\u200b", skills: ["differential-review"] }));
+    expect(evaluate({ files: ["README.md"], body: lookalike }).errors.join("\n")).toMatch(/not independent/);
+  });
   it("skills may be a bulleted list under skills:", () => {
     const b = body(
       "reviewer: a\ncontext: c1\nskills:\n  - differential-review\n  - agentic-actions-auditor\nfindings: 0\nmeasured: ran it",

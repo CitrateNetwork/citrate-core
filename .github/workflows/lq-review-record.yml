@@ -12,7 +12,10 @@
 # API and git, never expanded into a shell or an expression in run:. No privileged base-branch
 # trigger (no pull_request_target), no secrets, no write permission. The script that judges is the
 # base branch tip's copy (the head's only in the PR that introduces it), so a PR cannot edit its own
-# rule. The head's --self-test runs in its own token-less job; the enforcement job does not `needs`
+# rule through the script. It can through this file: on pull_request and merge_group GitHub runs the
+# PR's own copy of the workflow, so a PR that edits it judges itself. The control for that is owner
+# review of .github/workflows/lq-*.yml and scripts/ci/lq/** (a CODEOWNERS tail row, as LQ-WP03 has),
+# which is L0's map to add; the same holds for every lq-* workflow. The head's --self-test runs in its own token-less job; the enforcement job does not `needs`
 # it (a required job skipped by a failed dependency reads as passing).
 #
 # Triggers: `edited` re-runs the check when the body changes (a review record is added after the
@@ -22,7 +25,8 @@ name: lq-review-record
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+    # labeled/unlabeled: finding-fix changes the required skills.
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
   merge_group:
     types: [checks_requested]
 
