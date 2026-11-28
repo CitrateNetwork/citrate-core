@@ -47,7 +47,7 @@
         { "runner": "vitest", "file": "src/shell/agentToolGates.test.ts" },
         { "runner": "vitest", "file": "src/shell/shellRunApproval.store.test.ts" },
         { "runner": "vitest", "file": "src/a11y/approvalDialogs.a11y.test.tsx" },
-        { "runner": "cargo", "filter": "hermes_mcp_cards::tests::" }
+        { "runner": "cargo", "filter": "hermes::mcp_cards::tests::" }
       ]
     },
     {

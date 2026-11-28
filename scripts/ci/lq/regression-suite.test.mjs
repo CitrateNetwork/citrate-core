@@ -136,6 +136,11 @@ describe("regression-suite", () => {
     const bad = verify({ suites: reg.suites, cargo: { exit: 101, tests: parseCargoLog(redCargo) }, vitest: GREEN_VITEST, root: "/w/repo" });
     expect(bad.find((r) => r.id === "L3-CARGO")).toMatchObject({ ok: false });
     expect(bad.find((r) => r.id === "L3-CARGO").reason).toMatch(/failed: lq_l3_gate::gate_refuses/);
+    // The failure is the failing suite's alone; the other cargo suites keep their own verdict.
+    expect(bad.find((r) => r.id === "LQ:forced-update-gate/cargo/citrate-core").ok).toBe(true);
+    expect(bad.find((r) => r.id === "cargo")).toBeUndefined();
+    const broken = verify({ suites: reg.suites, cargo: { exit: 101, tests: parseCargoLog(GREEN_CARGO) }, vitest: GREEN_VITEST, root: "/w/repo" });
+    expect(broken.find((r) => r.id === "cargo").reason).toMatch(/exited 101 with no failing test/);
     const redVitest = vitestReport({
       "src/shell/updateGate.test.tsx": { "gates on a minimum": "passed" },
       "src/shell/seams/store.test.ts": { "store methods": "failed" },
