@@ -490,10 +490,11 @@ mod nofollow {
 
     /// Owned by this user, then narrowed to `0700` through the handle (never by path).
     pub(super) fn own_and_narrow(fd: &OwnedFd) -> io::Result<bool> {
-        // SAFETY: `stat` is plain old data; zeroed is a valid value that fstat overwrites.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: `fd` is open and `st` is a valid out pointer.
-        rc(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) })?;
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `fd` is open and `st` is a valid out pointer fstat fills on success.
+        rc(unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) })?;
+        // SAFETY: fstat returned 0, so it wrote the whole struct.
+        let st = unsafe { st.assume_init() };
         // SAFETY: geteuid has no preconditions.
         if st.st_uid != unsafe { libc::geteuid() } {
             return Ok(false);
@@ -504,22 +505,28 @@ mod nofollow {
     }
 
     pub(super) fn kind_at(dir: &OwnedFd, name: &CStr) -> io::Result<Kind> {
-        // SAFETY: as in `own_and_narrow`.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: `dir` is open, `name` valid, `st` a valid out pointer.
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `dir` is open, `name` valid, `st` a valid out pointer fstatat fills on success.
         let r = unsafe {
             libc::fstatat(
                 dir.as_raw_fd(),
                 name.as_ptr(),
-                &mut st,
+                st.as_mut_ptr(),
                 libc::AT_SYMLINK_NOFOLLOW,
             )
         };
         match rc(r) {
             Err(e) if e.raw_os_error() == Some(libc::ENOENT) => Ok(Kind::Missing),
             Err(e) => Err(e),
-            Ok(()) if (st.st_mode & libc::S_IFMT) == libc::S_IFDIR => Ok(Kind::Dir),
-            Ok(()) => Ok(Kind::Other),
+            Ok(()) => {
+                // SAFETY: fstatat returned 0, so it wrote the whole struct.
+                let st = unsafe { st.assume_init() };
+                if (st.st_mode & libc::S_IFMT) == libc::S_IFDIR {
+                    Ok(Kind::Dir)
+                } else {
+                    Ok(Kind::Other)
+                }
+            }
         }
     }
 
