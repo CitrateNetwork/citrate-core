@@ -120,25 +120,51 @@ fn defaults_match_the_code() {
     assert_eq!(rust_rows, compiled.len(), "a new Rust flag joins this list");
 }
 
+/// The sign-off check the named tripwire below runs, on any table, sources and tree: every
+/// `required` row's gate, each failure as one line.
+fn signoff_failures(
+    t: &Table,
+    sources: &[(String, String)],
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Vec<String> {
+    let _ = sources;
+    let mut out = Vec::new();
+    for row in t.flags.iter().filter(|r| r.signoff == Signoff::Required) {
+        let Some(id) = row.signoff_id() else {
+            out.push(format!("{} is required but names no sign-off", row.id));
+            continue;
+        };
+        let spec = Spec {
+            packet_repo: signoff::packet_repo(&id).to_string(),
+            id: id.clone(),
+        };
+        let on = row.default;
+        if let Err(e) = signoff::gate(&spec, on, read) {
+            out.push(format!(
+                "{} is {on} but its sign-off {id} does not hold: {e}",
+                row.id
+            ));
+        }
+    }
+    out
+}
+
 #[test]
 fn flags_requiring_signoff_have_a_verified_record() {
     let t = table();
-    let gated: Vec<_> = t
-        .flags
-        .iter()
-        .filter(|r| r.signoff == Signoff::Required)
-        .collect();
-    assert!(!gated.is_empty(), "no sign-off rows; the table is broken");
-    for row in gated {
+    assert!(
+        t.flags.iter().any(|r| r.signoff == Signoff::Required),
+        "no sign-off rows; the table is broken"
+    );
+    for row in t.flags.iter().filter(|r| r.signoff == Signoff::Required) {
         let id = row.signoff_id().expect("a required row has a sign-off id");
-        let spec = signoff::spec(&id).expect("spec from the table");
-        if let Err(e) = signoff::gate(&spec, row.default, &read_repo) {
-            panic!(
-                "{} is {} but its sign-off {id} does not hold: {e}",
-                row.id, row.default
-            );
-        }
+        assert_eq!(
+            signoff::spec(&id).expect("spec from the table").packet_repo,
+            signoff::packet_repo(&id)
+        );
     }
+    let failures = signoff_failures(&t, &sources(), &read_repo);
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// The 3.7 initial rows, as the lane file lists them.
@@ -457,5 +483,48 @@ fn a_flipped_flag_without_a_verified_record_fails() {
     assert!(
         signoff::validate(&cl, &record).is_err(),
         "a record for another sign-off"
+    );
+}
+
+/// Review round 3 (#838): the named tripwire gates on the code's value, not only the table's. A
+/// const flipped to true in its file while the table still says false needs its record too.
+#[test]
+fn a_const_flipped_without_a_table_edit_still_needs_its_record() {
+    let file = "src-tauri/src/alpha.rs".to_string();
+    let on = SOURCE.replace("ALPHA: bool = false", "ALPHA: bool = true");
+    let gated = |default: bool| {
+        table_of(serde_json::json!([{
+            "id": "ALPHA", "lane": "L1", "where": file, "default": default, "signoff": "required",
+        }]))
+    };
+    let none = |_: &str| None;
+    let off = vec![(file.clone(), SOURCE.to_string())];
+    let flipped = vec![(file.clone(), on)];
+    assert!(signoff_failures(&gated(false), &off, &none).is_empty(), "off in both");
+    let code_only = signoff_failures(&gated(false), &flipped, &none);
+    assert!(
+        code_only
+            .iter()
+            .any(|m| m.contains("ALPHA is true") && m.contains("ALPHA.json is missing")),
+        "{code_only:?}"
+    );
+    let table_only = signoff_failures(&gated(true), &off, &none);
+    assert!(table_only.iter().any(|m| m.contains("ALPHA is true")), "{table_only:?}");
+    // A Rust row whose const cannot be found is refused, never read as off.
+    let gone = vec![(file.clone(), "// no flag here\n".to_string())];
+    let missing = signoff_failures(&gated(false), &gone, &none);
+    assert!(
+        missing.iter().any(|m| m.contains("points at no")),
+        "{missing:?}"
+    );
+    // A table-only row gates on the table's value.
+    let pqc = table_of(serde_json::json!([{
+        "id": "BETA", "lane": "L9", "where": flags::TABLE_PATH, "default": true, "signoff": "required",
+    }]));
+    assert!(
+        signoff_failures(&pqc, &off, &none)
+            .iter()
+            .any(|m| m.contains("BETA is true")),
+        "table-only row"
     );
 }
