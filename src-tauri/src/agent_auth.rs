@@ -37,8 +37,8 @@
 //! ACP host; the home is core's app data folder; route tokens come from the in-process model
 //! proxy. Keyless: nothing here signs or holds a vendor key (Rule 3).
 
-// Wired by the L1 agent runtime commands and the ACP host spawn (WP14b, WP03); until then only the
-// tests below call it.
+// The launch environment, route minting and path checks are wired by the ACP host spawn (WP03);
+// until then only the tests call them. Status, sign-out and removal are wired (the commands below).
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::path::{Component, Path, PathBuf};
@@ -858,9 +858,106 @@ pub fn revoke_agent_routes(proxy: Option<&ModelProxy>, id: &AgentId) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// L1-WP14b: the agent runtime sign-in commands (Settings and the harness picker)
+// ---------------------------------------------------------------------------
+
+/// The ACP agents Core knows: `release/agents.lock.json` (WP13). Compiled in, so the list a
+/// command accepts is the reviewed lock, never a webview argument.
+const AGENTS_LOCK: &str = include_str!("../../release/agents.lock.json");
+
+/// `id` as an agent id, refused unless `release/agents.lock.json` has a row for it.
+pub fn locked_agent(id: &str) -> Result<AgentId, AuthError> {
+    let id = AgentId::parse(id)?;
+    let lock: serde_json::Value = serde_json::from_str(AGENTS_LOCK)
+        .map_err(|e| AuthError::Io(format!("release/agents.lock.json does not parse: {e}")))?;
+    let known = lock["agents"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|r| r["id"].as_str() == Some(id.as_str())));
+    if known {
+        Ok(id)
+    } else {
+        Err(AuthError::BadId(format!(
+            "\"{}\" is not an agent this build knows",
+            id.as_str()
+        )))
+    }
+}
+
+/// The sign-in state of one agent (metadata only).
+pub fn auth_status_at(homes: &AgentHomes, id: &str) -> Result<HomeStatus, AuthError> {
+    Ok(homes.home_status(&locked_agent(id)?))
+}
+
+/// Sign one agent out: its routes revoked, its home emptied. Answers the new state.
+pub fn sign_out_at(
+    homes: &AgentHomes,
+    proxy: Option<&ModelProxy>,
+    id: &str,
+) -> Result<HomeStatus, AuthError> {
+    let id = locked_agent(id)?;
+    homes.sign_out_agent(&id, proxy)?;
+    Ok(homes.home_status(&id))
+}
+
+/// Remove one agent's folder (uninstall cleanup). Answers whether anything was removed.
+pub fn remove_at(
+    homes: &AgentHomes,
+    proxy: Option<&ModelProxy>,
+    id: &str,
+) -> Result<bool, AuthError> {
+    homes.remove_agent_dir(&locked_agent(id)?, proxy)
+}
+
+fn homes_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<AgentHomes, String> {
+    use tauri::Manager;
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(AgentHomes::new(&data))
+}
+
+/// `agent_runtime_auth_status { id }`: whether the agent's home exists and its own sign-in file is
+/// present. Data source: core's app data folder, metadata only (no file in the home is read).
+#[tauri::command]
+pub async fn agent_runtime_auth_status(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<HomeStatus, String> {
+    crate::blocking::off_main(move || Ok(auth_status_at(&homes_for_app(&app)?, &id)?)).await
+}
+
+/// `agent_runtime_sign_out { id }`: revoke the agent's proxy routes and empty its home. Data
+/// source: core's app data folder and the in-process model proxy.
+#[tauri::command]
+pub async fn agent_runtime_sign_out(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<HomeStatus, String> {
+    crate::blocking::off_main(move || {
+        let proxy = crate::ai::proxy_for_app(&app).ok();
+        Ok(sign_out_at(&homes_for_app(&app)?, proxy.as_deref(), &id)?)
+    })
+    .await
+}
+
+/// `agent_runtime_remove { id }`: the uninstall cleanup (routes revoked, the agent's folder
+/// deleted). Data source: core's app data folder and the in-process model proxy.
+#[tauri::command]
+pub async fn agent_runtime_remove(app: tauri::AppHandle, id: String) -> Result<bool, String> {
+    crate::blocking::off_main(move || {
+        let proxy = crate::ai::proxy_for_app(&app).ok();
+        Ok(remove_at(&homes_for_app(&app)?, proxy.as_deref(), &id)?)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     include!("agent_auth_tests.rs");
+}
+
+#[cfg(test)]
+mod command_tests {
+    include!("agent_auth_command_tests.rs");
 }
 
 #[cfg(test)]

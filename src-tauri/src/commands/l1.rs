@@ -72,6 +72,10 @@ macro_rules! v60_commands_l1 {
             node_mcp::node_mcp_token_revoke,
             node_mcp::node_mcp_requests,
             node_mcp::node_mcp_decide,
+            // L1-WP14b (v060) — per-agent sign-in homes: status, sign-out, uninstall cleanup.
+            hermes::agent_auth::agent_runtime_auth_status,
+            hermes::agent_auth::agent_runtime_sign_out,
+            hermes::agent_auth::agent_runtime_remove,
         ])
     };
 }
