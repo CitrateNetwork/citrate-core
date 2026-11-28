@@ -9,9 +9,9 @@ mod lq_ch6_proxy_paths {
     use super::*;
     use crate::model_proxy::tests::Rig;
 
-    /// Paths a client might try. None of them is the chat path at a826e441.
+    /// Paths a client might try. None of them is served. `/v1/responses` left this list in L1-WP10,
+    /// which serves it (and `lq_ch6_the_responses_path_needs_a_route_bearer` pins it instead).
     const OTHER_PATHS: &[&str] = &[
-        "/v1/responses",
         "/v1/responses/compact",
         "/v1/messages",
         "/v1/models",
@@ -43,7 +43,7 @@ mod lq_ch6_proxy_paths {
     }
 
     #[test]
-    fn lq_ch6_the_chat_path_is_the_only_one_served() {
+    fn lq_ch6_only_the_chat_and_responses_paths_are_served() {
         assert_eq!(CHAT_PATH, "/v1/chat/completions");
         let rig = Rig::new("lq-ch6-paths");
         let b = granted(&rig);
@@ -55,7 +55,11 @@ mod lq_ch6_proxy_paths {
                 assert!(resp.contains("not_found"), "{method} {path:?}: {resp}");
             }
         }
-        assert_eq!(rig.vendor.calls(), before, "no other path reached the vendor");
+        assert_eq!(
+            rig.vendor.calls(),
+            before,
+            "no other path reached the vendor"
+        );
         // The chat path itself still answers.
         let ok = serve(&rig, &at(&b, "POST", CHAT_PATH, &[]));
         assert_eq!(status_of(&ok), 200, "{ok}");
@@ -92,15 +96,42 @@ mod lq_ch6_proxy_paths {
     #[test]
     fn lq_ch6_an_unknown_path_is_404_before_any_bearer_check() {
         let rig = Rig::new("lq-ch6-bearer");
-        for path in ["/v1/responses", "/v1/messages"] {
+        for path in ["/v1/responses/compact", "/v1/messages"] {
             let mut none = at("x", "POST", path, &[]);
             none.headers.retain(|(k, _)| k != "authorization");
             assert_eq!(status_of(&serve(&rig, &none)), 404, "{path}");
             let unknown = at("cmp_nope", "POST", path, &[]);
             assert_eq!(status_of(&serve(&rig, &unknown)), 404, "{path}");
         }
-        // On the chat path the same requests are 401.
-        let unknown = at("cmp_nope", "POST", CHAT_PATH, &[]);
-        assert_eq!(status_of(&serve(&rig, &unknown)), 401);
+        // On the chat and responses paths the same requests are 401.
+        for path in [CHAT_PATH, RESPONSES_PATH] {
+            let unknown = at("cmp_nope", "POST", path, &[]);
+            assert_eq!(status_of(&serve(&rig, &unknown)), 401, "{path}");
+        }
+    }
+
+    /// L1-WP10 supersedes the `/v1/responses` row: it is served, POST only, behind the same guards
+    /// and a route bearer, and nothing reaches a vendor without one.
+    #[test]
+    fn lq_ch6_the_responses_path_needs_a_route_bearer() {
+        assert_eq!(RESPONSES_PATH, "/v1/responses");
+        let rig = Rig::new("lq-ch6-responses");
+        let b = granted(&rig);
+        let before = rig.vendor.calls();
+        for method in ["GET", "PUT", "DELETE", "post"] {
+            assert_eq!(
+                status_of(&serve(&rig, &at(&b, method, RESPONSES_PATH, &[]))),
+                405,
+                "{method}"
+            );
+        }
+        let mut none = at("x", "POST", RESPONSES_PATH, &[]);
+        none.headers.retain(|(k, _)| k != "authorization");
+        assert_eq!(status_of(&serve(&rig, &none)), 401);
+        assert_eq!(
+            status_of(&serve(&rig, &at(&rig.key, "POST", RESPONSES_PATH, &[]))),
+            401
+        );
+        assert_eq!(rig.vendor.calls(), before, "no vendor call without a route");
     }
 }
