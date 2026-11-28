@@ -98,6 +98,21 @@ today through its chat tools (`src/agent/everydayTools.ts`).
 **Left to build**: custom-server persistence (write to the MCP config + spawn stdio / mount
 https), and surfacing per-server tool lists. The three named providers connect today; none is an agent tool yet.
 
+**Release builds and the token relay (L6-WP05, flag `CONNECTIONS_V2`, off until a recorded
+release-build connect).** A release build holds no provider client secret and reads no
+`oauth.dev.json`; that path is compiled into debug builds only. With the flag on, the provider
+registry (`src-tauri/src/oauth_client/providers.rs`) decides each service: GitHub uses the
+compiled public client id of Citrate Core's GitHub OAuth App and exchanges, refreshes and revokes
+through the Citrate relay (`POST https://auth.citrate.ai/oauth/relay/v1/github/{token,refresh,revoke}`,
+bearer = the member's auth.citrate.ai session; citrate-identity `docs/OAUTH_RELAY.md`). Signed
+out, Connect says "Sign in to Citrate to connect" and never falls back to a device-held secret.
+Notion, Google and Hugging Face read "not configured" in a release build until their client ids
+are registered here and the relay has a row for them. GitHub requests `repo read:org` (the code
+asked for `repo` only before WP05; reconciled to the table above). Disconnect asks the provider
+to revoke first where it can (GitHub through the relay, Google directly), records the outcome,
+then removes the token from the vault; when the revoke is not confirmed the token is still
+removed and the member is told to remove Citrate Core in the provider's account settings.
+
 ---
 
 ## 3. Foundational models — local + cloud providers   ·  **PARTIAL (routes to real surfaces)**
