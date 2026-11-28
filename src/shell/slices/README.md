@@ -68,6 +68,8 @@ The rules `registerSlice` enforces (it throws and registers nothing otherwise):
 A persisted slice is restored at registration and written on every change. `device` scope uses
 the key as given; `network` scope keys the entry by genesis (`<key>@<genesis>`), so a value read
 on one network is never restored on another. A saved value replaces a default only when it is of
-the same JSON kind (a `null` default takes a string, number or boolean). The registry's storage
-entry is listed in `../persistScope.test.ts`.
+the same JSON kind (a `null` default takes a string, number or boolean). The check is shallow:
+the items of a saved array or the fields of a saved object are not checked, so a lane that needs
+a nested shape validates it after registration. The registry's storage entry is listed in
+`../persistScope.test.ts`.
 
