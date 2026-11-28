@@ -298,6 +298,11 @@ export function FleetWizardView({
                   <code className="mono" style={{ fontSize: 10.5, wordBreak: "break-all" }}>{s.offer.link}</code>
                   <span style={note}>{expiresIn(s.offer.expiresAt, nowSecs)}</span>
                   <span style={note}>Reachable at: {s.offer.hints.join(", ")}</span>
+                  {s.offer.ephemeralKey && (
+                    <span style={note} data-testid="fleet-ephemeral-key">
+                      {EPHEMERAL_KEY_NOTE}
+                    </span>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -574,3 +579,7 @@ export function FleetWizard({
 
   return <FleetWizardView state={state} nowSecs={now} available={available} canLink={!!api.linkThisDevice} {...handlers} />;
 }
+
+/** L7-WP02: said when the keychain could not hold the pairing key. */
+export const EPHEMERAL_KEY_NOTE =
+  "This machine could not use its keychain, so this link stops working if Citrate Core restarts before it is used.";

@@ -67,6 +67,11 @@ export interface PairOffer {
   installQr?: QrMatrix;
   /** This machine is linked, so its DeviceLink travels with the pairing. */
   carriesDeviceLink?: boolean;
+  /**
+   * L7-WP02: the pairing key is held in memory for this run only (the keychain could not be used),
+   * so the link stops working if Citrate Core restarts. Absent from an older core.
+   */
+  ephemeralKey?: boolean;
 }
 
 /** Whether THIS machine has a DeviceLink (from `device_links`). */
