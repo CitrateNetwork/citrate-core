@@ -286,6 +286,61 @@ pub(crate) struct Connected {
     pub scope: Option<String>,
     /// Requested scopes the server did not grant (it may grant less, RFC 6749 section 3.3).
     pub missing_scopes: Vec<String>,
+    /// Some requested scopes were not granted: the connector is "limited".
+    pub limited: bool,
+}
+
+/// The scopes in a token answer's `scope`: space-separated per RFC 6749, comma-separated by
+/// Slack; both are accepted.
+pub(crate) fn split_scopes(s: &str) -> Vec<&str> {
+    s.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|x| !x.is_empty())
+        .collect()
+}
+
+/// The requested scopes missing from `grant`, or `None` when the server did not say (RFC 6749
+/// section 5.1: an absent `scope` means the requested scope was granted).
+pub(crate) fn missing_from(req: &AuthRequest, grant: &Grant) -> Option<Vec<String>> {
+    let granted = split_scopes(grant.scope.as_deref()?);
+    Some(
+        req.discovered
+            .scopes
+            .iter()
+            .filter(|s| !granted.contains(&s.as_str()))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// Best-effort revoke of a token that will not be stored (none of the scopes were granted).
+fn revoke_unused(
+    net: &dyn McpHttp,
+    relay: Option<&dyn RelayTransport>,
+    req: &AuthRequest,
+    grant: &Grant,
+) {
+    let token = grant.access_token.expose();
+    if let Client::Relay { provider, .. } = &req.client {
+        if let Some(relay) = relay {
+            let body = Zeroizing::new(serde_json::json!({ "token": token }).to_string());
+            let _ = relay.post(provider, RelayOp::Revoke, &body);
+        }
+        return;
+    }
+    if let Some(endpoint) = &req.discovered.auth_server.revocation_endpoint {
+        let mut form: Vec<(&str, &str)> =
+            vec![("token", token), ("token_type_hint", "access_token")];
+        client_fields(&req.client, &mut form);
+        let basic = match &req.client {
+            Client::Confidential {
+                client_id,
+                secret,
+                basic: true,
+            } => Some((client_id.as_str(), secret.expose())),
+            _ => None,
+        };
+        let _ = http::send(net, endpoint, Request::PostForm { form: &form, basic });
+    }
 }
 
 /// Seal `grant` for `connector_id`, bound to the request's resource and issuer.
@@ -297,21 +352,7 @@ pub(crate) fn seal_grant(
 ) -> Result<Connected, McpAuthError> {
     let now = now_unix();
     let auth = &req.discovered.auth_server;
-    let granted: Vec<&str> = grant
-        .scope
-        .as_deref()
-        .map(|s| s.split_whitespace().collect())
-        .unwrap_or_default();
-    let missing_scopes = match grant.scope {
-        Some(_) => req
-            .discovered
-            .scopes
-            .iter()
-            .filter(|s| !granted.contains(&s.as_str()))
-            .cloned()
-            .collect(),
-        None => Vec::new(),
-    };
+    let missing_scopes = missing_from(req, &grant).unwrap_or_default();
     let rec = TokenRecord {
         v: store::RECORD_V,
         connector_id: connector_id.to_string(),
@@ -337,6 +378,7 @@ pub(crate) fn seal_grant(
         expires_at: grant.expires_in.map(|e| now.saturating_add(e)),
         connected_at: now,
         needs_refresh: false,
+        missing_scopes: missing_scopes.clone(),
     };
     store::write(vault, &rec)?;
     Ok(Connected {
@@ -344,6 +386,7 @@ pub(crate) fn seal_grant(
         resource: rec.resource.clone(),
         client_kind: req.client.kind(),
         scope: grant.scope,
+        limited: !missing_scopes.is_empty(),
         missing_scopes,
     })
 }
@@ -359,6 +402,14 @@ pub(crate) fn complete(
 ) -> Result<Connected, McpAuthError> {
     let code = check_callback(req, cb)?;
     let grant = exchange(net, relay, req, &code)?;
+    // Lead decision 2026-11-28: a granted subset is stored as "limited"; none granted is refused
+    // and the token revoked.
+    let none_granted = !req.discovered.scopes.is_empty()
+        && missing_from(req, &grant).is_some_and(|m| m.len() == req.discovered.scopes.len());
+    if none_granted {
+        revoke_unused(net, relay, req, &grant);
+        return Err(McpAuthError::ScopesDenied);
+    }
     seal_grant(vault, connector_id, req, grant)
 }
 

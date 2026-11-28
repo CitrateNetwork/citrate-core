@@ -116,6 +116,8 @@ pub(crate) enum McpAuthError {
     IssMismatch,
     /// The member declined consent.
     Declined,
+    /// The server granted none of the requested scopes; the token was revoked, nothing stored.
+    ScopesDenied,
     /// The authorization or token endpoint answered with this OAuth error code.
     TokenRejected(String),
     NotSignedIn,
@@ -166,6 +168,9 @@ impl std::fmt::Display for McpAuthError {
             McpAuthError::Declined => {
                 f.write_str("the sign-in was declined; nothing was connected")
             }
+            McpAuthError::ScopesDenied => f.write_str(
+                "the server granted none of the permissions Citrate Core asked for; nothing was connected",
+            ),
             McpAuthError::TokenRejected(code) => {
                 write!(f, "the server refused the sign-in ({code})")
             }

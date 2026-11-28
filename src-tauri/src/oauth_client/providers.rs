@@ -9,8 +9,9 @@ use crate::connections::Service;
 /// Public; its secret lives only in the relay deployment (`GITHUB_CLIENT_SECRET`).
 pub const GITHUB_CLIENT_ID: &str = "Ov23liUgI4U92ZzDXwnt";
 
-const NOTION_NOT_REGISTERED: &str = "the Notion public integration's client id is not yet \
-     registered for release builds (docs/CONNECTIONS_RUNBOOK.md section 2)";
+/// Citrate Core's Notion public integration (lead, 2026-11-28; relay `notion` row configured
+/// 2026-11-28T06:55Z). Public; its secret lives only in the relay deployment.
+pub const NOTION_CLIENT_ID: &str = "425d872b-594c-8185-b5e8-0037d5c70dc3";
 const GOOGLE_NOT_REGISTERED: &str = "no Google OAuth client is registered for release builds, \
      and the Citrate relay has no Google row yet (docs/CONNECTIONS_RUNBOOK.md section 2)";
 const HF_NOT_REGISTERED: &str = "no Hugging Face OAuth app is registered for release builds, \
@@ -29,9 +30,9 @@ pub(crate) fn setup_for(service: Service) -> ProviderSetup {
         Service::Notion => ProviderSetup {
             provider: "notion",
             mode: ClientMode::Relay,
-            client_id: None,
-            configured: false,
-            reason: Some(NOTION_NOT_REGISTERED),
+            client_id: Some(NOTION_CLIENT_ID),
+            configured: true,
+            reason: None,
         },
         Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => ProviderSetup {
             provider: "google",
