@@ -1,5 +1,5 @@
 {
-  "$comment": "L1-WP13a (planset v060, lanes/L1_AGENT_RUNTIME.md WP13): the ACP agents Core can run, pinned with dated evidence. Every row was checked on checked_at against the publisher's own source (npm registry, GitHub release, the ACP registry entry at evidence.acp_registry.commit). Nothing here is installable yet: delivery is a signed component download after the W0 signing ceremony (owner answer L1-Q2), and every row stays vetted=vetting until its citrate-security record (L1-WP15) says otherwise. sha256 values are of the artifact named by url; npm_integrity is the registry's own dist.integrity, re-computed locally for the npm tarballs on checked_at. Ids are the AgentId values agent_auth.rs knows (one LAYOUTS row each).",
+  "$comment": "L1-WP13a (planset v060, lanes/L1_AGENT_RUNTIME.md WP13): the ACP agents Core can run, pinned with dated evidence. Every row was checked on checked_at against the publisher's own source (npm registry, GitHub release, the ACP registry entry at evidence.acp_registry.commit). Nothing here is installable yet: delivery is a signed component download after the W0 signing ceremony (owner answer L1-Q2), and every row stays vetted=vetting until its citrate-security record (L1-WP15) says otherwise. sha256 values are of the artifact named by url; npm_integrity is the registry's own dist.integrity, re-computed locally for the npm tarballs on checked_at. Ids are the AgentId values agent_auth.rs knows (one LAYOUTS row each). Owner decisions 2026-11-28: delivery per row; Muse Code is a vendor download (the member downloads Meta's binary, Citrate does not redistribute); Grok Build ships xAI's published binary, never built from source, with its npm postinstall never run; OpenCode and Cline are not in 0.6.0; openclaw and oh-my-opencode are refused. vetting_record names the citrate-security record (security #199).",
   "version": 1,
   "checked_at": "2026-11-27",
   "evidence": {
@@ -7,7 +7,13 @@
       "repo": "https://github.com/agentclientprotocol/registry",
       "commit": "85c7fc4854227904ca2b8b759eea57c144256872",
       "release": "https://github.com/agentclientprotocol/registry/releases/tag/v2026.11.28-85c7fc4",
-      "quarantined_ids": ["agoragentic-acp", "deepagents", "fast-agent", "minion-code", "vtcode"]
+      "quarantined_ids": [
+        "agoragentic-acp",
+        "deepagents",
+        "fast-agent",
+        "minion-code",
+        "vtcode"
+      ]
     },
     "acp_crate": {
       "name": "agent-client-protocol",
@@ -28,15 +34,23 @@
       "license": "Apache-2.0",
       "license_kind": "osi",
       "runtime": "native",
-      "launch": { "cmd": "hermes", "args": ["--acp"], "env": {} },
+      "launch": {
+        "cmd": "hermes",
+        "args": [
+          "--acp"
+        ],
+        "env": {}
+      },
       "source": "https://github.com/CitrateNetwork/citrate-agent-runtime/commit/aa12b10ee9965619818268dcd6d8651b37dbf19a",
       "artifacts": [],
       "wire": "chat",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-hermes",
       "installable": false,
       "installable_reason": "built from source as the hermes-sidecar component (release/components.json); ACP mode not built yet",
-      "notes": []
+      "notes": [],
+      "delivery": "bundled",
+      "license_condition": null
     },
     {
       "id": "codex",
@@ -47,7 +61,11 @@
       "license": "Apache-2.0",
       "license_kind": "osi",
       "runtime": "node",
-      "launch": { "cmd": "codex-acp", "args": [], "env": {} },
+      "launch": {
+        "cmd": "codex-acp",
+        "args": [],
+        "env": {}
+      },
       "source": "https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.12.1",
       "artifacts": [
         {
@@ -69,7 +87,7 @@
       ],
       "wire": "responses",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-codex",
       "installable": false,
       "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2)",
       "notes": [
@@ -77,7 +95,9 @@
         "@zed-industries/codex-acp is deprecated on npm and github.com/zed-industries/codex-acp is archived (last release v0.16.0, 2026-06-08).",
         "GitHub reports the repo license as NOASSERTION; the LICENSE file in the npm tarball is Apache-2.0 (Copyright 2025 JetBrains s.r.o.).",
         "Proxy mode needs /v1/responses (L1-WP10, not built); the gateway auth method carries a base URL and headers over ACP authenticate, which fits a Citrate route token."
-      ]
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
     },
     {
       "id": "claude",
@@ -88,7 +108,11 @@
       "license": "Apache-2.0 adapter; @anthropic-ai/claude-agent-sdk 0.3.331 under Anthropic terms (SEE LICENSE IN README.md)",
       "license_kind": "mixed",
       "runtime": "node",
-      "launch": { "cmd": "claude-agent-acp", "args": [], "env": {} },
+      "launch": {
+        "cmd": "claude-agent-acp",
+        "args": [],
+        "env": {}
+      },
       "source": "https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.113.0",
       "artifacts": [
         {
@@ -120,13 +144,15 @@
       ],
       "wire": "messages",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-claude",
       "installable": false,
       "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); API key only through the Citrate proxy (L1-Q3), which needs /v1/messages (L1-WP12, not built)",
       "notes": [
         "The ACP registry lists the entry's license as proprietary because of the bundled Claude Agent SDK; the adapter's own LICENSE is Apache-2.0.",
         "@zed-industries/claude-code-acp and @zed-industries/claude-agent-acp are deprecated on npm in favour of @agentclientprotocol/claude-agent-acp."
-      ]
+      ],
+      "delivery": "signed_component",
+      "license_condition": "The adapter is Apache-2.0; the bundled @anthropic-ai/claude-agent-sdk is under Anthropic's terms (SEE LICENSE IN README.md). Shipped only if the vetting record accepts those terms for redistribution; API key only through the Citrate proxy (L1-Q3)."
     },
     {
       "id": "gemini",
@@ -137,7 +163,13 @@
       "license": "Apache-2.0",
       "license_kind": "osi",
       "runtime": "node",
-      "launch": { "cmd": "gemini", "args": ["--acp"], "env": {} },
+      "launch": {
+        "cmd": "gemini",
+        "args": [
+          "--acp"
+        ],
+        "env": {}
+      },
       "source": "https://github.com/google-gemini/gemini-cli/releases/tag/v0.71.1",
       "artifacts": [
         {
@@ -149,10 +181,14 @@
       ],
       "wire": "native",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-gemini",
       "installable": false,
       "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); needs the pinned Node runtime component (L1-Q3)",
-      "notes": ["engines.node >= 20. Home from GEMINI_CLI_HOME; tokens in a file when GEMINI_FORCE_FILE_STORAGE is set."]
+      "notes": [
+        "engines.node >= 20. Home from GEMINI_CLI_HOME; tokens in a file when GEMINI_FORCE_FILE_STORAGE is set."
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
     },
     {
       "id": "goose",
@@ -163,7 +199,13 @@
       "license": "Apache-2.0",
       "license_kind": "osi",
       "runtime": "native",
-      "launch": { "cmd": "goose", "args": ["acp"], "env": {} },
+      "launch": {
+        "cmd": "goose",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
       "source": "https://github.com/aaif-goose/goose/releases/tag/v1.61.1",
       "artifacts": [
         {
@@ -189,10 +231,14 @@
       ],
       "wire": "chat",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-goose",
       "installable": false,
       "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); Codex and goose are bundled only if the ceremony slips",
-      "notes": ["github.com/block/goose now redirects to github.com/aaif-goose/goose; release URLs under block/goose still resolve."]
+      "notes": [
+        "github.com/block/goose now redirects to github.com/aaif-goose/goose; release URLs under block/goose still resolve."
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
     },
     {
       "id": "grok",
@@ -200,10 +246,17 @@
       "acp": "supported",
       "acp_evidence": "ACP registry entry grok-build 1.0.94 (npx @xai-official/grok@1.0.94 agent stdio); not quarantined.",
       "version": "1.0.94",
-      "license": "unclear: npm license field Apache-2.0, no LICENSE file in the tarball, ACP registry says proprietary (https://x.ai/legal/terms-of-service)",
-      "license_kind": "unclear",
+      "license": "xAI terms of service (https://x.ai/legal/terms-of-service); the npm license field says Apache-2.0 but the tarball has no LICENSE file",
+      "license_kind": "proprietary",
       "runtime": "native",
-      "launch": { "cmd": "grok", "args": ["agent", "stdio"], "env": {} },
+      "launch": {
+        "cmd": "grok",
+        "args": [
+          "agent",
+          "stdio"
+        ],
+        "env": {}
+      },
       "source": "https://www.npmjs.com/package/@xai-official/grok/v/1.0.94",
       "artifacts": [
         {
@@ -225,10 +278,14 @@
       ],
       "wire": "native",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-grok",
       "installable": false,
-      "installable_reason": "license unclear for redistribution; signed component download waits on the W0 signing ceremony (L1-Q2)",
-      "notes": ["The npm package runs a postinstall script (node bin/postinstall.js) and ships its native binary through optionalDependencies."]
+      "installable_reason": "vendor binary under xAI's terms (owner decision 2026-11-28); waits on its vetting record and the W0 signing ceremony conditions",
+      "notes": [
+        "The npm package runs a postinstall script (node bin/postinstall.js) and ships its native binary through optionalDependencies."
+      ],
+      "delivery": "vendor_binary",
+      "license_condition": "xAI's terms. Core delivers xAI's published platform binary (@xai-official/grok-<platform>), never a build from source, and never runs the wrapper package's postinstall script (node bin/postinstall.js); if the wrapper is ever needed, its postinstall runs only inside the L2 sandbox (owner decision 2026-11-28)."
     },
     {
       "id": "muse",
@@ -239,7 +296,15 @@
       "license": "proprietary (https://dev.meta.ai/legal/terms-of-service)",
       "license_kind": "proprietary",
       "runtime": "native",
-      "launch": { "cmd": "muse", "args": ["acp"], "env": { "MUSE_EXPERIMENTAL_ACP": "on" } },
+      "launch": {
+        "cmd": "muse",
+        "args": [
+          "acp"
+        ],
+        "env": {
+          "MUSE_EXPERIMENTAL_ACP": "on"
+        }
+      },
       "source": "https://dev.meta.ai/docs/muse-code",
       "artifacts": [
         {
@@ -265,10 +330,40 @@
       ],
       "wire": "native",
       "vetted": "vetting",
-      "vetting_record": null,
+      "vetting_record": "VET-AGT-2026-11-28-muse",
       "installable": false,
-      "installable_reason": "proprietary license (redistribution needs Meta's terms); ACP mode is experimental; signed component download waits on the W0 signing ceremony (L1-Q2)",
-      "notes": ["sha256 values are the ACP registry's; the binaries were not downloaded on checked_at."]
+      "installable_reason": "vendor download on first pick (owner decision 2026-11-28); waits on its vetting record and the W0 signing ceremony conditions; ACP mode is experimental",
+      "notes": [
+        "sha256 values are the ACP registry's; the binaries were not downloaded on checked_at."
+      ],
+      "delivery": "vendor_download",
+      "license_condition": "Meta's terms (https://dev.meta.ai/legal/terms-of-service). Citrate does not redistribute: on first pick the member downloads Meta's binary from the vendor URL, and Core checks it against the pinned sha256 before it runs (owner decision 2026-11-28)."
+    }
+  ],
+  "not_offered": [
+    {
+      "id": "openclaw",
+      "decision": "refused",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "oh-my-opencode",
+      "decision": "refused",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "opencode",
+      "decision": "not_in_0.6.0",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "cline",
+      "decision": "not_in_0.6.0",
+      "decided": "2026-11-28",
+      "by": "owner"
     }
   ]
 }

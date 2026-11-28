@@ -181,7 +181,99 @@ fn grok_build_and_muse_code_are_listed_but_not_installable() {
     for a in agents() {
         if ["grok", "muse"].contains(&s(&a, "id")) {
             assert_eq!(a["installable"], false);
-            assert!(["proprietary", "unclear"].contains(&s(&a, "license_kind")));
+            assert_eq!(s(&a, "license_kind"), "proprietary", "xAI and Meta terms");
         }
+    }
+}
+
+// Owner decisions 2026-11-28: delivery per row, license conditions, vetting record ids, and the
+// agents not offered in 0.6.0.
+
+#[test]
+fn every_row_names_its_delivery_and_its_vetting_record() {
+    for a in agents() {
+        let id = s(&a, "id");
+        let delivery = s(&a, "delivery");
+        assert!(
+            [
+                "bundled",
+                "signed_component",
+                "vendor_download",
+                "vendor_binary"
+            ]
+            .contains(&delivery),
+            "{id}: {delivery}"
+        );
+        assert_eq!(
+            s(&a, "vetting_record"),
+            format!("VET-AGT-2026-11-28-{id}"),
+            "{id}: the citrate-security record id"
+        );
+    }
+}
+
+#[test]
+fn every_row_without_a_plain_osi_license_states_its_license_condition() {
+    for a in agents() {
+        let id = s(&a, "id");
+        if s(&a, "license_kind") != "osi" {
+            let c = a["license_condition"].as_str().unwrap_or_default();
+            assert!(!c.trim().is_empty(), "{id}: license_condition");
+        }
+    }
+}
+
+#[test]
+fn muse_code_is_a_vendor_download_and_grok_build_the_vendor_binary_without_its_postinstall() {
+    let rows = agents();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|a| s(a, "id") == id)
+            .cloned()
+            .expect("row")
+    };
+    let muse = row("muse");
+    assert_eq!(
+        s(&muse, "delivery"),
+        "vendor_download",
+        "Citrate does not redistribute Muse Code"
+    );
+    assert!(s(&muse, "license_condition").contains("does not redistribute"));
+    let grok = row("grok");
+    assert_eq!(
+        s(&grok, "delivery"),
+        "vendor_binary",
+        "xAI's published binary, not a build"
+    );
+    assert!(s(&grok, "license_condition").contains("never runs the wrapper package's postinstall"));
+    for a in [&muse, &grok] {
+        assert_eq!(
+            a["installable"], false,
+            "waits on vetting and the signing ceremony"
+        );
+    }
+}
+
+#[test]
+fn refused_and_deferred_agents_are_never_offered() {
+    let l = lock();
+    let not_offered = l["not_offered"].as_array().expect("not_offered");
+    let ids: BTreeSet<String> = agents().iter().map(|a| s(a, "id").to_string()).collect();
+    let mut seen = BTreeSet::new();
+    for n in not_offered {
+        let id = s(n, "id");
+        assert!(
+            ["refused", "not_in_0.6.0"].contains(&s(n, "decision")),
+            "{id}"
+        );
+        assert!(!ids.contains(id), "{id} has no agent row");
+        assert!(
+            LAYOUTS.iter().all(|x| x.id != id),
+            "{id} has no home layout"
+        );
+        seen.insert(id.to_string());
+    }
+    for want in ["openclaw", "oh-my-opencode", "opencode", "cline"] {
+        assert!(seen.contains(want), "{want} is recorded");
     }
 }
