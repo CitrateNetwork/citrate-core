@@ -558,5 +558,8 @@ fn shutdown_through_a_shared_handle_kills_the_agent() {
     let pid = s.pid();
     s.shutdown();
     assert!(wait_dead(pid, Duration::from_secs(5)));
-    assert!(other.prompt(text("updates 1")).is_err(), "a stopped session takes no turn");
+    assert!(
+        other.prompt(text("updates 1")).is_err(),
+        "a stopped session takes no turn"
+    );
 }
