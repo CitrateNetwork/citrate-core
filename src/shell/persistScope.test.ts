@@ -98,6 +98,8 @@ describe("persisted state scope tripwire", () => {
 const STORAGE_ENTRIES: Record<string, string> = {
   "src/shell/state.ts STORAGE_KEY": "per key: PERSIST_SCOPE, stamped with its genesis",
   "src/shell/store.ts STORAGE_KEY": "per key: PERSIST_SCOPE, stamped with its genesis",
+  // L0-WP07f: the demo panel's reset (resetProto) moved to the L3 onboarding module; same key.
+  "src/shell/actions/l3/onboarding.ts STORAGE_KEY": "per key: PERSIST_SCOPE, stamped with its genesis",
   "src/ErrorBoundary.tsx STORAGE_KEY": "reads the telemetry consent (device)",
   "src/privacy/joinFunnel.ts STORAGE_KEY": "reads the telemetry consent (device)",
   "src/onboarding/accessPass.ts STORAGE_KEY": "reads the onboarding stage (device): a finished onboarding marks an earlier install",

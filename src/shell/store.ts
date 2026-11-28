@@ -15,39 +15,22 @@ import * as l1Turn from "./actions/l1/turn";
 import * as l4ThreadEdit from "./actions/l4/threadEdit";
 import * as l8Proposals from "./actions/l8/proposals";
 import * as l5LocalModel from "./actions/l5/localModel";
+import * as l3Onboarding from "./actions/l3/onboarding";
 import { PREFERRED_CHAT_ID } from "./actions/l1/turn";
 // L0-WP07c: the turn helpers moved to actions/l1/turn.ts; every name is still exported here.
 export { GATEWAY_CONSENT_UNAVAILABLE, LOCAL_ASK_NOT_SENT, LOCAL_ONLY_NOT_SENT, LOCAL_ROUTE_POLL_MS, LOCAL_START_WAIT_MS, PREFERRED_CHAT_ID, SELF_GATED_TOOLS } from "./actions/l1/turn";
 import { entitlementSafeguardFromChain } from "./actions/l3/auth";
-import { isGrantOnChain } from "./grantReads";
+import { describeBond, isGrantOnChain } from "./grantReads";
 // L0-WP07b: these helpers moved out of this file (to actions/l3/auth.ts and grantReads.ts); every
 // name is still exported here.
 export { deriveIdentityFromEmail, ENTITLEMENT_POLL_MAX_MS, ENTITLEMENT_POLL_MS, entitlementSafeguardFromChain, FOCUS_RECHECK_MIN_MS, isExpiredClaim, membershipActivatingFromChain } from "./actions/l3/auth";
-export { isGrantOnChain, VALIDATOR_STAKE_REQUIREMENT_WEI } from "./grantReads";
+export { describeBond, isGrantOnChain, VALIDATOR_STAKE_REQUIREMENT_WEI } from "./grantReads";
 import { bindStoreInternals } from "./storeInternals";
 import { type RoundDraft } from "../fl/roundDraft";
 import { type ChatAttachment } from "../agent/chatAttachments";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
-import {
-  Activity,
-  AppState,
-  CerSpec,
-  ChatMsg,
-  ChatProposal,
-  ChatRoundDraft,
-  LogLine,
-  Persona,
-  PERSONAS,
-  PERSIST_KEYS,
-  RANK,
-  STORAGE_KEY,
-  freshState,
-  greeting,
-  loadState,
-  makeHash,
-  WalletReview,
-} from "./state";
+import { Activity, AppState, CerSpec, ChatMsg, ChatProposal, ChatRoundDraft, LogLine, Persona, PERSONAS, PERSIST_KEYS, RANK, STORAGE_KEY, loadState, makeHash, WalletReview } from "./state";
 import { NET_STAMP_FIELD, type NetRead } from "./netScope";
 import type { CeremonyView } from "../bridge/types";
 import { SignedTxExpired } from "../bridge/types";
@@ -111,7 +94,6 @@ import { signInApi, type SignInOutcome } from "../budgets/signIn";
 import { locate, resolveRoute } from "./places";
 import { reachedStep } from "../privacy/joinFunnel";
 import { ACTIVE_PROFILE, isReady as isProfileReady } from "../network/profile";
-import { isGrantDelayed } from "../onboarding/grantDelay";
 
 /** Q-E.1 — plain-language labels for the sim "can only be signed and sent in the desktop app" toast. */
 /**
@@ -160,15 +142,6 @@ export function isPaidEntitlementActive(st: { tier: string; entitlement: string 
   return st.entitlement === "active";
 }
 
-/**
- * How the dashboard describes a member's bond (M-2.2 / M-2.3). Pure, so the
- * wording is testable without a render.
- *
- * Rule 1: every branch names a real on-chain fact. "Staked" is never claimed for a
- * member whose escrow does not exist, and an unlock is never advertised as
- * withdrawable while KYC is outstanding — the chain enforces both gates, and the UI
- * must not imply otherwise.
- */
 /**
  * C1-V5 — the member's validator key as the bond reads give it (the rule #354's S7 read uses):
  * `MemberBond.pubkey()` once the bond has activated (kept after an exit), else this node's own key.
@@ -229,39 +202,6 @@ export function bondClaimBlocked(s: Pick<AppState, "bondActivated" | "bondedStak
 export function bondReadsFromGrant(g: GrantStatus): Pick<AppState, "bondActivated" | "bondPubkey" | "bondUnlocked" | "bondKycVerified"> {
   if (!g.bondDeployed) return { bondActivated: null, bondPubkey: null, bondUnlocked: null, bondKycVerified: null };
   return { bondActivated: g.bondActivated ?? null, bondPubkey: g.bondPubkey ?? null, bondUnlocked: g.bondUnlocked ?? null, bondKycVerified: g.isKycVerified === true };
-}
-
-export function describeBond(g: {
-  bondDeployed: boolean;
-  unlockBlock: number | null;
-  isUnlocked: boolean;
-  isKycVerified: boolean;
-  hasValidator: boolean;
-  bondActivated?: boolean | null;
-}): string {
-  // C1-V V5 — the UI truth contract §1 membership/bond words: "staked" only once the bond is
-  // activated (`hasValidator`, the bond clone is a registry staker); "Locked until … (block N)" from
-  // MemberBond.unlockBlock (the app does not read unlockTimestamp yet, so only the block shows);
-  // "Unlocked · verify identity to withdraw" / "Unlocked" from isUnlocked + isKycVerified.
-  if (!g.bondDeployed) return "No bond yet";
-  // #349 review: the bond's activation state is MemberBond.activated(); a registry binding
-  // (hasValidator) implies it. After an exit or a slash hasValidator reads false while the bond
-  // stays activated, and an unread flag is not evidence either way.
-  const activated = g.hasValidator ? true : (g.bondActivated ?? null);
-  if (!g.isUnlocked) {
-    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString("en-US");
-    if (g.hasValidator) return `Staked · locked until block ${at}`;
-    // "not staked" needs activated() = false (#411's fix); otherwise the plain §1 lock word.
-    return activated === false ? `Bond locked · not staked · until block ${at}` : `Locked until block ${at}`;
-  }
-  // Unlocked. A never-activated bond can't be released or withdrawn (requestRelease /
-  // withdrawToMember revert NotActivated()), so it gets no identity / withdraw wording (v1.2).
-  if (activated === false) return "Unlocked · not activated";
-  if (activated === null) return "Unlocked · bond state not read yet";
-  // Owner decision A.5: eligible, never automatic. A.6: KYC supersedes the lock, so an
-  // unverified member is NOT told their funds are available.
-  if (!g.isKycVerified) return "Unlocked · verify identity to withdraw";
-  return "Unlocked";
 }
 
 /** A wei amount (decimal string) as SALT; null when it is not a decimal wei string (never 0). */
@@ -637,6 +577,30 @@ export interface StoreInternals {
   serveRouteTimer: Store["serveRouteTimer"];
   /** 07e: Store.stopModelPoll (private). */
   stopModelPoll: Store["stopModelPoll"];
+  /** 07f: the S1 sign-in delay timer (actions/l3/onboarding.ts). */
+  _s1t: Store["_s1t"];
+  /** 07f: core#584, the current S3 checkout attempt. */
+  s3Attempt: Store["s3Attempt"];
+  /** 07f: when this session opened the S3 checkout (ms). */
+  s3PayingSince: Store["s3PayingSince"];
+  /** 07f: the running S3 grant poll's generation. */
+  s3PollGen: Store["s3PollGen"];
+  /** 07f: Store.linkBeforeCheckout (private). */
+  linkBeforeCheckout: Store["linkBeforeCheckout"];
+  /** 07f: Store.pollGrant (private). */
+  pollGrant: Store["pollGrant"];
+  /** 07f: Store.pollGrantSim (private). */
+  pollGrantSim: Store["pollGrantSim"];
+  /** 07f: Store.pollKyc (private). */
+  pollKyc: Store["pollKyc"];
+  /** 07f: Store.pollMembership (private). */
+  pollMembership: Store["pollMembership"];
+  /** 07f: Store.readHeldGrant (private). */
+  readHeldGrant: Store["readHeldGrant"];
+  /** 07f: Store.readSignerHealth (private). */
+  readSignerHealth: Store["readSignerHealth"];
+  /** 07f: Store.updateGrantDelayed (private). */
+  updateGrantDelayed: Store["updateGrantDelayed"];
 }
 
 export class Store {
@@ -890,6 +854,38 @@ export class Store {
         self.serveRouteTimer = v;
       },
       stopModelPoll: (...a: Parameters<Store["stopModelPoll"]>) => self.stopModelPoll(...a),
+      get _s1t() {
+        return self._s1t;
+      },
+      set _s1t(v) {
+        self._s1t = v;
+      },
+      get s3Attempt() {
+        return self.s3Attempt;
+      },
+      set s3Attempt(v) {
+        self.s3Attempt = v;
+      },
+      get s3PayingSince() {
+        return self.s3PayingSince;
+      },
+      set s3PayingSince(v) {
+        self.s3PayingSince = v;
+      },
+      get s3PollGen() {
+        return self.s3PollGen;
+      },
+      set s3PollGen(v) {
+        self.s3PollGen = v;
+      },
+      linkBeforeCheckout: (...a: Parameters<Store["linkBeforeCheckout"]>) => self.linkBeforeCheckout(...a),
+      pollGrant: (...a: Parameters<Store["pollGrant"]>) => self.pollGrant(...a),
+      pollGrantSim: (...a: Parameters<Store["pollGrantSim"]>) => self.pollGrantSim(...a),
+      pollKyc: (...a: Parameters<Store["pollKyc"]>) => self.pollKyc(...a),
+      pollMembership: (...a: Parameters<Store["pollMembership"]>) => self.pollMembership(...a),
+      readHeldGrant: (...a: Parameters<Store["readHeldGrant"]>) => self.readHeldGrant(...a),
+      readSignerHealth: (...a: Parameters<Store["readSignerHealth"]>) => self.readSignerHealth(...a),
+      updateGrantDelayed: (...a: Parameters<Store["updateGrantDelayed"]>) => self.updateGrantDelayed(...a),
     });
     this.state = loadState();
     this.snap = this.state;
@@ -4963,28 +4959,20 @@ export class Store {
   }
 
   // ---------- onboarding transitions ----------
+  // L0-WP07f: the onboarding transitions and polls live in actions/l3/onboarding.ts (lane L3), as
+  // does the demo panel below; these are one-line delegates.
   onJoin(): void {
-    this.setState({ stage: "s1" });
-    this.save();
+    return l3Onboarding.onJoin(this);
   }
   onExplore(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
-    this.save();
+    return l3Onboarding.onExplore(this);
   }
-  /** S3 — "Run a node for free" (owner decision 2026-10-27, option a: the free path comes first).
-   *  Continues onboarding on the Free tier WITHOUT a paid membership (no SBT, no grant, no bond):
-   *  S4 wallet → S6 node ignition (S4 skips the grant step when there is no membership), then the
-   *  app via onS6Continue → onEnter. No checkout, no payment, no fabricated grant (Rule 1). The
-   *  paid membership stays available later (Settings → Billing opens the same checkout). */
+  /** S3 — "Run a node for free": continue onboarding on the Free tier (actions/l3/onboarding.ts). */
   onS3Free(): void {
-    this.endS3Check();
-    this.setState({ stage: "s4", tier: "free" });
-    this.save();
+    return l3Onboarding.onS3Free(this);
   }
-  /** Enterprise · Contact us — submit a qualified sales lead to core-membership. Returns `{ ok }`, or
-   *  `{ ok: false, error }` with the backend's honest message (Rule 1 — never a fabricated "received").
-   *  No money, no grant; the record just prepares sales for the call. */
-  async submitEnterpriseLead(lead: {
+  /** Enterprise · Contact us — submit a qualified sales lead to core-membership (actions/l3/onboarding.ts). */
+  submitEnterpriseLead(lead: {
     org: string;
     email: string;
     contact?: string;
@@ -4993,476 +4981,88 @@ export class Store {
     timeline?: string;
     notes?: string;
   }): Promise<{ ok: boolean; error?: string }> {
-    try {
-      await bridge.membership.enterpriseLead(lead);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error)?.message ?? err) };
-    }
+    return l3Onboarding.submitEnterpriseLead(this, lead);
   }
   onS1Start(): void {
-    this.setState({ s1: "waiting" });
-    // Tauri: drive the REAL loopback-PKCE sign-in. The system browser opens; on
-    // success the entitlement claim folds in and S1 completes. A failure/cancel
-    // returns to idle (honest — no faked success).
-    if (BRIDGE_MODE === "tauri") {
-      void this.authLogin()
-        .then(() => {
-          this.setState({ s1: "done" });
-          this.save();
-        })
-        .catch(() => {
-          this.setState({ s1: "idle" });
-        });
-      return;
-    }
-    // Web-dev sim: the prototype attestation animation (no real auth).
-    this._s1t = setTimeout(() => {
-      this.setState({ s1: "attest", s1c: 0 });
-      setTimeout(() => this.setState({ s1c: 1 }), 700);
-      setTimeout(() => this.setState({ s1c: 2 }), 1500);
-      setTimeout(() => this.setState({ s1c: 3 }), 2300);
-      setTimeout(() => {
-        this.setState({ s1: "done" });
-        this.save();
-      }, 2800);
-    }, 2300);
+    return l3Onboarding.onS1Start(this);
   }
   onS1Cancel(): void {
-    if (this._s1t) clearTimeout(this._s1t);
-    // rc.5 FIX 2: the sign-in runs in the system browser, so closing the tab sends
-    // nothing back. Cancel the Rust loopback wait too, so a late browser completion
-    // cannot sign the member in behind a screen that says cancelled.
-    if (BRIDGE_MODE === "tauri") void this.cancelSignIn();
-    this.setState({ s1: "idle" });
+    return l3Onboarding.onS1Cancel(this);
   }
   onS2Start(): void {
-    this.setState({ s2: "pending" });
-    // Tauri: open the REAL KYC flow in the browser, then poll /userinfo for the
-    // kyc_status claim change (none→pending→verified/failed/review). The S2 UI
-    // drives entirely off the real claim.
-    if (BRIDGE_MODE === "tauri") {
-      void this.kycStart().catch(() => {
-        /* browser open failed — stay pending; the user can retry */
-      });
-      this.pollKyc();
-      return;
-    }
-    // Web-dev sim: resolve to the persona's scripted outcome after a beat.
-    setTimeout(() => {
-      this.setState({ s2: this.state.kycOutcome });
-      this.save();
-    }, 2600);
+    return l3Onboarding.onS2Start(this);
   }
 
-  /**
-   * Poll the live /userinfo entitlement for a KYC status change while S2 is
-   * pending (Tauri only). Stops once the claim resolves to a terminal state.
-   */
+  /** Poll the live /userinfo entitlement for a KYC change while S2 is pending (actions/l3/onboarding.ts). */
   private pollKyc(): void {
-    if (BRIDGE_MODE !== "tauri") return;
-    const tick = () => {
-      if (this.state.s2 !== "pending") return; // resolved or navigated away
-      void this.authUserinfo().finally(() => {
-        if (this.state.s2 === "pending") setTimeout(tick, 5000);
-        else this.save();
-      });
-    };
-    setTimeout(tick, 5000);
+    return l3Onboarding.pollKyc(this);
   }
   onS3Pay(): void {
-    // Tauri: open the REAL core-membership checkout popup, then POLL the on-chain
-    // membership grant. The money + grant happen ENTIRELY server-side
-    // (core-membership → treasury-signer droplet); this app only opens the URL and
-    // watches the chain. S3 advances ONLY when the REAL on-chain grant lands (SBT +
-    // >=32k stake) — NOT the KYC entitlement (which a verified member holds before
-    // paying), and NEVER a faked settle (Rule 1). See pollMembership for why.
-    if (BRIDGE_MODE === "tauri") {
-      // ORDERING GUARD (Rule 1; see wallet_link.rs). The grant funds + mints to the
-      // authority's `wallet_address` claim. Until THIS device's custody EOA is
-      // LINKED, that claim is the counterfactual smart-wallet address no key can
-      // spend — so core-membership refuses (`grant_denied_no_member_wallet`) rather
-      // than strand the 32k bond at an unspendable address. So LINK FIRST, then
-      // check out. The link ceremony re-reads the claim on approval
-      // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
-      // Pay proceeds. This mirrors how activation is gated on the link.
-      if (this.linkBeforeCheckout("Link your wallet first — approve the link, then tap Pay again.")) return;
-      // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
-      // grant. Settlement is chain truth, and the client had no way to observe an
-      // existing grant: `settled` was reachable ONLY through `pollMembership`, which
-      // ran ONLY from this handler. So a member who was granted while the app was
-      // closed (or after its poll gave up) came back to S3 `idle`, whose only
-      // paid control is the checkout button — and paying again is the one
-      // thing that cannot help, because the membership is one-per-sub and the second
-      // order can never be granted. Observed 2026-08-15: a member reached three
-      // stranded `paid` orders this way. Read the chain BEFORE spending money.
-      //
-      // ONE ATTEMPT AT A TIME (core#584). The read above takes time, and until it ends a second
-      // Pay, Back, or choosing membership again could each still open a checkout. So: a second
-      // call while a check runs is ignored; each attempt carries a token, and an attempt whose
-      // token was superseded (Back ends it via endS3Check) or whose stage changed opens nothing.
-      if (this.state.s3Checking) return;
-      const attempt = ++this.s3Attempt;
-      const stage = this.state.stage;
-      this.setState({ s3Checking: true });
-      void (async () => {
-        let settled: boolean;
-        try {
-          settled = await this.settleS3IfAlreadyGranted();
-        } catch {
-          // Not a read failure (that returns false inside): something unexpected. Open nothing,
-          // and give the controls back so the member can try again.
-          if (attempt === this.s3Attempt) this.setState({ s3Checking: false });
-          return;
-        }
-        if (attempt !== this.s3Attempt) return; // ended by Back / Continue free; ignore the result
-        this.setState({ s3Checking: false });
-        if (settled || this.state.stage !== stage) return;
-        this.s3PayingSince = Date.now();
-        this.setState({ s3: "paying", s3GrantDelayed: false, s3SignerReady: null, membershipCheckoutAt: this.s3PayingSince });
-        // login_hint = the signed-in email → the browser checkout binds to THIS account.
-        void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
-          // Popup open failed (headless / user cancel at OS level) — stay "paying";
-          // the poll below simply never settles. The user can retry (S3 re-enterable).
-        });
-        this.s3PollGen++;
-        this.pollMembership();
-        // FIX 1a: S3 settles on the chain grant; the claim can land later. Keep watching
-        // the entitlement so the member never sits on a stale "lapsed" banner.
-        this.startEntitlementPoll();
-      })();
-      return;
-    }
-    // Web-dev sim: keep the prototype's fake settle so onboarding still walks.
-    // (Guarded: the sim membership.checkout is a no-op; the tier flip is sim-only.)
-    this.setState({ s3: "paying" });
-    setTimeout(() => {
-      this.setState({ s3: "settled", tier: "pilot" });
-      this.save();
-    }, 2500);
+    return l3Onboarding.onS3Pay(this);
   }
 
-  /**
-   * core#584 — end any running pre-checkout grant check: its result is ignored, so it opens no
-   * checkout. Back on the member checkout and "Continue free" call this. Idempotent.
-   */
+  /** core#584 — end any running pre-checkout grant check (actions/l3/onboarding.ts). */
   endS3Check(): void {
-    this.s3Attempt++;
-    if (this.state.s3Checking) this.setState({ s3Checking: false });
+    return l3Onboarding.endS3Check(this);
   }
 
-  /**
-   * CORE-D3.C — poll while S3 is "paying" (Tauri only), advancing to "settled"
-   * ONLY once the REAL on-chain membership grant lands: `MembershipStakeVault`
-   * attributes >= 32,000 SALT to the member AND the member holds the SBT
-   * (`isGrantOnChain` + `hasSbt`, read permissionlessly from chain 40204).
-   *
-   * WHY the on-chain grant and NOT the entitlement claim: a KYC-verified principal
-   * is auto-granted the `commercial.kyc` tier by the authority (→ the app's `pilot`
-   * tier) BEFORE paying for a membership, so `isPaidEntitlementActive` is already
-   * true pre-payment and would let a verified user walk past S3 unpaid. The on-chain
-   * SBT + stake is the honest "this membership was purchased AND provisioned" marker
-   * — it lands only after the member pays and the treasury-signer executes the grant,
-   * so S3 can never settle before payment (Rule 1 — no fabricated settle). The live
-   * /userinfo is still folded (for the tier/entitlement DISPLAY), but it is not the
-   * settle decision.
-   *
-   * Bounded (mirrors pollGrant's cadence) so a never-completing checkout does not
-   * poll forever: after the cap it leaves S3 re-enterable (still "paying") rather
-   * than fabricating a settlement.
-   */
+  /** CORE-D3.C — poll while S3 is "paying" until the real on-chain grant lands (actions/l3/onboarding.ts). */
   private pollMembership(attempt = 0, gen = this.s3PollGen): void {
-    if (BRIDGE_MODE !== "tauri") return;
-    // CADENCE. The old budget was 60 × 5s = 5 minutes flat, which was SHORTER than
-    // the server's own retry cadence: core-membership re-drives stranded grants on a
-    // 10-minute cron (`vercel.json` crons → /api/cron/reconcile-grants). So whenever
-    // the Stripe webhook's grant attempt failed — the case the reconciler exists to
-    // rescue — the client had already given up before the FIRST retry could run, and
-    // the member sat on a dead spinner while the system healed itself behind them.
-    // Observed 2026-08-15: paid at 12:43, poll expired ~12:48, first eligible sweep
-    // was later still.
-    //
-    // Now: fast for the checkout window (the happy path settles in seconds), then
-    // slow and long enough to span several reconciler sweeps without hammering the
-    // public RPC — grantStatus is nine sequential eth_calls.
-    const FAST_ATTEMPTS = 24; // 2 min at 5s — the normal settle window
-    const FAST_MS = 5_000;
-    const SLOW_MS = 30_000;
-    const MAX_ATTEMPTS = FAST_ATTEMPTS + 52; // + 26 min at 30s ≈ 28 min total
-    const delay = attempt < FAST_ATTEMPTS ? FAST_MS : SLOW_MS;
-    const tick = () => {
-      if (this.state.s3 !== "paying") return; // resolved or navigated away
-      if (gen !== this.s3PollGen) return; // a newer poll (Check again) took over
-      // The signer read is a second, read-only source that only decides what S3 SAYS while it
-      // waits (the delayed-grant card); it never settles. Every 30 s: each 6th fast tick, every
-      // slow tick. core-membership caches the verdict 15 s.
-      if (attempt % 6 === 0 || attempt >= FAST_ATTEMPTS) void this.readSignerHealth();
-      const member = this.identity().wallet;
-      // Read the REAL on-chain grant; fold /userinfo for display (never the decision).
-      void Promise.all([bridge.membership.grantStatus(member), this.authUserinfo()])
-        .then(([grant]) => {
-          if (this.state.s3 !== "paying" || gen !== this.s3PollGen) return;
-          // ONLY the genuine on-chain grant settles S3 — never the pre-payment
-          // KYC entitlement (Rule 1).
-          if (isGrantOnChain(grant) && grant.hasSbt) {
-            this.setState({ s3: "settled", s3PollExhausted: false, s3GrantDelayed: false });
-            this.save();
-            return;
-          }
-          this.updateGrantDelayed();
-          // Not yet granted — keep polling until the bounded cap.
-          if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1, gen);
-          // At the cap we stop polling; S3 stays "paying" (re-enterable) and we SAY SO
-          // rather than leaving a spinner that will never resolve. Never faked.
-          else this.setState({ s3PollExhausted: true });
-        })
-        .catch(() => {
-          // Transient RPC/read error — retry until the cap; never fabricate a settle.
-          if (gen !== this.s3PollGen) return;
-          this.updateGrantDelayed();
-          if (this.state.s3 === "paying" && attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1, gen);
-          else if (this.state.s3 === "paying") this.setState({ s3PollExhausted: true });
-        });
-    };
-    setTimeout(tick, delay);
+    return l3Onboarding.pollMembership(this, attempt, gen);
   }
 
-  /**
-   * Re-check the membership grant after the bounded poll gave up — the exit from
-   * what used to be a dead-end spinner.
-   *
-   * Chain-read ONLY. It restarts `pollMembership`, which settles S3 exclusively on
-   * the real on-chain grant (`isGrantOnChain && hasSbt`). It does NOT re-open Stripe
-   * checkout, so re-checking can never charge a member a second time — the exact
-   * hazard that made the dead end dangerous, since the only control the member could
-   * see was the checkout button.
-   */
+  /** Re-check the membership grant after the bounded poll gave up (actions/l3/onboarding.ts). */
   recheckMembership(): void {
-    if (this.state.s3 !== "paying") return;
-    // From the delayed-grant card the first poll is still running: end it, so one loop runs.
-    this.s3PollGen++;
-    this.setState({ s3PollExhausted: false });
-    void this.readSignerHealth();
-    this.pollMembership();
+    return l3Onboarding.recheckMembership(this);
   }
 
-  /**
-   * Read core-membership's grant-signer readiness (public `/api/health`, core-membership#86) into
-   * `s3SignerReady`, then re-decide the delayed-grant card. A failed read changes nothing: no read
-   * is not evidence either way (Rule 1). Never settles S3.
-   */
-  private async readSignerHealth(): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") return;
-    try {
-      const h = await bridge.membership.signerHealth();
-      if (this.state.s3 !== "paying") return;
-      if (h.signerReady !== this.state.s3SignerReady) this.setState({ s3SignerReady: h.signerReady });
-      this.updateGrantDelayed();
-    } catch {
-      /* unreachable or not core-membership: keep the last read */
-    }
+  /** Read core-membership's grant-signer readiness, then re-decide the delayed card (actions/l3/onboarding.ts). */
+  private readSignerHealth(): Promise<void> {
+    return l3Onboarding.readSignerHealth(this);
   }
 
-  /** Re-decide the delayed-grant card from the checkout time and the last signer read. */
+  /** Re-decide the delayed-grant card from the checkout time and the last signer read (actions/l3/onboarding.ts). */
   private updateGrantDelayed(): void {
-    const delayed =
-      this.state.s3 === "paying" &&
-      isGrantDelayed({ payingSinceMs: this.s3PayingSince, nowMs: Date.now(), signerReady: this.state.s3SignerReady });
-    if (delayed !== this.state.s3GrantDelayed) this.setState({ s3GrantDelayed: delayed });
+    return l3Onboarding.updateGrantDelayed(this);
   }
 
-  /**
-   * Settle S3 directly from chain truth when the member ALREADY holds the grant.
-   *
-   * The missing "resume from what is actually true" step. S3's only exit was the
-   * Continue button behind `s3 === "settled"`, and the only writer of `settled` was
-   * `pollMembership`, started only by `onS3Pay`. Nothing ever asked the simple
-   * question "is this member already granted?" — so a member granted out-of-band
-   * (reconciler sweep, operator remediation, or simply a grant that landed after
-   * the app closed) was stranded on a screen whose only affordance was to pay again.
-   *
-   * Same evidence bar as the poll: `isGrantOnChain && hasSbt`, read permissionlessly
-   * from chain 40204. Returns false — and changes nothing — on any read failure, so
-   * a flaky RPC can never manufacture a settle (Rule 1).
-   */
-  async settleS3IfAlreadyGranted(): Promise<boolean> {
-    if (BRIDGE_MODE !== "tauri") return false;
-    if (this.state.s3 === "settled") return true;
-    const grant = await this.readHeldGrant();
-    if (!grant) return false;
-    this.setState({
-      s3: "settled",
-      s3PollExhausted: false,
-      s3GrantDelayed: false,
-      hasGrant: true,
-      hasSbt: grant.hasSbt,
-    });
-    this.save();
-    return true;
+  /** Settle S3 directly from chain truth when the member ALREADY holds the grant (actions/l3/onboarding.ts). */
+  settleS3IfAlreadyGranted(): Promise<boolean> {
+    return l3Onboarding.settleS3IfAlreadyGranted(this);
   }
 
-  /**
-   * The membership grant this account already holds on chain (`isGrantOnChain && hasSbt`, read
-   * permissionlessly from 40204), or null. Null on any read failure: an unreadable chain is not
-   * evidence of a grant (Rule 1). Shared by every checkout's money guard.
-   */
-  private async readHeldGrant(): Promise<GrantStatus | null> {
-    try {
-      const grant = await bridge.membership.grantStatus(this.identity().wallet);
-      return isGrantOnChain(grant) && grant.hasSbt ? grant : null;
-    } catch {
-      return null;
-    }
+  /** The membership grant this account already holds on chain, or null (actions/l3/onboarding.ts). */
+  private readHeldGrant(): Promise<GrantStatus | null> {
+    return l3Onboarding.readHeldGrant(this);
   }
 
-  /** Checkout ordering guard: true (and the link ceremony opened) when the wallet is not linked yet. */
+  /** Checkout ordering guard: true (and the link ceremony opened) when unlinked (actions/l3/onboarding.ts). */
   private linkBeforeCheckout(message: string): boolean {
-    if (this.walletIsLinked()) return false;
-    this.toast(message);
-    void this.linkWallet();
-    return true;
+    return l3Onboarding.linkBeforeCheckout(this, message);
   }
   onS5Begin(): void {
-    this.setState({ s5: "verifying", s5c: 0 });
-    setTimeout(() => this.setState({ s5c: 1 }), 800);
-    setTimeout(() => this.setState({ s5c: 2 }), 1600);
-    setTimeout(() => this.setState({ s5c: 3 }), 2400);
-    setTimeout(() => {
-      // Enter the honest "settling / waiting for the on-chain grant" state and
-      // start the bounded poll that settles S5 ONLY from the REAL chain read.
-      this.setState({ s5: "settling", s5n: 0 });
-      if (BRIDGE_MODE === "tauri") this.pollGrant();
-      else this.pollGrantSim();
-    }, 3300);
+    return l3Onboarding.onS5Begin(this);
   }
 
-  /**
-   * BC-1.3 — the web-dev SIM S5 settle. The sim has NO real 40204, so it derives an
-   * HONEST grant status from the persona/AppState via `bridge.membership.grantStatus`
-   * (granted only for a paid+active sim member) and settles S5 from THAT — not a
-   * blind timer (Rule 1's shape carried into the preview). Bounded like pollGrant.
-   */
+  /** BC-1.3 — the web-dev SIM S5 settle (actions/l3/onboarding.ts). */
   private pollGrantSim(attempt = 0): void {
-    if (BRIDGE_MODE === "tauri") return;
-    const MAX_ATTEMPTS = 20;
-    const tick = () => {
-      if (this.state.s5 !== "settling") return;
-      void bridge.membership
-        .grantStatus(this.identity().wallet)
-        .then((grant) => {
-          if (this.state.s5 !== "settling") return;
-          if (isGrantOnChain(grant) && grant.hasSbt) {
-            // s5StakeWei carries the sim-derived attributedStake (honest for the
-            // preview — grantStatus derives it from the paid persona, not a real
-            // chain read; the card renders it, never a hardcoded 32,000).
-            this.setState({
-              s5: "settled",
-              s5n: 32000,
-              s5StakeWei: grant.attributedStakeWei,
-              // M-2.2/M-2.3: the lock + KYC state, straight from the bond.
-              s5BondStatus: describeBond(grant),
-              hasGrant: true,
-              hasSbt: grant.hasSbt,
-            });
-            this.save();
-            return;
-          }
-          if (attempt + 1 < MAX_ATTEMPTS) this.pollGrantSim(attempt + 1);
-        })
-        .catch(() => {
-          if (this.state.s5 === "settling" && attempt + 1 < MAX_ATTEMPTS) this.pollGrantSim(attempt + 1);
-        });
-    };
-    setTimeout(tick, 700);
+    return l3Onboarding.pollGrantSim(this, attempt);
   }
 
-  /**
-   * BC-1.3 — poll the REAL on-chain grant while S5 is "settling", advancing to
-   * "settled" ONLY when the 32,000-SALT grant is genuinely on-chain AND the SBT is
-   * minted AND the /userinfo entitlement is paid+active (Rule 1 — no fabricated
-   * settlement). `hasGrant`/`hasSbt` are set ONLY from the real read; a member whose
-   * grant has not landed simply stays in the honest "still settling" state (S5 is
-   * re-enterable) — the poll never fabricates a grant.
-   *
-   * Bounded (mirrors pollMembership's cadence) so a never-completing grant does not
-   * poll forever: after the cap it stops but leaves S5 "settling" (re-enterable),
-   * never faked. TAURI only — the web-dev SIM path keeps its own honest animation
-   * (the tick loop) that derives settlement from the sim grantStatus.
-   */
+  /** BC-1.3 — poll the real on-chain grant while S5 is "settling" (actions/l3/onboarding.ts). */
   private pollGrant(attempt = 0): void {
-    if (BRIDGE_MODE !== "tauri") return;
-    const MAX_ATTEMPTS = 60; // ~5 min at 5s cadence
-    const tick = () => {
-      if (this.state.s5 !== "settling") return; // resolved or navigated away
-      const member = this.identity().wallet;
-      // Read the REAL on-chain grant (attributedStake + SBT) and re-check the live
-      // entitlement leg. Both must be real for S5 to settle (Rule 1).
-      void Promise.all([bridge.membership.grantStatus(member), this.authUserinfo()])
-        .then(([grant]) => {
-          if (this.state.s5 !== "settling") return;
-          const grantOnChain = isGrantOnChain(grant);
-          // "Stuck on step 5" fix: the ON-CHAIN grant — a minted membership SBT plus
-          // attributed stake in the vault — is the DEFINITIVE, real proof the grant
-          // landed (Rule 1: both are live chain reads). Settle S5 on that. The paid
-          // ENTITLEMENT tier is an OFF-CHAIN refinement read from /userinfo that can
-          // lag the on-chain grant (session-token snapshot / roster propagation);
-          // gating the settle on it stranded members whose grant was already on
-          // chain. We keep calling authUserinfo() each tick so the tier still
-          // refines to commercial/commercial.kyc — it just no longer BLOCKS S5.
-          if (grantOnChain && grant.hasSbt) {
-            // hasGrant/hasSbt/s5StakeWei set ONLY from the real read; never before
-            // it. s5StakeWei is the REAL attributedStake the settled card renders
-            // (F1 — no hardcoded 32,000).
-            this.setState({
-              s5: "settled",
-              s5n: 32000,
-              s5StakeWei: grant.attributedStakeWei,
-              // M-2.2/M-2.3: the lock + KYC state, straight from the bond.
-              s5BondStatus: describeBond(grant),
-              hasGrant: true,
-              hasSbt: grant.hasSbt,
-            });
-            this.save();
-            return;
-          }
-          // Not yet fully settled — keep polling until the bounded cap. Never set
-          // hasGrant/hasSbt without the real grant.
-          if (attempt + 1 < MAX_ATTEMPTS) this.pollGrant(attempt + 1);
-          // At the cap we stop; S5 stays "settling" (re-enterable), never faked.
-        })
-        .catch(() => {
-          // A transient RPC/read error — retry until the cap; never fabricate.
-          if (this.state.s5 === "settling" && attempt + 1 < MAX_ATTEMPTS) this.pollGrant(attempt + 1);
-        });
-    };
-    setTimeout(tick, 5000);
+    return l3Onboarding.pollGrant(this, attempt);
   }
   onEnter(): void {
-    const s = this.state;
-    this.setState({
-      stage: "done",
-      coach: s.coachDone ? -1 : 0,
-      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })],
-    });
-    this.save();
+    return l3Onboarding.onEnter(this);
   }
 
   // ---------- demo panel ----------
   selectPersona(pid: string): void {
-    const ns = freshState(pid);
-    ns.demoOpen = true;
-    this.setState(ns);
-    this.save();
+    return l3Onboarding.selectPersona(this, pid);
   }
   resetProto(): void {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
-    const ns = freshState("p1");
-    this.setState(ns);
-    this.toast("Prototype reset — fresh install");
+    return l3Onboarding.resetProto(this);
   }
 }
 

@@ -37,3 +37,7 @@ l0-wp07c src/agent/harness.retire.test.ts
 # test that calls Store.prototype.verifyModel on a stub Store binds the stub's internals view, which
 # the moved verifyModel reads for stopModelPoll. Test-only edit; its assertions are unchanged.
 l0-wp07e src/onboarding/modelStep.test.tsx
+# L0-WP07f store action extraction, onboarding (lanes/L0_INTEGRATION_SEAMS.md 5, L0-WP07): the core#584
+# checkout tripwire reads onS3Pay's guard order from actions/l3/onboarding.ts, where onS3Pay moved,
+# and checks the Store method is its one-line delegate. Test-only edit; the order checked is unchanged.
+l0-wp07f src/onboarding/checkoutInFlight.test.tsx

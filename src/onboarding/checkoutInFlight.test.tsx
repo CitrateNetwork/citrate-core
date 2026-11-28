@@ -255,14 +255,18 @@ describe("S3 checkout: one attempt at a time while the grant check runs (core#58
 describe("tripwire: checkout opens only from a current attempt (core#584)", () => {
   const SRC = join(__dirname, "..");
   const store = readFileSync(join(SRC, "shell", "store.ts"), "utf8");
+  // L0-WP07f: onS3Pay moved to actions/l3/onboarding.ts (`this` became `store`, and the private
+  // s3Attempt is read through the Store's internals view).
+  const onboarding = readFileSync(join(SRC, "shell", "actions", "l3", "onboarding.ts"), "utf8");
 
   it("onS3Pay refuses a second call during the check and drops a stale attempt before checkout", () => {
-    const start = store.indexOf("  onS3Pay(): void {");
+    expect(store).toMatch(/\n  onS3Pay\(\): void \{\n    return l3Onboarding\.onS3Pay\(this\);\n  \}\n/);
+    const start = onboarding.indexOf("export function onS3Pay(store: Store): void {");
     expect(start).toBeGreaterThan(-1);
-    const body = store.slice(start, store.indexOf("\n  }\n", start));
-    const busy = body.indexOf("if (this.state.s3Checking) return;");
-    const read = body.indexOf("await this.settleS3IfAlreadyGranted()");
-    const stale = body.indexOf("if (attempt !== this.s3Attempt) return;");
+    const body = onboarding.slice(start, onboarding.indexOf("\n}\n", start));
+    const busy = body.indexOf("if (store.state.s3Checking) return;");
+    const read = body.indexOf("await store.settleS3IfAlreadyGranted()");
+    const stale = body.indexOf("if (attempt !== internals.s3Attempt) return;");
     const open = body.indexOf("bridge.membership.checkout(");
     expect(busy).toBeGreaterThan(-1);
     expect(read).toBeGreaterThan(busy);
