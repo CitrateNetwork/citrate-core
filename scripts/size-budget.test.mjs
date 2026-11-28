@@ -385,8 +385,12 @@ describe("committed release/budgets.json", () => {
     expect(b.components["macos-aarch64/app"].maxBytes).toBe(1_200_000_000);
     const tight = [
       ["bin/hermes", MEASURED_2026_10_04.hermes],
-      ["bin/citrate-core", MEASURED_2026_10_04.citrateCore],
     ];
+    // Owner decision 2026-10-29: bin/citrate-core raised to 45 MB for 0.5.2 (the 0.5.2 RC1 build
+    // measured 42,809,616 bytes); slimming the main binary is a 0.5.3 item. Its baseline is unchanged.
+    const core = b.components["macos-aarch64/bin/citrate-core"];
+    expect(core.baselineBytes).toBe(MEASURED_2026_10_04.citrateCore);
+    expect(core.maxBytes).toBe(45_000_000);
     for (const [id, bytes] of tight) {
       const row = b.components[`macos-aarch64/${id}`];
       expect(row.baselineBytes, id).toBe(bytes);
@@ -404,10 +408,17 @@ describe("committed release/budgets.json", () => {
     "artifacts/macos-aarch64/app.tar.gz": 424_350_415,
     "components/macos-aarch64/app": 818_552_274,
     "components/macos-aarch64/bin/hermes": 25_974_928,
-    "components/macos-aarch64/bin/citrate-core": 38_834_896,
     "components/macos-aarch64/resources/llama": 25_515_197,
     "components/macos-aarch64/resources/licenses": 798_515,
   };
+
+  it("records the 0.5.2 RC1 measurement of the main binary within its owner-raised budget", () => {
+    const b = loadBudgets(file);
+    const core = b.components["macos-aarch64/bin/citrate-core"];
+    expect(core.measuredBytes).toBe(42_809_616);
+    expect(core.measured).toMatch(/owner decision/);
+    expect(core.maxBytes).toBeGreaterThanOrEqual(core.measuredBytes);
+  });
 
   it("records the post-prep re-measurement within the unchanged budgets", () => {
     const b = loadBudgets(file);

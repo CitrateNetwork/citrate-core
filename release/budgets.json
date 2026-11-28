@@ -7,7 +7,8 @@
     "2026-10-04 (HUP-S11.0, pending owner sign-off): the macOS rows a local 0.5.0-line bundle-lite build pushed over budget were re-set from that build: installer and updater = measured + about 5%, rounded up to the next 5 MB; components = measured + 10%, rounded up to the next MB. See release/README.md.",
     "2026-10-04 (L14 release prep, pending owner sign-off): measuredBytes/measured record a re-measurement after the llama prune and the Hermes strip; maxBytes and baselineBytes (what each budget was set from) are unchanged. See release/README.md.",
     "Raising a budget is a reviewed change: say why in the PR and update baselineBytes when a new release ships.",
-    "2026-10-06 (owner decision): the macOS bundle ships the BGE embedding GGUF (~219 MB, Hermes keyed embedding retrieval on every OS) and the embedded knowledge corpus. Raised: dmg 700 MB, app.tar.gz 710 MB, app 1.2 GB, resources/models 725 MB, resources/knowledge-corpus 250 MB. Re-measure at the v0.5.0 build (D2), record measuredBytes, then tighten."
+    "2026-10-06 (owner decision): the macOS bundle ships the BGE embedding GGUF (~219 MB, Hermes keyed embedding retrieval on every OS) and the embedded knowledge corpus. Raised: dmg 700 MB, app.tar.gz 710 MB, app 1.2 GB, resources/models 725 MB, resources/knowledge-corpus 250 MB. Re-measure at the v0.5.0 build (D2), record measuredBytes, then tighten.",
+    "2026-10-29 (owner decision): macos-aarch64/bin/citrate-core raised 40 MB -> 45 MB for 0.5.2. The 0.5.2 RC1 build measured 42.8 MB; slimming the main binary is a 0.5.3 item. The bundled templates directory (resources/_up_, about 84 kB) is now measured and reported, not gated."
   ],
   "version": 1,
   "artifacts": {
@@ -49,11 +50,11 @@
       "source": "local v0.4.2 build 2026-09-30"
     },
     "macos-aarch64/bin/citrate-core": {
-      "maxBytes": 40000000,
+      "maxBytes": 45000000,
       "baselineBytes": 35851840,
       "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off",
-      "measuredBytes": 38834896,
-      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off; the app binary grew with the forward merge (97.1% of its budget)"
+      "measuredBytes": 42809616,
+      "measured": "0.5.2 RC1 release build 2026-10-29 at core 8c83c8b4 (bundle-lite, aarch64): 42.8 MB; budget raised to 45 MB by owner decision"
     },
     "macos-aarch64/bin/cluster-daemon": {
       "maxBytes": 6000000,
@@ -147,6 +148,10 @@
       "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off",
       "measuredBytes": 818552274,
       "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off"
+    },
+    "macos-aarch64/resources/_up_": {
+      "maxBytes": null,
+      "source": "bundled templates; measured and reported, not gated (0.5.2 RC1: about 84 kB)"
     }
   }
 }
