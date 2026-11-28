@@ -135,7 +135,9 @@ pub(crate) fn parse(text: &str) -> Result<Table, String> {
             ));
         }
         if r.record.is_some() && r.signoff != Signoff::Required {
-            return Err(format!("{at}: only a signoff \"required\" row names a record"));
+            return Err(format!(
+                "{at}: only a signoff \"required\" row names a record"
+            ));
         }
         if let (Some(path), Some(id)) = (r.record_path(), r.signoff_id()) {
             let shape_ok = path == format!("{RECORD_DIR}{id}.json") && is_signoff_id(&id);

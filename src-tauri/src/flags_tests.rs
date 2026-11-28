@@ -329,15 +329,24 @@ fn a_malformed_table_is_refused() {
         bad(&|r| r["record"] = "release/signoffs/ALPHA.json".into()),
         "a record on a none row"
     );
-    let required = |record: &str| {
+    let required = |record: &'static str| {
         move |r: &mut serde_json::Value| {
             r["signoff"] = "required".into();
             r["record"] = record.into();
         }
     };
-    assert!(!bad(&required("release/signoffs/CL-S9.json")), "a named record");
-    assert!(bad(&required("release/signoffs/../x.json")), "record is a path");
-    assert!(bad(&required("release/signoffs/a/b.json")), "a nested record");
+    assert!(
+        !bad(&required("release/signoffs/CL-S9.json")),
+        "a named record"
+    );
+    assert!(
+        bad(&required("release/signoffs/../x.json")),
+        "record is a path"
+    );
+    assert!(
+        bad(&required("release/signoffs/a/b.json")),
+        "a nested record"
+    );
     assert!(bad(&required("release/x.json")), "outside release/signoffs");
     assert!(bad(&required("release/signoffs/X.md")), "not a .json");
     let table = |rows: serde_json::Value, version: u32| {
@@ -363,7 +372,11 @@ fn a_malformed_table_is_refused() {
         r
     };
     assert!(
-        table(serde_json::json!([shared(alpha_row(false)), shared(beta)]), 1).is_err(),
+        table(
+            serde_json::json!([shared(alpha_row(false)), shared(beta)]),
+            1
+        )
+        .is_err(),
         "two flags on one record"
     );
 }
