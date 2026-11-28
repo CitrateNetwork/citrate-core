@@ -1861,3 +1861,100 @@ fn post_form_sends_accept_application_json() {
     );
     assert!(req.contains("content-type: application/x-www-form-urlencoded"));
 }
+
+/// 0.6.0 L6-WP05: records what `post_json_to_authority` sent.
+#[derive(Default)]
+struct RecordingJson {
+    calls: StdMutex<Vec<(String, Option<String>, String)>>,
+}
+struct RecordingJsonClient(Arc<RecordingJson>);
+impl HttpClient for RecordingJsonClient {
+    fn get(&self, _url: &str, _bearer: Option<&str>) -> Result<String> {
+        Err(AuthError::Network)
+    }
+    fn post_form(&self, _url: &str, _form: &[(&str, &str)]) -> Result<String> {
+        Err(AuthError::Network)
+    }
+    fn post_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
+        self.0.calls.lock().unwrap().push((
+            url.to_string(),
+            bearer.map(str::to_string),
+            body.to_string(),
+        ));
+        Ok("{\"ok\":true}".to_string())
+    }
+}
+
+/// L6-WP05: the member's bearer goes to the pinned issuer origin only, on a plain path; a path
+/// that could steer it elsewhere is refused before any request, and no session means NotSignedIn.
+#[test]
+fn l6_wp05_post_json_to_authority_sends_the_bearer_to_the_issuer_only() {
+    let rec = Arc::new(RecordingJson::default());
+    let mgr = AuthManager::new(
+        AuthorityConfig::production(),
+        Box::new(RecordingJsonClient(rec.clone())),
+    );
+    assert_eq!(
+        mgr.post_json_to_authority("/oauth/relay/v1/github/token", "{}"),
+        Err(AuthError::NotSignedIn)
+    );
+    assert!(rec.calls.lock().unwrap().is_empty());
+
+    mgr.set_session(
+        "FIXTURE-MEMBER-AT",
+        3600,
+        Claims {
+            sub: "did:citrate:fixture".to_string(),
+            ..Claims::default()
+        },
+    );
+    let out = mgr
+        .post_json_to_authority("/oauth/relay/v1/github/token", "{\"code\":\"c\"}")
+        .expect("posted");
+    assert_eq!(out, "{\"ok\":true}");
+    {
+        let calls = rec.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            "https://auth.citrate.ai/oauth/relay/v1/github/token"
+        );
+        assert_eq!(calls[0].1.as_deref(), Some("FIXTURE-MEMBER-AT"));
+        assert_eq!(calls[0].2, "{\"code\":\"c\"}");
+    }
+
+    for bad in [
+        "oauth/relay",
+        "//evil.example/x",
+        "/x@evil.example",
+        "/x:443",
+        "/../x",
+        "/x\\y",
+        "/x?to=evil",
+        "/x#frag",
+        "/x y",
+        "https://evil.example/x",
+    ] {
+        assert_eq!(
+            mgr.post_json_to_authority(bad, "{}"),
+            Err(AuthError::Rejected(400)),
+            "{bad}"
+        );
+    }
+    assert_eq!(rec.calls.lock().unwrap().len(), 1, "no refused path was sent");
+
+    // An expired session token is never sent: the caller refreshes first.
+    mgr.set_session(
+        "FIXTURE-MEMBER-AT-OLD",
+        0,
+        Claims {
+            sub: "did:citrate:fixture".to_string(),
+            ..Claims::default()
+        },
+    );
+    assert_eq!(
+        mgr.post_json_to_authority("/oauth/relay/v1/github/token", "{}"),
+        Err(AuthError::Unauthorized)
+    );
+    assert_eq!(rec.calls.lock().unwrap().len(), 1, "an expired bearer was not sent");
+}
