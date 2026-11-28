@@ -59,8 +59,10 @@ describe("US-1.1 AC1: no tool loop for the local model in the webview", () => {
     const harness = src("src/agent/harness.ts");
     const store = src("src/shell/store.ts");
     const daemon = src("src/daemons/turn.ts");
+    // L0-WP07c: the Store's turn engine (sendChat, handleTool) moved to actions/l1/turn.ts.
+    const turn = src("src/shell/actions/l1/turn.ts");
     expect(harness).not.toMatch(/export function createLocalAgentProvider/);
-    for (const [name, text] of [["store.ts", store], ["daemons/turn.ts", daemon]] as const) {
+    for (const [name, text] of [["store.ts", store], ["actions/l1/turn.ts", turn], ["daemons/turn.ts", daemon]] as const) {
       expect(text, name).not.toMatch(/createLocalAgentProvider|inferLocalTools/);
     }
     // The local model's agent turns go through the sidecar provider; the fallback is the no-tools one.
