@@ -113,7 +113,9 @@ numbers match the comments in `WebSigningBudget.tla` (`CallChecks`).
 | 12 | **No standing approval to the target.** The wallet holds no live allowance or operator approval naming the target. | Read from 40204 (approval logs for this wallet, confirmed by the current `allowance` / `isApprovedForAll` value). With an approval in place, a call to the member's own contract could move the member's assets, which D1 excludes. |
 
 Budget values (default `max_ops`, default gas cap, per-call gas ceiling) are not set here. They
-come from the default budget values WP, as ADR-2026-09-30 O-2 did for B-1 and B-2.
+come from the default budget values WP, as ADR-2026-09-30 O-2 did for B-1 and B-2. Until that
+WP sets them, a grant with no gas cap, a zero cap, an empty target set or an empty function list
+is refused (fail closed); no code path supplies a default.
 
 **Voiding.** Besides `budget_revoke` and "Stop all", a B-3 budget is voided when: its session
 ends; its envelope is revoked; the session's HIC level is raised to HIC-1 or HIC-0 (raising
