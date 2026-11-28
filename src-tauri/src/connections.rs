@@ -25,9 +25,9 @@ use zeroize::Zeroizing;
 // 0.6.0 L6-WP05: the OAuth client v2 (provider registry, relay mode, refresh, revoke). Declared
 // here rather than in lib.rs (L0's file) so the lane stays inside its own files; its path is the
 // lane's `src-tauri/src/oauth_client/`. L0 may hoist it to the crate root without changing it.
-// L6-WP05 stack: the registry and the relay client land before the connect flow uses them; the
-// dead-code allowance goes when the refresh and revoke PR wires the last of them.
-#[allow(dead_code, unused_imports)]
+// L6-WP05 stack: the relay's refresh and revoke bodies are used from part 3 (refresh and revoke);
+// the dead-code allowance goes there.
+#[allow(dead_code)]
 #[path = "oauth_client/mod.rs"]
 pub(crate) mod oauth_client;
 
@@ -136,8 +136,9 @@ impl Service {
     pub fn default_scopes(self) -> &'static [&'static str] {
         match self {
             // read repos + open PR drafts (the member approves every write via the
-            // ceremony regardless of the granted scope).
-            Service::GitHub => &["repo"],
+            // ceremony regardless of the granted scope). L6-WP05: `read:org` as the runbook
+            // registers it (docs/CONNECTIONS_RUNBOOK.md section 2), so org repos and teams list.
+            Service::GitHub => &["repo", "read:org"],
             Service::GoogleDrive => &["https://www.googleapis.com/auth/drive.readonly"],
             Service::Notion => &[],
             Service::HuggingFace => &["read-repos"],
@@ -288,9 +289,11 @@ pub fn token_exchange_params(
 use crate::custody::CustodyVault;
 use crate::oidc::HttpClient;
 use serde::{Deserialize, Serialize};
+#[cfg(debug_assertions)]
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -333,6 +336,9 @@ pub enum ConnError {
     Vault,
     /// The service id from the UI is not one of github/gdrive/notion.
     UnknownService,
+    /// L6-WP05: the member declined on the provider's consent page (`error=access_denied` on
+    /// the callback). Nothing was exchanged or stored.
+    Declined,
     /// L6-WP05: the relay needs a signed-in member and there is no live Citrate session.
     NotSignedIn,
     /// L6-WP05: the relay answered 429.
@@ -350,6 +356,9 @@ impl std::fmt::Display for ConnError {
             ConnError::TokenExchange => "the provider rejected the authorization code",
             ConnError::Vault => "the secure vault is locked or unavailable",
             ConnError::UnknownService => "unknown service",
+            ConnError::Declined => {
+                "the sign-in was declined at the provider; nothing was connected"
+            }
             ConnError::NotSignedIn => "Sign in to Citrate to connect",
             ConnError::RateLimited => "the Citrate relay is busy; try again in a minute",
         };
@@ -387,6 +396,8 @@ pub(crate) fn slot(service: Service) -> String {
 
 /// The `oauth.dev.json` env-key prefix for a service (the file uses provider
 /// names, not the internal ids: GitHub→GITHUB, GoogleDrive→GOOGLE, Notion→NOTION).
+/// Debug builds only (L6-WP05): a release build has no dev file path at all.
+#[cfg(debug_assertions)]
 fn env_prefix(service: Service) -> &'static str {
     match service {
         Service::GitHub => "GITHUB",
@@ -399,21 +410,26 @@ fn env_prefix(service: Service) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Dev-credential loader
+// Dev-credential loader (debug builds only, L6-WP05)
+//
+// A release build compiles none of this: it holds no client secret and never reads a
+// credential file. It connects through the provider registry (`oauth_client`), behind
+// `CONNECTIONS_V2`; with the flag off it reports `NotConfigured`, never the dev file.
 // ---------------------------------------------------------------------------
 
 /// A provider's OAuth client credentials. The secret is `Zeroizing` so it wipes on
 /// drop and never lands in a `{:?}`.
+#[cfg(debug_assertions)]
 struct ClientCreds {
     client_id: String,
     client_secret: Zeroizing<String>,
 }
 
 /// The dev credential file path: `CITRATE_OAUTH_DEV_FILE` if set (tests/CI), else
-/// `oauth.dev.json` relative to the working dir (dev). NOT bundled in a release —
-/// the ship path seals these in the OS keyring (Settings → Connections), a
-/// subsequent WP; until then, a release build has no file here and reports
-/// `NotConfigured` honestly (Rule 1).
+/// `oauth.dev.json` relative to the working dir (dev). Debug builds only: a release
+/// build exchanges through the Citrate relay and never holds a client secret
+/// (L6-WP05, `oauth_client`).
+#[cfg(debug_assertions)]
 fn dev_credentials_path() -> PathBuf {
     if let Ok(p) = std::env::var("CITRATE_OAUTH_DEV_FILE") {
         return PathBuf::from(p);
@@ -423,6 +439,7 @@ fn dev_credentials_path() -> PathBuf {
 
 /// Parse the dotenv-style `KEY=VALUE` credential file (blank lines + `#` comments
 /// skipped). Despite the `.json` suffix the file is line-oriented `KEY=VALUE`.
+#[cfg(debug_assertions)]
 fn parse_dev_credentials(contents: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in contents.lines() {
@@ -482,6 +499,10 @@ impl ConnectionListener {
     /// `StateMismatch`. Now a foreign / malformed / wrong-state request gets a 400 and
     /// the listener keeps waiting for the real callback; only a request carrying the
     /// flow's own `state` completes it (still exactly one code is accepted).
+    ///
+    /// L6-WP05: a provider error callback (`error=access_denied`) carrying the flow's own
+    /// `state` ends the flow at once with `Declined` (the member said no; nothing is stored).
+    /// An error callback with any other `state` is a drive-by like the rest and changes nothing.
     fn wait_for_callback(
         self,
         timeout: Duration,
@@ -497,8 +518,10 @@ impl ConnectionListener {
                     stream
                         .set_nonblocking(false)
                         .map_err(|_| ConnError::Network)?;
-                    if let Some(cb) = Self::serve_callback(stream, expected_state) {
-                        return Ok(cb);
+                    match Self::serve_callback(stream, expected_state) {
+                        Served::Code(cb) => return Ok(cb),
+                        Served::Declined => return Err(ConnError::Declined),
+                        Served::Foreign => {}
                     }
                     // Not our callback — keep listening until the deadline.
                     if Instant::now() >= deadline {
@@ -517,21 +540,29 @@ impl ConnectionListener {
     }
 
     /// Parse the request; if it is THE callback (`code` + the expected `state`) write a
-    /// minimal close-the-tab page and return it, otherwise answer 400 and return `None`.
-    fn serve_callback(mut stream: TcpStream, expected_state: &str) -> Option<CallbackParams> {
-        let params = Self::read_request(&mut stream)
-            .ok()
-            .filter(|cb| ct_eq(cb.state.as_bytes(), expected_state.as_bytes()));
-        let (status, body) = if params.is_some() {
-            (
+    /// minimal close-the-tab page and return it; if it is the provider's error callback for
+    /// this flow, say nothing was connected and return `Declined`; otherwise answer 400.
+    fn serve_callback(mut stream: TcpStream, expected_state: &str) -> Served {
+        let served = match Self::read_request(&mut stream) {
+            Ok(target) => classify_callback(&target, expected_state),
+            Err(_) => Served::Foreign,
+        };
+        let (status, body) = match &served {
+            Served::Code(_) => (
                 "200 OK",
                 "<!doctype html><meta charset=utf-8><title>Citrate Core</title>\
                  <body style=\"font-family:system-ui;padding:3rem;text-align:center\">\
                  <p>Connection authorized. You can close this tab and return to \
                  Citrate Core.</p>",
-            )
-        } else {
-            ("400 Bad Request", "not the sign-in callback")
+            ),
+            Served::Declined => (
+                "200 OK",
+                "<!doctype html><meta charset=utf-8><title>Citrate Core</title>\
+                 <body style=\"font-family:system-ui;padding:3rem;text-align:center\">\
+                 <p>Connection not authorized. Nothing was connected. You can close this \
+                 tab and return to Citrate Core.</p>",
+            ),
+            Served::Foreign => ("400 Bad Request", "not the sign-in callback"),
         };
         let resp = format!(
             "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
@@ -541,11 +572,11 @@ impl ConnectionListener {
         );
         let _ = stream.write_all(resp.as_bytes());
         let _ = stream.flush();
-        params
+        served
     }
 
-    /// Read the first request line and extract `code` + `state` from its target.
-    fn read_request(stream: &mut TcpStream) -> std::result::Result<CallbackParams, ConnError> {
+    /// Read the first request line and return its target (path and query).
+    fn read_request(stream: &mut TcpStream) -> std::result::Result<String, ConnError> {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|_| ConnError::Network)?;
@@ -559,7 +590,55 @@ impl ConnectionListener {
             .split_whitespace()
             .nth(1)
             .ok_or(ConnError::StateMismatch)?;
-        parse_callback_target(target)
+        Ok(target.to_string())
+    }
+}
+
+/// What one request to the loopback turned out to be (L6-WP05).
+enum Served {
+    /// The flow's own callback with a code.
+    Code(CallbackParams),
+    /// The provider's error callback for this flow (the member declined consent).
+    Declined,
+    /// Anything else: a drive-by, a wrong `state`, a malformed request.
+    Foreign,
+}
+
+/// Classify a callback target against the flow's `state` (constant-time compare on both the
+/// code and the error path, so a page that does not know `state` cannot end the flow).
+fn classify_callback(target: &str, expected_state: &str) -> Served {
+    if let Ok(cb) = parse_callback_target(target) {
+        if ct_eq(cb.state.as_bytes(), expected_state.as_bytes()) {
+            return Served::Code(cb);
+        }
+        return Served::Foreign;
+    }
+    match parse_callback_denial(target) {
+        Some(state) if ct_eq(state.as_bytes(), expected_state.as_bytes()) => Served::Declined,
+        _ => Served::Foreign,
+    }
+}
+
+/// The `state` of a provider error callback (`?error=access_denied&state=..`, RFC 6749
+/// 4.1.2.1), when the target is one: an `error`, a `state`, and no `code`.
+fn parse_callback_denial(target: &str) -> Option<String> {
+    let parsed = url::Url::parse("http://127.0.0.1/")
+        .and_then(|base| base.join(target))
+        .ok()?;
+    let mut error = false;
+    let mut code = false;
+    let mut state = None;
+    for (k, v) in parsed.query_pairs() {
+        match k.as_ref() {
+            "error" => error = !v.is_empty(),
+            "code" => code = true,
+            "state" => state = Some(v.into_owned()),
+            _ => {}
+        }
+    }
+    match state {
+        Some(st) if error && !code && !st.is_empty() => Some(st),
+        _ => None,
     }
 }
 
@@ -714,20 +793,108 @@ pub struct ConnectionStatus {
 // The connection manager + its Tauri state
 // ---------------------------------------------------------------------------
 
+/// How this run reaches a service's OAuth client (L6-WP05). Never holds a secret outside the
+/// debug-only `DevFile` arm.
+enum ClientPlan {
+    /// Debug builds only: the developer's `oauth.dev.json` client id and secret, sent from the
+    /// device to the provider (the pre-WP05 path, kept for development).
+    #[cfg(debug_assertions)]
+    DevFile(ClientCreds),
+    /// A public client: the device exchanges with the provider directly, sending the PKCE
+    /// verifier and no secret.
+    PublicPkce { client_id: &'static str },
+    /// A provider that needs a client secret: the device holds only the public client id and
+    /// exchanges through the Citrate relay, which adds the secret server-side.
+    Relay {
+        client_id: &'static str,
+        provider: &'static str,
+    },
+}
+
+impl ClientPlan {
+    fn client_id(&self) -> &str {
+        match self {
+            #[cfg(debug_assertions)]
+            ClientPlan::DevFile(c) => &c.client_id,
+            ClientPlan::PublicPkce { client_id } | ClientPlan::Relay { client_id, .. } => client_id,
+        }
+    }
+
+    /// The mode name for a log line (never a credential).
+    fn mode(&self) -> &'static str {
+        match self {
+            #[cfg(debug_assertions)]
+            ClientPlan::DevFile(_) => "dev-file",
+            ClientPlan::PublicPkce { .. } => "public-pkce",
+            ClientPlan::Relay { .. } => "relay",
+        }
+    }
+}
+
+/// A log sink for the flow's lifecycle lines. Lines name the service, the mode and the outcome
+/// only; the production sink also runs them through `secret_shapes::redact`.
+type LogSink = Box<dyn Fn(&str) + Send + Sync>;
+
+fn stderr_log() -> LogSink {
+    Box::new(|line: &str| eprintln!("{}", crate::secret_shapes::redact(line)))
+}
+
 /// Process-wide MCP-connection manager: the HTTP client (ureq in prod, a test seam
-/// in tests) + the credential-file path.
+/// in tests), the credential-file path (debug builds only), and whether the provider
+/// registry is on (`CONNECTIONS_V2`).
 pub struct ConnectionManager {
     http: Box<dyn HttpClient>,
+    #[cfg(debug_assertions)]
     creds_path: PathBuf,
+    /// L6-WP05: `CONNECTIONS_V2`. Off: only the dev file (debug) can configure a service, and
+    /// a release build reports `NotConfigured`. On: the compiled provider registry applies.
+    v2: bool,
+    log: LogSink,
 }
 
 impl ConnectionManager {
+    /// The development manager: reads client credentials from the dev file at `creds_path`.
+    /// `CONNECTIONS_V2` starts off; see [`Self::with_v2`].
+    #[cfg(debug_assertions)]
     pub fn new(http: Box<dyn HttpClient>, creds_path: PathBuf) -> Self {
-        ConnectionManager { http, creds_path }
+        ConnectionManager {
+            http,
+            creds_path,
+            v2: false,
+            log: stderr_log(),
+        }
+    }
+
+    /// The release manager: no credential file, no client secret.
+    #[cfg(not(debug_assertions))]
+    fn release(http: Box<dyn HttpClient>) -> Self {
+        ConnectionManager {
+            http,
+            v2: false,
+            log: stderr_log(),
+        }
+    }
+
+    /// Turn the provider registry (`CONNECTIONS_V2`) on or off.
+    pub(crate) fn with_v2(mut self, on: bool) -> Self {
+        self.v2 = on;
+        self
+    }
+
+    /// Replace the log sink (tests capture the lines).
+    #[cfg(test)]
+    fn with_log(mut self, log: LogSink) -> Self {
+        self.log = log;
+        self
+    }
+
+    fn log(&self, line: &str) {
+        (self.log)(line);
     }
 
     /// Load a service's client credentials from the dev file. Missing file or key →
-    /// `NotConfigured` (honest: the flow cannot start without real creds).
+    /// `NotConfigured` (honest: the flow cannot start without real creds). Debug builds only.
+    #[cfg(debug_assertions)]
     fn creds(&self, service: Service) -> std::result::Result<ClientCreds, ConnError> {
         let contents =
             std::fs::read_to_string(&self.creds_path).map_err(|_| ConnError::NotConfigured)?;
@@ -749,40 +916,156 @@ impl ConnectionManager {
         })
     }
 
-    /// HUP-S10.2: whether this service's OAuth client id and secret are configured (without them
-    /// the flow cannot start, and the UI keeps Connect disabled with that reason).
-    pub(crate) fn is_configured(&self, service: Service) -> bool {
-        self.creds(service).is_ok()
+    /// How this run reaches `service`'s OAuth client. Debug builds prefer the developer's dev
+    /// file; otherwise (and always in a release build) the compiled registry decides, and only
+    /// while `CONNECTIONS_V2` is on. `NotConfigured` otherwise.
+    fn plan(&self, service: Service) -> std::result::Result<ClientPlan, ConnError> {
+        #[cfg(debug_assertions)]
+        if let Ok(creds) = self.creds(service) {
+            return Ok(ClientPlan::DevFile(creds));
+        }
+        if !self.v2 {
+            return Err(ConnError::NotConfigured);
+        }
+        let setup = oauth_client::setup_for(service);
+        match (&setup.mode, setup.client_id, setup.configured) {
+            (oauth_client::ClientMode::Relay, Some(client_id), true) => Ok(ClientPlan::Relay {
+                client_id,
+                provider: setup.provider,
+            }),
+            (oauth_client::ClientMode::PublicPkce, Some(client_id), true) => {
+                Ok(ClientPlan::PublicPkce { client_id })
+            }
+            _ => Err(ConnError::NotConfigured),
+        }
     }
 
-    /// Run the full connect flow: bind the fixed loopback, mint PKCE + state, open
-    /// the authorize URL in the system browser (via `open`), await one callback,
-    /// verify `state` (constant-time), then exchange + seal the token. Blocking
-    /// (the caller runs it off the main thread).
+    /// HUP-S10.2: whether this service's OAuth client is configured (without it the flow cannot
+    /// start, and the UI keeps Connect disabled with that reason). L6-WP05: a relay-mode service
+    /// counts as configured when its public client id is compiled in and `CONNECTIONS_V2` is on.
+    pub(crate) fn is_configured(&self, service: Service) -> bool {
+        self.plan(service).is_ok()
+    }
+
+    /// Run the full connect flow with no relay transport (a relay-mode service then reports
+    /// `NotSignedIn`). See [`Self::connect_with`]; the command passes the member's session.
+    #[cfg(test)]
     pub fn connect(
         &self,
         service: Service,
         vault: &CustodyVault,
         open: impl Fn(&str) -> std::result::Result<(), ConnError>,
     ) -> std::result::Result<ConnectionStatus, ConnError> {
+        self.connect_with(service, vault, None, open)
+    }
+
+    /// Run the full connect flow: bind the fixed loopback, mint PKCE + state, open
+    /// the authorize URL in the system browser (via `open`), await one callback,
+    /// verify `state` (constant-time), then exchange + seal the token. Blocking
+    /// (the caller runs it off the main thread). A relay-mode service exchanges through
+    /// `relay` (the member's Citrate session); with none it fails before any browser opens.
+    pub(crate) fn connect_with(
+        &self,
+        service: Service,
+        vault: &CustodyVault,
+        relay: Option<&dyn oauth_client::relay::RelayTransport>,
+        open: impl Fn(&str) -> std::result::Result<(), ConnError>,
+    ) -> std::result::Result<ConnectionStatus, ConnError> {
         // Fail fast before opening a browser / binding a socket if unconfigured.
-        let creds = self.creds(service)?;
+        let plan = match self.plan(service) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let reason = if self.v2 {
+                    oauth_client::provider_setup(service.id())
+                        .and_then(|setup| setup.reason)
+                        .unwrap_or("no client registered")
+                } else {
+                    "CONNECTIONS_V2 is off in this build"
+                };
+                self.log(&format!(
+                    "connections: {} not configured: {reason}",
+                    service.id()
+                ));
+                return Err(e);
+            }
+        };
+        if matches!(plan, ClientPlan::Relay { .. }) && relay.is_none() {
+            return Err(ConnError::NotSignedIn);
+        }
         let listener = ConnectionListener::bind()?;
         let state = random_state();
         let pkce = Pkce::new();
-        let auth_url = authorize_url(service, &creds.client_id, &state, &pkce.challenge);
+        let auth_url = authorize_url(service, plan.client_id(), &state, &pkce.challenge);
         open(&auth_url)?;
-        let cb = listener.wait_for_callback(CALLBACK_TIMEOUT, &state)?;
+        let cb = match listener.wait_for_callback(CALLBACK_TIMEOUT, &state) {
+            Ok(cb) => cb,
+            Err(ConnError::Declined) => {
+                self.log(&format!(
+                    "connections: {} sign-in declined at the provider; nothing stored",
+                    service.id()
+                ));
+                return Err(ConnError::Declined);
+            }
+            Err(e) => return Err(e),
+        };
         // Defence in depth: the listener only returns a state-matching callback.
         if !ct_eq(cb.state.as_bytes(), state.as_bytes()) {
             return Err(ConnError::StateMismatch);
         }
-        self.exchange_and_store(service, &creds, vault, &cb.code, &pkce.verifier)
+        self.exchange_with_plan(service, &plan, vault, &cb.code, &pkce.verifier, relay)
+    }
+
+    /// Exchange the code the way `plan` says and seal the token.
+    fn exchange_with_plan(
+        &self,
+        service: Service,
+        plan: &ClientPlan,
+        vault: &CustodyVault,
+        code: &str,
+        verifier: &str,
+        relay: Option<&dyn oauth_client::relay::RelayTransport>,
+    ) -> std::result::Result<ConnectionStatus, ConnError> {
+        let out = match plan {
+            #[cfg(debug_assertions)]
+            ClientPlan::DevFile(creds) => {
+                self.exchange_and_store(service, creds, vault, code, verifier)
+            }
+            ClientPlan::PublicPkce { client_id } => {
+                // No secret: `token_exchange_params` drops the empty value.
+                let params = token_exchange_params(service, client_id, "", code, verifier);
+                self.post_provider_form(service.token_endpoint(), &params)
+                    .and_then(|body| self.seal_token_response(service, &body, vault))
+            }
+            ClientPlan::Relay { provider, .. } => {
+                let relay = relay.ok_or(ConnError::NotSignedIn)?;
+                let req = oauth_client::relay::token_body(code, verifier, service.redirect_uri())?;
+                relay
+                    .post(provider, oauth_client::relay::RelayOp::Token, &req)
+                    .map_err(|e| e.into_conn(ConnError::TokenExchange))
+                    .and_then(|body| self.seal_token_response(service, &body, vault))
+            }
+        };
+        match &out {
+            Ok(_) => self.log(&format!(
+                "connections: {} connected via {}; token sealed in {}",
+                service.id(),
+                plan.mode(),
+                slot(service)
+            )),
+            Err(e) => self.log(&format!(
+                "connections: {} exchange via {} failed: {e}",
+                service.id(),
+                plan.mode()
+            )),
+        }
+        out
     }
 
     /// Exchange the authorization `code` (with the PKCE verifier) and seal the
-    /// resulting token in the vault. Factored out so it is unit-tested over an
-    /// injected HTTP seam + a headless vault, without a live provider or socket.
+    /// resulting token in the vault, with the dev-file client secret (debug builds only).
+    /// Factored out so it is unit-tested over an injected HTTP seam + a headless vault,
+    /// without a live provider or socket.
+    #[cfg(debug_assertions)]
     fn exchange_and_store(
         &self,
         service: Service,
@@ -798,23 +1081,45 @@ impl ConnectionManager {
             code,
             verifier,
         );
-        let form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        // The body holds the tokens: keep it in a wiping buffer.
-        let body = Zeroizing::new(
-            self.http
-                .post_form(service.token_endpoint(), &form)
-                .map_err(|_| ConnError::TokenExchange)?,
-        );
-        let tok: TokenResponse =
-            serde_json::from_str(&body).map_err(|_| ConnError::TokenExchange)?;
+        let body = self.post_provider_form(service.token_endpoint(), &params)?;
+        self.seal_token_response(service, &body, vault)
+    }
 
+    /// POST a form to a provider endpoint; the body (it holds tokens) comes back in a wiping
+    /// buffer.
+    fn post_provider_form(
+        &self,
+        url: &str,
+        params: &[(&'static str, String)],
+    ) -> std::result::Result<Zeroizing<String>, ConnError> {
+        let form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        self.http
+            .post_form(url, &form)
+            .map(Zeroizing::new)
+            .map_err(|_| ConnError::TokenExchange)
+    }
+
+    /// Parse a provider token response and seal it as the service's record, in one vault put.
+    /// No length or shape is assumed of any token.
+    fn seal_token_response(
+        &self,
+        service: Service,
+        body: &str,
+        vault: &CustodyVault,
+    ) -> std::result::Result<ConnectionStatus, ConnError> {
+        let tok: TokenResponse =
+            serde_json::from_str(body).map_err(|_| ConnError::TokenExchange)?;
+        if tok.access_token.expose().is_empty() {
+            return Err(ConnError::TokenExchange);
+        }
         let connected_at = now_unix();
         let expires_at = tok.expires_in.map(|e| connected_at.saturating_add(e));
+        let scope = tok.scope.clone();
         let record = StoredConnection {
             access_token: tok.access_token.expose(),
             refresh_token: tok.refresh_token.as_ref().map(SecretString::expose),
             token_type: tok.token_type.as_deref(),
-            scope: tok.scope.as_deref(),
+            scope: scope.as_deref(),
             expires_at,
             connected_at,
         };
@@ -826,7 +1131,7 @@ impl ConnectionManager {
         Ok(ConnectionStatus {
             service: service.id().to_string(),
             connected: true,
-            scope: tok.scope,
+            scope,
             connected_at: Some(connected_at),
         })
     }
@@ -876,13 +1181,14 @@ impl ConnectionManager {
 /// Managed Tauri state: the process-wide connection manager.
 pub struct ConnectionState(pub ConnectionManager);
 
-/// Build the connection state for a Tauri build: production ureq client + the dev
-/// credential path.
+/// Build the connection state for a Tauri build: production ureq client, the dev
+/// credential path in a debug build (none in a release build), and `CONNECTIONS_V2`.
 pub fn build_connection_state() -> ConnectionState {
-    ConnectionState(ConnectionManager::new(
-        Box::new(crate::oidc::UreqClient),
-        dev_credentials_path(),
-    ))
+    #[cfg(debug_assertions)]
+    let mgr = ConnectionManager::new(Box::new(crate::oidc::UreqClient), dev_credentials_path());
+    #[cfg(not(debug_assertions))]
+    let mgr = ConnectionManager::release(Box::new(crate::oidc::UreqClient));
+    ConnectionState(mgr.with_v2(oauth_client::connections_v2_enabled()))
 }
 
 // ---------------------------------------------------------------------------
@@ -893,12 +1199,14 @@ pub fn build_connection_state() -> ConnectionState {
 /// provider's authorize page in the SYSTEM browser (third-party OAuth forbids
 /// embedded webviews). ASYNC so Tauri runs it off the main thread while the
 /// loopback blocks. Returns a claim-free `ConnectionStatus`; the token is sealed in
-/// the vault, never returned.
+/// the vault, never returned. L6-WP05: a relay-mode service exchanges through the
+/// Citrate relay with the member's Citrate session (`oauth_client::relay`).
 #[tauri::command]
 pub async fn connection_start(
     app: tauri::AppHandle,
     state: State<'_, ConnectionState>,
     custody: State<'_, crate::custody::CustodyState>,
+    auth: State<'_, crate::oidc::AuthState>,
     service: String,
 ) -> std::result::Result<ConnectionStatus, String> {
     let svc = Service::from_id(&service).ok_or_else(|| ConnError::UnknownService.to_string())?;
@@ -910,9 +1218,10 @@ pub async fn connection_start(
             .open_url(url.to_string(), None::<&str>)
             .map_err(|_| ConnError::Network)
     };
+    let relay = oauth_client::relay::AuthorityRelay::new(&auth.0, &custody.0);
     state
         .0
-        .connect(svc, &custody.0, open)
+        .connect_with(svc, &custody.0, Some(&relay), open)
         .map_err(|e| e.to_string())
 }
 

@@ -27,6 +27,7 @@ pub(crate) mod relay;
 mod tests;
 
 pub use providers::provider_setup;
+pub(crate) use providers::setup_for;
 
 /// How a provider's OAuth client is set up (lanes/L6 section 3.2, frozen).
 #[derive(Debug, Clone, PartialEq, Eq)]
