@@ -186,6 +186,8 @@ describe("regression-suite", () => {
     const noFilter = loadRegistry(tree({ "ci/characterization.d/l4.json": JSON.stringify({ version: 1, suites: [{ id: "X", runner: "cargo", package: "citrate-core" }] }) }));
     expect(noFilter.errors.join("\n")).toMatch(/X: a cargo suite needs package and filter/);
     expect(loadRegistry(tree({ "ci/characterization.json": "{" })).errors.join("\n")).toMatch(/ci\/characterization\.json/);
+    const opt = loadRegistry(tree({ "ci/characterization.d/l4.json": JSON.stringify({ version: 1, suites: [{ id: "Y", runner: "vitest", files: ["--reporter=x"] }] }), "--reporter=x": "x" }));
+    expect(opt.errors.join("\n")).toMatch(/not a plain path or test filter/);
   });
 
   it("the registries in this repo load, and every file they name exists", () => {
