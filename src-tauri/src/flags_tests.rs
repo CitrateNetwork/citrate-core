@@ -7,6 +7,9 @@
 //!     And release/signoffs/HERMES_NODE_WRITE_TOOLS.json does not verify
 //!     When cargo test runs
 //!     Then flags_requiring_signoff_have_a_verified_record fails
+//!
+//! That test gates each `required` row on the value it has in this build: the table's `default`
+//! or the marked const in `where` (`flags::gated_value`), so a const-only flip fails it too.
 
 use crate::flags::{self, Signoff, Table};
 use crate::signoff::{self, Spec};
