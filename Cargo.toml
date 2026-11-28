@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "kit", "templates/renderer", "components"]
+# crates/*: lane crates join the workspace with no root edit (L0-WP10; crates/README.md). Their
+# third-party packages still need intake rows in release/dep-intake.json.
+members = ["src-tauri", "kit", "templates/renderer", "components", "crates/*"]
 
 # Space: full DWARF debug info is the bulk of a debug build's target/ size.
 # "line-tables-only" keeps file:line in panics/backtraces (so debugging still
