@@ -519,9 +519,14 @@ mod lq_l8_fl {
     }
 
     /// Why a code line of `src` could turn a test off wherever it sits, or None: an #[ignore], a
-    /// cfg_attr, a cfg other than cfg(test) or an inner `#![...]` anywhere on it (a cfg on an
-    /// enclosing module turns off every test in it), or a `mod` item at all.
+    /// #[should_panic] (it inverts the test), a cfg_attr, a cfg other than cfg(test) or an inner
+    /// `#![...]` anywhere on it (a cfg on an enclosing module turns off every test in it), an
+    /// allow(unnameable_test_items) (it silences the lint on a test rustc never collects), or a
+    /// `mod` item at all.
     fn disabling(line: &str) -> Option<&'static str> {
+        if line.contains("unnameable_test_items") {
+            return Some("an allow for a test nested where rustc never collects it");
+        }
         let squashed: String = line.split_whitespace().collect();
         for (i, _) in squashed.match_indices('#') {
             let at = &squashed[i..];
@@ -534,6 +539,9 @@ mod lq_l8_fl {
             if at.starts_with("#[ignore") {
                 return Some("an #[ignore]");
             }
+            if at.starts_with("#[should_panic") {
+                return Some("a #[should_panic]");
+            }
             if at.starts_with("#[cfg") && !at.starts_with("#[cfg(test)]") {
                 return Some("a cfg other than cfg(test)");
             }
@@ -545,9 +553,109 @@ mod lq_l8_fl {
         None
     }
 
-    /// Ok when `src` declares `fn <name>() {` as a test that runs: under #[test], with no
-    /// #[ignore], no cfg_attr and no cfg other than cfg(test) anywhere in its attribute block.
-    /// Any code line `disabling` names fails it too (a backstop the block parse cannot see past).
+    /// The end of the literal that starts at `chars[i]`, or None when none starts there: a
+    /// string (`"..."`, `b"..."`), a raw string (`r"..."`, `r#"..."#`, `br#"..."#`) or a char
+    /// (`'x'`, `'\n'`). A lifetime (`'a`) is no literal. Err when a literal never closes.
+    fn literal_end(chars: &[char], i: usize) -> Result<Option<usize>, String> {
+        let unclosed = || Err("a literal that never closes".to_string());
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let fresh = i == 0 || !ident(chars[i - 1]);
+        let raw_at = match chars[i] {
+            'r' if fresh => Some(i + 1),
+            'b' if fresh && chars.get(i + 1) == Some(&'r') => Some(i + 2),
+            _ => None,
+        };
+        if let Some(mut j) = raw_at {
+            let mut hashes = 0;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                let mut k = j + 1;
+                while k < chars.len() {
+                    let tail = &chars[k + 1..];
+                    let closes = tail.len() >= hashes && tail[..hashes].iter().all(|c| *c == '#');
+                    if chars[k] == '"' && closes {
+                        return Ok(Some(k + 1 + hashes));
+                    }
+                    k += 1;
+                }
+                return unclosed();
+            }
+            return Ok(None);
+        }
+        match chars[i] {
+            '"' => {
+                let mut k = i + 1;
+                while k < chars.len() {
+                    match chars[k] {
+                        '\\' => k += 2,
+                        '"' => return Ok(Some(k + 1)),
+                        _ => k += 1,
+                    }
+                }
+                unclosed()
+            }
+            '\'' if chars.get(i + 1) == Some(&'\\') => {
+                // The escaped char is at i + 2, so the closing quote is the first one after it.
+                let rest = chars.get(i + 3..).unwrap_or_default();
+                match rest.iter().position(|c| *c == '\'') {
+                    Some(n) => Ok(Some(i + 4 + n)),
+                    None => unclosed(),
+                }
+            }
+            '\'' if chars.get(i + 2) == Some(&'\'') => Ok(Some(i + 3)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The brace depth at byte `at` of `code`, braces inside a string, a char, a raw string or a
+    /// `//` comment aside. Err (fail closed) on a block comment, a `}` with none open, braces that
+    /// do not balance by the end, or `at` inside a literal.
+    fn depth_at(code: &str, at: usize) -> Result<usize, String> {
+        let chars: Vec<char> = code.chars().collect();
+        let offsets: Vec<usize> = code.char_indices().map(|(b, _)| b).collect();
+        let (mut depth, mut i, mut found) = (0usize, 0usize, None);
+        while i < chars.len() {
+            if offsets[i] == at {
+                found = Some(depth);
+            }
+            if let Some(end) = literal_end(&chars, i)? {
+                let end_byte = offsets.get(end).copied().unwrap_or(code.len());
+                if offsets[i] < at && end_byte > at {
+                    return Err("the declaration sits inside a literal".to_string());
+                }
+                i = end;
+                continue;
+            }
+            match (chars[i], chars.get(i + 1)) {
+                ('/', Some('*')) => return Err("a block comment can hide a declaration".to_string()),
+                ('/', Some('/')) => {
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                ('{', _) => depth += 1,
+                ('}', _) => {
+                    depth = depth.checked_sub(1).ok_or("a } with no { open")?;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            return Err("braces that do not balance".to_string());
+        }
+        found.ok_or_else(|| "no item starts there".to_string())
+    }
+
+    /// Ok when `src` declares `fn <name>() {` as a test that runs: at module scope (brace depth 0:
+    /// rustc never collects a #[test] in a fn body, a closure, an impl or a const block), under
+    /// #[test], with no #[ignore], #[should_panic], cfg_attr or cfg other than cfg(test) anywhere
+    /// in its attribute block. Any code line `disabling` names fails it too (a backstop the block
+    /// parse cannot see past), and so does any block comment.
     fn live_test(src: &str, name: &str) -> Result<(), String> {
         let code = code_lines(src);
         for line in code.lines() {
@@ -568,12 +676,18 @@ mod lq_l8_fl {
         let Some(at) = at else {
             return Err(format!("{name} is not declared"));
         };
+        let depth = depth_at(&code, at).map_err(|why| format!("{name}: {why}"))?;
+        if depth != 0 {
+            return Err(format!("{name} is nested {depth} deep, where rustc never collects it"));
+        }
         let attrs = attributes_above(&code, at)?;
         if !attrs.iter().any(|a| a == "test") {
             return Err(format!("{name} is not under #[test]"));
         }
         for a in &attrs {
-            let off = a.starts_with("ignore") || a.starts_with("cfg_attr");
+            let off = ["ignore", "should_panic", "cfg_attr"]
+                .iter()
+                .any(|p| a.starts_with(p));
             if off || (a.starts_with("cfg") && a != "cfg(test)") {
                 return Err(format!("{name} is turned off by #[{a}]"));
             }
@@ -744,7 +858,7 @@ mod lq_l8_fl {
             "#[test]\nfn t() {\n}\n",
             "/// Doc.\n#[test]\n#[allow(clippy::bool_assert_comparison)]\nfn t() {\n}\n",
             "#[cfg(test)]\n#[test]\nfn t() {\n}\n",
-            "}\n\n#[test]\nfn t() {\n}\n",
+            "fn x() {\n}\n\n#[test]\nfn t() {\n}\n",
         ];
         for case in live {
             assert_eq!(live_test(case, "t"), Ok(()), "{case}");

@@ -78,10 +78,15 @@ function declaredVitest(src: string): string[] {
   return [...uncommented(src).matchAll(/^[ \t]*it\(\s*"([A-Za-z0-9_]+)"\s*,/gm)].map((m) => m[1]);
 }
 
-/** A Rust fn and its whole attribute block, each attribute with its whitespace removed. */
+/**
+ * A Rust fn and its whole attribute block, each attribute with its whitespace removed; `nested`
+ * when it sits inside a block that is not a module (a fn body, a closure, an impl, a const block),
+ * where rustc never collects a #[test].
+ */
 interface CargoFn {
   name: string;
   attrs: string[];
+  nested: boolean;
 }
 
 /** One attribute, `#[...]`, its body captured; brackets inside a string literal stay in the body. */
@@ -91,25 +96,13 @@ const CARGO_FN = new RegExp(
   "gm",
 );
 
-/** Rust source for the cargo checks: comments out, and a trailing `//` comment after an attribute dropped. */
+/** Rust source for the host checks: comments out, and a trailing `//` comment after an attribute dropped. */
 function cargoSource(src: string): string {
   return uncommented(src).replace(/^([ \t]*#.*\])[ \t]*\/\/.*$/gm, "$1");
 }
 
-/** Every fn with attributes directly above it, outside comments. */
-function cargoFns(src: string): CargoFn[] {
-  return [...cargoSource(src).matchAll(CARGO_FN)].map((m) => ({
-    name: m[m.length - 1],
-    attrs: [...m[1].matchAll(new RegExp(ATTR, "g"))].map((a) => a[1].replace(/\s+/g, "")),
-  }));
-}
-
-const isCargoTest = (f: CargoFn) => f.attrs.some((a) => /^(?:tokio::)?test\b/.test(a));
-
-/** What turns a Rust test off: an #[ignore], a cfg_attr, or a cfg other than cfg(test), anywhere in its block. */
-function disabledBy(f: CargoFn): string | undefined {
-  return f.attrs.find((a) => /^(?:ignore|cfg_attr)\b/.test(a) || (/^cfg\b/.test(a) && a !== "cfg(test)"));
-}
+/** A Rust comment, raw string, string or char literal, matched left to right as the lexer reads them. */
+const RUST_TOKEN = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|b?r(#*)"[\s\S]*?"\1|b?"(?:[^"\\]|\\[\s\S])*"|b?'(?:[^'\\\n]|\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.))'/g;
 
 /**
  * Rust source as code only: comments become a space and string, raw string and char literals
@@ -117,15 +110,73 @@ function disabledBy(f: CargoFn): string | undefined {
  * the lexer reads it.
  */
 function rustCode(src: string): string {
-  const token = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|b?r(#*)"[\s\S]*?"\1|b?"(?:[^"\\]|\\[\s\S])*"|b?'(?:[^'\\\n]|\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.))'/g;
-  return src.replace(token, (t) => (t.startsWith("/") ? " " : '""'));
+  return src.replace(RUST_TOKEN, (t) => (t.startsWith("/") ? " " : '""'));
+}
+
+/**
+ * Rust source with every comment (and, unless `keepLiterals`, every literal) blanked to spaces,
+ * newlines kept, so each offset still points at the same byte of `src`.
+ */
+function rustBlanked(src: string, keepLiterals: boolean): string {
+  return src.replace(RUST_TOKEN, (t) => (keepLiterals && !t.startsWith("/") ? t : t.replace(/[^\n]/g, " ")));
+}
+
+/** A `{` that opens a module body: `mod <name> {`. */
+const MOD_OPEN = /\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*$/;
+
+/**
+ * For each offset of `src`, how many open blocks around it are not module bodies (literals and
+ * comments aside), plus the first brace error: a `}` with none open, or a `{` never closed.
+ */
+function blockScopes(src: string): { nonModule: Int32Array; error?: string } {
+  const code = rustBlanked(src, false);
+  const nonModule = new Int32Array(code.length + 1);
+  const open: boolean[] = [];
+  let depth = 0;
+  let error: string | undefined;
+  for (let i = 0; i < code.length; i++) {
+    nonModule[i] = depth;
+    if (code[i] === "{") {
+      const isModule = MOD_OPEN.test(code.slice(Math.max(0, i - 128), i));
+      open.push(isModule);
+      if (!isModule) depth++;
+    } else if (code[i] === "}") {
+      const top = open.pop();
+      if (top === undefined) error ??= "a } with no { open";
+      else if (!top) depth--;
+    }
+  }
+  nonModule[code.length] = depth;
+  if (open.length > 0) error ??= "an unclosed {";
+  return { nonModule, error };
+}
+
+/** Every fn with attributes directly above it, outside comments, with whether it sits in a non-module block. */
+function cargoFns(src: string): CargoFn[] {
+  const { nonModule } = blockScopes(src);
+  return [...rustBlanked(src, true).matchAll(CARGO_FN)].map((m) => ({
+    name: m[m.length - 1],
+    attrs: [...m[1].matchAll(new RegExp(ATTR, "g"))].map((a) => a[1].replace(/\s+/g, "")),
+    nested: nonModule[m.index ?? 0] > 0,
+  }));
+}
+
+const isCargoTest = (f: CargoFn) => f.attrs.some((a) => /^(?:tokio::)?test\b/.test(a));
+
+/**
+ * What turns a Rust test off: an #[ignore], a #[should_panic] (it passes only while the behavior it
+ * guards is broken), a cfg_attr, or a cfg other than cfg(test), anywhere in its block.
+ */
+function disabledBy(f: CargoFn): string | undefined {
+  return f.attrs.find((a) => /^(?:ignore|should_panic|cfg_attr)\b/.test(a) || (/^cfg\b/.test(a) && a !== "cfg(test)"));
 }
 
 /**
  * Attributes that turn a Rust test off wherever they sit, the block parse aside: an #[ignore], a
- * cfg_attr, a cfg other than cfg(test) (on an enclosing module too), or any inner `#![...]`.
+ * #[should_panic], a cfg_attr, a cfg other than cfg(test) (on an enclosing module too), or any
+ * inner `#![...]`.
  */
-const DISABLING_ATTR = /#\s*(?:!\s*\[|\[\s*(?:ignore\b|cfg(?!\s*\(\s*test\s*\)\s*\])))/g;
+const DISABLING_ATTR = /#\s*(?:!\s*\[|\[\s*(?:ignore\b|should_panic\b|cfg(?!\s*\(\s*test\s*\)\s*\])))/g;
 const ATTR_AT = new RegExp(`^#\\s*!?\\s*\\[((?:"(?:[^"\\\\]|\\\\.)*"|[^\\]"])*)\\]`);
 
 /** The `mod` items in Rust code, by name. */
@@ -134,20 +185,22 @@ const MOD_ITEM = /\bmod\s+([A-Za-z_][A-Za-z0-9_]*)/g;
 /** cargo: the functions under `#[test]` (or `#[tokio::test]`) that still run, outside comments. */
 function declaredCargo(src: string): string[] {
   return cargoFns(src)
-    .filter((f) => isCargoTest(f) && disabledBy(f) === undefined)
+    .filter((f) => isCargoTest(f) && disabledBy(f) === undefined && !f.nested)
     .map((f) => f.name);
 }
 
 /**
- * cargo: each test turned off (`name: #[attr]`), then each disabling attribute anywhere in the code
- * (whitespace removed), then each `mod <name>` other than the suite's own opening `suiteMod`. A
- * test in a cfg'd-out module keeps its own #[test] block, so a protected or pinned file carries
- * no such attribute and no other module at all. Empty when every test runs.
+ * cargo: each test turned off (`name: #[attr]`), each test nested in a block that is not a module,
+ * then each disabling attribute anywhere in the code (whitespace removed), any
+ * `unnameable_test_items` (the lint a nested test raises), each `mod <name>` other than the suite's
+ * own opening `suiteMod`, and a brace error. A test in a cfg'd-out module keeps its own #[test]
+ * block, so a protected or pinned file carries no such attribute and no other module at all.
+ * Empty when every test runs.
  */
 function disabledCargo(src: string, suiteMod?: string): string[] {
-  const off = cargoFns(src)
-    .filter((f) => isCargoTest(f) && disabledBy(f) !== undefined)
-    .map((f) => `${f.name}: #[${disabledBy(f)}]`);
+  const fns = cargoFns(src).filter(isCargoTest);
+  const off = fns.filter((f) => disabledBy(f) !== undefined).map((f) => `${f.name}: #[${disabledBy(f)}]`);
+  const nested = fns.filter((f) => f.nested).map((f) => `${f.name}: inside a block that is not a module`);
   const code = rustCode(src);
   const attrs = [...code.matchAll(DISABLING_ATTR)].map((m) => {
     const at = code.slice(m.index ?? 0);
@@ -157,7 +210,9 @@ function disabledCargo(src: string, suiteMod?: string): string[] {
   const mods = [...code.matchAll(MOD_ITEM)].map((m) => `mod ${m[1]}`);
   const own = suiteMod === undefined ? -1 : mods.indexOf(`mod ${suiteMod}`);
   if (own >= 0) mods.splice(own, 1);
-  return [...off, ...attrs, ...mods];
+  const lint = [...code.matchAll(/\bunnameable_test_items\b/g)].map((m) => m[0]);
+  const { error } = blockScopes(src);
+  return [...off, ...nested, ...attrs, ...lint, ...mods, ...(error === undefined ? [] : [error])];
 }
 
 /** The column-0 test module of a host file: `#[cfg(test)]`, `mod tests {`, include lines only, `}`. */
