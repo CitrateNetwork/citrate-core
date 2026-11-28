@@ -1,0 +1,23 @@
+------------------------- MODULE WebSigningBudgetB3 -------------------------
+(***************************************************************************)
+(* CI entry point for the B-3 configs of WebSigningBudget.tla (budgeted    *)
+(* contract calls, ADR-2026-11-27 Rule-3 amendment 2, L2-WP06a).           *)
+(*                                                                         *)
+(* The model is WebSigningBudget.tla itself: one module, one closed list.  *)
+(* This module only extends it, so tlc_expect.py can check the small B-3   *)
+(* configs (WebSigningBudgetB3*.cfg, each with an EXPECT line) on every PR *)
+(* that touches src-tauri/formal, while the five pre-B-3 configs, which    *)
+(* take about 33 minutes together, keep running through                    *)
+(* scripts/run-tlc.sh and WebSigningBudget_mutants.py as before.           *)
+(*                                                                         *)
+(* Configs:                                                                *)
+(*   WebSigningBudgetB3.cfg        green: B-3 requests with every          *)
+(*                                 adversarial field, safety + liveness    *)
+(*   WebSigningBudgetB3_Mixed.cfg  green: SIWE, x402, a generic Tx and B-3 *)
+(*                                 requests together, tiny bounds          *)
+(*   WebSigningBudgetB3_Mut*.cfg   one broken B-3 guard each (B3Mutant);   *)
+(*                                 TLC must report the named invariant     *)
+(*   WebSigningBudgetB3_ReachCallSigned.cfg  witness: a call is auto-signed*)
+(***************************************************************************)
+EXTENDS WebSigningBudget
+=============================================================================

@@ -24,6 +24,23 @@
 (*     origin exemption as a constant that defaults to OFF (strict rule).  *)
 (*   - a bounded clock (Tick) and rolling windows of W ticks.              *)
 (*                                                                         *)
+(* B-3 budgeted contract calls (ADR-2026-11-27 Rule-3 amendment 2, L2-     *)
+(* WP06a; PROPOSED, nothing wired):                                        *)
+(*   - a separate request type and entry point (DecideCall, the model of   *)
+(*     request_call_budgeted) under the same budget lock, signed by the    *)
+(*     same gated signer (Sign, Return);                                   *)
+(*   - one budget per agent session (CallSlot), granted by an HIC-1        *)
+(*     ceremony (GrantCall) over a target set chosen from the contracts    *)
+(*     this member's wallet deployed from a READY gate record (deployed,   *)
+(*     grown only by DeployOwn: a per-deploy ceremony, never a budget);    *)
+(*   - an adversarial environment (RequestCall) that asks for creations,   *)
+(*     value, foreign targets, other chains, raw-ack calldata, approval    *)
+(*     and permit selectors, and other sessions' budgets;                  *)
+(*   - max_ops <= 20, expiry <= the model's 24 h, a per-budget gas cap with*)
+(*     write-ahead gas reservation, strict taint (no O-3 exemption).       *)
+(*   - B3Mutant names one broken guard in a mutant config; "none" in every *)
+(*     green config. Mutant and witness configs: WebSigningBudgetB3_*.cfg. *)
+(*                                                                         *)
 (* Abstractions (see README "WebSigningBudget" for the full list)          *)
 (*   - deterministic parse checks with no cross-request state (strict      *)
 (*     EIP-4361 parse, Version, Chain ID, address, Issued At, statement    *)
@@ -56,15 +73,41 @@ CONSTANTS
     MaxCrashes,       \* bound on process crashes
     O3Exempt,         \* owner decision O-3; FALSE = strict red-team rule (the ADR default)
     ReqKinds,         \* which request kinds the environment raises (lets a cfg focus a class)
-    TaintSources      \* which taint sources the environment produces (subset of Sources)
+    TaintSources,     \* which taint sources the environment produces (subset of Sources)
+    \* B-3 (ADR-2026-11-27). Every pre-B-3 config sets Sessions = {} and Contracts = {}, so
+    \* none of the B-3 actions is enabled there and those state spaces are unchanged.
+    Sessions,         \* agent sessions that can hold a B-3 budget (origin agent:<session>)
+    Contracts,        \* contract addresses on chain (strings); "create" is a contract creation
+    Chains,           \* chain ids a call request can name; only "c40204" is coverable
+    CallValues,       \* tx value a call request can carry; only 0 is coverable
+    Gas,              \* worst-case gas cost of one call (gas_limit * max_fee), positive
+    Selectors,        \* calldata classes: "plain" or a never-covered class ("approve", ...)
+    CallMaxOps,       \* max_ops of a B-3 budget (at most 20)
+    CallTTL,          \* B-3 budget lifetime at grant, in ticks (at most W, the model's 24 h)
+    GasCap,           \* per-budget gas cap (sum of reserved worst-case gas)
+    MaxDeploys,       \* bound on member deploys (per-deploy ceremonies, outside any budget)
+    B3Mutant          \* "none", or the one B-3 guard a mutant config breaks
 
 ASSUME Allowlist \subseteq Origins
 ASSUME /\ MaxCount \in Nat /\ PerSigMax \in Nat /\ PerRecipMax \in Nat /\ GlobalMax \in Nat
        /\ W \in Nat \ {0} /\ TTL \in Nat \ {0} /\ O3Exempt \in BOOLEAN
 
-ClosedList  == {"Siwe", "X402"}
+\* D1 as amended by ADR-2026-11-27: B-1 SIWE, B-2 x402 and B-3 budgeted contract calls. A
+\* "BudgetedCall" is a transaction submitted through the separate B-3 request type; a "Tx" in
+\* OtherKinds is any transaction submitted as a generic intent, which is never budgetable.
+ClosedList  == {"Siwe", "X402", "BudgetedCall"}
 AllKinds    == ClosedList \cup OtherKinds
 ASSUME OtherKinds \cap ClosedList = {}
+
+B3Mutants == {"none", "Covers", "SignsCreation", "SignsValue", "ForeignTarget", "GrantForeign",
+              "AnyChain", "RawAck", "Delegation", "ForeignSession", "NoOpsCap", "NoGasCap",
+              "TaintIgnored", "WriteBehind"}
+ASSUME /\ "c40204" \in Chains /\ 0 \in CallValues /\ "plain" \in Selectors
+       /\ "create" \notin Contracts /\ "other" \notin Sessions
+       /\ CallValues \subseteq Nat /\ Gas \subseteq Nat \ {0} /\ GasCap \in Nat
+       /\ CallMaxOps \in 1..20                 \* ADR-2026-11-27: max_ops <= 20
+       /\ CallTTL \in 1..W                     \* ADR-2026-11-27: expiry <= 24 h
+       /\ MaxDeploys \in Nat /\ B3Mutant \in B3Mutants
 
 \* Provenance of a SIWE request as core attests it over its own CDP session:
 \*   "top"    : the attested top frame of a managed-browser tab
@@ -80,9 +123,12 @@ ASSUME ReqKinds \subseteq AllKinds
 
 \* Budget slots: one SIWE budget per origin, one x402 budget per pinned recipient.
 \* The two kinds are different slot types, so neither can be widened into the other.
+\* B-3: one budget per agent session, a third slot type.
 WebSlot(o)  == <<"web", o>>
 PaySlot(r)  == <<"x402", r>>
-Slots       == {WebSlot(o) : o \in Origins} \cup {PaySlot(r) : r \in Recipients}
+CallSlot(x) == <<"call", x>>
+CallSlots   == {CallSlot(x) : x \in Sessions}
+Slots       == {WebSlot(o) : o \in Origins} \cup {PaySlot(r) : r \in Recipients} \cup CallSlots
 
 NoReq == [kind |-> "none"]
 
@@ -98,9 +144,12 @@ VARIABLES
     lock,       \* [phase, rq, slot, gen, rid]; phase "idle" means the budget lock is free
     taint,      \* SUBSET Sources: untrusted content in the current task's context
     down,       \* the core process has crashed and not yet recovered
-    cnt         \* counters: [req, pending, signed, unknown, lost, grants, crashes]
+    cnt,        \* counters: [req, pending, signed, unknown, lost, grants, crashes]
+    deployed    \* contracts this member's wallet deployed from a READY gate record (deploy
+                \* records, persisted, append-only); the only possible B-3 targets
 
-vars == <<clock, budget, ledger, resv, records, signed, revokes, req, lock, taint, down, cnt>>
+vars == <<clock, budget, ledger, resv, records, signed, revokes, req, lock, taint, down, cnt,
+          deployed>>
 
 -----------------------------------------------------------------------------
 (* Helpers *)
@@ -140,12 +189,14 @@ BudgetLive(s) ==
     /\ budget[s].used < MaxCount
 
 \* Strict taint rule; with O-3 accepted, content from the same allowlisted origin does not
-\* taint a sign-in to that origin. x402 never gets an exemption (D3 "Taint").
+\* taint a sign-in to that origin. x402 never gets an exemption (D3 "Taint"), and neither
+\* does B-3 (ADR-2026-11-27). The last disjunct is the TaintIgnored mutant only.
 TaintOk(rq) ==
     \/ taint = {}
     \/ /\ O3Exempt
        /\ rq.kind = "Siwe"
        /\ taint \subseteq {rq.origin}
+    \/ B3Mutant = "TaintIgnored" /\ rq.kind = "BudgetedCall"
 
 SlotOf(rq) == IF rq.kind = "Siwe" THEN WebSlot(rq.origin) ELSE PaySlot(rq.recip)
 
@@ -175,6 +226,52 @@ X402Eligible(rq) ==
 
 Eligible(rq) == SiweEligible(rq) \/ X402Eligible(rq)
 
+\* B-3 (ADR-2026-11-27). Worst-case gas reserved under generation g of session x's budget.
+CallGas(x, g) ==
+    SumSet({i \in Idx(resv) : resv[i].kind = "BudgetedCall" /\ resv[i].key = x /\ resv[i].gen = g},
+           [i \in Idx(resv) |-> resv[i].v])
+
+CallBudgetLiveIgnoringCount(s) ==
+    budget[s].live /\ ~budget[s].revoked /\ clock < budget[s].exp
+
+\* The target set a call slot's current generation was granted over ({} for other slots).
+TermsOf(s) == IF s \in CallSlots THEN budget[s].targets ELSE {}
+
+\* Mutant switch: the guard holds, or the mutant config breaks exactly this guard.
+Broken(m) == B3Mutant = m
+
+\* The dormant SessionBudget::covers (ADR-2026-08-29): origin, kind, chain, ops left, not
+\* expired. Kept as mutant "Covers": wired as it stands, it would auto-sign a creation.
+CallCovers(rq) ==
+    /\ rq.att = rq.sess
+    /\ rq.chain = "c40204"
+    /\ CallBudgetLiveIgnoringCount(CallSlot(rq.sess))
+    /\ budget[CallSlot(rq.sess)].used < CallMaxOps
+
+\* A creation is never covered; any other target must be in the budget's granted set.
+CallTargetOk(rq) ==
+    IF rq.to = "create"
+    THEN Broken("SignsCreation")
+    ELSE rq.to \in budget[CallSlot(rq.sess)].targets \/ Broken("ForeignTarget")
+
+\* ADR-2026-11-27 D2: every B-3 check that carries a modelled safety property.
+CallChecks(rq) ==
+    LET s == CallSlot(rq.sess) IN
+    /\ rq.att = rq.sess \/ Broken("ForeignSession")       \* D2 #1 core-attested session origin
+    /\ rq.chain = "c40204" \/ Broken("AnyChain")          \* D2 #2 chain pinned
+    /\ rq.value = 0 \/ Broken("SignsValue")               \* D2 #3 value 0
+    /\ CallTargetOk(rq)                                   \* D2 #4-5 no creation, own targets
+    /\ rq.decoded \/ Broken("RawAck")                     \* D2 #6 decodable, never raw-ack
+    /\ rq.sel = "plain" \/ Broken("Delegation")           \* D2 #7 no approval/permit/role
+    /\ CallBudgetLiveIgnoringCount(s)                     \* D2 #8 live, not revoked, unexpired
+    /\ budget[s].used < CallMaxOps \/ Broken("NoOpsCap")  \* D2 #9 max_ops
+    /\ CallGas(rq.sess, budget[s].gen) + rq.gas <= GasCap \/ Broken("NoGasCap") \* D2 #10
+    /\ TaintOk(rq)                                        \* D2 #11 strict taint
+
+CallEligible(rq) ==
+    /\ rq.kind = "BudgetedCall"
+    /\ IF Broken("Covers") THEN CallCovers(rq) ELSE CallChecks(rq)
+
 -----------------------------------------------------------------------------
 TypeOK ==
     /\ clock \in 0..MaxClock
@@ -188,10 +285,16 @@ TypeOK ==
     /\ lock.phase \in {"idle", "recorded", "signed"}
     /\ taint \subseteq Sources
     /\ down \in BOOLEAN
+    /\ deployed \subseteq Contracts
+    /\ \A s \in CallSlots : budget[s].targets \subseteq Contracts
 
 Init ==
     /\ clock = 0
-    /\ budget = [s \in Slots |-> [gen |-> 0, live |-> FALSE, revoked |-> FALSE, used |-> 0, exp |-> 0]]
+    /\ budget = [s \in Slots |->
+                  IF s \in CallSlots
+                  THEN [gen |-> 0, live |-> FALSE, revoked |-> FALSE, used |-> 0, exp |-> 0,
+                        targets |-> {}]
+                  ELSE [gen |-> 0, live |-> FALSE, revoked |-> FALSE, used |-> 0, exp |-> 0]]
     /\ ledger = [o \in Origins |-> {}]
     /\ resv = <<>>
     /\ records = <<>>
@@ -203,6 +306,7 @@ Init ==
     /\ down = FALSE
     /\ cnt = [req |-> 0, pending |-> 0, signed |-> 0, unknown |-> 0, lost |-> 0,
               grants |-> 0, crashes |-> 0]
+    /\ deployed = {}
 
 Idle == lock.phase = "idle"
 Up   == ~down
@@ -213,13 +317,13 @@ Up   == ~down
 Tick ==
     /\ clock < MaxClock
     /\ clock' = clock + 1
-    /\ UNCHANGED <<budget, ledger, resv, records, signed, revokes, req, lock, taint, down, cnt>>
+    /\ UNCHANGED <<budget, ledger, resv, records, signed, revokes, req, lock, taint, down, cnt, deployed>>
 
 Raise(rq) ==
     /\ Up /\ req = NoReq /\ cnt.req < MaxReq
     /\ req' = rq
     /\ cnt' = [cnt EXCEPT !.req = @ + 1]
-    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down, deployed>>
 
 \* The sidecar submits {tab_id, message}; core attests origin + provenance itself.
 RequestSiwe ==
@@ -242,18 +346,38 @@ RequestOther ==
     \E k \in OtherKinds \cap ReqKinds, r \in Recipients, v \in Values :
         Raise([kind |-> k, recip |-> r, to |-> r, value |-> v])
 
+\* B-3: a contract call submitted through the B-3 request type. The sidecar names the session
+\* budget it claims (`sess`), the target, the calldata and a gas hint; core attests the
+\* session of the channel the request came in on (`att`; "other" is a page, an external
+\* client or the member's own UI). The environment is adversarial: it targets any contract
+\* (own or foreign) or asks for a creation, at any gas, and each request can carry one more
+\* defect: another origin, another chain, value, raw-ack calldata or an approval-class
+\* selector. One extra defect per request loses nothing: every B-3 check is a conjunct over
+\* one field, so a request with two defects fails whenever either single-defect request
+\* fails, and an ineligible request only adds one pending HIC-1 ceremony (README, B-3).
+Defects == {"none", "origin", "chain", "value", "raw", "selector"}
+RequestCall ==
+    /\ "BudgetedCall" \in ReqKinds
+    /\ \E x \in Sessions, t \in Contracts \cup {"create"}, g \in Gas, f \in Defects :
+       \E a \in (IF f = "origin" THEN (Sessions \cup {"other"}) \ {x} ELSE {x}),
+         ch \in (IF f = "chain" THEN Chains \ {"c40204"} ELSE {"c40204"}),
+         v \in (IF f = "value" THEN CallValues \ {0} ELSE {0}),
+         sel \in (IF f = "selector" THEN Selectors \ {"plain"} ELSE {"plain"}) :
+          Raise([kind |-> "BudgetedCall", sess |-> x, att |-> a, chain |-> ch, value |-> v,
+                 to |-> t, decoded |-> f # "raw", sel |-> sel, gas |-> g])
+
 Taint ==
     /\ Up
     /\ \E src \in TaintSources : /\ src \notin taint
                             /\ taint' = taint \cup {src}
-    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, req, lock, down, cnt>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, req, lock, down, cnt, deployed>>
 
 \* A new agent task starts with a clean context. The current task must be finished:
 \* no request waiting and nothing under the lock.
 NewTask ==
     /\ Up /\ Idle /\ req = NoReq /\ taint # {}
     /\ taint' = {}
-    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, req, lock, down, cnt>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, req, lock, down, cnt, deployed>>
 
 -----------------------------------------------------------------------------
 (* Member actions (HIC-1, native window). Both take the budget lock. *)
@@ -268,7 +392,7 @@ Grant(s) ==
     /\ budget' = [budget EXCEPT ![s] = [gen |-> @.gen + 1, live |-> TRUE, revoked |-> FALSE,
                                         used |-> 0, exp |-> clock + TTL]]
     /\ cnt' = [cnt EXCEPT !.grants = @ + 1]
-    /\ UNCHANGED <<clock, ledger, resv, records, signed, revokes, req, lock, taint, down>>
+    /\ UNCHANGED <<clock, ledger, resv, records, signed, revokes, req, lock, taint, down, deployed>>
 
 \* D4 Revoke: takes the dedicated budget lock, persists the tombstone, returns. The
 \* revoke "commits" at this step; `revokes` remembers how many auto-signs existed then.
@@ -277,7 +401,7 @@ Revoke(s) ==
     /\ budget[s].live /\ ~budget[s].revoked
     /\ budget' = [budget EXCEPT ![s].revoked = TRUE]
     /\ revokes' = revokes \cup {[slot |-> s, gen |-> budget[s].gen, n |-> Len(signed)]}
-    /\ UNCHANGED <<clock, ledger, resv, records, signed, req, lock, taint, down, cnt>>
+    /\ UNCHANGED <<clock, ledger, resv, records, signed, req, lock, taint, down, cnt, deployed>>
 
 \* "Stop all autonomy" / budget_revoke_all: every live budget at once, under the lock.
 RevokeAll ==
@@ -287,7 +411,28 @@ RevokeAll ==
                                                     ELSE budget[s]]
     /\ revokes' = revokes \cup {[slot |-> s, gen |-> budget[s].gen, n |-> Len(signed)] :
                                  s \in {x \in Slots : budget[x].live /\ ~budget[x].revoked}}
-    /\ UNCHANGED <<clock, ledger, resv, records, signed, req, lock, taint, down, cnt>>
+    /\ UNCHANGED <<clock, ledger, resv, records, signed, req, lock, taint, down, cnt, deployed>>
+
+\* B-3 grant (ADR-2026-11-27 D3): one HIC-1 ceremony, the member's personal_sign over the
+\* terms, opens a new generation of the session's budget. The terms name the target set,
+\* chosen from the contracts this wallet deployed from a READY gate record, never empty. A
+\* grant never widens a live budget; a later deploy is not covered until a new grant.
+GrantCall(s) ==
+    /\ Up /\ Idle /\ cnt.grants < MaxGrants
+    /\ ~CallBudgetLiveIgnoringCount(s)
+    /\ \E T \in (SUBSET (IF Broken("GrantForeign") THEN Contracts ELSE deployed)) \ {{}} :
+          budget' = [budget EXCEPT ![s] = [gen |-> @.gen + 1, live |-> TRUE, revoked |-> FALSE,
+                                           used |-> 0, exp |-> clock + CallTTL, targets |-> T]]
+    /\ cnt' = [cnt EXCEPT !.grants = @ + 1]
+    /\ UNCHANGED <<clock, ledger, resv, records, signed, revokes, req, lock, taint, down, deployed>>
+
+\* A contract creation the member approved in its own per-deploy SignatureCeremony, with a
+\* READY gate record for exactly that init code (DeployGate.tla), lands in the deploy
+\* records. It is never a budgeted signature, so it never appears in `signed`.
+DeployOwn(c) ==
+    /\ Up /\ c \notin deployed /\ Cardinality(deployed) < MaxDeploys
+    /\ deployed' = deployed \cup {c}
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, req, lock, taint, down, cnt>>
 
 -----------------------------------------------------------------------------
 (* Core: request_budgeted (D7). One acquisition of the budget lock covers the check,  *)
@@ -298,6 +443,7 @@ RevokeAll ==
 \* fall through to an HIC-1 pending ceremony (never dropped, D2 / D8).
 Decide ==
     /\ Up /\ Idle /\ req # NoReq
+    /\ req.kind # "BudgetedCall"
     /\ IF Eligible(req)
        THEN LET s == SlotOf(req)
                 rid == Len(records) + 1 IN
@@ -316,7 +462,7 @@ Decide ==
        ELSE /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
             /\ UNCHANGED <<budget, ledger, resv, records, lock>>
     /\ req' = NoReq
-    /\ UNCHANGED <<clock, signed, revokes, taint, down>>
+    /\ UNCHANGED <<clock, signed, revokes, taint, down, deployed>>
 
 \* The write-ahead itself fails (disk full, MAC key unavailable): nothing is signed, the
 \* request falls through to HIC-1. Nothing was persisted, so nothing is reserved.
@@ -324,7 +470,37 @@ WriteAheadFail ==
     /\ Up /\ Idle /\ req # NoReq /\ Eligible(req)
     /\ req' = NoReq
     /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
-    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down, deployed>>
+
+\* B-3: request_call_budgeted (ADR-2026-11-27 D5), the same shape as Decide under the same
+\* budget lock. Eligible: debit one op, reserve the worst-case gas, and write the decision
+\* record (which carries the request) in one atomic write, then go on to Sign. Not
+\* eligible: an HIC-1 pending ceremony. WriteBehind mutant: the record is not written here.
+DecideCall ==
+    /\ Up /\ Idle /\ req # NoReq /\ req.kind = "BudgetedCall"
+    /\ IF CallEligible(req)
+       THEN LET s == CallSlot(req.sess)
+                rid == Len(records) + 1 IN
+            /\ budget' = [budget EXCEPT ![s].used = @ + 1]
+            /\ resv' = Append(resv, [kind |-> "BudgetedCall", key |-> req.sess, v |-> req.gas,
+                                     t |-> clock, gen |-> budget[s].gen])
+            /\ records' = IF Broken("WriteBehind") THEN records
+                          ELSE Append(records, [slot |-> s, gen |-> budget[s].gen,
+                                                status |-> "reserved", rq |-> req])
+            /\ lock' = [phase |-> "recorded", rq |-> req, slot |-> s, gen |-> budget[s].gen,
+                        rid |-> rid]
+            /\ UNCHANGED cnt
+       ELSE /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
+            /\ UNCHANGED <<budget, resv, records, lock>>
+    /\ req' = NoReq
+    /\ UNCHANGED <<clock, ledger, signed, revokes, taint, down, deployed>>
+
+\* B-3 write-ahead failure: nothing reserved, nothing signed, HIC-1.
+CallWriteAheadFail ==
+    /\ Up /\ Idle /\ req # NoReq /\ req.kind = "BudgetedCall" /\ CallEligible(req)
+    /\ req' = NoReq
+    /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
+    /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, lock, taint, down, deployed>>
 
 \* Still holding the lock: call the gated signer. Taint and expiry are re-read immediately
 \* before the signer (the safer reading; see README ambiguity A-2). If either now fails,
@@ -335,14 +511,15 @@ Sign ==
     /\ IF TaintOk(lock.rq) /\ clock < budget[lock.slot].exp
        THEN /\ signed' = Append(signed,
                   [kind |-> lock.rq.kind, slot |-> lock.slot, gen |-> lock.gen, rid |-> lock.rid,
-                   rq |-> lock.rq, t |-> clock, exp |-> budget[lock.slot].exp, taint |-> taint])
+                   rq |-> lock.rq, t |-> clock, exp |-> budget[lock.slot].exp, taint |-> taint,
+                   own |-> deployed, terms |-> TermsOf(lock.slot)])
             /\ lock' = [lock EXCEPT !.phase = "signed"]
             /\ UNCHANGED <<records, cnt>>
        ELSE /\ records' = [records EXCEPT ![lock.rid].status = "not_signed"]
             /\ lock' = [phase |-> "idle"]
             /\ cnt' = [cnt EXCEPT !.pending = @ + 1]
             /\ UNCHANGED signed
-    /\ UNCHANGED <<clock, budget, ledger, resv, revokes, req, taint, down>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, revokes, req, taint, down, deployed>>
 
 \* Close the record and release the lock; the signature goes back to the caller.
 Return ==
@@ -350,7 +527,7 @@ Return ==
     /\ records' = [records EXCEPT ![lock.rid].status = "signed"]
     /\ lock' = [phase |-> "idle"]
     /\ cnt' = [cnt EXCEPT !.signed = @ + 1]
-    /\ UNCHANGED <<clock, budget, ledger, resv, signed, revokes, req, taint, down>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, signed, revokes, req, taint, down, deployed>>
 
 -----------------------------------------------------------------------------
 (* Crash and recovery (D8). Persisted state survives: budgets (with counters and      *)
@@ -364,6 +541,7 @@ Crash ==
     /\ lock' = [phase |-> "idle"]
     /\ cnt' = [cnt EXCEPT !.crashes = @ + 1,
                           !.lost = @ + (IF req # NoReq THEN 1 ELSE 0)]
+    /\ UNCHANGED deployed
     /\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, taint>>
 
 \* Every record still "reserved" has an unknown outcome: the crash may have come before or
@@ -376,17 +554,22 @@ Recover ==
                                       ELSE records[i]]
        /\ cnt' = [cnt EXCEPT !.unknown = @ + Cardinality(open)]
     /\ down' = FALSE
-    /\ UNCHANGED <<clock, budget, ledger, resv, signed, revokes, req, lock, taint>>
+    /\ UNCHANGED <<clock, budget, ledger, resv, signed, revokes, req, lock, taint, deployed>>
 
 -----------------------------------------------------------------------------
 Next ==
     \/ Tick \/ RequestSiwe \/ RequestX402 \/ RequestOther \/ Taint \/ NewTask
-    \/ \E s \in Slots : Grant(s) \/ Revoke(s)
+    \/ \E s \in Slots \ CallSlots : Grant(s)
+    \/ \E s \in CallSlots : GrantCall(s)
+    \/ \E s \in Slots : Revoke(s)
     \/ RevokeAll
+    \/ \E c \in Contracts : DeployOwn(c)
     \/ Decide \/ WriteAheadFail \/ Sign \/ Return
+    \/ RequestCall \/ DecideCall \/ CallWriteAheadFail
     \/ Crash \/ Recover
 
-Fairness == WF_vars(Decide) /\ WF_vars(Sign) /\ WF_vars(Return) /\ WF_vars(Recover)
+Fairness == WF_vars(Decide) /\ WF_vars(DecideCall) /\ WF_vars(Sign) /\ WF_vars(Return)
+            /\ WF_vars(Recover)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -399,6 +582,7 @@ Symmetry == Permutations(Recipients) \cup Permutations(Nonces)
 
 IsSiwe(i) == signed[i].kind = "Siwe"
 IsX402(i) == signed[i].kind = "X402"
+IsCall(i) == signed[i].kind = "BudgetedCall"
 
 \* D9 OnlyClosedList (03_TLA_SPECS: OnlySiwe for the web class): no transaction, permit,
 \* other typed data or eth_sign is ever auto-signed.
@@ -434,10 +618,11 @@ RecipientPinned ==
 \* current one, so a calendar-window implementation would fail it. Checked over the
 \* reservations, which include every signature (a reservation precedes each one).
 Gens == 0..MaxGrants
+SlotMax(s) == IF s \in CallSlots THEN CallMaxOps ELSE MaxCount
 NeverExceedsCaps ==
-    /\ \A s \in Slots : budget[s].used <= MaxCount
+    /\ \A s \in Slots : budget[s].used <= SlotMax(s)
     /\ \A s \in Slots, g \in Gens :
-          Cardinality({i \in Idx(signed) : signed[i].slot = s /\ signed[i].gen = g}) <= MaxCount
+          Cardinality({i \in Idx(signed) : signed[i].slot = s /\ signed[i].gen = g}) <= SlotMax(s)
     /\ \A i \in Idx(signed) : IsX402(i) => signed[i].rq.value <= PerSigMax
     /\ \A e \in 0..clock :
           /\ GlobalWin(e) <= GlobalMax
@@ -473,6 +658,7 @@ RecordBeforeSignature ==
         /\ signed[i].rid \in Idx(records)
         /\ records[signed[i].rid].slot = signed[i].slot
         /\ records[signed[i].rid].gen = signed[i].gen
+        /\ IsCall(i) => records[signed[i].rid].rq = signed[i].rq   \* B-3: the record binds the call
 
 \* D8 crash semantics: a record never says not_signed when a signature exists for it. A
 \* crash yields outcome_unknown, never a false negative.
@@ -497,9 +683,50 @@ BudgetMonotone ==
                   /\ budget'[s].used >= budget[s].used
                   /\ budget'[s].exp = budget[s].exp
                   /\ (budget[s].revoked => budget'[s].revoked)
+                  /\ (s \in CallSlots => budget'[s].targets = budget[s].targets)
         /\ Len(resv') >= Len(resv) /\ SubSeq(resv', 1, Len(resv)) = resv
         /\ \A o \in Origins : ledger[o] \subseteq ledger'[o]
-        /\ Len(signed') >= Len(signed) /\ SubSeq(signed', 1, Len(signed)) = signed ]_vars
+        /\ Len(signed') >= Len(signed) /\ SubSeq(signed', 1, Len(signed)) = signed
+        /\ deployed \subseteq deployed' ]_vars
+
+-----------------------------------------------------------------------------
+(* B-3 invariants (ADR-2026-11-27 D8). Each has a mutant config that breaks it.  *)
+
+\* No contract creation is ever auto-signed: every 40204 publish is a per-deploy ceremony.
+NoCreationAutoSigned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.to # "create"
+
+\* No auto-signed call carries value.
+NoValueAutoSigned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.value = 0
+
+\* The target is in the set the budget was granted over, and that set holds only contracts
+\* this member's wallet deployed from a READY gate record, as of the signature.
+OnlyOwnDeployedTargets ==
+    \A i \in Idx(signed) : IsCall(i) =>
+        /\ signed[i].rq.to \in signed[i].terms
+        /\ signed[i].terms \subseteq signed[i].own
+
+\* Chain 40204 only.
+ChainPinned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.chain = "c40204"
+
+\* Calldata that needs a raw-mode ack is never auto-signed.
+NoRawAckAutoSigned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.decoded
+
+\* Approvals, permits, operator, role, ownership and upgrade selectors are never auto-signed.
+NoDelegationAutoSigned == \A i \in Idx(signed) : IsCall(i) => signed[i].rq.sel = "plain"
+
+\* The call came in on the session whose budget paid for it (origin agent:<session>).
+SessionBound ==
+    \A i \in Idx(signed) : IsCall(i) =>
+        /\ signed[i].rq.att = signed[i].rq.sess
+        /\ signed[i].slot = CallSlot(signed[i].rq.sess)
+
+\* Worst-case gas reserved under one generation of a session's budget never exceeds the cap.
+\* Every signature is preceded by its reservation, so this bounds signed gas as well.
+GasCapped == \A x \in Sessions, g \in Gens : CallGas(x, g) <= GasCap
+
+\* Reachability witness (RT-17): TLC must find this violated on the green B-3 constants,
+\* which shows a budgeted call can be auto-signed at all (the invariants are not vacuous).
+W_NoCallAutoSigned == \A i \in Idx(signed) : ~IsCall(i)
 
 \* D9 FallThroughLive: a request is never stuck; with NoDrop, a request that fails any
 \* check becomes a pending HIC-1 ceremony. The lock is always released, a crash recovered.
