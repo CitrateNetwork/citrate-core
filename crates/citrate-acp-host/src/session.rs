@@ -151,6 +151,13 @@ impl AcpHost {
                 stderr_tail: String::new(),
             })
         };
+        if !s.spec.command.is_absolute() {
+            return Err(fail(format!(
+                "{}: the agent command must be an absolute path, not {}",
+                s.spec.id,
+                s.spec.command.display()
+            )));
+        }
         verify_pin(&s.spec).map_err(fail)?;
         process::check_launch(&s.env, &s.spec.args, &self.cfg.scan).map_err(fail)?;
         let _rt = self.rt.enter();
