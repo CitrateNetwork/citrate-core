@@ -7,8 +7,10 @@
 //! route's model. The route token may arrive as `Authorization: Bearer` or `x-api-key` (Anthropic
 //! clients send the latter); a vendor key in either is not a route. The wire is the
 //! `anthropic-version` the Anthropic adapter is pinned to; a request naming another is refused.
-//! Carried: system text, text, `tool_use`, `tool_result`, custom tools. Dropped: `thinking` blocks
-//! and the `thinking` setting (a vendor's opaque state, like Responses reasoning). Refused by name:
+//! Carried: system text (top-level and `system` turns), text, `tool_use`, `tool_result`, custom
+//! tools. Dropped: `thinking` blocks and the `thinking` setting (a vendor's opaque state, like
+//! Responses reasoning), and request options the internal request has no field for
+//! (`output_config`, `context_management`, `safeguards`, `metadata`). Refused by name:
 //! images and documents, server tools (`web_search_*`, `bash_*`, ...), `stop_sequences`.
 //!
 //! A streamed answer is the Messages SSE sequence (`message_start`, `content_block_*`,
@@ -63,7 +65,9 @@ fn turn(messages: &mut Vec<ChatMessage>, m: &Value) -> Result<(), String> {
     let role = match m.get("role").and_then(Value::as_str) {
         Some("user") => Role::User,
         Some("assistant") => Role::Assistant,
-        _ => return Err("each message needs a role of user or assistant".into()),
+        // Claude Code sends system turns inside `messages`; they carry text only.
+        Some("system") => Role::System,
+        _ => return Err("each message needs a role of user, assistant or system".into()),
     };
     let blocks = match m.get("content") {
         Some(Value::String(s)) => {
