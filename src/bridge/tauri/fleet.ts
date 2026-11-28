@@ -72,6 +72,10 @@ export interface PairOffer {
    * so the link stops working if Citrate Core restarts. Absent from an older core.
    */
   ephemeralKey?: boolean;
+  /** L7-WP03: the pairing port asked for (4210, TCP, private addresses only). Absent from an older core. */
+  port?: number;
+  /** L7-WP03: that port was taken on some address, which then uses another port (its hint carries it). */
+  portFallback?: boolean;
 }
 
 /** Whether THIS machine has a DeviceLink (from `device_links`). */

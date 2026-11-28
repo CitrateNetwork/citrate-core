@@ -6,7 +6,8 @@
 //! 2. **Discovery (opt-in).** mDNS lists other machines running Citrate Core
 //!    (`fleet_mdns.rs`). Off by default, off again at the next start.
 //! 3. **Pairing by link or QR.** A short-lived, single-use, signed link (`fleet_pairing.rs`).
-//!    While a link is open this app listens on an ephemeral TCP port; the other machine opens the
+//!    While a link is open this app listens on TCP [`PAIRING_PORT`] (L7-WP03) on its private
+//!    addresses only (a port the OS picks where that one is taken); the other machine opens the
 //!    link, verifies it, connects to one of its address hints and presents it. The issuer redeems
 //!    it (once), and both sides record each other in their local fleet roster with tier + role.
 //! 4. **Connectivity (S8.3).** When the other machine cannot be reached, read-only Tailscale
@@ -28,7 +29,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,6 +51,9 @@ pub(crate) mod net;
 
 /// The local fleet roster, in the app data dir.
 pub const ROSTER_FILE: &str = "fleet.json";
+/// L7-WP03: the documented pairing port (TCP), bound on private addresses only. Owner-approved
+/// 2026-11-26 (10_OWNER_QUESTIONS L7-Q1..4).
+pub const PAIRING_PORT: u16 = 4210;
 /// Most devices the local roster keeps.
 pub const MAX_DEVICES: usize = 64;
 /// Connect deadline per address hint when joining.
@@ -531,13 +535,27 @@ pub fn join_link_with(
     Err(JoinError::Unreachable(tried))
 }
 
-/// `ip:port` hints: this machine's primary LAN address, then tailnet IPv4s. Deduped, capped.
-pub fn build_hints(lan: Option<IpAddr>, tailnet: &[String], port: u16) -> Vec<String> {
-    let mut ips: Vec<IpAddr> = lan.into_iter().collect();
-    ips.extend(tailnet.iter().filter_map(|s| s.parse::<IpAddr>().ok()));
+/// The addresses this machine may be reached at: its primary LAN address, then tailnet IPv4s.
+/// Deduped, in order; unparseable entries dropped.
+pub fn candidate_ips(lan: Option<IpAddr>, tailnet: &[String]) -> Vec<IpAddr> {
+    let mut ips: Vec<IpAddr> = Vec::new();
+    for ip in lan
+        .into_iter()
+        .chain(tailnet.iter().filter_map(|s| s.parse::<IpAddr>().ok()))
+    {
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    ips
+}
+
+/// `ip:port` hints, one per bound pairing address (L7-WP03: each address carries the port it is
+/// actually bound on). Deduped, capped.
+pub fn build_hints(bound: &[SocketAddr]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for ip in ips {
-        let h = SocketAddr::new(ip, port).to_string();
+    for a in bound {
+        let h = a.to_string();
         if !out.contains(&h) && out.len() < crate::fleet_pairing::MAX_HINTS {
             out.push(h);
         }
@@ -553,11 +571,55 @@ fn primary_lan_ip() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-/// The pairing listener: every interface, a port the OS picks (the answering side still drops
-/// peers [`peer_allowed`] refuses). One place, so the characterization suite pins it (L7-WP01) and
-/// L7-WP03 changes it to the fixed port on private addresses.
-pub(crate) fn bind_pairing_listener() -> Result<TcpListener, String> {
-    TcpListener::bind("0.0.0.0:0").map_err(|e| format!("pairing listener: {e}"))
+/// L7-WP03: the pairing listeners that are bound, and whether any of them is not on the port asked.
+pub(crate) struct BoundPairing {
+    pub listeners: Vec<TcpListener>,
+    pub addrs: Vec<SocketAddr>,
+    /// `port` was taken on at least one address, so that address uses a port the OS picked.
+    pub fallback: bool,
+}
+
+/// L7-WP03: one listener per address on `port`, or on a port the OS picks for an address where
+/// `port` is taken. An unspecified address, or one [`peer_allowed`] would not answer, is never
+/// bound; an address that cannot be bound for another reason is skipped. Production passes only
+/// `net::private_links::private_listen_addrs` output. Err when nothing could be bound.
+pub(crate) fn bind_pairing_listeners(addrs: &[IpAddr], port: u16) -> Result<BoundPairing, String> {
+    let mut b = BoundPairing {
+        listeners: Vec::new(),
+        addrs: Vec::new(),
+        fallback: false,
+    };
+    for ip in addrs {
+        if ip.is_unspecified() || !peer_allowed(*ip) {
+            continue;
+        }
+        let l = match TcpListener::bind(SocketAddr::new(*ip, port)) {
+            Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && port != 0 => {
+                match TcpListener::bind(SocketAddr::new(*ip, 0)) {
+                    Ok(l) => {
+                        b.fallback = true;
+                        l
+                    }
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+        let Ok(a) = l.local_addr() else {
+            continue;
+        };
+        b.addrs.push(a);
+        b.listeners.push(l);
+    }
+    if b.listeners.is_empty() {
+        return Err(
+            "This machine has no network address to pair on. Connect to a network \
+                    (or Tailscale) and try again."
+                .into(),
+        );
+    }
+    Ok(b)
 }
 
 // ---- runtime state + commands ---------------------------------------------------------------
@@ -568,8 +630,17 @@ struct Runtime {
     /// Random per-run mDNS instance id (not the roster id, so adverts are not linkable).
     instance_id: String,
     discovery: Option<Discovery>,
-    /// The open pairing server: its port and its stop flag.
-    server: Option<(u16, Arc<AtomicBool>, Arc<PairCtx>)>,
+    /// The open pairing server.
+    server: Option<PairServer>,
+}
+
+/// L7-WP03: the open pairing server: where it listens, how many listener threads still run, its
+/// shared state, and whether some address fell back from [`PAIRING_PORT`].
+struct PairServer {
+    addrs: Vec<SocketAddr>,
+    live: Arc<AtomicUsize>,
+    ctx: Arc<PairCtx>,
+    fallback: bool,
 }
 
 fn runtime() -> &'static Mutex<Runtime> {
@@ -673,7 +744,11 @@ fn advert_for(rt: &Runtime, me: &FleetSelf) -> Advert {
         label: me.label.clone(),
         tier: me.tier.clone(),
         role: me.role.clone(),
-        port: rt.server.as_ref().map(|s| s.0).unwrap_or(0),
+        port: rt
+            .server
+            .as_ref()
+            .and_then(|s| s.addrs.first().map(|a| a.port()))
+            .unwrap_or(0),
     }
 }
 
@@ -710,8 +785,8 @@ pub fn fleet_set_label_sync(app: tauri::AppHandle, label: String) -> Result<Flee
         if let Some(d) = &rt.discovery {
             d.set_advert(advert_for(&rt, &me));
         }
-        if let Some((_, _, ctx)) = &rt.server {
-            if let Ok(mut g) = ctx.me.lock() {
+        if let Some(srv) = &rt.server {
+            if let Ok(mut g) = srv.ctx.me.lock() {
                 g.label = me.label.clone();
             }
         }
@@ -804,6 +879,11 @@ pub struct PairOffer {
     /// L7-WP02: the pairing key is held in memory for this run only (the keychain could not be
     /// used), so this link stops working if Citrate Core restarts.
     pub ephemeral_key: bool,
+    /// L7-WP03: the pairing port asked for ([`PAIRING_PORT`]).
+    pub port: u16,
+    /// L7-WP03: that port was taken on some address, so that address uses a port the OS picked
+    /// (its hint carries the real one).
+    pub port_fallback: bool,
 }
 
 /// **Command — fleet_pair_create.** Open a pairing link (and QR). Starts the pairing listener
@@ -823,18 +903,21 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
         crate::fleet_tailscale::tailnet_ipv4s(&crate::fleet_tailscale::detect_tailscale());
     let mut rt = lock_rt()?;
     let issuer = issuer_for(&mut rt, &path);
-    let port = match &rt.server {
-        Some((port, running, ctx)) if running.load(Ordering::SeqCst) => {
+    let (bound, fallback) = match &rt.server {
+        Some(srv) if srv.live.load(Ordering::SeqCst) > 0 => {
             // The machine may have been linked since the listener started.
-            if let Ok(mut g) = ctx.me.lock() {
+            if let Ok(mut g) = srv.ctx.me.lock() {
                 g.link_code = link_code.clone();
             }
-            *port
+            (srv.addrs.clone(), srv.fallback)
         }
         _ => {
-            let listener = bind_pairing_listener()?;
-            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-            let running = Arc::new(AtomicBool::new(true));
+            // L7-WP03: private addresses only (LAN, tailnet), on the documented port.
+            let addrs = crate::fleet::net::private_links::private_listen_addrs(
+                crate::fleet::net::private_links::PrivateLinkPolicy::ALL,
+                &candidate_ips(primary_lan_ip(), &tailnet),
+            );
+            let b = bind_pairing_listeners(&addrs, PAIRING_PORT)?;
             let ctx = Arc::new(PairCtx {
                 issuer: issuer.clone(),
                 roster_path: path.clone(),
@@ -851,23 +934,36 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
                     })
                 }),
             });
-            let (iss, flag, c) = (issuer.clone(), running.clone(), ctx.clone());
-            std::thread::Builder::new()
-                .name("fleet-pair".into())
-                .spawn(move || {
-                    // Grace so the first link can be issued before the "none open" check.
-                    std::thread::sleep(Duration::from_millis(300));
-                    serve_pairing(listener, c, |now| {
-                        iss.lock().map(|i| i.outstanding(now) == 0).unwrap_or(true)
-                    });
-                    flag.store(false, Ordering::SeqCst);
-                })
-                .map_err(|e| format!("pairing listener: {e}"))?;
-            rt.server = Some((port, running, ctx));
-            port
+            let live = Arc::new(AtomicUsize::new(0));
+            for listener in b.listeners {
+                let (iss, n, c) = (issuer.clone(), live.clone(), ctx.clone());
+                n.fetch_add(1, Ordering::SeqCst);
+                let spawned =
+                    std::thread::Builder::new()
+                        .name("fleet-pair".into())
+                        .spawn(move || {
+                            // Grace so the first link can be issued before the "none open" check.
+                            std::thread::sleep(Duration::from_millis(300));
+                            serve_pairing(listener, c, |now| {
+                                iss.lock().map(|i| i.outstanding(now) == 0).unwrap_or(true)
+                            });
+                            n.fetch_sub(1, Ordering::SeqCst);
+                        });
+                if let Err(e) = spawned {
+                    live.fetch_sub(1, Ordering::SeqCst);
+                    return Err(format!("pairing listener: {e}"));
+                }
+            }
+            rt.server = Some(PairServer {
+                addrs: b.addrs.clone(),
+                live,
+                ctx,
+                fallback: b.fallback,
+            });
+            (b.addrs, b.fallback)
         }
     };
-    let hints = build_hints(primary_lan_ip(), &tailnet, port);
+    let hints = build_hints(&bound);
     if hints.is_empty() {
         return Err(
             "This machine has no network address to pair on. Connect to a network \
@@ -896,6 +992,8 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
         install_qr: qr_matrix(INSTALL_URL)?,
         carries_device_link: link_code.is_some(),
         ephemeral_key: !persistent,
+        port: PAIRING_PORT,
+        port_fallback: fallback,
     })
 }
 

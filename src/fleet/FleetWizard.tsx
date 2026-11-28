@@ -13,6 +13,7 @@
 // =====================================================================
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { FleetApi, QrMatrix, TsState } from "../bridge/tauri/fleet";
+import { pairingPortNote } from "../net/pairingPort";
 import {
   STEPS,
   canBrowse,
@@ -298,6 +299,11 @@ export function FleetWizardView({
                   <code className="mono" style={{ fontSize: 10.5, wordBreak: "break-all" }}>{s.offer.link}</code>
                   <span style={note}>{expiresIn(s.offer.expiresAt, nowSecs)}</span>
                   <span style={note}>Reachable at: {s.offer.hints.join(", ")}</span>
+                  {pairingPortNote(s.offer) && (
+                    <span style={note} data-testid="fleet-pair-port">
+                      {pairingPortNote(s.offer)}
+                    </span>
+                  )}
                   {s.offer.ephemeralKey && (
                     <span style={note} data-testid="fleet-ephemeral-key">
                       {EPHEMERAL_KEY_NOTE}

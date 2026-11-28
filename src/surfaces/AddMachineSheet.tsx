@@ -19,6 +19,7 @@ import { expiresIn, roleLabel } from "../fleet/wizard";
 import type { FleetApi, FleetDevice, PairClaim, PairOffer } from "../bridge/tauri/fleet";
 import type { ClusterGroupSeed, MeshStatus } from "../bridge/domains";
 import { CODE_MISMATCH, isGroupSeed, joinOutcome, joinedThisOffer } from "./clusterBoard";
+import { pairingPortNote } from "../net/pairingPort";
 
 /** How often the roster is re-read while this device waits for the other machine. */
 export const ROSTER_POLL_MS = 3000;
@@ -185,6 +186,11 @@ function AddSide({ api, groupSeed, onPaired, mesh, nowSecs = () => Date.now() / 
                 {copied ? "Link copied" : "Copy link"}
               </button>
               <span style={note}>Single use, {expiresIn(offer.o.expiresAt, nowSecs())}.</span>
+              {pairingPortNote(offer.o) && (
+                <span style={note} data-testid="add-machine-port">
+                  {pairingPortNote(offer.o)}
+                </span>
+              )}
             </div>
           </div>
         </div>
