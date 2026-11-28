@@ -6,7 +6,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { registerSurfaces, surfaceForRoute, type SurfaceDecl } from "./registry";
+import { RESERVED_ROUTES, registerSurfaces, surfaceForRoute, type SurfaceDecl } from "./registry";
 import { CANONICAL_ROUTES, LEGACY_ROUTES, PLACES, ROUTABLE, locate, resolveRoute } from "../places";
 import { PlaceView, surfaceFor } from "../PlaceView";
 import { ROUTES } from "../Sidebar";
@@ -55,8 +55,9 @@ describe("L0-WP08 route registry", () => {
     registerSurfaces([decl("node/wp08-legacy", "L7"), decl("settings/wp08-legacy", "L3")]);
     for (const [from, to] of Object.entries(LEGACY_ROUTES)) expect(resolveRoute(from), from).toEqual(to);
     // A lane can never take a built-in route: canonical, legacy, a place prefix or a bare place.
-    for (const r of ["wallet", "hermes/chat", "dashboard", "settings/ai", "node/storage", "store"]) {
-      expect(() => registerSurfaces([decl(r, "L6")]), r).toThrow(/built-in route/);
+    for (const r of ["wallet", "hermes/chat", "dashboard", "settings/ai", "node/storage", "store", "onboarding"]) {
+      const tab = { place: "store" as const, label: "X", order: 30 };
+      expect(() => registerSurfaces([decl(r, "L6", r.includes("/") ? {} : { tab })]), r).toThrow(/built-in route/);
       expect(surfaceForRoute(r), r).toBeUndefined();
     }
     expect((surfaceFor("wallet", store, store.state) as ReactElement).type).toBe(Wallet);
@@ -93,6 +94,20 @@ describe("L0-WP08 route registry", () => {
       expect(() => registerSurfaces([decl(`store/wp08-ok-${ROUTABLE.length}`, "L6"), d]), `${why}: ${d.route}`).toThrow();
     }
     expect(ROUTABLE.length).toBe(before);
+  });
+
+  it("every_named_navigation_target_is_built_in_or_reserved", () => {
+    // A store.go("<id>") literal that no place resolves could be taken by a lane's registration and
+    // capture that navigation. Each one resolves, or is reserved in registry.ts.
+    const targets = new Set<string>();
+    for (const f of readdirSync(SRC, { recursive: true }) as string[]) {
+      if (!/\.tsx?$/.test(f) || /\.test\.tsx?$/.test(f)) continue;
+      for (const m of readFileSync(join(SRC, f), "utf8").matchAll(/\.go\("([^"]+)"/g)) targets.add(m[1]);
+    }
+    expect(targets.size).toBeGreaterThan(10);
+    const loose = [...targets].filter((t) => resolveRoute(t) === null && !RESERVED_ROUTES.includes(t)).sort();
+    expect(loose).toEqual([]);
+    expect(resolveRoute("onboarding")).toBeNull(); // still not a place route, so still reserved
   });
 
   it("lane_route_files_exist_and_never_import_place_view", () => {

@@ -10,7 +10,7 @@
 //   - a route that is not lowercase segments (a-z, 0-9, inner '-') joined by '/';
 //   - a route another registration holds (the error names both lanes);
 //   - a built-in route: canonical, legacy, a place prefix or a bare place (resolveRoute knows it),
-//     so a lane can never replace a built-in surface or redirect;
+//     so a lane can never replace a built-in surface or redirect, or a RESERVED id below;
 //   - a route with no place: the tab's place, or else the route's first segment, must be a place,
 //     and a tab may not sit in another place than the one the route's first segment names;
 //   - a tab with an empty label or an order below 10 (built-in tabs are 10, 20, 30, …), so a
@@ -45,6 +45,10 @@ const SEGMENT = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const ROUTE_RE = new RegExp(`^${SEGMENT}(?:/${SEGMENT})*$`);
 const FIRST_TAB_ORDER = 10;
 
+/** Ids the app navigates to by name (store.go) that no place resolves: a claim link lands at
+ *  sign-in on "onboarding". A lane may not take one, or it would capture that navigation. */
+export const RESERVED_ROUTES: readonly string[] = Object.freeze(["onboarding"]);
+
 const registered = new Map<string, SurfaceDecl>();
 
 const isPlace = (id: unknown): id is PlaceId => PLACES.some((p) => p.id === id);
@@ -74,7 +78,9 @@ function validate(d: SurfaceDecl, batch: Map<string, SurfaceDecl>): PlaceId {
   }
   const held = registered.get(d.route) ?? batch.get(d.route);
   if (held) throw new Error(`route "${d.route}" is registered by ${held.lane}; ${d.lane} cannot register it again`);
-  if (resolveRoute(d.route) !== null) throw new Error(`route "${d.route}" is a built-in route (places.ts); ${d.lane} cannot take it`);
+  if (resolveRoute(d.route) !== null || RESERVED_ROUTES.includes(d.route)) {
+    throw new Error(`route "${d.route}" is a built-in route (places.ts) or reserved; ${d.lane} cannot take it`);
+  }
   if (typeof d.render !== "function") throw new Error(`route "${d.route}": render must be a function`);
   return placeOf(d);
 }
