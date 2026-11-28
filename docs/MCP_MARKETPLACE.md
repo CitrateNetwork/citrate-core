@@ -91,9 +91,7 @@ mcp_subregistry`).
   signature (prehashed Ed25519 only), then the JSON and field rules, then freshness (at most 31
   days of validity, 10 minutes of clock skew) and the sequence.
 - **Rollback.** A document with a lower sequence than the last one accepted, or the same sequence
-  with different bytes, is refused. `verify_and_record` keeps the last accepted sequence and
-  SHA-256 in a file; an unreadable record refuses (it is never reset), and a refused document is
-  never recorded.
+  with different bytes, is refused against the last-seen record the caller passes in.
 - **Schema v1.** `{ schema, sequence, issued_at, expires_at, servers[] }`. Each server follows the
   official `server.json` (`name` as `<reverse-dns>/<server>`, `title`, `description`, `version`,
   `remotes[]` of `{ type: "streamable-http" | "sse", url }`, `packages[]` of `{ registryType:

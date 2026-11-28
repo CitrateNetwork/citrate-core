@@ -6,7 +6,7 @@
 //! domain, [`SUBREGISTRY_DOMAIN`]: a Store catalog signature never passes as a subregistry
 //! signature, and the reverse. It reuses the catalog verification core: prehashed Ed25519 only,
 //! the size cap before anything else, nothing in the JSON read before the signature verifies,
-//! anti-rollback by sequence (persisted on disk by [`verify_and_record`]), and a bounded lifetime.
+//! anti-rollback by sequence against the last document seen, and a bounded lifetime.
 //!
 //! **Key slot.** The trust root is the catalog key slot, [`PRODUCTION_CATALOG_PUBKEY`], which is
 //! EMPTY until the owner's key ceremony. Until then [`subregistry_trust_root`] refuses with
@@ -24,7 +24,6 @@
 //! Rule 3: nothing here holds a private key or signs. The mirror builder (`tools/mcp-mirror/`)
 //! writes the unsigned document; the owner signs it offline.
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -71,9 +70,6 @@ pub enum SubregistryError {
         seen: u64,
         got: u64,
     },
-    /// The persisted last-seen record cannot be read or written. Never silently reset: the
-    /// sequence in it is what stops a replayed older document.
-    State(String),
 }
 
 impl std::fmt::Display for SubregistryError {
@@ -91,10 +87,6 @@ impl std::fmt::Display for SubregistryError {
             Rollback { seen, got } => write!(
                 f,
                 "the signed catalog is older than the one already seen (sequence {got} < {seen})"
-            ),
-            State(m) => write!(
-                f,
-                "the signed catalog record on this machine is unreadable: {m}"
             ),
         }
     }
@@ -317,47 +309,6 @@ pub fn verify_subregistry(
     if let Some(seen) = last_seen {
         rollback_check(seen, &verified.seen())?;
     }
-    Ok(verified)
-}
-
-/// Reads the persisted last-seen record. A missing file is `None` (first run); a file that does
-/// not parse is [`SubregistryError::State`], never treated as missing.
-pub fn load_seen(path: &Path) -> Result<Option<SeenSubregistry>, SubregistryError> {
-    match std::fs::read(path) {
-        Ok(b) => serde_json::from_slice(&b)
-            .map(Some)
-            .map_err(|e| SubregistryError::State(format!("{}: {e}", path.display()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(SubregistryError::State(format!("{}: {e}", path.display()))),
-    }
-}
-
-/// Persists `seen` (write to a sibling temp file, then rename), refusing to lower the record.
-pub fn record_seen(path: &Path, seen: &SeenSubregistry) -> Result<(), SubregistryError> {
-    if let Some(prev) = load_seen(path)? {
-        rollback_check(&prev, seen)?;
-    }
-    let state = |e: std::io::Error| SubregistryError::State(format!("{}: {e}", path.display()));
-    let json = serde_json::to_vec(seen).map_err(|e| SubregistryError::State(e.to_string()))?;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, json).map_err(state)?;
-    std::fs::rename(&tmp, path).map_err(state)
-}
-
-/// [`verify_subregistry`] against the record at `seen_path`, recording the accepted document
-/// there. A refused document is never recorded, and a refusal never lowers the record.
-pub fn verify_and_record(
-    bytes: &[u8],
-    sig_text: &str,
-    root: &TrustRoot,
-    seen_path: &Path,
-    now: u64,
-) -> Result<VerifiedSubregistry, SubregistryError> {
-    let last = load_seen(seen_path)?;
-    let verified = verify_subregistry(bytes, sig_text, root, last.as_ref(), now)?;
-    record_seen(seen_path, &verified.seen())?;
     Ok(verified)
 }
 
