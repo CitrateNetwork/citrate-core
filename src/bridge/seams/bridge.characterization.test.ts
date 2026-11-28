@@ -26,8 +26,17 @@ function shape(v: unknown, depth = 0): unknown {
   return v === null ? "null" : typeof v;
 }
 
+/** L0-WP05: the v060 lane namespaces (L0 section 3.3), new since a826e441 and each owned by one
+ *  lane; bridgeLanes.test.ts checks them. The recorded surface is the bridge without exactly these
+ *  keys, and each must be present: any other added, removed or changed key still fails here. */
+const V60_LANE_KEYS = ["acp", "hic", "notify", "conversations", "media", "mcpCatalog", "net", "trainTogether", "pqc"];
+
 function surface(b: { mode: string }) {
   const s = shape(b) as Record<string, unknown>;
+  for (const k of V60_LANE_KEYS) {
+    expect(Object.keys(s), `bridge.${k} (v060 lane namespace)`).toContain(k);
+    delete s[k];
+  }
   return { mode: b.mode, domains: Object.keys(s).length, shape: s };
 }
 

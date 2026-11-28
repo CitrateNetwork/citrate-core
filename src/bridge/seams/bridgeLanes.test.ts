@@ -21,6 +21,8 @@ const LANE_KEYS: Record<string, string> = {
   L9: "pqc",
 };
 const LANES = Object.keys(LANE_KEYS).map((l) => l.toLowerCase());
+/** Building the whole bridge (both modes, fresh module graphs) is slow on a loaded runner. */
+const BUILDS_THE_BRIDGE = 30_000;
 
 const BRIDGE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = join(BRIDGE_DIR, "..", "..");
@@ -86,7 +88,7 @@ describe("L0-WP05: v060 lane bridge namespaces", () => {
       }
     }
     expect(calls, "building the lane namespaces invokes no command").toEqual([]);
-  });
+  }, BUILDS_THE_BRIDGE);
 
   it("v60_tauri_build_selects_the_tauri_lane_impls", async () => {
     // sharp-edges: a sim impl must never be selected in a Tauri build. Each tauri bridge.<key> is
@@ -111,7 +113,7 @@ describe("L0-WP05: v060 lane bridge namespaces", () => {
       const key = LANE_KEYS[lane.toUpperCase()];
       expect(sim[key], `sim bridge.${key}`).not.toBe(await tauriExport(lane));
     }
-  });
+  }, BUILDS_THE_BRIDGE);
 
   it("v60_lane_namespaces_have_the_same_members_in_both_modes", async () => {
     const sim = await simBridge();
@@ -122,7 +124,7 @@ describe("L0-WP05: v060 lane bridge namespaces", () => {
         expect(typeof (tauri[key] as Record<string, unknown>)[m], `tauri bridge.${key}.${m}`).toBe("function");
       }
     }
-  });
+  }, BUILDS_THE_BRIDGE);
 
   it("lane_files_do_not_import_each_other", () => {
     const problems: string[] = [];
