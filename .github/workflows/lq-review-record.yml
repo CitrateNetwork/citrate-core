@@ -1,0 +1,92 @@
+# created: 2026-11-28 | branch: feat/v60-lq-wp18-review-record
+# author: Larry Klosowski (LQ lane, LQ-WP18; Claude Opus 5.5)
+# status: active
+#
+# lq / review-record (LQ-WP18, planset 2026-11-07-v060 lanes/LQ_NON_REGRESSION_GUARD.md): the PR
+# body's `## Review record` must carry two independent reviewer blocks (distinct context ids) that
+# between them ran every Trail of Bits skill the diff's paths require, with a mutation campaign
+# (no survivors) on a money, authz or state-machine path. Matrix and rules:
+# scripts/ci/lq/review-matrix.mjs.
+#
+# Untrusted input: the PR body, title, labels and paths are read by the script from the read-only
+# API and git, never expanded into a shell or an expression in run:. No privileged base-branch
+# trigger (no pull_request_target), no secrets, no write permission. The script that judges is the
+# base branch tip's copy (the head's only in the PR that introduces it), so a PR cannot edit its own
+# rule through the script. It can through this file: on pull_request and merge_group GitHub runs the
+# PR's own copy of the workflow, so a PR that edits it judges itself. The control for that is owner
+# review of .github/workflows/lq-*.yml and scripts/ci/lq/** (a CODEOWNERS tail row, as LQ-WP03 has),
+# which is L0's map to add; the same holds for every lq-* workflow. The head's --self-test runs in its own token-less job; the enforcement job does not `needs`
+# it (a required job skipped by a failed dependency reads as passing).
+#
+# Triggers: `edited` re-runs the check when the body changes (a review record is added after the
+# reviews). merge_group re-checks the queued PR's current body against the group commit's own diff
+# (the group's parent is the base), so a record removed after the PR run is still caught.
+name: lq-review-record
+
+on:
+  pull_request:
+    # labeled/unlabeled: finding-fix changes the required skills.
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+concurrency:
+  group: lq-review-record-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: lq / review-record self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Self-test (matrix, record parser, independence rule)
+        run: node scripts/ci/lq/review-matrix.mjs --self-test
+
+  review-record:
+    name: lq / review-record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Check the review record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = merge_group ]; then
+            BASE=$(git rev-parse HEAD^1)
+          else
+            BASE="$PR_BASE"
+          fi
+          # The base tip's script judges the change; only the PR that introduces it runs its own.
+          if git cat-file -e "$BASE:scripts/ci/lq/review-matrix.mjs" 2>/dev/null; then
+            git show "$BASE:scripts/ci/lq/review-matrix.mjs" > "$RUNNER_TEMP/review-matrix.mjs"
+          else
+            echo "review-matrix.mjs is new in this change; running the head copy"
+            cp scripts/ci/lq/review-matrix.mjs "$RUNNER_TEMP/review-matrix.mjs"
+          fi
+          node "$RUNNER_TEMP/review-matrix.mjs" check --from-event --base "$BASE" --root "$GITHUB_WORKSPACE"
