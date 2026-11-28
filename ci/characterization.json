@@ -26,14 +26,26 @@
       "lane": "L0",
       "runner": "vitest",
       "files": ["src/shell/seams/state.characterization.test.ts"],
-      "covers": ["src/shell/state.ts", "src/shell/netScope.ts"],
+      "covers": ["src/shell/state.ts", "src/shell/state/**", "src/shell/netScope.ts"],
       "fixtures": [
         "fixtures/seams/fresh-state-p1.a826e441.json",
+        "fixtures/seams/fresh-state-p2.a826e441.json",
+        "fixtures/seams/fresh-state-p3.a826e441.json",
+        "fixtures/seams/fresh-state-p4.a826e441.json",
+        "fixtures/seams/fresh-state-zz.a826e441.json",
         "fixtures/seams/persist-keys.a826e441.json",
         "fixtures/seams/save-0.5.9.member.a826e441.json",
         "fixtures/seams/load-0.5.9-save.a826e441.json",
         "fixtures/seams/load-0.5.1-save.a826e441.json"
       ]
+    },
+    {
+      "id": "SEAM-STATE-PARTS",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/seams/statePartition.test.ts", "src/shell/slices/registry.test.ts"],
+      "covers": ["src/shell/state.ts", "src/shell/state/**", "src/shell/slices/registry.ts"],
+      "fixtures": ["fixtures/seams/persist-keys.a826e441.json"]
     },
     {
       "id": "SEAM-BRIDGE",

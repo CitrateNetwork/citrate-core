@@ -103,6 +103,7 @@ const STORAGE_ENTRIES: Record<string, string> = {
   "src/onboarding/accessPass.ts STORAGE_KEY": "reads the onboarding stage (device): a finished onboarding marks an earlier install",
   "src/privacy/joinFunnel.ts JOIN_FUNNEL_STORAGE_KEY": "device: this install's join steps",
   "src/shell/slices/groups.ts HISTORY_KEY": "device: group chat history drained from the member's daemon",
+  "src/shell/slices/registry.ts storageKey": "per registered slice (L0-WP06): its own citrate-core.v60.* key; device as given, network keyed by genesis (<key>@<genesis>); never for a sealed slice",
   "src/surfaces/groups/groupHermes.ts OWN_KEY": "device: refs of the Hermes answers this device posted to its groups (shown as verified)",
   "src/agent/sidecarProvider.ts key": "device: the Hermes sidecar session",
   "src/shell/slices/chatHistory.ts LEGACY_PLAINTEXT_KEY": "removed on load: a development build's plaintext chat history, moved into the sealed store (nothing writes it)",

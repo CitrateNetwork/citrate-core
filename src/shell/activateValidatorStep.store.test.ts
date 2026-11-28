@@ -703,7 +703,8 @@ describe("follow-up tripwires", () => {
   });
 
   it("only the store writes s7TxHash (no surface resets it around the read generation)", () => {
-    const offenders = files.filter((f) => !["shell/store.ts", "shell/state.ts"].includes(rel(f)) && /s7TxHash\s*:/.test(readFileSync(f, "utf8")));
+    // L0-WP06: the AppState field and its default (null) live in shell/state/core.ts.
+    const offenders = files.filter((f) => !["shell/store.ts", "shell/state/core.ts"].includes(rel(f)) && /s7TxHash\s*:/.test(readFileSync(f, "utf8")));
     expect(offenders.map(rel)).toEqual([]);
   });
 });
