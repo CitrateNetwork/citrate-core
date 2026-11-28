@@ -174,9 +174,9 @@ describe("this repo", () => {
     }
   });
 
-  // cargo is on the CI runner (ubuntu-latest) and the build host; metadata needs no network here.
-  const cargo = spawnSync("cargo", ["--version"], { encoding: "utf8" });
-  it.skipIf(cargo.status !== 0)("cargo takes a lane crate from crates/* beside crates/README.md", () => {
+  // Runs cargo itself (on the CI runner and the build host, as every Rust job here does); metadata
+  // with --no-deps --offline needs no network.
+  it("cargo takes a lane crate from crates/* beside crates/README.md", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp10-ws-"));
     tmpDirs.push(root);
     const toml = fs.readFileSync(path.join(repoRoot, "Cargo.toml"), "utf8");
