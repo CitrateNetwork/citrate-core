@@ -30,6 +30,10 @@ pub struct HostConfig {
     pub init_timeout: Duration,
     /// How long a cancelled turn may take to end before the agent's process group is killed.
     pub cancel_grace: Duration,
+    /// The one variable that may carry this session's route token (Core: `CITRATE_ROUTE_TOKEN`).
+    /// Its value is exempt from `scan` in the environment only: it may sit in no other variable,
+    /// and no frame, prompt or argument the host writes may contain it.
+    pub route_env: Option<String>,
 }
 
 pub struct SessionStart {
@@ -159,7 +163,27 @@ impl AcpHost {
             )));
         }
         verify_pin(&s.spec).map_err(fail)?;
-        process::check_launch(&s.env, &s.spec.args, &self.cfg.scan).map_err(fail)?;
+        let (route, rest): (Vec<_>, Vec<_>) = s
+            .env
+            .iter()
+            .cloned()
+            .partition(|(k, _)| Some(k) == self.cfg.route_env.as_ref());
+        let token = route
+            .first()
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty());
+        let base = self.cfg.scan.clone();
+        let scan: SecretScan = match token.clone() {
+            Some(t) => Arc::new(move |x: &str| base(x) || x.contains(t.as_str())),
+            None => base,
+        };
+        process::check_launch(&rest, &s.spec.args, &scan).map_err(fail)?;
+        if route.iter().any(|(_, v)| (self.cfg.scan)(v)) {
+            return Err(fail(format!(
+                "refused: {} carries a credential shape that is not a route token",
+                self.cfg.route_env.as_deref().unwrap_or("")
+            )));
+        }
         let _rt = self.rt.enter();
         let mut child = process::spawn(&s.spec.command, &s.spec.args, &s.env, &s.cwd)
             .map_err(|e| fail(format!("{}: spawn failed: {e}", s.spec.id)))?;
@@ -186,11 +210,7 @@ impl AcpHost {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let transport = ByteStreams::new(
-            ScannedWriter::new(
-                stdin.compat_write(),
-                self.cfg.scan.clone(),
-                self.cfg.tap.clone(),
-            ),
+            ScannedWriter::new(stdin.compat_write(), scan.clone(), self.cfg.tap.clone()),
             TappedReader::new(stdout.compat(), self.cfg.tap.clone()),
         );
         let turn = Arc::new(TurnState::default());
@@ -218,7 +238,7 @@ impl AcpHost {
             rt: self.rt.handle().clone(),
             kill: Mutex::new(Some(kill_tx)),
             stderr: ring,
-            scan: self.cfg.scan.clone(),
+            scan,
             cancel_grace: self.cfg.cancel_grace,
         };
         let ready = self

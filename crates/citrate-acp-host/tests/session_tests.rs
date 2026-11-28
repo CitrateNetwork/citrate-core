@@ -509,19 +509,41 @@ fn route_token_rides_only_in_the_route_env_and_never_in_a_frame() {
     // The test scanner does not know the cmp_ shape: the host itself keeps the session's token out
     // of every other variable and every frame it writes.
     let (h, frames) = host();
-    let s = start_in(&h, &tmp("route"), vec![(ROUTE_ENV.into(), ROUTE_TOKEN.into())], vec![]);
-    assert_eq!(report(&s)["env"][ROUTE_ENV], ROUTE_TOKEN, "the agent has its route");
-    let err = s.prompt(text(&format!("updates 1 {ROUTE_TOKEN}"))).expect_err("refused");
+    let s = start_in(
+        &h,
+        &tmp("route"),
+        vec![(ROUTE_ENV.into(), ROUTE_TOKEN.into())],
+        vec![],
+    );
+    assert_eq!(
+        report(&s)["env"][ROUTE_ENV],
+        ROUTE_TOKEN,
+        "the agent has its route"
+    );
+    let err = s
+        .prompt(text(&format!("updates 1 {ROUTE_TOKEN}")))
+        .expect_err("refused");
     assert!(err.contains("credential"), "{err}");
     assert!(s.authenticate(ROUTE_TOKEN).is_err());
     let all = frames.lock().expect("frames");
-    assert!(all.iter().filter(|(d, _)| *d == Direction::ToAgent).all(|(_, l)| !l.contains(ROUTE_TOKEN)));
+    assert!(all
+        .iter()
+        .filter(|(d, _)| *d == Direction::ToAgent)
+        .all(|(_, l)| !l.contains(ROUTE_TOKEN)));
     drop(all);
     for env in [
-        vec![("OTHER".to_string(), ROUTE_TOKEN.to_string()), (ROUTE_ENV.into(), ROUTE_TOKEN.into())],
+        vec![
+            ("OTHER".to_string(), ROUTE_TOKEN.to_string()),
+            (ROUTE_ENV.into(), ROUTE_TOKEN.into()),
+        ],
         vec![(ROUTE_ENV.to_string(), FAKE_KEY.to_string())],
     ] {
-        let r = h.start(SessionStart { spec: spec(), env, cwd: tmp("route2"), mcp_servers: vec![] });
+        let r = h.start(SessionStart {
+            spec: spec(),
+            env,
+            cwd: tmp("route2"),
+            mcp_servers: vec![],
+        });
         assert!(r.err().expect("refused").reason.contains("credential"));
     }
 }

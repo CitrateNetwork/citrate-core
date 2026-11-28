@@ -23,20 +23,45 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Credential shapes looked for in every frame and in stderr (vendor keys and Citrate route tokens).
+/// Vendor credential shapes: the host refuses any outbound frame, prompt, argument or env value with
+/// one (the session's route token is guarded by exact match instead).
+fn vendor_shape(s: &str) -> bool {
+    shape(
+        s,
+        &[
+            "sk-",
+            "sk_",
+            "AIza",
+            "xai-",
+            "ghp_",
+            "gho_",
+            "github_pat_",
+            "AKIA",
+        ],
+    )
+}
+
+/// Credential shapes looked for afterwards in every frame and in stderr (vendor keys and Citrate
+/// route tokens).
 fn credential_shape(s: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "sk-",
-        "sk_",
-        "AIza",
-        "xai-",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "AKIA",
-        "cmp_",
-    ];
-    PREFIXES.iter().any(|p| {
+    shape(
+        s,
+        &[
+            "sk-",
+            "sk_",
+            "AIza",
+            "xai-",
+            "ghp_",
+            "gho_",
+            "github_pat_",
+            "AKIA",
+            "cmp_",
+        ],
+    )
+}
+
+fn shape(s: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|p| {
         s.match_indices(p).any(|(i, _)| {
             let tail = &s[i + p.len()..];
             tail.chars()
@@ -124,7 +149,7 @@ fn real_adapter_initialize_session_prompt_cancel_cleanup() {
     let host = AcpHost::new(HostConfig {
         client_name: "citrate-core-acp-probe".into(),
         client_version: env!("CARGO_PKG_VERSION").into(),
-        scan: Arc::new(credential_shape),
+        scan: Arc::new(vendor_shape),
         policy: Arc::new(DenyByDefault),
         tap: Some(tap),
         init_timeout: Duration::from_secs(90),
