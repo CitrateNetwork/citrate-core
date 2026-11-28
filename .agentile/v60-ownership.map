@@ -440,6 +440,43 @@ l5,l8 src/fl/Adapters.tsx
 l5,l8 src/fl/adapters.test.tsx
 l0,lq .agentile/coverage/ratchet.json
 
+# --- Bridge domain files (L0-WP05 step 2): src/bridge/domains.ts split into one file per domain.
+# Proposed assignment; each lane planner confirms. domains.ts stays L0's barrel (hotspot below) and
+# keeps the composition types (BridgeContract, CxBridge). The l0 rows are the spine (config,
+# custody, wallet, node, storage): they change only through L0 PRs, reviewed by LQ. ---
+l1 src/bridge/domains/agent.ts
+l1 src/bridge/domains/agentHarness.ts
+l1 src/bridge/domains/agentSkills.ts
+l1 src/bridge/domains/delegation.ts
+l1 src/bridge/domains/services.ts
+l2 src/bridge/domains/shell.ts
+l2 src/bridge/domains/signing.ts
+l2 src/bridge/domains/contracts.ts
+l2 src/bridge/domains/components.ts
+l3 src/bridge/domains/auth.ts
+l3 src/bridge/domains/membership.ts
+l3 src/bridge/domains/tier.ts
+l3 src/bridge/domains/telemetry.ts
+l4 src/bridge/domains/chat.ts
+l4 src/bridge/domains/memory.ts
+l4 src/bridge/domains/groups.ts
+l4 src/bridge/domains/social.ts
+l4 src/bridge/domains/invites.ts
+l5 src/bridge/domains/model.ts
+l5 src/bridge/domains/modelsCatalog.ts
+l5 src/bridge/domains/escalation.ts
+l6 src/bridge/domains/connections.ts
+l6 src/bridge/domains/providers.ts
+l6 src/bridge/domains/store.ts
+l7 src/bridge/domains/cluster.ts
+l8 src/bridge/domains/training.ts
+l8 src/bridge/domains/flRounds.ts
+l0 src/bridge/domains/config.ts
+l0 src/bridge/domains/custody.ts
+l0 src/bridge/domains/wallet.ts
+l0 src/bridge/domains/node.ts
+l0 src/bridge/domains/storage.ts
+
 # --- L0 hotspots (L0 section 2.1). Exact paths, last, so no lane row above can claim them. ---
 l0 src-tauri/src/lib.rs
 l0 src-tauri/src/commands/mod.rs

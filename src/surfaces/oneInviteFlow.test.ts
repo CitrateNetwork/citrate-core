@@ -52,7 +52,11 @@ describe("one invite flow (D-12)", () => {
   });
 
   it("the bridge has one invite domain, with only request-and-approve methods", () => {
-    const domains = readFileSync(join(SRC, "bridge/domains.ts"), "utf8");
+    // L0-WP05 split bridge/domains.ts into bridge/domains/<name>.ts: read the barrel and every domain file.
+    const domainDir = join(SRC, "bridge/domains");
+    const domainFiles = readdirSync(domainDir).filter((f) => f.endsWith(".ts"));
+    expect(domainFiles).toContain("invites.ts");
+    const domains = [join(SRC, "bridge/domains.ts"), ...domainFiles.map((f) => join(domainDir, f))].map((f) => readFileSync(f, "utf8")).join("\n");
     expect(domains).not.toMatch(/interface JoinDomain|\bjoin: JoinDomain/);
     const tauri = readFileSync(join(SRC, "bridge/tauri/invites.ts"), "utf8");
     const cmds = Array.from(tauri.matchAll(/invoke(?:<[^>]*>)?\("([a-z_]+)"/g)).map((m) => m[1]).sort();

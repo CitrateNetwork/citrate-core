@@ -411,7 +411,55 @@
 # l0,lq
 /.agentile/coverage/ratchet.json @CitrateNetwork/maintainers
 
+# l1
+/src/bridge/domains/agent.ts @CitrateNetwork/maintainers
+/src/bridge/domains/agentHarness.ts @CitrateNetwork/maintainers
+/src/bridge/domains/agentSkills.ts @CitrateNetwork/maintainers
+/src/bridge/domains/delegation.ts @CitrateNetwork/maintainers
+/src/bridge/domains/services.ts @CitrateNetwork/maintainers
+
+# l2
+/src/bridge/domains/shell.ts @CitrateNetwork/maintainers
+/src/bridge/domains/signing.ts @CitrateNetwork/maintainers
+/src/bridge/domains/contracts.ts @CitrateNetwork/maintainers
+/src/bridge/domains/components.ts @CitrateNetwork/maintainers
+
+# l3
+/src/bridge/domains/auth.ts @CitrateNetwork/maintainers
+/src/bridge/domains/membership.ts @CitrateNetwork/maintainers
+/src/bridge/domains/tier.ts @CitrateNetwork/maintainers
+/src/bridge/domains/telemetry.ts @CitrateNetwork/maintainers
+
+# l4
+/src/bridge/domains/chat.ts @CitrateNetwork/maintainers
+/src/bridge/domains/memory.ts @CitrateNetwork/maintainers
+/src/bridge/domains/groups.ts @CitrateNetwork/maintainers
+/src/bridge/domains/social.ts @CitrateNetwork/maintainers
+/src/bridge/domains/invites.ts @CitrateNetwork/maintainers
+
+# l5
+/src/bridge/domains/model.ts @CitrateNetwork/maintainers
+/src/bridge/domains/modelsCatalog.ts @CitrateNetwork/maintainers
+/src/bridge/domains/escalation.ts @CitrateNetwork/maintainers
+
+# l6
+/src/bridge/domains/connections.ts @CitrateNetwork/maintainers
+/src/bridge/domains/providers.ts @CitrateNetwork/maintainers
+/src/bridge/domains/store.ts @CitrateNetwork/maintainers
+
+# l7
+/src/bridge/domains/cluster.ts @CitrateNetwork/maintainers
+
+# l8
+/src/bridge/domains/training.ts @CitrateNetwork/maintainers
+/src/bridge/domains/flRounds.ts @CitrateNetwork/maintainers
+
 # l0
+/src/bridge/domains/config.ts @CitrateNetwork/maintainers
+/src/bridge/domains/custody.ts @CitrateNetwork/maintainers
+/src/bridge/domains/wallet.ts @CitrateNetwork/maintainers
+/src/bridge/domains/node.ts @CitrateNetwork/maintainers
+/src/bridge/domains/storage.ts @CitrateNetwork/maintainers
 /src-tauri/src/lib.rs @CitrateNetwork/maintainers
 /src-tauri/src/commands/mod.rs @CitrateNetwork/maintainers
 /src-tauri/src/lanes/mod.rs @CitrateNetwork/maintainers

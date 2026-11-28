@@ -3,7 +3,7 @@
 // where every member checks it against the group owner and its roster. Only the owner makes admins
 // (Admin gates money-adjacent surfaces), so the role control is the owner's. Red-first.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -118,7 +118,10 @@ describe("Assign role sends a grant the daemon signs with the comms key (#495, G
   });
 
   it("no copy claims the grant is enforced at the relay", () => {
-    for (const p of ["src/surfaces/Groups.tsx", "src/surfaces/groups/GroupChat.tsx", "src/surfaces/groups/GroupMembers.tsx", "src/shell/slices/groups.ts", "src/bridge/domains.ts"]) {
+    // L0-WP05 split src/bridge/domains.ts into src/bridge/domains/<name>.ts: scan the barrel and every domain file.
+    const domainFiles = readdirSync(join(SRC, "src/bridge/domains")).filter((f) => f.endsWith(".ts")).map((f) => `src/bridge/domains/${f}`);
+    expect(domainFiles).toContain("src/bridge/domains/groups.ts");
+    for (const p of ["src/surfaces/Groups.tsx", "src/surfaces/groups/GroupChat.tsx", "src/surfaces/groups/GroupMembers.tsx", "src/shell/slices/groups.ts", "src/bridge/domains.ts", ...domainFiles]) {
       expect(read(p), p).not.toMatch(/enforced at the relay/i);
     }
   });
