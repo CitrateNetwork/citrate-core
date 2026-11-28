@@ -73,9 +73,9 @@ pub const INHERITED_ENV: &[&str] = &[
     "SYSTEMROOT",
 ];
 
-/// The agent's own temp folder inside its home (`TMPDIR`, `TMP`, `TEMP`); the member's shared temp
+/// The agent's own temp folder, `<home>/tmp` (`TMPDIR`, `TMP`, `TEMP`); the member's shared temp
 /// folder never crosses.
-pub const TMP_DIR: &str = ".tmp";
+pub const TMP_DIR: &str = "tmp";
 
 /// Why a home operation was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
