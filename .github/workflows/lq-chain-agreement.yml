@@ -184,9 +184,11 @@ jobs:
           PIN: ${{ steps.plan.outputs.sha256 }}
           FP: ${{ steps.plan.outputs.fingerprint }}
         run: |
-          set -uo pipefail
+          # GitHub's default shell is `bash -e`: -e off, so a refusal (exit 1) of the wrong-genesis
+          # case does not end the step. The verdicts are judged by summarize below; an exit code
+          # alone is never the evidence.
+          set +e -uo pipefail
           mkdir -p "$OUT"
-          # The verdicts are judged by summarize below; an exit code alone is never the evidence.
           python3 -I "$T/scripts/e2e/cold-sync.py" --profiles src-tauri/network/profiles.json \
             --node-bin "$NODE_BIN" --expect-sha256 "$PIN" --expect-fingerprint "$FP" \
             --blocks "$IN_BLOCKS" --every "$IN_EVERY" --timeout 60m --out "$OUT/positive"
