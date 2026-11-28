@@ -1024,6 +1024,8 @@ pub fn fleet_pair_join_sync(app: tauri::AppHandle, link: String) -> Result<JoinR
 pub struct TailscaleView {
     pub report: TailscaleReport,
     pub guidance: Vec<GuidanceStep>,
+    /// L7-WP06: where the report was read from (the LocalAPI, the CLI, or neither).
+    pub via: crate::fleet_tailscale::TailscaleVia,
 }
 
 /// **Command — fleet_tailscale.** Read-only Tailscale status + guidance for the wizard's
@@ -1031,7 +1033,7 @@ pub struct TailscaleView {
 #[tauri::command]
 pub async fn fleet_tailscale(lan_peers: u32, unreachable: bool) -> Result<TailscaleView, String> {
     crate::blocking::off_main(move || {
-        let report = crate::fleet_tailscale::detect_tailscale();
+        let (report, via) = crate::fleet_tailscale::detect_tailscale_via();
         let guidance = crate::fleet_tailscale::guidance(
             &report,
             &Reach {
@@ -1039,7 +1041,11 @@ pub async fn fleet_tailscale(lan_peers: u32, unreachable: bool) -> Result<Tailsc
                 unreachable,
             },
         );
-        Ok(TailscaleView { report, guidance })
+        Ok(TailscaleView {
+            report,
+            guidance,
+            via,
+        })
     })
     .await
 }

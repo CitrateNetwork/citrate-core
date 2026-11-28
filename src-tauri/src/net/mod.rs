@@ -6,10 +6,15 @@
 //! networking behavior before any L7 work package changes it.
 //!
 //! The module is declared from `fleet.rs` (an L7 file) with `#[path]`, so it is `crate::fleet::net`
-//! until L0's per-lane module tree (L0-WP04, `crate::lanes::l7`) gives it a lane home. Nothing in
-//! the running app reads it yet: the first consumer is the `net_status` command (L7 section 3.1).
+//! until L0's per-lane module tree (L0-WP04, `crate::lanes::l7`) gives it a lane home.
+//!
+//! - [`link_security`] (L7-WP01): no reader in the running app yet; the first is the `net_status`
+//!   command (L7 section 3.1).
+//! - [`tailscale_local`] (L7-WP06): the read-only Tailscale LocalAPI client, asked first by
+//!   `fleet_tailscale::detect_tailscale_via`.
 
 pub(crate) mod link_security;
+pub(crate) mod tailscale_local;
 
 #[cfg(test)]
 mod characterization_tests;

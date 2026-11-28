@@ -175,6 +175,25 @@ describe("FleetWizardView", () => {
     expect(html).toContain("linux-box");
   });
 
+  it("connect step says where the Tailscale status was read from and shows MagicDNS names (L7-WP06)", () => {
+    const report: TailscaleView["report"] = {
+      state: "running",
+      version: "1.90",
+      selfHost: "studio",
+      selfIps: ["100.64.1.10"],
+      peers: [{ hostName: "linux-box", dnsName: "linux-box.example.ts.net", userLogin: "member@example.com", os: "linux", ips: ["100.64.1.11"], online: true }],
+    };
+    const viaCli = render(st({ type: "goto", step: "connect" }, { type: "tailscale", view: { report, guidance: [], via: "cli" } }));
+    expect(viaCli).toContain("Read through the Tailscale app.");
+    expect(viaCli).toContain("linux-box.example.ts.net");
+    const viaLocal = render(st({ type: "goto", step: "connect" }, { type: "tailscale", view: { report, guidance: [], via: "localapi" } }));
+    expect(viaLocal).toContain("Read from the Tailscale service on this machine.");
+    // Not found: nothing is claimed about where it was read; an older core without `via` says nothing either.
+    for (const view of [{ report, guidance: [], via: "none" as const }, { report, guidance: [] }]) {
+      expect(render(st({ type: "goto", step: "connect" }, { type: "tailscale", view }))).not.toContain('data-testid="fleet-ts-via"');
+    }
+  });
+
   it("done step lists devices and says, per machine, whether its device link came across", () => {
     const html = render(
       st(
