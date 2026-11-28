@@ -8,6 +8,10 @@
 //! ([`STATUS_ARGS`]), with a short deadline, and parses the result. It never runs `up`, `down`,
 //! `login`, `set` or anything that changes Tailscale; the guidance tells the MEMBER what to do in
 //! Tailscale themselves. If the CLI cannot be found it says so (Rule 1), never guesses.
+//!
+//! L7-WP06: the LocalAPI (`net/tailscale_local.rs`, read-only by construction: status and whois
+//! only) is asked first, so no program is started when the daemon answers; the CLI stays the
+//! fallback, and [`TailscaleVia`] says which one answered.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -48,6 +52,10 @@ pub struct TsPeer {
     pub os: String,
     pub ips: Vec<String>,
     pub online: bool,
+    /// L7-WP06: the peer's MagicDNS name (`DNSName`, without the trailing dot), when it has one.
+    pub dns_name: Option<String>,
+    /// L7-WP06: the peer owner's Tailscale login (`User[<UserID>].LoginName`), when listed.
+    pub user_login: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,6 +108,7 @@ pub fn parse_status(json: &str) -> TailscaleReport {
         _ => TsState::Unknown,
     };
     let me = v.get("Self");
+    let users = v.get("User");
     let mut peers: Vec<TsPeer> = v
         .get("Peer")
         .and_then(|p| p.as_object())
@@ -115,6 +124,18 @@ pub fn parse_status(json: &str) -> TailscaleReport {
                             .to_string(),
                         ips: str_list(p.get("TailscaleIPs")),
                         online: p.get("Online").and_then(|b| b.as_bool()).unwrap_or(false),
+                        dns_name: p
+                            .get("DNSName")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.trim_end_matches('.').to_string())
+                            .filter(|s| !s.is_empty()),
+                        user_login: p
+                            .get("UserID")
+                            .and_then(|id| id.as_u64())
+                            .and_then(|id| users?.get(id.to_string()))
+                            .and_then(|u| u.get("LoginName"))
+                            .and_then(|s| s.as_str())
+                            .map(str::to_string),
                     })
                 })
                 .collect()
@@ -190,8 +211,53 @@ pub fn candidate_paths(os: &str, path_env: Option<&str>) -> Vec<PathBuf> {
     v
 }
 
-/// Run `tailscale status --json` (read-only) and report. Blocking: call off the main thread.
+/// Where a [`TailscaleReport`] was read from (L7 section 3.2 `NetStatus.tailscaleVia`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TailscaleVia {
+    /// The Tailscale LocalAPI (no program started).
+    Localapi,
+    /// The Tailscale CLI, `tailscale status --json`.
+    Cli,
+    /// Neither: Tailscale was not found on this machine.
+    None,
+}
+
+/// L7-WP06: the LocalAPI reading when there is one, else the CLI's, and which it was.
+pub fn pick(
+    local: Result<TailscaleReport, crate::fleet::net::tailscale_local::LocalApiError>,
+    cli: impl FnOnce() -> TailscaleReport,
+) -> (TailscaleReport, TailscaleVia) {
+    match local {
+        Ok(r) => (r, TailscaleVia::Localapi),
+        Err(_) => {
+            let r = cli();
+            let via = if r.state == TsState::NotInstalled {
+                TailscaleVia::None
+            } else {
+                TailscaleVia::Cli
+            };
+            (r, via)
+        }
+    }
+}
+
+/// Read Tailscale's status, read-only: the LocalAPI first, then `tailscale status --json`.
+/// Blocking: call off the main thread.
+pub fn detect_tailscale_via() -> (TailscaleReport, TailscaleVia) {
+    pick(
+        crate::fleet::net::tailscale_local::status(),
+        detect_tailscale_cli,
+    )
+}
+
+/// [`detect_tailscale_via`] without the source.
 pub fn detect_tailscale() -> TailscaleReport {
+    detect_tailscale_via().0
+}
+
+/// Run `tailscale status --json` (read-only) and report. Blocking: call off the main thread.
+pub fn detect_tailscale_cli() -> TailscaleReport {
     let path_env = std::env::var("PATH").ok();
     let Some(cli) = candidate_paths(std::env::consts::OS, path_env.as_deref())
         .into_iter()

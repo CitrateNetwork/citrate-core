@@ -292,14 +292,11 @@ fn the_endpoints_each_os_reads_are_pinned() {
     assert_eq!(HOST, "local-tailscaled.sock");
 }
 
-/// A fresh, empty directory for one test.
+/// A fresh, empty directory for one test. Short, so a unix socket path inside it stays under the
+/// 104-byte limit on macOS.
 #[cfg(unix)]
 fn temp_dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "citrate-ts-localapi-{name}-{}-{}",
-        std::process::id(),
-        crate::fleet::now_secs()
-    ));
+    let d = std::env::temp_dir().join(format!("cts-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");
     d
@@ -330,7 +327,7 @@ fn macsys_port_and_token_are_read_from_the_shared_dir() {
 #[test]
 fn a_unix_socket_localapi_answers() {
     let d = temp_dir("unix");
-    let path = d.join("tailscaled.sock");
+    let path = d.join("t.sock");
     let l = std::os::unix::net::UnixListener::bind(&path).expect("bind");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {

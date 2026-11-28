@@ -106,7 +106,14 @@ export interface TsPeer {
   os: string;
   ips: string[];
   online: boolean;
+  /** L7-WP06: the peer's MagicDNS name, when it has one. */
+  dnsName?: string | null;
+  /** L7-WP06: the peer owner's Tailscale login, when Tailscale lists it. */
+  userLogin?: string | null;
 }
+
+/** L7-WP06: where core read the Tailscale status from (`fleet_tailscale::TailscaleVia`). */
+export type TailscaleVia = "localapi" | "cli" | "none";
 
 export interface TailscaleView {
   report: {
@@ -117,6 +124,8 @@ export interface TailscaleView {
     peers: TsPeer[];
   };
   guidance: { id: string; text: string; url: string | null }[];
+  /** L7-WP06: the LocalAPI, the CLI, or neither (Tailscale not found). */
+  via?: TailscaleVia;
 }
 
 /** Everything the wizard needs from the backend. Injected, so tests can drive the wizard. */

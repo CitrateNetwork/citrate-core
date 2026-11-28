@@ -12,7 +12,7 @@
 // the link in; nothing pairs until the member presses "Pair".
 // =====================================================================
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { FleetApi, QrMatrix, TsState } from "../bridge/tauri/fleet";
+import type { FleetApi, QrMatrix, TailscaleVia, TsState } from "../bridge/tauri/fleet";
 import {
   STEPS,
   canBrowse,
@@ -56,6 +56,12 @@ export function QrCode({ qr, px = 4, testId = "fleet-qr", label = "Pairing QR co
     </svg>
   );
 }
+
+/** L7-WP06: where the Tailscale status was read from, in plain words. */
+const TS_VIA: Record<Exclude<TailscaleVia, "none">, string> = {
+  localapi: "Read from the Tailscale service on this machine.",
+  cli: "Read through the Tailscale app.",
+};
 
 const TS_STATE: Record<TsState, string> = {
   notInstalled: "Tailscale is not installed on this machine.",
@@ -348,9 +354,14 @@ export function FleetWizardView({
             <div className="surface" style={box}>
               <strong style={{ fontSize: 13 }}>{TS_STATE[ts.report.state]}</strong>
               {ts.report.selfIps.length > 0 && <span style={note}>This machine on Tailscale: {ts.report.selfIps.join(", ")}</span>}
+              {ts.via && ts.via !== "none" && (
+                <span style={note} data-testid="fleet-ts-via">
+                  {TS_VIA[ts.via]}
+                </span>
+              )}
               {ts.report.peers.map((p) => (
                 <span key={p.hostName} style={{ fontSize: 12 }}>
-                  {p.hostName} · {p.os} · {p.online ? "online" : "offline"}
+                  {p.dnsName ?? p.hostName} · {p.os} · {p.online ? "online" : "offline"}
                 </span>
               ))}
               {ts.guidance.length > 0 && (
