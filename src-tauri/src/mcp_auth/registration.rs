@@ -36,6 +36,9 @@ pub(crate) struct FixedClient {
     /// Endpoints for an issuer that publishes no metadata (GitHub: matrix row, from GitHub's docs;
     /// PKCE S256 per GitHub's OAuth docs). `None` when the issuer publishes its metadata.
     pub static_endpoints: Option<(&'static str, &'static str)>,
+    /// The scopes this client asks for, when narrower than the server's list, and how the
+    /// provider joins them in the `scope` parameter. `None`: the discovered scopes, space-joined.
+    pub scopes: Option<(&'static [&'static str], &'static str)>,
 }
 
 /// The fixed rows (provider matrix 2026-11-28; lanes/L6 WP13 for GitHub).
@@ -50,6 +53,7 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
             "https://github.com/login/oauth/authorize",
             "https://github.com/login/oauth/access_token",
         )),
+        scopes: None,
     },
     FixedClient {
         provider: "slack",
@@ -61,6 +65,17 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
              in the relay (runbook card sl-core)",
         ),
         static_endpoints: None,
+        // Slack's v2_user authorize takes the user scopes in `scope`, comma-joined, and rejects
+        // `user_scope` (lead's live check 2026-11-28T06:18Z; docs.slack.dev installing-with-oauth).
+        scopes: Some((
+            &[
+                "search:read.public",
+                "channels:read",
+                "channels:history",
+                "users:read",
+            ],
+            ",",
+        )),
     },
     FixedClient {
         provider: "notion",
@@ -72,6 +87,7 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
              (Notion's MCP server offers CIMD, which is used instead)",
         ),
         static_endpoints: None,
+        scopes: None,
     },
 ];
 

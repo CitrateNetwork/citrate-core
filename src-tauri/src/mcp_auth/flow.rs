@@ -55,8 +55,23 @@ pub(crate) fn begin(discovered: Discovered, client: Client) -> AuthRequest {
         ("code_challenge_method", "S256".into()),
         ("resource", discovered.resource_id.clone()),
     ];
+    // A fixed client row may name narrower scopes and the provider's separator (Slack).
+    let row_scopes = match &client {
+        Client::Relay { .. } => {
+            registration::fixed_for(&discovered.auth_server.issuer).and_then(|row| row.scopes)
+        }
+        _ => None,
+    };
+    let mut discovered = discovered;
+    let sep = match row_scopes {
+        Some((scopes, sep)) => {
+            discovered.scopes = scopes.iter().map(|s| s.to_string()).collect();
+            sep
+        }
+        None => " ",
+    };
     if !discovered.scopes.is_empty() {
-        q.push(("scope", discovered.scopes.join(" ")));
+        q.push(("scope", discovered.scopes.join(sep)));
     }
     let query = q
         .iter()

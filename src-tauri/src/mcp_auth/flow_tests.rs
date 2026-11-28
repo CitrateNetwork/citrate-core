@@ -463,3 +463,43 @@ fn the_loopback_parser_keeps_iss_and_callbacks_without_it_still_parse() {
     assert_eq!(old.iss, None);
     assert_eq!(old.code, "c");
 }
+
+#[test]
+fn slack_v2_user_takes_the_user_scopes_in_scope_comma_joined() {
+    // Slack's fixed row is not configured yet (no compiled client id), so the client is built here
+    // with a fixture id to pin the authorize parameters the row produces.
+    let net = Net::new();
+    serve(
+        &net,
+        SLACK_MCP,
+        SLACK_WWW,
+        SLACK_PRM_URL,
+        SLACK_PRM,
+        SLACK_AS_URL,
+        SLACK_AS,
+    );
+    let d = discover(&NetHttp(net), &url(SLACK_MCP), &fixed_metadata).unwrap();
+    let client = Client::Relay {
+        provider: "slack",
+        client_id: "fixture-slack-client-id",
+        redirect_uri: crate::connections::HOSTED_REDIRECT_URI,
+    };
+    let req = begin(d, client);
+    assert!(req
+        .url
+        .starts_with("https://slack.com/oauth/v2_user/authorize?"));
+    let q = query(&req.url);
+    assert_eq!(
+        q["scope"],
+        "search:read.public,channels:read,channels:history,users:read"
+    );
+    assert!(!q.contains_key("user_scope"), "v2_user rejects user_scope");
+    assert_eq!(q["redirect_uri"], "https://auth.citrate.ai/oauth/callback");
+    assert_eq!(q["code_challenge_method"], "S256");
+    assert_eq!(q["resource"], "https://mcp.slack.com");
+    assert_eq!(
+        req.discovered.scopes.len(),
+        4,
+        "the row's scopes are the requested set"
+    );
+}
