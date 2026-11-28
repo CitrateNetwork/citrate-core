@@ -26,6 +26,14 @@
 # (V60 MESH-2; GitHub accepts any one listed owner, so the security lead's part is their signature
 # in the record, which the build verifies against signers.json).
 #! reviewers * @CitrateNetwork/maintainers
+# LQ guards cannot approve themselves (owner 2026-11-28): every LQ workflow, everything under
+# scripts/ci/lq/, the TLC expectation checker and the ADRs decide whether a quality gate passes or
+# what a gate means, so the owner approves every change to them. The lane rows below still name the
+# lane that edits each file; the owner's approval is added on top, after every lane rule.
+#! tail /.github/workflows/lq-*.yml @SaulBuilds
+#! tail /scripts/ci/lq/** @SaulBuilds
+#! tail /src-tauri/formal/tlc_expect.py @SaulBuilds
+#! tail /docs/adr/** @SaulBuilds
 # LQ-WP03 (#789, seam L0-WP01a): the tripwire registry, its rule, its check, the check's own tests and
 # the workflow decide whether a registered tripwire may go (only for a stricter replacement), so the
 # owner approves every change to them. The lane rows below still name LQ as the lane that edits them.

@@ -95,6 +95,8 @@ export function generate(mapText) {
     out.push(
       "",
       "# Owner-pinned paths (map '#! tail'), written last so no lane rule above overrides them.",
+      "# LQ guards: the LQ workflows, scripts/ci/lq/, the TLC expectation checker and the ADRs need the",
+      "# owner, so no LQ check can approve a change to itself (owner 2026-11-28).",
       "# LQ-WP03: the tripwire registry, its rule, its check and tests, and its workflow; no tripwire",
       "# weakens without the owner. V60 MESH-2: the CL-S4 sign-off record, the packet copy and the signer",
       "# registry need the owner's approval; the security lead's part is their signature in the record,",

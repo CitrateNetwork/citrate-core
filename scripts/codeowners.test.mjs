@@ -51,6 +51,39 @@ describe("CODEOWNERS is generated from the v60 ownership map", () => {
     for (const p of pinned) expect(tail, p).toContainEqual({ pattern: p, owners: ["@SaulBuilds"] });
   });
 
+  it("owner-pins every LQ guard after every lane rule, so no LQ check can approve a change to itself", () => {
+    // Owner 2026-11-28: the LQ workflows, scripts/ci/lq/, the TLC expectation checker and the ADRs
+    // decide whether a gate passes, so a lane that edits them cannot be their only approver.
+    const pinned = ["/.github/workflows/lq-*.yml", "/scripts/ci/lq/**", "/src-tauri/formal/tlc_expect.py", "/docs/adr/**"];
+    const rules = read(".github/CODEOWNERS").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+    const lastLaneRule = rules.findLastIndex((l) => l.endsWith(" @CitrateNetwork/maintainers"));
+    const { tail } = parseMap(read(".agentile/v60-ownership.map"));
+    for (const p of pinned) {
+      expect(rules.indexOf(`${p} @SaulBuilds`), p).toBeGreaterThan(lastLaneRule);
+      expect(tail, p).toContainEqual({ pattern: p, owners: ["@SaulBuilds"] });
+    }
+    // Every rule after the first pin is the owner's: a later row cannot take a pinned path back.
+    const first = Math.min(...pinned.map((p) => rules.indexOf(`${p} @SaulBuilds`)));
+    for (const l of rules.slice(first)) expect(l.split(/\s+/).slice(1), l).toEqual(["@SaulBuilds"]);
+    // And for the files that exist today, the last matching rule (GitHub's semantics) is the owner.
+    const re = (pat) => {
+      let body = pat.slice(1);
+      const dir = body.endsWith("/**") || body.endsWith("/");
+      body = body.replace(/\/\*\*$|\/$/, "");
+      const seg = body.split("/").map((s) => s.split("*").map((x) => x.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join("/");
+      return new RegExp(`^${seg}${dir ? "/.+" : ""}$`);
+    };
+    const owned = rules.filter((l) => l !== "* @CitrateNetwork/maintainers").map((l) => [re(l.split(/\s+/)[0]), l]);
+    const files = execFileSync("git", ["ls-files", ".github/workflows", "scripts/ci/lq", "src-tauri/formal", "docs/adr"], { cwd: repo, encoding: "utf8" })
+      .split("\n")
+      .filter((f) => /^\.github\/workflows\/lq-[^/]*\.yml$|^scripts\/ci\/lq\/|^src-tauri\/formal\/tlc_expect\.py$|^docs\/adr\//.test(f));
+    expect(files.length).toBeGreaterThan(10);
+    for (const f of files) {
+      const last = owned.filter(([r]) => r.test(f)).at(-1);
+      expect(last?.[1], f).toMatch(/ @SaulBuilds$/);
+    }
+  });
+
   it("every map row names known lanes and a glob CODEOWNERS can express exactly", () => {
     const { rows } = parseMap(read(".agentile/v60-ownership.map"));
     expect(rows.length).toBeGreaterThan(100);
