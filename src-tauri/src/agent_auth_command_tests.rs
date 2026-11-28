@@ -159,3 +159,33 @@ fn command_answers_carry_no_secret() {
         "no field of the login file appears"
     );
 }
+
+// Review P2-1 (#842): the commands refuse a symlinked `agents/<id>` and delete nothing outside.
+#[cfg(unix)]
+#[test]
+fn sign_out_and_remove_commands_refuse_a_symlinked_agent_folder() {
+    let fx = Fx::new();
+    let elsewhere = fx.0.join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("home")).unwrap();
+    std::fs::write(elsewhere.join("home/file"), "member file").unwrap();
+    std::fs::create_dir_all(fx.0.join(AGENTS_DIR)).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.0.join(AGENTS_DIR).join("codex")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.0.join(AGENTS_DIR).join("goose")).unwrap();
+    let h = fx.homes();
+    assert!(matches!(
+        sign_out_at(&h, None, "codex"),
+        Err(AuthError::Refused(_))
+    ));
+    assert!(matches!(
+        remove_at(&h, None, "goose"),
+        Err(AuthError::Refused(_))
+    ));
+    assert!(
+        elsewhere.join("home/file").exists(),
+        "nothing outside is deleted"
+    );
+    assert!(
+        fx.0.join(AGENTS_DIR).join("goose").exists(),
+        "the refused link stays for the member to see"
+    );
+}
