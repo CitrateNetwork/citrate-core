@@ -421,6 +421,7 @@ impl PairIssuer {
     }
 
     /// A pairing key from a fixed seed, in memory only (tests).
+    #[cfg(test)]
     pub fn from_seed(seed: [u8; 32]) -> Self {
         Self::from_seed_ref(&seed)
     }
