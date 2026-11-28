@@ -47,10 +47,7 @@ fn the_shipped_build_says_the_key_is_not_issued() {
     // the pinned list and the honest message, never a signed state.
     let v = catalog_view(&catalog_trust_root(), &BTreeSet::new());
     assert!(!v.signed);
-    assert_eq!(
-        v.refused.as_ref().map(|r| r.code.as_str()),
-        Some("no_key")
-    );
+    assert_eq!(v.refused.as_ref().map(|r| r.code.as_str()), Some("no_key"));
 }
 
 #[test]
@@ -85,7 +82,10 @@ fn the_view_serializes_in_the_frozen_shape() {
         .iter()
         .filter_map(|e| e["auth"].as_str().map(String::from))
         .collect();
-    assert!(auths.iter().all(|a| a == "oauth" || a == "none"), "{auths:?}");
+    assert!(
+        auths.iter().all(|a| a == "oauth" || a == "none"),
+        "{auths:?}"
+    );
 }
 
 #[test]
@@ -134,7 +134,13 @@ fn normalize_url_drops_one_trailing_slash_and_lowercases_the_host() {
         normalize_url("https://MCP.Notion.com/mcp/"),
         "https://mcp.notion.com/mcp"
     );
-    assert_eq!(normalize_url("https://mcp.vercel.com/"), "https://mcp.vercel.com");
+    assert_eq!(
+        normalize_url("https://mcp.vercel.com/"),
+        "https://mcp.vercel.com"
+    );
     // The path keeps its case.
-    assert_eq!(normalize_url("https://a.example/Mcp"), "https://a.example/Mcp");
+    assert_eq!(
+        normalize_url("https://a.example/Mcp"),
+        "https://a.example/Mcp"
+    );
 }

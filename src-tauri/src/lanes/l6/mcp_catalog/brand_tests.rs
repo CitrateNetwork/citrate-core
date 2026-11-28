@@ -60,7 +60,12 @@ fn every_entry_is_https_on_the_brands_domain() {
 #[test]
 fn every_entry_has_source_and_checked_date() {
     for s in BRAND_SERVERS {
-        assert!(s.source.starts_with("https://"), "{}: source {}", s.id, s.source);
+        assert!(
+            s.source.starts_with("https://"),
+            "{}: source {}",
+            s.id,
+            s.source
+        );
         assert!(
             on_domain(host(s.source), brand_domains(s.id)),
             "{}: the source {} is not the publisher's own page",
@@ -127,7 +132,11 @@ fn auth_mode_declared() {
 #[test]
 fn write_tools_are_off_by_default() {
     for s in BRAND_SERVERS {
-        assert!(!s.write_tools_default, "{}: write tools on by default", s.id);
+        assert!(
+            !s.write_tools_default,
+            "{}: write tools on by default",
+            s.id
+        );
     }
 }
 
