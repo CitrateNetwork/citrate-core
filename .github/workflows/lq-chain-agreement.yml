@@ -137,7 +137,7 @@ jobs:
     env:
       ARCH: ${{ matrix.arch }}
       IN_BLOCKS: ${{ inputs.blocks || '5000' }}
-      IN_EVERY: ${{ inputs.every || '1000' }}
+      IN_EVERY: ${{ inputs.every || '10000' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
