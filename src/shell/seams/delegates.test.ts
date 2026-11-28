@@ -14,6 +14,7 @@ import * as l3Auth from "../actions/l3/auth";
 import * as l1Turn from "../actions/l1/turn";
 import * as l4ThreadEdit from "../actions/l4/threadEdit";
 import * as l8Proposals from "../actions/l8/proposals";
+import * as l5LocalModel from "../actions/l5/localModel";
 
 // Every export of a lane module becomes a pass-through spy, so a test can stub one and check the call.
 vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
@@ -34,6 +35,10 @@ vi.mock("../actions/l4/threadEdit", async (importOriginal) => {
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
 vi.mock("../actions/l8/proposals", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+vi.mock("../actions/l5/localModel", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
@@ -131,6 +136,21 @@ const ROWS: Row[] = [
   { method: "patchRoundDraft", target: l8Proposals.patchRoundDraft, args: ["d-delegate-1", { state: "declined" }] },
   { method: "openRoundDraft", target: l8Proposals.openRoundDraft, args: ["d-delegate-2"] },
   { method: "declineRoundDraft", target: l8Proposals.declineRoundDraft, args: ["d-delegate-3"] },
+  // 07e: store.ts "CORE-BC-3: local model (download + verify + serve)" ->
+  // src/shell/actions/l5/localModel.ts (lane L5).
+  { method: "refreshModel", target: l5LocalModel.refreshModel, args: [] },
+  { method: "loadModelOptions", target: l5LocalModel.loadModelOptions, args: [] },
+  { method: "startModelDownload", target: l5LocalModel.startModelDownload, args: ["small"] },
+  { method: "pauseModelDownload", target: l5LocalModel.pauseModelDownload, args: [] },
+  { method: "chooseSmallerModel", target: l5LocalModel.chooseSmallerModel, args: [] },
+  { method: "chooseDefaultModel", target: l5LocalModel.chooseDefaultModel, args: [] },
+  { method: "verifyModel", target: l5LocalModel.verifyModel, args: [] },
+  { method: "selectModel", target: l5LocalModel.selectModel, args: ["model-delegate", []] },
+  { method: "routerActiveId", target: l5LocalModel.routerActiveId, args: [] },
+  { method: "routerActive", target: l5LocalModel.routerActive, args: [[]] },
+  { method: "skipModel", target: l5LocalModel.skipModel, args: [] },
+  { method: "stopModelPoll", target: l5LocalModel.stopModelPoll, args: [] },
+  { method: "serveLocalAndRoute", target: l5LocalModel.serveLocalAndRoute, args: [] },
 ];
 
 afterEach(() => {
