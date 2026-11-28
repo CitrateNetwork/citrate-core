@@ -116,6 +116,7 @@ pub struct Session {
     cmd: mpsc::UnboundedSender<Cmd>,
     turn: Arc<TurnState>,
     exited: Arc<AtomicBool>,
+    closed: AtomicBool,
     rt: tokio::runtime::Handle,
     kill: Mutex<Option<oneshot::Sender<()>>>,
     stderr: Arc<Mutex<StderrRing>>,
@@ -235,6 +236,7 @@ impl AcpHost {
             cmd: cmd_tx,
             turn,
             exited,
+            closed: AtomicBool::new(false),
             rt: self.rt.handle().clone(),
             kill: Mutex::new(Some(kill_tx)),
             stderr: ring,
@@ -432,6 +434,9 @@ impl Session {
         if (self.scan)(&blocks.to_string()) {
             return Err("refused: the prompt carries a credential shape; it was not sent".into());
         }
+        if self.closed.load(SeqCst) {
+            return Err("the session is closed".into());
+        }
         if self
             .turn
             .active
@@ -507,12 +512,19 @@ impl Session {
 
     /// Stop the agent: SIGTERM to its group, up to 2 s to exit, then SIGKILL.
     pub fn close(self) {
+        self.shutdown();
+    }
+
+    /// [`Session::close`] through a shared handle: the agent's group is stopped and later turns are
+    /// refused.
+    pub fn shutdown(&self) {
+        self.closed.store(true, SeqCst);
         process::signal_group(self.pid, false);
         let end = Instant::now() + Duration::from_secs(2);
         while !self.exited.load(SeqCst) && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(20));
         }
-        // Drop kills whatever is left of the group.
+        self.kill_now();
     }
 
     fn kill_now(&self) {
