@@ -73,7 +73,7 @@ pub const HERMES_NODE_TOKEN_LABEL: &str = "Hermes (built-in)";
 /// Hermes gets the read tools only. This one switch drives both sides: the sidecar's allowlist
 /// entry (`allow_write_tools`) and the scope of Hermes's connect token (a read-only token is not
 /// offered, and may not call, any write tool, whatever the sidecar does).
-// @flag
+// @flag HERMES_NODE_WRITE_TOOLS
 pub const HERMES_NODE_WRITE_TOOLS: bool = false;
 
 /// The name of the built-in node entry (reserved for user-added servers in agent-mcp-host).

@@ -1,48 +1,89 @@
-//! L0-WP09 (planset v060, L0_INTEGRATION_SEAMS 5): the feature-flag table, `release/flags.json`.
+//! L0-WP09 (planset v060, L0_INTEGRATION_SEAMS 3.7 and 5): the feature-flag table,
+//! `release/flags.json`, in the 3.7 shape:
+//! `{ "version": 1, "flags": [ { "id", "lane", "where", "default", "signoff": "required" | "none", "record"? } ] }`.
 //!
-//! Every build-time feature flag is a `bool` const marked with a `// @flag` line right above it,
-//! and has exactly one row in the table naming its file, its owning lane, its value in the code,
-//! and what gates a change to it: a sign-off record (checked by [`crate::signoff::gate`]) or a
-//! named test in the flag's file. `flags_tests.rs` ties the table to the code both ways, and the
-//! webview reads the same table through the generated `src/shell/flags.gen.ts`
-//! (`scripts/gen-flags.mjs`). It is a build gate: only tests read it.
+//! - `id`: the flag's SCREAMING_CASE name.
+//! - `lane`: its owning lane, `L0` to `L9` (L0 section 2.2: the lane edits its rows; L0 reviews the
+//!   schema; the owner approves every change, CODEOWNERS).
+//! - `where`: the repo-relative file that holds its value. A `.rs` file under `src-tauri/src/`
+//!   declares it as a `bool` const with a `// @flag <ID>` line right above it, and the row's
+//!   `default` is that const's value. `where` equal to `release/flags.json` itself is a table-only
+//!   flag: no Rust const reads it; scripts read the JSON and the webview reads `flag(id)` from
+//!   `src/shell/flags.ts`. (3.7 lists `PQC_CLAIMS_ALLOWED` with no `where`, and L0-WP12's
+//!   `cx-copy-lint` reads it from this file.) The 3.7 examples' `:line` suffixes are left out:
+//!   the marker finds the const, and line numbers drift.
+//! - `signoff`: `required` means a `true` value needs a sign-off record that verifies
+//!   ([`crate::signoff::gate`]); `none` means the flag's own tests gate it.
+//! - `record`: the record a `required` flag needs, `release/signoffs/<id>.json`; when left out it is
+//!   `release/signoffs/<ID>.json`. The record's file stem is the sign-off id.
+//!
+//! `flags_tests.rs` ties the table to the code both ways and runs the sign-off gate; the webview
+//! reads the same table through the generated `src/shell/flags.gen.ts` (`scripts/gen-flags.mjs`).
+//! It is a build gate: only tests read it. A flag never defaults on a feature whose data source
+//! does not exist (Rule 1).
 
 use serde::Deserialize;
 
-/// The table, repo-relative.
+/// The table, repo-relative. Also the `where` of a table-only flag.
 pub(crate) const TABLE_PATH: &str = "release/flags.json";
-/// The marker line that sits right above a flag's `const`.
+/// The marker that sits right above a flag's `const`, followed by one space and the flag's id.
 pub(crate) const MARKER: &str = "// @flag";
+/// Where sign-off records live, repo-relative.
+const RECORD_DIR: &str = "release/signoffs/";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Table {
-    #[serde(rename = "$comment")]
-    pub comment: Vec<String>,
+    pub version: u32,
     pub flags: Vec<Row>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Row {
-    pub name: String,
-    /// Repo-relative path of the Rust file that declares the const.
-    pub file: String,
+    pub id: String,
     pub lane: String,
-    /// The const's value in the code.
+    #[serde(rename = "where")]
+    pub where_: String,
+    /// The flag's value in this build.
     pub default: bool,
-    /// The sign-off a `true` value needs, if any.
-    pub signoff: Option<SignoffRef>,
-    /// The test in `file` that gates a change, if any.
-    pub gate: Option<String>,
-    pub summary: String,
+    pub signoff: Signoff,
+    #[serde(default)]
+    pub record: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SignoffRef {
-    pub id: String,
-    pub packet_repo: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub(crate) enum Signoff {
+    #[serde(rename = "required")]
+    Required,
+    #[serde(rename = "none")]
+    NotNeeded,
+}
+
+impl Row {
+    /// The record a `true` value needs, repo-relative; `None` when the flag needs no sign-off.
+    pub(crate) fn record_path(&self) -> Option<String> {
+        (self.signoff == Signoff::Required).then(|| {
+            self.record
+                .clone()
+                .unwrap_or_else(|| format!("{RECORD_DIR}{}.json", self.id))
+        })
+    }
+
+    /// The sign-off id: the record's file stem (`CL-S4` for `release/signoffs/CL-S4.json`).
+    pub(crate) fn signoff_id(&self) -> Option<String> {
+        // A path of another shape keeps its full text, which `parse` then refuses.
+        self.record_path().map(|p| {
+            p.strip_prefix(RECORD_DIR)
+                .and_then(|f| f.strip_suffix(".json"))
+                .map_or_else(|| p.clone(), str::to_string)
+        })
+    }
+
+    /// The flag lives only in the table (no Rust const).
+    pub(crate) fn table_only(&self) -> bool {
+        self.where_ == TABLE_PATH
+    }
 }
 
 fn is_ident(s: &str) -> bool {
@@ -59,64 +100,51 @@ fn is_signoff_id(s: &str) -> bool {
         && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
 }
 
-/// Parse and check the table: unique names and sign-off ids, a Rust file under `src-tauri/src/`,
-/// a known lane, and at least one gate (a sign-off or a test) on every flag.
+/// A `.rs` path under `src-tauri/src/` with no empty, `.` or `..` segment.
+fn is_rust_source(p: &str) -> bool {
+    p.starts_with("src-tauri/src/")
+        && p.ends_with(".rs")
+        && p.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+/// Parse and check the table: version 1, unique ids and sign-off ids, a known lane, a `where`
+/// that is a Rust source or the table itself, and a `record` only on a `required` row, naming one
+/// file directly in `release/signoffs/`.
 pub(crate) fn parse(text: &str) -> Result<Table, String> {
     let t: Table = serde_json::from_str(text).map_err(|e| format!("{TABLE_PATH}: {e}"))?;
-    if t.comment.iter().all(|c| c.trim().is_empty()) {
-        return Err(format!("{TABLE_PATH}: $comment says what the table is"));
+    if t.version != 1 {
+        return Err(format!("{TABLE_PATH}: version must be 1"));
     }
-    let mut names: Vec<&str> = Vec::new();
     let mut ids: Vec<&str> = Vec::new();
+    let mut signoffs: Vec<String> = Vec::new();
     for r in &t.flags {
-        let at = format!("{TABLE_PATH} row {}", r.name);
-        if !is_ident(&r.name) || names.contains(&r.name.as_str()) {
-            return Err(format!(
-                "{at}: the name must be a unique SCREAMING_CASE const"
-            ));
+        let at = format!("{TABLE_PATH} row {}", r.id);
+        if !is_ident(&r.id) || ids.contains(&r.id.as_str()) {
+            return Err(format!("{at}: id must be a unique SCREAMING_CASE name"));
         }
-        names.push(&r.name);
-        let segments_ok = r
-            .file
-            .split('/')
-            .all(|p| !p.is_empty() && p != "." && p != "..");
-        if !r.file.starts_with("src-tauri/src/") || !r.file.ends_with(".rs") || !segments_ok {
-            return Err(format!(
-                "{at}: file must be a .rs path under src-tauri/src/"
-            ));
-        }
+        ids.push(&r.id);
         let lane_ok = r.lane.len() == 2
-            && r.lane.starts_with('l')
+            && r.lane.starts_with('L')
             && r.lane[1..].chars().all(|c| c.is_ascii_digit());
         if !lane_ok {
-            return Err(format!("{at}: lane must be l0..l9"));
+            return Err(format!("{at}: lane must be L0..L9"));
         }
-        if r.summary.trim().is_empty() {
-            return Err(format!("{at}: a summary says what the flag turns on"));
+        if !r.table_only() && !is_rust_source(&r.where_) {
+            return Err(format!(
+                "{at}: where must be a .rs path under src-tauri/src/ or {TABLE_PATH}"
+            ));
         }
-        match (&r.signoff, &r.gate) {
-            (None, None) => return Err(format!("{at}: name a signoff or a gate test")),
-            (_, Some(g))
-                if !g.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || g.is_empty() =>
-            {
-                return Err(format!("{at}: gate must be a test fn name"));
-            }
-            _ => {}
+        if r.record.is_some() && r.signoff != Signoff::Required {
+            return Err(format!("{at}: only a signoff \"required\" row names a record"));
         }
-        if let Some(s) = &r.signoff {
-            if !is_signoff_id(&s.id) || ids.contains(&s.id.as_str()) {
+        if let (Some(path), Some(id)) = (r.record_path(), r.signoff_id()) {
+            let shape_ok = path == format!("{RECORD_DIR}{id}.json") && is_signoff_id(&id);
+            if !shape_ok || signoffs.contains(&id) {
                 return Err(format!(
-                    "{at}: the sign-off id must be a unique plain segment"
+                    "{at}: record must be a unique release/signoffs/<id>.json, id one plain segment"
                 ));
             }
-            ids.push(&s.id);
-            let mut repo = s.packet_repo.split('/');
-            let repo_ok = repo.next() == Some("CitrateNetwork")
-                && repo.next().is_some_and(|n| !n.is_empty())
-                && repo.next().is_none();
-            if !repo_ok {
-                return Err(format!("{at}: packet_repo must be a CitrateNetwork repo"));
-            }
+            signoffs.push(id);
         }
     }
     Ok(t)
@@ -131,7 +159,7 @@ pub(crate) fn load() -> Result<Table, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Marked {
     pub file: String,
-    pub name: String,
+    pub id: String,
     pub value: bool,
 }
 
@@ -151,38 +179,62 @@ fn bool_const(line: &str) -> Option<(&str, bool)> {
     is_ident(name).then_some((name, value))
 }
 
-/// The flags marked in one file. A marker must sit right above a `const NAME: bool = <literal>;`,
-/// and a marked name may be declared only once in the file (no `cfg` twin the table cannot see).
+/// A line that is meant as a flag marker: a `//` comment whose text starts with `@flag`, in any
+/// spacing (`// @flag`, `//@flag`, `//  @flag X`). Doc comments (`///`, `//!`) are not markers.
+fn looks_like_marker(line: &str) -> bool {
+    let t = line.trim_start();
+    t.strip_prefix("//").is_some_and(|rest| {
+        !rest.starts_with('/') && !rest.starts_with('!') && rest.trim_start().starts_with("@flag")
+    })
+}
+
+/// The flags marked in one file. A marker is exactly `// @flag <ID>`, sits right above
+/// `const <ID>: bool = <literal>;` with the same id, and that id is declared only once in the file
+/// (no `cfg` twin the table cannot see). A malformed marker is refused, never skipped.
 pub(crate) fn marked_consts(file: &str, src: &str) -> Result<Vec<Marked>, String> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out: Vec<Marked> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        if line.trim() != MARKER {
+        if !looks_like_marker(line) {
             continue;
         }
+        let at = format!("{file}:{}", i + 1);
+        let id = line
+            .trim()
+            .strip_prefix(MARKER)
+            .and_then(|r| r.strip_prefix(' '))
+            .filter(|id| is_ident(id))
+            .ok_or_else(|| format!("{at}: a marker is exactly `{MARKER} <ID>`"))?;
         let Some((name, value)) = lines.get(i + 1).and_then(|l| bool_const(l)) else {
             return Err(format!(
-                "{file}:{}: {MARKER} must sit right above `const NAME: bool = true|false;`",
-                i + 1
+                "{at}: `{MARKER} {id}` must sit right above `const {id}: bool = true|false;`"
             ));
         };
+        if name != id {
+            return Err(format!("{at}: `{MARKER} {id}` marks const {name}"));
+        }
+        // Count declarations in code lines only. A comment that quotes `const NAME:` is not a
+        // twin; a cfg twin is always code. (Counting comments too would fail closed on prose.)
         let decl = format!("const {name}:");
-        let count = lines.iter().filter(|l| l.contains(&decl)).count();
+        let count = lines
+            .iter()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains(&decl))
+            .count();
         if count != 1 {
             return Err(format!("{file}: {name} is declared {count} times"));
         }
         out.push(Marked {
             file: file.to_string(),
-            name: name.to_string(),
+            id: name.to_string(),
             value,
         });
     }
     Ok(out)
 }
 
-/// Every disagreement between the table and the marked consts of `sources` (file, text): a marked
-/// const with no row, a row with no marked const, a default that is not the code's value, and a
-/// gate test that is not in the flag's file.
+/// Every disagreement between the table and the marked consts of `sources` (file, text): a
+/// malformed marker, a marked const with no row, a Rust row with no marked const, and a default
+/// that is not the code's value.
 pub(crate) fn mismatches(table: &Table, sources: &[(String, String)]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut marked: Vec<Marked> = Vec::new();
@@ -196,38 +248,27 @@ pub(crate) fn mismatches(table: &Table, sources: &[(String, String)]) -> Vec<Str
         if !table
             .flags
             .iter()
-            .any(|r| r.name == m.name && r.file == m.file)
+            .any(|r| r.id == m.id && r.where_ == m.file)
         {
             out.push(format!(
                 "{}: {} is marked {MARKER} but has no row in {TABLE_PATH}",
-                m.file, m.name
+                m.file, m.id
             ));
         }
     }
-    for r in &table.flags {
-        let Some(m) = marked.iter().find(|m| m.name == r.name && m.file == r.file) else {
+    for r in table.flags.iter().filter(|r| !r.table_only()) {
+        let Some(m) = marked.iter().find(|m| m.id == r.id && m.file == r.where_) else {
             out.push(format!(
-                "{TABLE_PATH} row {} points at no {MARKER} const in {}",
-                r.name, r.file
+                "{TABLE_PATH} row {} points at no `{MARKER} {}` const in {}",
+                r.id, r.id, r.where_
             ));
             continue;
         };
         if m.value != r.default {
             out.push(format!(
                 "{TABLE_PATH} row {} says {} but {} has {}",
-                r.name, r.default, r.file, m.value
+                r.id, r.default, r.where_, m.value
             ));
-        }
-        if let Some(g) = &r.gate {
-            let has_fn = sources
-                .iter()
-                .any(|(f, s)| f == &r.file && s.contains(&format!("fn {g}(")));
-            if !has_fn {
-                out.push(format!(
-                    "{TABLE_PATH} row {}: gate test {g} is not in {}",
-                    r.name, r.file
-                ));
-            }
         }
     }
     out

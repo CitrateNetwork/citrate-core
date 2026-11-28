@@ -1,9 +1,10 @@
 //! L0-WP09 (planset v060, L0_INTEGRATION_SEAMS 5): the sign-off record check that gates a
 //! feature flag, generalized from V60 MESH-2's CL-S4 check (`cluster_mesh.rs`) with its logic
-//! unchanged. A flag whose row in `release/flags.json` names a sign-off may be `true` only when
-//! `release/signoffs/<id>.json` VERIFIES: the owner's and the security lead's EIP-191 signatures
-//! recover to the keys registered for those roles in `release/signoffs/signers.json`, and the
-//! packet copy committed beside the record (`<id>_SIGNOFF_PACKET.md`) hashes to the signed sha256.
+//! unchanged. A flag whose row in `release/flags.json` says `"signoff": "required"` may be `true`
+//! only when its record `release/signoffs/<id>.json` VERIFIES: the owner's and the security
+//! lead's EIP-191 signatures recover to the keys registered for those roles in
+//! `release/signoffs/signers.json`, and the packet copy committed beside the record
+//! (`<id>_SIGNOFF_PACKET.md`) hashes to the signed sha256.
 //!
 //! It is a build gate: only tests read it. A record for a security-sensitive item holds only a hash
 //! of the reviewed packet, never the findings.
@@ -17,25 +18,39 @@ pub(crate) const SIGNERS: &str = "release/signoffs/signers.json";
 /// The roles that must both sign, each by a different person.
 const ROLES: [&str; 2] = ["owner", "security-lead"];
 
-/// One sign-off: its id (the record's `wp`) and the repo the reviewed packet lives in. Both come
-/// from the flag's row in `release/flags.json`.
+/// One sign-off: its id (the record's `wp`, the record file's stem) and the repo the reviewed
+/// packet lives in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Spec {
     pub id: String,
     pub packet_repo: String,
 }
 
-/// The sign-off `id` as `release/flags.json` declares it.
+/// Where a sign-off's packet lives when it is not citrate-core. Pinned here, not in
+/// `release/flags.json`, so a table edit cannot move a packet to another repo (CL-S4 is
+/// V60 MESH-2's cross-machine transport review, kept in citrate-cluster).
+const PACKET_REPOS: [(&str, &str); 1] = [("CL-S4", "CitrateNetwork/citrate-cluster")];
+const DEFAULT_PACKET_REPO: &str = "CitrateNetwork/citrate-core";
+
+/// The repo sign-off `id`'s packet must live in.
+pub(crate) fn packet_repo(id: &str) -> &'static str {
+    PACKET_REPOS
+        .iter()
+        .find(|(k, _)| *k == id)
+        .map_or(DEFAULT_PACKET_REPO, |(_, repo)| *repo)
+}
+
+/// The sign-off `id`, which a `required` row of `release/flags.json` must name.
 pub(crate) fn spec(id: &str) -> Result<Spec, String> {
     let table = crate::flags::load()?;
     table
         .flags
         .iter()
-        .filter_map(|row| row.signoff.as_ref())
-        .find(|s| s.id == id)
-        .map(|s| Spec {
-            id: s.id.clone(),
-            packet_repo: s.packet_repo.clone(),
+        .filter_map(crate::flags::Row::signoff_id)
+        .find(|s| s == id)
+        .map(|id| Spec {
+            packet_repo: packet_repo(&id).to_string(),
+            id,
         })
         .ok_or_else(|| format!("release/flags.json names no sign-off {id}"))
 }

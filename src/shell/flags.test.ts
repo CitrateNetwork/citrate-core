@@ -1,26 +1,27 @@
 // L0-WP09: src/shell/flags.gen.ts is generated from release/flags.json (scripts/gen-flags.mjs), so
-// the webview and the Rust consts read one table. cargo test ties the table to the consts
+// the webview and the Rust consts read one table, and src/shell/flags.ts exports flag(id) over it
+// (L0_INTEGRATION_SEAMS 3.7). cargo test ties the table to the consts
 // (src-tauri/src/flags_tests.rs); this file ties the generated module to the table.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { OUT, render, TABLE } from "../../scripts/gen-flags.mjs";
 import { ROOT } from "../../scripts/seams-snapshot.mjs";
+import { flag, type FlagId } from "./flags";
 import { FLAG_ROWS, FLAGS } from "./flags.gen";
 
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 
 const good = {
-  $comment: ["t"],
+  version: 1,
   flags: [
     {
-      name: "ALPHA",
-      file: "src-tauri/src/alpha.rs",
-      lane: "l1",
+      id: "ALPHA",
+      lane: "L1",
+      where: "src-tauri/src/alpha.rs",
       default: false,
-      signoff: { id: "ALPHA", packet_repo: "CitrateNetwork/citrate-core" },
-      gate: null,
-      summary: "turns alpha on",
+      signoff: "required",
+      record: "release/signoffs/ALPHA.json",
     },
   ],
 };
@@ -30,20 +31,28 @@ describe("flags.gen.ts", () => {
     expect(read(OUT)).toBe(render(read(TABLE)));
   });
 
-  it("holds each row's value and sign-off, and no file paths", () => {
+  it("holds each row's value and sign-off, and no repo paths", () => {
     const table = JSON.parse(read(TABLE));
-    expect(FLAG_ROWS.map((r) => r.name)).toEqual(table.flags.map((r: { name: string }) => r.name));
+    expect(FLAG_ROWS.map((r) => r.id)).toEqual(table.flags.map((r: { id: string }) => r.id));
     for (const r of table.flags) {
-      expect(FLAGS[r.name as keyof typeof FLAGS]).toBe(r.default);
-      expect(read(OUT)).not.toContain(r.file);
-      if (r.signoff) expect(read(OUT)).not.toContain(r.signoff.packet_repo);
+      expect(FLAGS[r.id as keyof typeof FLAGS]).toBe(r.default);
+      expect(flag(r.id as FlagId)).toBe(r.default);
+      if (r.where !== TABLE) expect(read(OUT)).not.toContain(r.where);
+      if (r.record) expect(read(OUT)).not.toContain(r.record);
     }
   });
 
   it("keeps today's values (a sign-off flips them, never this table alone)", () => {
-    expect(FLAGS.HERMES_NODE_WRITE_TOOLS).toBe(false);
-    expect(FLAGS.TRANSPORT_SIGNED_OFF).toBe(false);
-    expect(FLAGS.MULTI_GROUP_DAEMON).toBe(true);
+    expect(flag("HERMES_NODE_WRITE_TOOLS")).toBe(false);
+    expect(flag("TRANSPORT_SIGNED_OFF")).toBe(false);
+    expect(flag("MULTI_GROUP_DAEMON")).toBe(true);
+    expect(flag("PQC_CLAIMS_ALLOWED")).toBe(false);
+  });
+
+  it("flag() reads an id the table does not hold as off", () => {
+    for (const id of ["NOT_A_FLAG", "__proto__", "constructor", "toString", "hasOwnProperty"]) {
+      expect(flag(id as FlagId)).toBe(false);
+    }
   });
 
   it("the owner approves every change to the table", () => {
@@ -63,13 +72,15 @@ describe("flags.gen.ts", () => {
       return () => render(JSON.stringify(t));
     };
     expect(bad((r) => (r.default = "false"))).toThrow(/true or false/);
-    expect(bad((r) => (r.name = "alpha"))).toThrow(/SCREAMING_CASE/);
-    expect(bad((r) => (r.name = "A: true, B"))).toThrow(/SCREAMING_CASE/);
-    expect(bad((r) => (r.lane = "l10"))).toThrow(/lane/);
-    expect(bad((r) => (r.summary = " "))).toThrow(/summary/);
-    expect(bad((r) => (r.signoff = { id: "" }))).toThrow(/signoff/);
+    expect(bad((r) => (r.id = "alpha"))).toThrow(/SCREAMING_CASE/);
+    expect(bad((r) => (r.id = "A: true, B"))).toThrow(/SCREAMING_CASE/);
+    expect(bad((r) => (r.lane = "l1"))).toThrow(/lane/);
+    expect(bad((r) => (r.lane = "L10"))).toThrow(/lane/);
+    expect(bad((r) => (r.signoff = { id: "ALPHA" }))).toThrow(/signoff/);
+    expect(bad((r) => (r.signoff = "maybe"))).toThrow(/signoff/);
     const dup = { ...good, flags: [good.flags[0], good.flags[0]] };
     expect(() => render(JSON.stringify(dup))).toThrow(/twice/);
-    expect(() => render("{}")).toThrow(/flags/);
+    expect(() => render(JSON.stringify({ flags: [] }))).toThrow(/version/);
+    expect(() => render(JSON.stringify({ version: 1 }))).toThrow(/flags/);
   });
 });

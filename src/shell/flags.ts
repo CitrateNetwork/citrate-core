@@ -1,0 +1,10 @@
+// L0-WP09 (planset v060, L0_INTEGRATION_SEAMS 3.7): the webview's read of the build-time feature
+// flags in release/flags.json, through the generated ./flags.gen (scripts/gen-flags.mjs).
+import { FLAGS, type FlagId } from "./flags.gen";
+
+export type { FlagId };
+
+/** The flag's value in this build. An id the table does not hold reads as off (fails closed). */
+export function flag(id: FlagId): boolean {
+  return Object.prototype.hasOwnProperty.call(FLAGS, id) && FLAGS[id] === true;
+}

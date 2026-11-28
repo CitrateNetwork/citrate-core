@@ -28,14 +28,14 @@ use serde::{Deserialize, Serialize};
 /// for those roles in `release/signoffs/signers.json`, and the packet copy committed beside the
 /// record hashes to the signed sha256. The test `signed_flag_requires_signoff_record` fails the
 /// build otherwise.
-// @flag
+// @flag TRANSPORT_SIGNED_OFF
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
 /// The bundled daemon serves every group from one process (citrate-cluster HUP-S8.4, on main since
 /// #11). V60 MESH-1: `true`, because the pinned `cluster-daemon` rev is in
 /// [`MULTI_GROUP_DAEMON_REVS`]. On its own this turns nothing on: the mesh default also needs
 /// [`TRANSPORT_SIGNED_OFF`].
-// @flag
+// @flag MULTI_GROUP_DAEMON
 pub(crate) const MULTI_GROUP_DAEMON: bool = true;
 
 /// V60 MESH-1: the citrate-cluster revs checked to serve every group from one daemon process. The
@@ -223,8 +223,10 @@ pub async fn cluster_mesh_set_enabled(
 /// (required before `TRANSPORT_SIGNED_OFF` may be true) checks each role's signature against the
 /// registered role key and the committed packet copy against the signed digest. It is a build gate: only the tests read it
 /// (the record is evidence for whoever flips [`TRANSPORT_SIGNED_OFF`], not something the app loads).
-/// L0-WP09: the check itself is the shared sign-off verifier (`crate::signoff`), with CL-S4's
-/// row in `release/flags.json`; these names keep the tests below unchanged.
+/// L0-WP09: the check itself is the shared sign-off verifier (`crate::signoff`). CL-S4 is the
+/// record of the `TRANSPORT_SIGNED_OFF` row in `release/flags.json`, and its packet repo stays
+/// `CitrateNetwork/citrate-cluster`, pinned in `signoff.rs`; these names keep the tests below
+/// unchanged.
 #[cfg(test)]
 mod signoff {
     use crate::signoff as shared;

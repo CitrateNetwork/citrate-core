@@ -1334,6 +1334,12 @@
       "replaced_by": null
     },
     {
+      "id": "citrate_core_lib::flags_tests::flags_requiring_signoff_have_a_verified_record",
+      "class": "honesty",
+      "since": "694e990c",
+      "replaced_by": null
+    },
+    {
       "id": "citrate_core_lib::fleet::tests::a_broken_issuer_roster_never_burns_the_link",
       "class": "network",
       "since": "a826e441",

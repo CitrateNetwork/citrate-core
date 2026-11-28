@@ -1,37 +1,35 @@
 {
-  "$comment": [
-    "L0-WP09 feature-flag table (planset 2026-11-07-v060, lanes/L0_INTEGRATION_SEAMS.md section 5). One row per build-time flag: a bool const marked with a '// @flag' line right above it.",
-    "default is the const's value in the code. signoff names the record a true value needs: release/signoffs/<id>.json, verified against release/signoffs/signers.json and the packet copy <id>_SIGNOFF_PACKET.md (owner and security lead, EIP-191). gate names a test in the flag's file that gates a change. Every row has at least one.",
-    "src-tauri/src/flags_tests.rs ties this table to the code both ways and runs the sign-off check; src/shell/flags.gen.ts is generated from it by scripts/gen-flags.mjs. A flag never defaults on a feature whose data source does not exist (Rule 1).",
-    "A sign-off record for a security-sensitive item holds only a hash of a private packet, never the findings."
-  ],
+  "version": 1,
   "flags": [
     {
-      "name": "HERMES_NODE_WRITE_TOOLS",
-      "file": "src-tauri/src/hermes_mcp.rs",
-      "lane": "l1",
+      "id": "HERMES_NODE_WRITE_TOOLS",
+      "lane": "L1",
+      "where": "src-tauri/src/hermes_mcp.rs",
       "default": false,
-      "signoff": { "id": "HERMES_NODE_WRITE_TOOLS", "packet_repo": "CitrateNetwork/citrate-core" },
-      "gate": null,
-      "summary": "Hermes is offered the node MCP server's write tools (proposals the member approves in the app)."
+      "signoff": "required",
+      "record": "release/signoffs/HERMES_NODE_WRITE_TOOLS.json"
     },
     {
-      "name": "TRANSPORT_SIGNED_OFF",
-      "file": "src-tauri/src/cluster_mesh.rs",
-      "lane": "l7",
+      "id": "TRANSPORT_SIGNED_OFF",
+      "lane": "L7",
+      "where": "src-tauri/src/cluster_mesh.rs",
       "default": false,
-      "signoff": { "id": "CL-S4", "packet_repo": "CitrateNetwork/citrate-cluster" },
-      "gate": "signed_flag_requires_signoff_record",
-      "summary": "The CL-S4 cross-machine transport sign-off is recorded in this build (one of the two preconditions for the mesh on by default)."
+      "signoff": "required",
+      "record": "release/signoffs/CL-S4.json"
     },
     {
-      "name": "MULTI_GROUP_DAEMON",
-      "file": "src-tauri/src/cluster_mesh.rs",
-      "lane": "l7",
+      "id": "MULTI_GROUP_DAEMON",
+      "lane": "L7",
+      "where": "src-tauri/src/cluster_mesh.rs",
       "default": true,
-      "signoff": null,
-      "gate": "the_multi_group_flag_matches_the_bundled_daemon",
-      "summary": "The bundled cluster daemon serves every group from one process (checked against the pinned daemon rev)."
+      "signoff": "none"
+    },
+    {
+      "id": "PQC_CLAIMS_ALLOWED",
+      "lane": "L9",
+      "where": "release/flags.json",
+      "default": false,
+      "signoff": "required"
     }
   ]
 }

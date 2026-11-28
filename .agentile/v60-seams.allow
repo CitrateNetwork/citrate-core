@@ -31,7 +31,10 @@ l0-wp03 src-tauri/src/store_catalog_tests.rs
 l0-wp03 src/fl/datasetBridge.test.ts
 
 # L0-WP09 feature-flag table (lanes/L0_INTEGRATION_SEAMS.md 5, L0-WP09 steps 1 and 2): one
-# `// @flag` marker line right above each flag const, and the CL-S4 record check delegates to the
+# `// @flag <ID>` marker line right above each flag const, and the CL-S4 record check delegates to the
 # shared crate::signoff verifier (logic unchanged; the cluster_mesh tests are unchanged).
 l0-wp09 src-tauri/src/hermes_mcp.rs
 l0-wp09 src-tauri/src/cluster_mesh.rs
+# Review on #838: register flags_requiring_signoff_have_a_verified_record in LQ's tripwire registry
+# (one added entry, nothing removed; the owner approves, CODEOWNERS tail rule).
+l0-wp09 .agentile/coverage/tripwires.json

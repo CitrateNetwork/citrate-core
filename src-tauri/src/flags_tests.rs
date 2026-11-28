@@ -8,7 +8,7 @@
 //!     When cargo test runs
 //!     Then flags_requiring_signoff_have_a_verified_record fails
 
-use crate::flags::{self, Table};
+use crate::flags::{self, Signoff, Table};
 use crate::signoff::{self, Spec};
 use std::path::{Path, PathBuf};
 
@@ -80,7 +80,8 @@ fn every_marked_const_has_a_row() {
                 .len()
         })
         .sum();
-    assert_eq!(marked, table().flags.len(), "one marked const per row");
+    let rust_rows = table().flags.iter().filter(|r| !r.table_only()).count();
+    assert_eq!(marked, rust_rows, "one marked const per Rust row");
 }
 
 #[test]
@@ -111,43 +112,114 @@ fn defaults_match_the_code() {
         ),
     ];
     let t = table();
-    for (name, value) in compiled {
-        let row = t.flags.iter().find(|r| r.name == name).expect("a row");
-        assert_eq!(row.default, value, "{name}");
+    for (id, value) in compiled {
+        let row = t.flags.iter().find(|r| r.id == id).expect("a row");
+        assert_eq!(row.default, value, "{id}");
     }
+    let rust_rows = t.flags.iter().filter(|r| !r.table_only()).count();
+    assert_eq!(rust_rows, compiled.len(), "a new Rust flag joins this list");
 }
 
 #[test]
 fn flags_requiring_signoff_have_a_verified_record() {
     let t = table();
-    let gated: Vec<_> = t.flags.iter().filter(|r| r.signoff.is_some()).collect();
+    let gated: Vec<_> = t
+        .flags
+        .iter()
+        .filter(|r| r.signoff == Signoff::Required)
+        .collect();
     assert!(!gated.is_empty(), "no sign-off rows; the table is broken");
     for row in gated {
-        let Some(s) = &row.signoff else { continue };
-        let spec = signoff::spec(&s.id).expect("spec from the table");
+        let id = row.signoff_id().expect("a required row has a sign-off id");
+        let spec = signoff::spec(&id).expect("spec from the table");
         if let Err(e) = signoff::gate(&spec, row.default, &read_repo) {
             panic!(
-                "{} is {} but its sign-off {} does not hold: {e}",
-                row.name, row.default, s.id
+                "{} is {} but its sign-off {id} does not hold: {e}",
+                row.id, row.default
             );
         }
     }
 }
 
+/// The 3.7 initial rows, as the lane file lists them.
+#[test]
+fn the_initial_rows_are_the_spec_rows() {
+    let t = table();
+    assert_eq!(t.version, 1);
+    let rows: Vec<_> = t
+        .flags
+        .iter()
+        .map(|r| {
+            (
+                r.id.as_str(),
+                r.lane.as_str(),
+                r.where_.as_str(),
+                r.default,
+                r.signoff,
+                r.record_path(),
+            )
+        })
+        .collect();
+    let rec = |id: &str| Some(format!("release/signoffs/{id}.json"));
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "HERMES_NODE_WRITE_TOOLS",
+                "L1",
+                "src-tauri/src/hermes_mcp.rs",
+                false,
+                Signoff::Required,
+                rec("HERMES_NODE_WRITE_TOOLS")
+            ),
+            (
+                "TRANSPORT_SIGNED_OFF",
+                "L7",
+                "src-tauri/src/cluster_mesh.rs",
+                false,
+                Signoff::Required,
+                rec("CL-S4")
+            ),
+            (
+                "MULTI_GROUP_DAEMON",
+                "L7",
+                "src-tauri/src/cluster_mesh.rs",
+                true,
+                Signoff::NotNeeded,
+                None
+            ),
+            (
+                "PQC_CLAIMS_ALLOWED",
+                "L9",
+                flags::TABLE_PATH,
+                false,
+                Signoff::Required,
+                rec("PQC_CLAIMS_ALLOWED")
+            ),
+        ]
+    );
+    // CL-S4's packet stays in citrate-cluster; the table cannot move it.
+    let cl = signoff::spec("CL-S4").expect("CL-S4 is in the table");
+    assert_eq!(cl.packet_repo, "CitrateNetwork/citrate-cluster");
+    let hermes = signoff::spec("HERMES_NODE_WRITE_TOOLS").expect("in the table");
+    assert_eq!(hermes.packet_repo, "CitrateNetwork/citrate-core");
+    assert!(signoff::spec("NOT_A_SIGNOFF").is_err());
+}
+
 // --- Mutation proofs: each check fails on the broken input it exists for. ---
 
 const SOURCE: &str =
-    "/// doc\n// @flag\npub const ALPHA: bool = false;\n#[test]\nfn alpha_gate() {}\n";
+    "/// doc\n// @flag ALPHA\npub const ALPHA: bool = false;\n#[test]\nfn alpha_gate() {}\n";
 
 fn table_of(rows: serde_json::Value) -> Table {
-    flags::parse(&serde_json::json!({ "$comment": ["test"], "flags": rows }).to_string())
+    flags::parse(&serde_json::json!({ "version": 1, "flags": rows }).to_string())
         .expect("test table")
 }
 
 fn alpha_row(default: bool) -> serde_json::Value {
     serde_json::json!({
-        "name": "ALPHA", "file": "src-tauri/src/alpha.rs", "lane": "l1", "default": default,
-        "signoff": null, "gate": "alpha_gate", "summary": "turns alpha on",
+        "id": "ALPHA", "lane": "L1", "where": "src-tauri/src/alpha.rs", "default": default,
+        "signoff": "none",
     })
 }
 
@@ -167,21 +239,21 @@ fn table_and_code_disagreements_are_named() {
     );
     let unmarked = vec![(
         "src-tauri/src/alpha.rs".to_string(),
-        SOURCE.replace("// @flag\n", ""),
+        SOURCE.replace("// @flag ALPHA\n", ""),
     )];
     let no_const = flags::mismatches(&table_of(serde_json::json!([alpha_row(false)])), &unmarked);
     assert!(
         no_const.iter().any(|m| m.contains("points at no")),
         "{no_const:?}"
     );
-    let no_gate = vec![(
-        "src-tauri/src/alpha.rs".to_string(),
-        SOURCE.replace("alpha_gate", "x"),
-    )];
-    let gate = flags::mismatches(&table_of(serde_json::json!([alpha_row(false)])), &no_gate);
+    // A table-only row needs no const, and a marked const cannot hide behind one.
+    let mut only = alpha_row(false);
+    only["where"] = flags::TABLE_PATH.into();
+    assert!(flags::mismatches(&table_of(serde_json::json!([only.clone()])), &unmarked).is_empty());
+    let hidden = flags::mismatches(&table_of(serde_json::json!([only])), &src);
     assert!(
-        gate.iter().any(|m| m.contains("gate test alpha_gate")),
-        "{gate:?}"
+        hidden.iter().any(|m| m.contains("ALPHA is marked")),
+        "{hidden:?}"
     );
 }
 
@@ -189,7 +261,7 @@ fn table_and_code_disagreements_are_named() {
 fn a_marker_must_sit_on_one_bool_literal_const() {
     let f = "src-tauri/src/alpha.rs";
     assert_eq!(flags::marked_consts(f, SOURCE).expect("ok").len(), 1);
-    let gap = SOURCE.replace("// @flag\n", "// @flag\n\n");
+    let gap = SOURCE.replace("// @flag ALPHA\n", "// @flag ALPHA\n\n");
     assert!(
         flags::marked_consts(f, &gap).is_err(),
         "blank line under the marker"
@@ -198,6 +270,29 @@ fn a_marker_must_sit_on_one_bool_literal_const() {
     assert!(flags::marked_consts(f, &expr).is_err(), "not a literal");
     let twin = format!("{SOURCE}#[cfg(feature = \"x\")]\npub const ALPHA: bool = true;\n");
     assert!(flags::marked_consts(f, &twin).is_err(), "a cfg twin");
+    // Prose that quotes the declaration is not a twin.
+    let prose = format!("{SOURCE}// was `pub const ALPHA: bool = true;` before\n");
+    assert_eq!(flags::marked_consts(f, &prose).expect("ok").len(), 1);
+}
+
+#[test]
+fn a_marker_must_name_its_flag() {
+    let f = "src-tauri/src/alpha.rs";
+    for bad in [
+        "// @flag",
+        "// @flag BETA",
+        "//@flag ALPHA",
+        "//  @flag ALPHA",
+        "// @flag  ALPHA",
+        "// @flag alpha",
+        "// @flag ALPHA extra",
+    ] {
+        let src = SOURCE.replace("// @flag ALPHA", bad);
+        assert!(flags::marked_consts(f, &src).is_err(), "{bad:?} is refused");
+    }
+    // Doc comments may mention the marker; they are not markers.
+    let doc = format!("/// a `// @flag <ID>` line marks a flag\n//! @flag X\n{SOURCE}");
+    assert_eq!(flags::marked_consts(f, &doc).expect("ok").len(), 1);
 }
 
 #[test]
@@ -205,43 +300,71 @@ fn a_malformed_table_is_refused() {
     let bad = |edit: &dyn Fn(&mut serde_json::Value)| {
         let mut row = alpha_row(false);
         edit(&mut row);
-        let text = serde_json::json!({ "$comment": ["t"], "flags": [row] }).to_string();
+        let text = serde_json::json!({ "version": 1, "flags": [row] }).to_string();
         flags::parse(&text).is_err()
     };
     assert!(!bad(&|_| {}), "the good row parses");
     assert!(
-        bad(&|r| r["gate"] = serde_json::Value::Null),
-        "no gate and no sign-off"
+        !bad(&|r| r["signoff"] = "required".into()),
+        "required with the default record"
     );
     assert!(
-        bad(&|r| r["file"] = "src-tauri/src/../x.rs".into()),
+        bad(&|r| r["where"] = "src-tauri/src/../x.rs".into()),
         "a .. path"
     );
     assert!(
-        bad(&|r| r["file"] = "kit/src/alpha.rs".into()),
+        bad(&|r| r["where"] = "kit/src/alpha.rs".into()),
         "outside src-tauri/src"
     );
-    assert!(bad(&|r| r["lane"] = "l10".into()), "unknown lane");
+    assert!(
+        bad(&|r| r["where"] = "scripts/cx-copy-lint.sh".into()),
+        "a script is not a where; table-only flags use the table"
+    );
+    assert!(bad(&|r| r["lane"] = "l1".into()), "lowercase lane");
+    assert!(bad(&|r| r["lane"] = "L10".into()), "unknown lane");
     assert!(bad(&|r| r["extra"] = true.into()), "unknown field");
+    assert!(bad(&|r| r["signoff"] = "maybe".into()), "unknown signoff");
+    assert!(bad(&|r| r["signoff"] = true.into()), "signoff is a word");
     assert!(
-        bad(&|r| r["signoff"] =
-            serde_json::json!({"id": "../x", "packet_repo": "CitrateNetwork/citrate-core"})),
-        "id is a path"
+        bad(&|r| r["record"] = "release/signoffs/ALPHA.json".into()),
+        "a record on a none row"
+    );
+    let required = |record: &str| {
+        move |r: &mut serde_json::Value| {
+            r["signoff"] = "required".into();
+            r["record"] = record.into();
+        }
+    };
+    assert!(!bad(&required("release/signoffs/CL-S9.json")), "a named record");
+    assert!(bad(&required("release/signoffs/../x.json")), "record is a path");
+    assert!(bad(&required("release/signoffs/a/b.json")), "a nested record");
+    assert!(bad(&required("release/x.json")), "outside release/signoffs");
+    assert!(bad(&required("release/signoffs/X.md")), "not a .json");
+    let table = |rows: serde_json::Value, version: u32| {
+        flags::parse(&serde_json::json!({ "version": version, "flags": rows }).to_string())
+    };
+    assert!(
+        table(serde_json::json!([alpha_row(false)]), 2).is_err(),
+        "version 2"
     );
     assert!(
-        bad(&|r| r["signoff"] = serde_json::json!({"id": "X", "packet_repo": "someone/else"})),
-        "foreign packet repo"
+        flags::parse(&serde_json::json!({ "flags": [] }).to_string()).is_err(),
+        "no version"
     );
-    let dup =
-        serde_json::json!({ "$comment": ["t"], "flags": [alpha_row(false), alpha_row(false)] });
     assert!(
-        flags::parse(&dup.to_string()).is_err(),
-        "a name listed twice"
+        table(serde_json::json!([alpha_row(false), alpha_row(false)]), 1).is_err(),
+        "an id listed twice"
     );
-    let silent = serde_json::json!({ "$comment": [" "], "flags": [alpha_row(false)] });
+    let mut beta = alpha_row(false);
+    beta["id"] = "BETA".into();
+    let shared = |mut r: serde_json::Value| {
+        r["signoff"] = "required".into();
+        r["record"] = "release/signoffs/SHARED.json".into();
+        r
+    };
     assert!(
-        flags::parse(&silent.to_string()).is_err(),
-        "a table that does not say what it is"
+        table(serde_json::json!([shared(alpha_row(false)), shared(beta)]), 1).is_err(),
+        "two flags on one record"
     );
 }
 
