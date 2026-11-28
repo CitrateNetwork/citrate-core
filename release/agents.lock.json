@@ -1,0 +1,369 @@
+{
+  "$comment": "L1-WP13a (planset v060, lanes/L1_AGENT_RUNTIME.md WP13): the ACP agents Core can run, pinned with dated evidence. Every row was checked on checked_at against the publisher's own source (npm registry, GitHub release, the ACP registry entry at evidence.acp_registry.commit). Nothing here is installable yet: delivery is a signed component download after the W0 signing ceremony (owner answer L1-Q2), and every row stays vetted=vetting until its citrate-security record (L1-WP15) says otherwise. sha256 values are of the artifact named by url; npm_integrity is the registry's own dist.integrity, re-computed locally for the npm tarballs on checked_at. Ids are the AgentId values agent_auth.rs knows (one LAYOUTS row each). Owner decisions 2026-11-28: delivery per row; Muse Code is a vendor download (the member downloads Meta's binary, Citrate does not redistribute); Grok Build ships xAI's published binary, never built from source, with its npm postinstall never run; OpenCode and Cline are not in 0.6.0; openclaw and oh-my-opencode are refused. vetting_record names the citrate-security record (security #199).",
+  "version": 1,
+  "checked_at": "2026-11-27",
+  "evidence": {
+    "acp_registry": {
+      "repo": "https://github.com/agentclientprotocol/registry",
+      "commit": "85c7fc4854227904ca2b8b759eea57c144256872",
+      "release": "https://github.com/agentclientprotocol/registry/releases/tag/v2026.11.28-85c7fc4",
+      "quarantined_ids": [
+        "agoragentic-acp",
+        "deepagents",
+        "fast-agent",
+        "minion-code",
+        "vtcode"
+      ]
+    },
+    "acp_crate": {
+      "name": "agent-client-protocol",
+      "version": "5.6.1",
+      "published": "2026-11-25",
+      "sha256": "e2889673b9bc92e57857cb780f5431b684840c78a95a8edaa4afc00293d10dda",
+      "license": "Apache-2.0",
+      "url": "https://crates.io/crates/agent-client-protocol/5.6.1"
+    }
+  },
+  "agents": [
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "acp": "pending",
+      "acp_evidence": "Hermes does not speak ACP yet: L1-WP07 adds agent-sidecar --acp in citrate-agent-runtime.",
+      "version": "aa12b10ee9965619818268dcd6d8651b37dbf19a",
+      "license": "Apache-2.0",
+      "license_kind": "osi",
+      "runtime": "native",
+      "launch": {
+        "cmd": "hermes",
+        "args": [
+          "--acp"
+        ],
+        "env": {}
+      },
+      "source": "https://github.com/CitrateNetwork/citrate-agent-runtime/commit/aa12b10ee9965619818268dcd6d8651b37dbf19a",
+      "artifacts": [],
+      "wire": "chat",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-hermes",
+      "installable": false,
+      "installable_reason": "built from source as the hermes-sidecar component (release/components.json); ACP mode not built yet",
+      "notes": [],
+      "delivery": "bundled",
+      "license_condition": null
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "acp": "supported",
+      "acp_evidence": "ACP registry entry codex-acp 2.12.1 (npx @agentclientprotocol/codex-acp@2.12.1); dist/index.js offers authMethods api-key, chat-gpt, chat-gpt-device-code and gateway (only when the client advertises auth._meta.gateway).",
+      "version": "2.12.1",
+      "license": "Apache-2.0",
+      "license_kind": "osi",
+      "runtime": "node",
+      "launch": {
+        "cmd": "codex-acp",
+        "args": [],
+        "env": {}
+      },
+      "source": "https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.12.1",
+      "artifacts": [
+        {
+          "platform": "any",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-2.12.1.tgz",
+          "sha256": "eb0823ed12856193624dd1aeaf293f4fe63d4d44ef82666a35a4567923986cce",
+          "npm_integrity": "sha512-4RGVK+bI2T7kkcfzj4hkmCtX1bVmoXB1nR2IXmzX9KVCXUY6cj9clHkyuGQBuIs2swr9Tf0AdWcY+5fQaYHpZQ=="
+        },
+        {
+          "platform": "linux-x86_64",
+          "url": "npm:@openai/codex@0.172.0-linux-x64",
+          "npm_integrity": "sha512-YJq6Wz3PFXV5LZ0OQc3/o+gpM3pLmQ/8n8uM2zF/m0O/8zED+uSPT8Ln1KGRrqR8Q6eon9YdWlhueAunVTZ+eg=="
+        },
+        {
+          "platform": "darwin-aarch64",
+          "url": "npm:@openai/codex@0.172.0-darwin-arm64",
+          "npm_integrity": "sha512-B239wE7pGeOmjylfqLymDIwuL4QgQR7pQZc5phHpZ3t8UVkno9AS3dNPEprm7AzZHw3kf2I6Uf+uOFfjGegELQ=="
+        }
+      ],
+      "wire": "responses",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-codex",
+      "installable": false,
+      "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2)",
+      "notes": [
+        "The adapter is now a Node package that drives @openai/codex (range ^0.172.0, pinned here to 0.172.0); the lane file's 'native binary' row is out of date.",
+        "@zed-industries/codex-acp is deprecated on npm and github.com/zed-industries/codex-acp is archived (last release v0.16.0, 2026-06-08).",
+        "GitHub reports the repo license as NOASSERTION; the LICENSE file in the npm tarball is Apache-2.0 (Copyright 2025 JetBrains s.r.o.).",
+        "Proxy mode needs /v1/responses (L1-WP10, not built); the gateway auth method carries a base URL and headers over ACP authenticate, which fits a Citrate route token."
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
+    },
+    {
+      "id": "claude",
+      "label": "Claude Agent",
+      "acp": "supported",
+      "acp_evidence": "ACP registry entry claude-acp 0.113.0 (binary and npx @agentclientprotocol/claude-agent-acp@0.113.0).",
+      "version": "0.113.0",
+      "license": "Apache-2.0 adapter; @anthropic-ai/claude-agent-sdk 0.3.331 under Anthropic terms (SEE LICENSE IN README.md)",
+      "license_kind": "mixed",
+      "runtime": "node",
+      "launch": {
+        "cmd": "claude-agent-acp",
+        "args": [],
+        "env": {}
+      },
+      "source": "https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.113.0",
+      "artifacts": [
+        {
+          "platform": "any",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/claude-agent-acp/-/claude-agent-acp-0.113.0.tgz",
+          "sha256": "9d46d6327f2d6f17bcdd1c12a724cdb898bf56bc19946c3ac38b2a36d241fad1",
+          "npm_integrity": "sha512-fXX8ulGhIg8qHNsy8iQgPV1ZtISwUSqIAmc0/CN2CgiAeMP1wOn0xbzwwOIKLXqoiNoOkvreT2dqvMhwSFKClw=="
+        },
+        {
+          "platform": "linux-x86_64",
+          "url": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.113.0/claude-agent-acp-linux-x64.tar.gz",
+          "sha256": "493595c4caef6dfb5d20f187ae96f887188262a281b0db95bb794d1977ddaf02"
+        },
+        {
+          "platform": "linux-aarch64",
+          "url": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.113.0/claude-agent-acp-linux-arm64.tar.gz",
+          "sha256": "b695145e2ef07bb8ff9ce8aa9277e5538ff834a6c625fc4b5710116ded228abf"
+        },
+        {
+          "platform": "darwin-aarch64",
+          "url": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.113.0/claude-agent-acp-darwin-arm64.zip",
+          "sha256": "68064a101b35cb4b671861270909435c083fdcd35701043394d6e376b192b482"
+        },
+        {
+          "platform": "darwin-x86_64",
+          "url": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.113.0/claude-agent-acp-darwin-x64.zip",
+          "sha256": "3ecfe12daa3171bc9a2dbdb07b616ac053e360aa548f69c61f051b8450d9078b"
+        }
+      ],
+      "wire": "messages",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-claude",
+      "installable": false,
+      "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); API key only through the Citrate proxy (L1-Q3), which needs /v1/messages (L1-WP12, not built)",
+      "notes": [
+        "The ACP registry lists the entry's license as proprietary because of the bundled Claude Agent SDK; the adapter's own LICENSE is Apache-2.0.",
+        "@zed-industries/claude-code-acp and @zed-industries/claude-agent-acp are deprecated on npm in favour of @agentclientprotocol/claude-agent-acp."
+      ],
+      "delivery": "signed_component",
+      "license_condition": "The adapter is Apache-2.0; the bundled @anthropic-ai/claude-agent-sdk is under Anthropic's terms (SEE LICENSE IN README.md). Shipped only if the vetting record accepts those terms for redistribution; API key only through the Citrate proxy (L1-Q3)."
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "acp": "supported",
+      "acp_evidence": "ACP registry entry gemini 0.71.1 (npx @google/gemini-cli@0.71.1 --acp); the bundle defines --acp and marks --experimental-acp deprecated.",
+      "version": "0.71.1",
+      "license": "Apache-2.0",
+      "license_kind": "osi",
+      "runtime": "node",
+      "launch": {
+        "cmd": "gemini",
+        "args": [
+          "--acp"
+        ],
+        "env": {}
+      },
+      "source": "https://github.com/google-gemini/gemini-cli/releases/tag/v0.71.1",
+      "artifacts": [
+        {
+          "platform": "any",
+          "url": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.71.1.tgz",
+          "sha256": "3381cebd8a58b43ab161fd9302d5b1f097ab2eb010278176e8afd3533d1c98bc",
+          "npm_integrity": "sha512-FYDTjU+9BFPYKBcFS3vCjJol8pFyV0iHVigUNr2wZqk4vYNFgacGB5ubyrySFGM5jWxCK+1EFdcDJiEQjNomaw=="
+        }
+      ],
+      "wire": "native",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-gemini",
+      "installable": false,
+      "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); needs the pinned Node runtime component (L1-Q3)",
+      "notes": [
+        "engines.node >= 20. Home from GEMINI_CLI_HOME; tokens in a file when GEMINI_FORCE_FILE_STORAGE is set."
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
+    },
+    {
+      "id": "goose",
+      "label": "goose",
+      "acp": "supported",
+      "acp_evidence": "ACP registry entry goose 1.61.1 (binary, args acp); the v1.61.1 release also ships goose-acp-* archives.",
+      "version": "1.61.1",
+      "license": "Apache-2.0",
+      "license_kind": "osi",
+      "runtime": "native",
+      "launch": {
+        "cmd": "goose",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
+      "source": "https://github.com/aaif-goose/goose/releases/tag/v1.61.1",
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "url": "https://github.com/block/goose/releases/download/v1.61.1/goose-x86_64-unknown-linux-gnu.tar.bz2",
+          "sha256": "34cd9a484a15564d3f462843359d24e4964ae328be3625024003d29f318e586c"
+        },
+        {
+          "platform": "linux-aarch64",
+          "url": "https://github.com/block/goose/releases/download/v1.61.1/goose-aarch64-unknown-linux-gnu.tar.bz2",
+          "sha256": "57a5480c7d71c49fb1e1153bb24f08511c2b58cb467babd7659b7020967a4067"
+        },
+        {
+          "platform": "darwin-aarch64",
+          "url": "https://github.com/block/goose/releases/download/v1.61.1/goose-aarch64-apple-darwin.tar.bz2",
+          "sha256": "1da551c55be746369e4af58bc6eb5e9dd67fb5ce682cb8683246e0c7dda1d0dc"
+        },
+        {
+          "platform": "darwin-x86_64",
+          "url": "https://github.com/block/goose/releases/download/v1.61.1/goose-x86_64-apple-darwin.tar.bz2",
+          "sha256": "3887fe49b549d517cd3518ab55ae2a5257ba11a3d4664fa1c3adf49197b2f585"
+        }
+      ],
+      "wire": "chat",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-goose",
+      "installable": false,
+      "installable_reason": "signed component download waits on the W0 signing ceremony (L1-Q2); Codex and goose are bundled only if the ceremony slips",
+      "notes": [
+        "github.com/block/goose now redirects to github.com/aaif-goose/goose; release URLs under block/goose still resolve."
+      ],
+      "delivery": "signed_component",
+      "license_condition": null
+    },
+    {
+      "id": "grok",
+      "label": "Grok Build",
+      "acp": "supported",
+      "acp_evidence": "ACP registry entry grok-build 1.0.94 (npx @xai-official/grok@1.0.94 agent stdio); not quarantined.",
+      "version": "1.0.94",
+      "license": "xAI terms of service (https://x.ai/legal/terms-of-service); the npm license field says Apache-2.0 but the tarball has no LICENSE file",
+      "license_kind": "proprietary",
+      "runtime": "native",
+      "launch": {
+        "cmd": "grok",
+        "args": [
+          "agent",
+          "stdio"
+        ],
+        "env": {}
+      },
+      "source": "https://www.npmjs.com/package/@xai-official/grok/v/1.0.94",
+      "artifacts": [
+        {
+          "platform": "any",
+          "url": "https://registry.npmjs.org/@xai-official/grok/-/grok-1.0.94.tgz",
+          "sha256": "2e5904097ffd3b5868594a392dcd9045bd4b2ad3ed1947acef3d1e1341209dbd",
+          "npm_integrity": "sha512-EzOiPFMFA67cDO3a02rkFAizrUVkm5jmJsMjhaBIaaKwoq1ROt4rmxCksvnDTCLEyDeBvS60FNp5JS5uqnTDvA=="
+        },
+        {
+          "platform": "linux-x86_64",
+          "url": "npm:@xai-official/grok-linux-x64@1.0.94",
+          "npm_integrity": "sha512-fkF0Vzo+SogTZGEdWu2THdwDtnwyc5CPYyX6+G2t2oPTuTBIbWbXZwvs2hFRc+ZJzrwBN4c/hJJczkwuo0QRTw=="
+        },
+        {
+          "platform": "darwin-aarch64",
+          "url": "npm:@xai-official/grok-darwin-arm64@1.0.94",
+          "npm_integrity": "sha512-hcpeM0Xo40ZBJaZDbRwx6gTbfyFz4NJCue+buO4MTj6PjIOszc2HlhoHZd5AsY6c7kL9NuJLJqNWLFhHtDr7pQ=="
+        }
+      ],
+      "wire": "native",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-grok",
+      "installable": false,
+      "installable_reason": "vendor binary under xAI's terms (owner decision 2026-11-28); waits on its vetting record and the W0 signing ceremony conditions",
+      "notes": [
+        "The npm package runs a postinstall script (node bin/postinstall.js) and ships its native binary through optionalDependencies."
+      ],
+      "delivery": "vendor_binary",
+      "license_condition": "xAI's terms. Core delivers xAI's published platform binary (@xai-official/grok-<platform>), never a build from source, and never runs the wrapper package's postinstall script (node bin/postinstall.js); if the wrapper is ever needed, its postinstall runs only inside the L2 sandbox (owner decision 2026-11-28)."
+    },
+    {
+      "id": "muse",
+      "label": "Muse Code",
+      "acp": "experimental",
+      "acp_evidence": "ACP registry entry muse-code 1.4.24 (binary, args acp, env MUSE_EXPERIMENTAL_ACP=on).",
+      "version": "1.4.24",
+      "license": "proprietary (https://dev.meta.ai/legal/terms-of-service)",
+      "license_kind": "proprietary",
+      "runtime": "native",
+      "launch": {
+        "cmd": "muse",
+        "args": [
+          "acp"
+        ],
+        "env": {
+          "MUSE_EXPERIMENTAL_ACP": "on"
+        }
+      },
+      "source": "https://dev.meta.ai/docs/muse-code",
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-x86-linux",
+          "sha256": "d752c45dce079ee29e118804b091d81ac2b1b89b67f317b4a162fa1af1206465"
+        },
+        {
+          "platform": "linux-aarch64",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-aarch64-linux",
+          "sha256": "31d4c1fdf382e6711b1c8854d976a6095fe4743eb17b2a8f9a5bb43aef5bad63"
+        },
+        {
+          "platform": "darwin-aarch64",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-aarch64-macos",
+          "sha256": "51224e835fccf2ba8c1abe9c2957b187252050a0b7315e0b1ee4cdcd2f090494"
+        },
+        {
+          "platform": "darwin-x86_64",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.24-R9131.1&file=muse-x86-macos",
+          "sha256": "dc65624b7e061e7f11f251acf4b11d77c4a1bb9eca945d58cd6787f84da8521a"
+        }
+      ],
+      "wire": "native",
+      "vetted": "vetting",
+      "vetting_record": "VET-AGT-2026-11-28-muse",
+      "installable": false,
+      "installable_reason": "vendor download on first pick (owner decision 2026-11-28); waits on its vetting record and the W0 signing ceremony conditions; ACP mode is experimental",
+      "notes": [
+        "sha256 values are the ACP registry's; the binaries were not downloaded on checked_at."
+      ],
+      "delivery": "vendor_download",
+      "license_condition": "Meta's terms (https://dev.meta.ai/legal/terms-of-service). Citrate does not redistribute: on first pick the member downloads Meta's binary from the vendor URL, and Core checks it against the pinned sha256 before it runs (owner decision 2026-11-28)."
+    }
+  ],
+  "not_offered": [
+    {
+      "id": "openclaw",
+      "decision": "refused",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "oh-my-opencode",
+      "decision": "refused",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "opencode",
+      "decision": "not_in_0.6.0",
+      "decided": "2026-11-28",
+      "by": "owner"
+    },
+    {
+      "id": "cline",
+      "decision": "not_in_0.6.0",
+      "decided": "2026-11-28",
+      "by": "owner"
+    }
+  ]
+}
