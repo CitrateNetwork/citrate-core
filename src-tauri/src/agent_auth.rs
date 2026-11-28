@@ -243,10 +243,6 @@ impl AgentHomes {
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// `<root>/<id>`.
     pub fn agent_dir(&self, id: &AgentId) -> PathBuf {
         self.root.join(id.as_str())
