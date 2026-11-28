@@ -175,8 +175,8 @@ describe("dep intake", () => {
   it("a federation git crate needs a drift entry and stays on one pinned rev", () => {
     const fed = `${CHAIN}?rev=${REV}#${REV}`;
     const cargo = cargoLock([["citrate-core"], ["serde", REG], ["citrate-fork", fed]]);
-    expect(check({ cargo, rows: [row(["cargo:citrate-fork"])] })).toEqual([expect.stringMatching(/\[\[drift\]\]/)]);
-    expect(check({ cargo, rows: [row(["cargo:citrate-fork"], { drift: "citrate-core -> citrate-chain (citrate-fork)" })] })).toEqual([]);
+    expect(check({ cargo, rows: [row(["cargo:citrate-fork"], { origins: [CHAIN] })] })).toEqual([expect.stringMatching(/\[\[drift\]\]/)]);
+    expect(check({ cargo, rows: [row(["cargo:citrate-fork"], { origins: [CHAIN], drift: "citrate-core -> citrate-chain (citrate-fork)" })] })).toEqual([]);
     const other = "1111111111111111111111111111111111111111";
     const split = cargoLock([["citrate-core"], ["serde", REG], ["citrate-wallet-core", fed], ["citrate-commd", `${CHAIN}?rev=${other}#${other}`]]);
     expect(check({ cargo: split, base: split })).toEqual([expect.stringMatching(/citrate-chain.*one rev/)]);
@@ -222,7 +222,7 @@ describe("dep intake", () => {
     const add = (comment) => `${CI_OK}      # ${comment}\n      cargo audit --ignore RUSTSEC-2026-0999\n`;
     expect(check({ ci: add("RUSTSEC-2026-0999 reachable only in tests") })).toEqual([expect.stringMatching(/RUSTSEC-2026-0999.*EXPIRES/)]);
     expect(check({ ci: add("RUSTSEC-2026-0999 EXPIRES 2027-01-31") })).toEqual([]);
-    // The date sits on the id's own line: an expiry elsewhere in the block does not carry over.
+    // The date follows the id: an id added below an existing date in the same block does not inherit it.
     const block = `${CI_OK}      # RUSTSEC-2026-0997 EXPIRES 2027-01-31\n      # RUSTSEC-2026-0999 reachable only in tests\n      cargo audit --ignore RUSTSEC-2026-0997 --ignore RUSTSEC-2026-0999\n`;
     expect(check({ ci: block })).toEqual([expect.stringMatching(/RUSTSEC-2026-0999.*EXPIRES/)]);
     expect(check({ ci: add("RUSTSEC-2026-0999 EXPIRES 2026-11-01") })).toEqual([expect.stringMatching(/lapsed/)]);

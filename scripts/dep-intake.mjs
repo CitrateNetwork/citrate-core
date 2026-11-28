@@ -24,7 +24,9 @@
 //     its row names the manifest [[drift]] entry (Rule 12). A federation repo no component records
 //     has no pin in this repo; there the check proves one rev, not which rev (review covers it);
 //   - every `cargo audit --ignore` in .github/workflows/ci.yml other than the frozen baseline below
-//     has a comment line naming its id with "EXPIRES YYYY-MM-DD", and that date has not passed.
+//     sits in a comment block that names it and then carries "EXPIRES YYYY-MM-DD" (at or after
+//     the id's line, so an id appended below an older date does not inherit it; the cargo audit
+//     step's comments stay as they are), and that date has not passed.
 //
 // Exit 0 OK, 1 defects, 2 usage or unreadable input. Zero dependencies.
 import { execFileSync } from "node:child_process";
@@ -102,12 +104,19 @@ export function npmLockPackages(lockText) {
 
 function auditErrors(ciYml, today) {
   const errors = [];
-  const comments = ciYml.split("\n").filter((l) => l.trim().startsWith("#"));
+  const blocks = [];
+  let cur = null;
+  for (const line of ciYml.split("\n")) {
+    if (line.trim().startsWith("#")) (cur ??= blocks[blocks.push([]) - 1]).push(line);
+    else cur = null;
+  }
   const ids = new Set([...ciYml.matchAll(/--ignore[=\s]+(RUSTSEC-\d{4}-\d{4})/g)].map((m) => m[1]));
   for (const id of [...ids].sort()) {
     if (AUDIT_BASELINE.has(id)) continue;
-    const dates = comments.filter((l) => l.includes(id)).flatMap((l) => [...l.matchAll(/EXPIRES (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]));
-    if (dates.length === 0) errors.push(`ci.yml: cargo audit --ignore ${id} needs a comment line naming it with an EXPIRES YYYY-MM-DD date`);
+    // The date follows the id in its comment block: an id added below an existing date does not inherit it.
+    const after = blocks.filter((b) => b.some((l) => l.includes(id))).map((b) => b.slice(b.findIndex((l) => l.includes(id))));
+    const dates = after.flatMap((b) => [...b.join("\n").matchAll(/EXPIRES (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]));
+    if (dates.length === 0) errors.push(`ci.yml: cargo audit --ignore ${id} needs a comment naming it followed by an EXPIRES YYYY-MM-DD date`);
     else if (dates.every((d) => d < today)) errors.push(`ci.yml: cargo audit --ignore ${id} expiry lapsed (${dates.sort().at(-1)}); fix the advisory or renew it in review`);
   }
   return errors;
