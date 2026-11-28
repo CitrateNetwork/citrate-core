@@ -1,0 +1,32 @@
+# citrate-acp-host: the Agent Client Protocol host for Citrate Core 0.6.0 (planset v060,
+# lanes/L1_AGENT_RUNTIME.md WP02/WP03). Core is the ACP *client*: it spawns a pinned agent process,
+# speaks ACP over the child's stdio, streams its session updates and answers its permission
+# requests. No Tauri dependency, so the host is tested on its own and the app links it.
+#
+# agent-client-protocol is pinned exactly (=5.6.1, crates.io sha256 e2889673...0dda, the value in
+# release/agents.lock.json evidence.acp_crate). Only its default features: no `process` (Core
+# spawns the child itself, with a cleared environment and its own process group) and no `stdio`.
+[package]
+license = "BUSL-1.1"
+name = "citrate-acp-host"
+version = "0.1.0"
+description = "citrate-acp-host: the ACP client host that runs pinned coding agents for Citrate Core (L1-WP03)."
+authors = ["Citrate Network"]
+edition = "2021"
+publish = false
+
+[dependencies]
+agent-client-protocol = "=5.6.1"
+# Already in Cargo.lock through Tauri (tokio 1.52.3, tokio-util 0.7.18, futures-* 0.3); `process`
+# and `compat` are features of those same crates.
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+# killpg for the agent's process group (already in the tree; src-tauri names it too).
+libc = "0.2"
