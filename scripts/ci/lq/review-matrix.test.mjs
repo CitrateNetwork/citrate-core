@@ -160,6 +160,13 @@ describe("review record rules", () => {
     const lookalike = body(block({ reviewer: "a", context: "agent-1", skills: ["differential-review"] }), block({ reviewer: "b", context: "agent-1\u200b", skills: ["differential-review"] }));
     expect(evaluate({ files: ["README.md"], body: lookalike }).errors.join("\n")).toMatch(/not independent/);
   });
+  it("a record inside fenced code does not count, and a quoted template does not hide the real one", () => {
+    const real = two(["differential-review"]);
+    const template = "## Template\n\n```markdown\n## Review record\nreviewer: <account>\ncontext: <id>\n```\n\n";
+    expect(evaluate({ files: ["README.md"], body: template + real }).errors).toEqual([]);
+    const fenced = "## Review record\n\n```\n" + two(["differential-review"]).split("## Review record")[1] + "\n```\n";
+    expect(evaluate({ files: ["README.md"], body: fenced }).ok).toBe(false);
+  });
   it("skills may be a bulleted list under skills:", () => {
     const b = body(
       "reviewer: a\ncontext: c1\nskills:\n  - differential-review\n  - agentic-actions-auditor\nfindings: 0\nmeasured: ran it",

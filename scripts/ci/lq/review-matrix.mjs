@@ -128,8 +128,19 @@ const KEYS = ["reviewer", "context", "model", "skills", "findings", "measured", 
 // The `## Review record` section of a PR body, as blocks of fields. A block starts at reviewer:.
 export function parseReviewRecord(body) {
   const text = String(body || "").replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?(-->|$)/g, "");
-  const lines = text.split("\n");
-  const start = lines.findIndex((l) => /^#{2,3}\s*review record\s*$/i.test(l.trim()));
+  // Fenced code is never part of the record (a template quoted in the body, or blocks a reader would
+  // see as code): its lines are blanked before the section is found or read.
+  let fence = null;
+  const lines = text.split("\n").map((l) => {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(l);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
+      return "";
+    }
+    if (f) { fence = f[1]; return ""; }
+    return l;
+  });
+  const start = lines.findIndex((l) => /^#{2,3}\s+review record\s*$/i.test(l.trim()));
   if (start < 0) return { found: false, blocks: [] };
   const blocks = [];
   let cur = null, lastKey = null;
