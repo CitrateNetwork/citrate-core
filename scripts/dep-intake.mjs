@@ -4,21 +4,27 @@
 //
 //   node scripts/dep-intake.mjs check [--repo <dir>] [--base <git rev>]
 //
-// With --base, every third-party package (a Cargo.lock entry with a source, a package-lock.json
-// install path) in the working tree's lockfiles that the base's lockfiles lack must be listed in
-// exactly one row's deps, as "cargo:<name>" or "npm:<name>". A package counts as new when its name
-// is new or when it comes from a source the base did not use for that name (a crates.io crate
-// swapped for a git fork, an npm package resolved from a new host); a version bump on the same
-// source is not new (cargo audit and review cover it). Workspace and path crates (crates/*,
-// src-tauri, kit, ...) are first party and need no row. Without --base nothing counts as new
-// (scheduled runs), and the checks below still run:
-//   - each row has lane (L0..L9, LQ), wp, reason, licence, reviewer and a supply_chain review
-//     {skill: "supply-chain-risk-auditor", result: "pass" | "pass-with-notes", notes};
+// With --base, every third-party package (a Cargo.lock entry with a source; a package-lock.json
+// entry, named by its lock "name" when set (an npm alias) and else by its install path) in the
+// working tree's lockfiles that the base's lockfiles lack must be listed in exactly one row's deps,
+// as "cargo:<name>" or "npm:<name>". A package counts as new when its name is new or when it comes
+// from a source origin the base did not use for that name (a crates.io crate swapped for a git
+// fork; an npm tarball from another host or another registry package); a version bump on the same
+// origin is not new (cargo audit and review cover it). Workspace and path crates (crates/*,
+// src-tauri, kit, ...) and linked npm workspace packages are first party and need no row. Without
+// --base nothing counts as new (scheduled runs), and the checks below still run:
+//   - each row has lane (L0..L9, LQ), wp, reason, licence, reviewer, a supply_chain review
+//     {skill: "supply-chain-risk-auditor", result: "pass" | "pass-with-notes", notes}, and origins:
+//     the reviewed source origins, which must hold every origin its deps come from (so a reviewed
+//     package later moved to a fork or another package fails until its row is reviewed again);
 //   - each row names only packages the lockfiles hold (a removed dependency takes its row along);
-//   - a CitrateNetwork git crate is pinned by rev=, all crates from one federation repo share one
-//     rev (the federation pin), and its row names the manifest [[drift]] entry (Rule 12);
+//   - a CitrateNetwork git crate (any spelling: https, http, ssh, any case, with or without .git)
+//     is pinned by a 40-hex rev=, all crates from one federation repo share one rev, that rev is the
+//     federation pin when release/components.json records one for the repo (federation.rev), and
+//     its row names the manifest [[drift]] entry (Rule 12). A federation repo no component records
+//     has no pin in this repo; there the check proves one rev, not which rev (review covers it);
 //   - every `cargo audit --ignore` in .github/workflows/ci.yml other than the frozen baseline below
-//     sits in a comment block carrying "EXPIRES YYYY-MM-DD", and that date has not passed.
+//     has a comment line naming its id with "EXPIRES YYYY-MM-DD", and that date has not passed.
 //
 // Exit 0 OK, 1 defects, 2 usage or unreadable input. Zero dependencies.
 import { execFileSync } from "node:child_process";
@@ -31,9 +37,12 @@ const AUDIT_BASELINE = new Set(["RUSTSEC-2025-0055", "RUSTSEC-2026-0367", "RUSTS
 const LANE = /^(L[0-9]|LQ)$/;
 const DEP = /^(cargo|npm):\S+$/;
 const RESULTS = new Set(["pass", "pass-with-notes"]);
-const FEDERATION = "git+https://github.com/CitrateNetwork/";
+// A git source on github.com/CitrateNetwork, in any spelling cargo accepts; group 1 is the repo.
+const FEDERATION = /^git\+(?:(?:https?|ssh|git):\/\/)?(?:[^@/?#]+@)?(?:www\.)?github\.com(?:(?::\d+)?\/|:)citratenetwork\/([^/?#]+?)(?:\.git)?\/?(?:[?#]|$)/i;
+const HEX40 = /^[0-9a-f]{40}$/;
 
 class Usage extends Error {}
+const text = (v) => typeof v === "string" && v.trim() !== "";
 
 /** Third-party Cargo.lock packages: "cargo:<name>" -> Set of sources. */
 export function cargoLockPackages(text) {
@@ -50,13 +59,26 @@ export function cargoLockPackages(text) {
   return pkgs;
 }
 
-/** Where a source comes from, without rev, commit or file: "git+https://host/repo.git", "https://registry.npmjs.org". */
-export function sourceOrigin(src) {
-  if (/^https?:\/\//.test(src)) return new URL(src).origin;
-  return src.split("#")[0].replace(/\?rev=[^&]*&?/, "?").replace(/\?$/, "");
+/** The CitrateNetwork repo a Cargo.lock source comes from, lowercased and without .git; null for any other source. */
+export function fedRepo(src) {
+  return FEDERATION.exec(src)?.[1].toLowerCase() ?? null;
 }
 
-/** package-lock.json (v2/v3) packages: "npm:<name>" -> Set of resolved URLs ("link" for a workspace link). */
+/**
+ * Where a source comes from, without rev, commit or version: "git+https://host/repo.git", and for a
+ * registry tarball the package path ("https://registry.npmjs.org/react", ".../@scope/name"). Any
+ * other tarball URL is kept whole, so a new URL is a new origin.
+ */
+export function sourceOrigin(src) {
+  if (/^https?:\/\//i.test(src)) {
+    const u = new URL(src);
+    const i = u.pathname.indexOf("/-/");
+    return `${u.origin}${i < 0 ? u.pathname : u.pathname.slice(0, i)}`;
+  }
+  return src.split("#")[0].replace(/([?&])rev=[^&]*&?/, "$1").replace(/[?&]$/, "");
+}
+
+/** package-lock.json (v2/v3) packages: "npm:<name>" -> Set of resolved URLs. The name is the entry's own (an alias installs it under another path); workspace links are first party and left out. */
 export function npmLockPackages(text) {
   let lock;
   try {
@@ -69,40 +91,44 @@ export function npmLockPackages(text) {
   for (const [p, v] of Object.entries(lock.packages)) {
     const i = p.lastIndexOf("node_modules/");
     if (i < 0) continue;
-    const key = `npm:${p.slice(i + "node_modules/".length)}`;
+    if (v?.link === true) continue;
+    const key = `npm:${text(v?.name) ? v.name : p.slice(i + "node_modules/".length)}`;
     if (!pkgs.has(key)) pkgs.set(key, new Set());
-    pkgs.get(key).add(v?.link ? "link" : typeof v?.resolved === "string" ? v.resolved : "unresolved");
+    pkgs.get(key).add(typeof v?.resolved === "string" ? v.resolved : "unresolved");
   }
   return pkgs;
 }
 
-const text = (v) => typeof v === "string" && v.trim() !== "";
-
 function auditErrors(ciYml, today) {
   const errors = [];
-  const blocks = [];
-  let cur = null;
-  for (const line of ciYml.split("\n")) {
-    if (line.trim().startsWith("#")) (cur ??= blocks[blocks.push([]) - 1]).push(line);
-    else cur = null;
-  }
+  const comments = ciYml.split("\n").filter((l) => l.trim().startsWith("#"));
   const ids = new Set([...ciYml.matchAll(/--ignore[=\s]+(RUSTSEC-\d{4}-\d{4})/g)].map((m) => m[1]));
   for (const id of [...ids].sort()) {
     if (AUDIT_BASELINE.has(id)) continue;
-    const dates = blocks.filter((b) => b.some((l) => l.includes(id))).flatMap((b) => [...b.join("\n").matchAll(/EXPIRES (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]));
-    if (dates.length === 0) errors.push(`ci.yml: cargo audit --ignore ${id} needs a comment naming it with an EXPIRES YYYY-MM-DD date`);
+    const dates = comments.filter((l) => l.includes(id)).flatMap((l) => [...l.matchAll(/EXPIRES (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]));
+    if (dates.length === 0) errors.push(`ci.yml: cargo audit --ignore ${id} needs a comment line naming it with an EXPIRES YYYY-MM-DD date`);
     else if (dates.every((d) => d < today)) errors.push(`ci.yml: cargo audit --ignore ${id} expiry lapsed (${dates.sort().at(-1)}); fix the advisory or renew it in review`);
   }
   return errors;
 }
 
+/** Federation pins from release/components.json: lowercased CitrateNetwork repo -> federation.rev. */
+export function federationPins(componentsJson) {
+  const pins = new Map();
+  for (const c of Array.isArray(componentsJson?.components) ? componentsJson.components : []) {
+    const repo = /^CitrateNetwork\/([^/]+)$/i.exec(c?.source?.repo ?? "")?.[1].toLowerCase();
+    if (repo && HEX40.test(c?.federation?.rev ?? "")) pins.set(repo, c.federation.rev);
+  }
+  return pins;
+}
+
 /** Check an intake against base and head package sets. Returns a list of defects. */
-export function checkIntake({ intake, base, head, ciYml, today }) {
+export function checkIntake({ intake, base, head, ciYml, today, pins = new Map() }) {
   const errors = [];
   const rows = Array.isArray(intake?.rows) ? intake.rows : [];
   if (!Array.isArray(intake?.rows)) errors.push("release/dep-intake.json has no rows[]");
   const present = new Set([...head.cargo.keys(), ...head.npm.keys()]);
-  const fedRepo = (src) => src.slice(FEDERATION.length).split(/[?#]/)[0];
+  const sourcesOf = (d) => head.cargo.get(d) ?? head.npm.get(d) ?? new Set();
 
   const listed = new Map();
   rows.forEach((r, i) => {
@@ -119,7 +145,11 @@ export function checkIntake({ intake, base, head, ciYml, today }) {
       if (listed.has(d)) errors.push(`${d}: listed in more than one row`);
       listed.set(d, r);
       if (!present.has(d)) errors.push(`${d}: ${at} names a package not in Cargo.lock or package-lock.json`);
-      const fed = [...(head.cargo.get(d) ?? [])].some((s) => s.startsWith(FEDERATION));
+      const origins = Array.isArray(r?.origins) ? r.origins : [];
+      for (const o of [...new Set([...sourcesOf(d)].map(sourceOrigin))].sort()) {
+        if (!origins.includes(o)) errors.push(`${d}: source ${o} is not in ${at} origins (the reviewed sources); a changed source needs the row reviewed again`);
+      }
+      const fed = [...(head.cargo.get(d) ?? [])].some((s) => fedRepo(s) !== null);
       if (fed && !text(r?.drift)) errors.push(`${d}: a federation crate needs drift naming its manifest.toml [[drift]] entry (Rule 12)`);
     }
   });
@@ -140,18 +170,24 @@ export function checkIntake({ intake, base, head, ciYml, today }) {
   const revs = new Map();
   for (const [name, sources] of head.cargo) {
     for (const s of sources) {
-      if (!s.startsWith(FEDERATION)) continue;
+      const repo = fedRepo(s);
+      if (repo === null) continue;
       const rev = /[?&]rev=([0-9a-f]{40})(#|&|$)/.exec(s)?.[1];
       if (!rev) {
         errors.push(`${name}: federation git source must pin a 40-hex rev= (the federation pin), not a branch or tag`);
         continue;
       }
-      const repo = fedRepo(s);
       if (!revs.has(repo)) revs.set(repo, new Set());
       revs.get(repo).add(rev);
     }
   }
-  for (const [repo, set] of revs) if (set.size > 1) errors.push(`CitrateNetwork/${repo}: federation crates must stay on one rev (found ${[...set].sort().join(", ")})`);
+  for (const [repo, set] of revs) {
+    if (set.size > 1) errors.push(`CitrateNetwork/${repo}: federation crates must stay on one rev (found ${[...set].sort().join(", ")})`);
+    const pin = pins.get(repo);
+    for (const rev of [...set].sort()) {
+      if (pin && rev !== pin) errors.push(`CitrateNetwork/${repo}: crate rev ${rev} is not the federation pin ${pin} (release/components.json federation.rev; move both with the manifest, Rule 12)`);
+    }
+  }
 
   return [...errors, ...auditErrors(ciYml, today)];
 }
@@ -197,7 +233,13 @@ function main(argv) {
     throw e instanceof Usage ? e : new Usage(`release/dep-intake.json: ${e.message}`);
   }
   const ciYml = read(path.join(repo, ".github", "workflows", "ci.yml"));
-  const errors = checkIntake({ intake, base, head, ciYml, today: new Date().toISOString().slice(0, 10) });
+  let pins;
+  try {
+    pins = federationPins(JSON.parse(read(path.join(repo, "release", "components.json"))));
+  } catch (e) {
+    throw e instanceof Usage ? e : new Usage(`release/components.json: ${e.message}`);
+  }
+  const errors = checkIntake({ intake, base, head, ciYml, pins, today: new Date().toISOString().slice(0, 10) });
   for (const e of errors) console.error(`dep-intake: ${e}`);
   if (errors.length === 0) console.log(`dep-intake: ok (${head.cargo.size} crates, ${head.npm.size} npm packages, ${intake.rows.length} intake rows${opt.base ? `, base ${opt.base}` : ""})`);
   return errors.length === 0 ? 0 : 1;
