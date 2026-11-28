@@ -107,6 +107,9 @@ mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+// L0-WP04 (planset v060): the per-lane module tree and start-up hooks (`lanes/l<N>/`). A lane's
+// new module is declared in its own `lanes/l<N>/mod.rs`, not here.
+mod lanes;
 mod local_data;
 mod mcp_servers;
 mod media;
@@ -371,8 +374,19 @@ pub fn run() {
     // node and its RocksDB first) inherits it. A Finder/Dock launch on macOS starts at 256, too
     // few for the node's SST files. Logs one line; never fails start-up.
     fd_limit::apply_at_startup();
+    // K6: install the network gate before anything can sign. Every wallet signature is
+    // checked locally against the active network profile (refused when no network is set,
+    // or when it commits to another chain id). Transaction sends additionally check the
+    // RPC's chain id and block-0 hash against the profile before broadcasting.
+    // L0-WP04: both gates are installed here, before the builder, because a plugin's own init
+    // (a lane plugin from `lanes::plugins_all` included) runs while the app is built, before the
+    // setup closure. The profile is compiled in, so nothing in setup is needed first.
+    network_profile::install_network_gate();
+    // G-SEC PAY-10/11/14: the FL payouts gate, from the same profile, before anything can
+    // sign. Payouts are dark unless the profile opens them and the pinned code matches.
+    network_profile::install_payouts_gate();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
         // Join-13: on Linux/Windows a clicked `citrate://` link arrives as that second launch's
@@ -397,7 +411,11 @@ pub fn run() {
         // tauri.conf.json). The JS API drives check/download/install via this plugin.
         .plugin(tauri_plugin_updater::Builder::new().build())
         // W2.4 — relaunch into the freshly-installed version.
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+    // L0-WP04: each lane's plugins (`lanes/l<N>/hooks.rs`), l0 to l9, after every plugin above, so
+    // single-instance stays first, and after the network and payouts gates (installed above), so a
+    // lane plugin's init cannot sign ungated. A new plugin goes in a lane's hooks.rs, not here.
+    crate::lanes::plugins_all(builder)
         // HUP-S10.3 — widget documents (`citrate-widget://localhost/<id>`), served from the widget
         // store with a strict CSP, to the main window only. See widgets.rs.
         .register_asynchronous_uri_scheme_protocol(widgets::SCHEME, |ctx, request, responder| {
@@ -409,14 +427,8 @@ pub fn run() {
             // 0.5.4 (#677, owner 2026-11-14: on for new installs only): whether this install has
             // data from an earlier run, read before this launch writes anything.
             let had_existing_data = hermes_setup::had_existing_data(&hermes_setup::data_roots(app.handle()));
-            // K6 — install the network gate before anything can sign. Every wallet signature is
-            // checked locally against the active network profile (refused when no network is set,
-            // or when it commits to another chain id). Transaction sends additionally check the
-            // RPC's chain id and block-0 hash against the profile before broadcasting.
-            network_profile::install_network_gate();
-            // G-SEC PAY-10/11/14: the FL payouts gate, from the same profile, before anything can
-            // sign. Payouts are dark unless the profile opens them and the pinned code matches.
-            network_profile::install_payouts_gate();
+            // The network and payouts gates are already installed: run() installs them before the
+            // builder, so they hold before any plugin (lane plugins included) initializes.
             // CORE-D5: the sidecar log folder is set before any sidecar can start.
             if let Ok(dir) = app.path().app_log_dir() {
                 sidecar_logs::init(&dir);
@@ -641,6 +653,10 @@ pub fn run() {
             // watching (turns from the node MCP server or the CLI), instead of leaving them to the
             // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
             hermes_headless::spawn(app.handle().clone());
+            // L0-WP04: each lane's setup step (`lanes/l<N>/hooks.rs`), l0 to l9, LAST: after the
+            // whole existing setup body (the network and payouts gates were installed before the
+            // builder). The first failing hook stops start-up with its lane id in the error.
+            crate::lanes::setup_all(app)?;
             Ok(())
         })
         .invoke_handler(crate::v60_all_commands!())
@@ -657,6 +673,9 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 shutdown_all_sidecars(app_handle);
+                // L0-WP04: each lane's quit step (`lanes/l<N>/hooks.rs`), l0 to l9, after the
+                // teardown. ExitRequested and Exit both reach here, so a quit hook may run twice.
+                crate::lanes::on_exit_all(app_handle);
             }
         });
 }

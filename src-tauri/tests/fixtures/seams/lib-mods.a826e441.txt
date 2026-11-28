@@ -100,6 +100,7 @@ mod ipc_name;
 mod ipfs;
 mod journal_export;
 mod knowledge_import;
+mod lanes;
 mod local_data;
 mod mcp_servers;
 mod media;

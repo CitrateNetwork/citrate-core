@@ -3,11 +3,13 @@
 //!
 //! L0-WP03 split the `generate_handler!` list into per-lane lists (`src/commands/l<N>.rs`) and
 //! `permissions/main-window.toml` into per-lane ACLs; the registration and ACL snapshots stayed
-//! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 moves the module
-//! tree and must keep these snapshots byte-identical. A lane PR that drops or re-points a
-//! recorded command fails here by name. A lane adds a command in its own `commands/l<N>.rs` and
-//! `permissions/l<N>-commands.toml` only: those lane-owned files are the reviewed record of the
-//! addition, and the commands fixture stays the a826e441 baseline (`baseline_problems`).
+//! byte-identical, and the module set gained exactly `mod commands;`. L0-WP04 added the per-lane
+//! module tree (`src/lanes/`): the module set gained exactly `mod lanes;`, and a lane declares its
+//! new modules in `lanes/l<N>/mod.rs`, so a new lane module leaves this snapshot alone. A lane PR
+//! that drops or re-points a recorded command fails here by name. A lane adds a command in its
+//! own `commands/l<N>.rs` and `permissions/l<N>-commands.toml` only: those lane-owned files are
+//! the reviewed record of the addition, and the commands fixture stays the a826e441 baseline
+//! (`baseline_problems`).
 //! A fixture changes only in an L0-reviewed PR that says why; record it again with
 //! `node scripts/seams-snapshot.mjs` (`SEAMS_SNAPSHOT_WRITE=1`). A missing fixture fails and prints
 //! `SEAMS_SNAPSHOT_MISSING <path> <hex>` with the exact bytes it would record.
@@ -689,4 +691,426 @@ fn registry_source_sees_every_lane() {
             "commands/{lane}.rs must not call generate_handler! itself"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// L0-WP04: the per-lane module tree and start-up hooks (`src/lanes/l<N>/{mod.rs,hooks.rs}`),
+// L0_INTEGRATION_SEAMS section 3.2. A lane adds a module, a plugin, a setup step or a quit step in
+// its own files; lib.rs calls `crate::lanes::{plugins_all, setup_all, on_exit_all}` once each, at
+// points that keep the existing start-up and quit order. These read the sources, so a hook that
+// moves ahead of the single-instance plugin or the network gate fails by name.
+// ---------------------------------------------------------------------------------------------
+
+/// The three hook phases, in the order a launch runs them. The compiler checks each hook's
+/// signature (lanes/mod.rs takes it as a typed function pointer); this checks the name and shape.
+const HOOK_PHASES: [&str; 3] = ["plugins", "setup", "on_exit"];
+
+/// lib.rs with every `//` comment dropped, so a comment that names a call never counts as one.
+fn lib_code() -> String {
+    LIB_RS
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(at) => &l[..at],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The body of `run()`: from its signature to the next top-level item.
+fn run_body(code: &str) -> &str {
+    let start = code
+        .find("pub fn run() {")
+        .expect("lib.rs has pub fn run()");
+    let len = code[start..].find("\n}\n").expect("end of run()");
+    &code[start..start + len]
+}
+
+/// The setup closure: from `.setup(|app| {` to the invoke handler that follows it.
+fn setup_body(run: &str) -> &str {
+    let start = run
+        .find(".setup(|app| {")
+        .expect("run() has the setup closure");
+    let len = run[start..]
+        .find(".invoke_handler(")
+        .expect("the invoke handler follows the setup closure");
+    &run[start..start + len]
+}
+
+/// Byte offsets of every occurrence of `needle` in `hay`.
+fn offsets(hay: &str, needle: &str) -> Vec<usize> {
+    hay.match_indices(needle).map(|(at, _)| at).collect()
+}
+
+#[test]
+fn single_instance_is_first_plugin() {
+    let code = lib_code();
+    let run = run_body(&code);
+    let builder = run
+        .find("tauri::Builder::default()")
+        .expect("run() builds the app with tauri::Builder::default()");
+    let plugins = offsets(&run[builder..], ".plugin(");
+    assert!(
+        plugins.len() >= 2,
+        "run() registers its plugins on the builder"
+    );
+    assert!(
+        run[builder + plugins[0]..].starts_with(".plugin(tauri_plugin_single_instance::init("),
+        "tauri requires tauri_plugin_single_instance to be the first plugin registered"
+    );
+    assert_eq!(
+        code.matches("tauri_plugin_single_instance::init(").count(),
+        1,
+        "single-instance is registered once"
+    );
+}
+
+#[test]
+fn lane_plugins_follow_existing_plugins() {
+    let code = lib_code();
+    let run = run_body(&code);
+    let calls = offsets(run, "crate::lanes::plugins_all(builder)");
+    assert_eq!(
+        calls.len(),
+        1,
+        "run() calls lanes::plugins_all(builder) once"
+    );
+    let last_plugin = *offsets(run, ".plugin(")
+        .last()
+        .expect("run() registers plugins");
+    let setup = run.find(".setup(|app| {").expect("setup closure");
+    assert!(
+        last_plugin < calls[0] && calls[0] < setup,
+        "the lane plugins come after every existing .plugin( and before .setup"
+    );
+    // lib.rs registers no plugin after the lanes': a new plugin goes in a lane's hooks.rs.
+    assert!(
+        !run[calls[0]..].contains(".plugin("),
+        "no .plugin( after lanes::plugins_all in lib.rs"
+    );
+}
+
+/// The gate installs, in lib.rs code. `run()` installs both before it creates the builder.
+const GATES: [&str; 2] = [
+    "network_profile::install_network_gate();",
+    "network_profile::install_payouts_gate();",
+];
+
+/// Problems with where lib.rs installs the network and payouts gates (empty when right): each
+/// gate is installed once, in `run()`, before `tauri::Builder::default()`, so before any plugin
+/// initializes (a plugin's init runs while the app is built), before `lanes::plugins_all` and
+/// before the setup closure and `lanes::setup_all`.
+fn gate_problems(code: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let run = run_body(code);
+    let Some(builder) = run.find("tauri::Builder::default()") else {
+        return vec!["run() has no tauri::Builder::default()".into()];
+    };
+    for gate in GATES {
+        let at = offsets(code, gate);
+        if at.len() != 1 {
+            problems.push(format!("lib.rs runs {gate} {} times, want 1", at.len()));
+            continue;
+        }
+        match run.find(gate) {
+            Some(at) if at < builder => {}
+            Some(_) => problems.push(format!("{gate} runs after the builder is created")),
+            None => problems.push(format!("{gate} is not in run()")),
+        }
+    }
+    problems
+}
+
+#[test]
+fn lane_plugins_run_after_network_gate() {
+    let code = lib_code();
+    assert_eq!(gate_problems(&code), Vec::<String>::new());
+    let run = run_body(&code);
+    let plugins = run
+        .find("crate::lanes::plugins_all(builder)")
+        .expect("run() calls lanes::plugins_all");
+    for gate in GATES {
+        assert!(
+            run.find(gate).expect("gate in run()") < plugins,
+            "lane plugins are added after {gate}"
+        );
+    }
+    // Mutation proofs: each regression below is caught.
+    let gate_in_setup = code.replacen(GATES[0], "", 1).replacen(
+        ".setup(|app| {",
+        &format!(".setup(|app| {{ {}", GATES[0]),
+        1,
+    );
+    let gate_twice = code.replacen(GATES[1], &format!("{} {}", GATES[1], GATES[1]), 1);
+    let gate_lost = code.replacen(GATES[1], "", 1);
+    for (name, mutant) in [
+        ("network gate moved into setup", gate_in_setup),
+        ("payouts gate installed twice", gate_twice),
+        ("payouts gate lost", gate_lost),
+    ] {
+        assert_ne!(mutant, code, "{name}: the mutation applies");
+        assert!(!gate_problems(&mutant).is_empty(), "{name} is caught");
+    }
+}
+
+#[test]
+fn lane_setup_runs_after_network_gate() {
+    let code = lib_code();
+    assert_eq!(gate_problems(&code), Vec::<String>::new());
+    let run = run_body(&code);
+    let setup = setup_body(run);
+    let calls = offsets(setup, "crate::lanes::setup_all(app)?;");
+    assert_eq!(
+        calls.len(),
+        1,
+        "the setup closure calls lanes::setup_all(app)? once"
+    );
+    let setup_at = run.find(".setup(|app| {").expect("setup closure");
+    for gate in GATES {
+        assert!(
+            run.find(gate).expect("gate in run()") < setup_at,
+            "lane setup hooks run after {gate}"
+        );
+    }
+    // Last: the existing setup body runs in full, then the lanes, then the closure returns.
+    let after = &setup[calls[0] + "crate::lanes::setup_all(app)?;".len()..];
+    assert!(
+        after.trim_start().starts_with("Ok(())"),
+        "lanes::setup_all is the last step of the setup closure"
+    );
+}
+
+/// The span of the block that starts at the `{` at `open` (inclusive of both braces).
+fn block_at(code: &str, open: usize) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in code[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&code[open..=open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Problems with the quit path's lane hooks (empty when right): the run-event handler has one
+/// exit branch, `if matches!(event, ExitRequested { .. } | Exit) { .. }`, and inside it, and only
+/// there, `shutdown_all_sidecars(app_handle);` then `crate::lanes::on_exit_all(app_handle);`,
+/// each once. A call after the branch's closing brace would run on every run event.
+fn exit_problems(code: &str) -> Vec<String> {
+    const OPEN: &str = ".run(|app_handle, event| {";
+    const TEARDOWN: &str = "shutdown_all_sidecars(app_handle);";
+    const LANES_EXIT: &str = "crate::lanes::on_exit_all(app_handle);";
+    let Some(handler_at) = code.find(OPEN) else {
+        return vec!["lib.rs has no run-event handler".into()];
+    };
+    let Some(handler) = block_at(code, handler_at + OPEN.len() - 1) else {
+        return vec!["the run-event handler is not closed".into()];
+    };
+    let mut problems = Vec::new();
+    if offsets(code, "on_exit_all(").len() != 1 {
+        problems.push("lib.rs must call lanes::on_exit_all exactly once".into());
+    }
+    let Some(cond_at) = handler.find("if matches!(") else {
+        return [problems, vec!["the handler has no exit branch".into()]].concat();
+    };
+    // The branch condition is the macro call's parentheses; its body is the next block.
+    let mut depth = 0usize;
+    let mut cond_end = None;
+    for (i, c) in handler[cond_at..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    cond_end = Some(cond_at + i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(cond_end) = cond_end else {
+        return [
+            problems,
+            vec!["the exit branch condition is not closed".into()],
+        ]
+        .concat();
+    };
+    let cond: String = handler[cond_at..cond_end].split_whitespace().collect();
+    if cond != "ifmatches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit)" {
+        problems.push(format!("exit branch condition changed: {cond}"));
+    }
+    let rest = &handler[cond_end..];
+    let open = cond_end + (rest.len() - rest.trim_start().len());
+    let body = match handler[open..].starts_with('{') {
+        true => block_at(handler, open),
+        false => None,
+    };
+    let Some(body) = body else {
+        return [problems, vec!["the exit branch has no body".into()]].concat();
+    };
+    let inner: Vec<&str> = body[1..body.len() - 1].split_whitespace().collect();
+    if inner != [TEARDOWN, LANES_EXIT] {
+        problems.push(format!(
+            "the exit branch must run {TEARDOWN} then {LANES_EXIT}, got {}",
+            inner.join(" ")
+        ));
+    }
+    let outside = handler.replacen(body, "", 1);
+    for call in [TEARDOWN, LANES_EXIT] {
+        if outside.contains(call) {
+            problems.push(format!("{call} runs outside the exit branch"));
+        }
+    }
+    problems
+}
+
+#[test]
+fn lane_exit_hooks_run_after_sidecar_teardown() {
+    let code = lib_code();
+    assert_eq!(exit_problems(&code), Vec::<String>::new());
+    let teardown = "                shutdown_all_sidecars(app_handle);\n";
+    let lanes_exit = "crate::lanes::on_exit_all(app_handle);";
+    let branch_end = format!("{lanes_exit}\n            }}");
+    // Mutation proofs (review findings on 92bb72ea and 637b9200): each regression below is caught.
+    let after_branch = code.replacen(&branch_end, &format!("}}\n            {lanes_exit}"), 1);
+    let before_teardown = code.replacen(&format!("{lanes_exit}\n"), "\n", 1).replacen(
+        teardown,
+        &format!("                {lanes_exit}\n{teardown}"),
+        1,
+    );
+    let exit_only = code.replacen(
+        "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
+        "tauri::RunEvent::Exit",
+        1,
+    );
+    let twice = code.replacen(lanes_exit, &format!("{lanes_exit} {lanes_exit}"), 1);
+    let lost = code.replacen(lanes_exit, "", 1);
+    for (name, mutant) in [
+        (
+            "quit hooks after the exit branch (every run event)",
+            after_branch,
+        ),
+        ("quit hooks before the sidecar teardown", before_teardown),
+        ("ExitRequested no longer handled", exit_only),
+        ("quit hooks called twice", twice),
+        ("quit hooks lost", lost),
+    ] {
+        assert_ne!(mutant, code, "{name}: the mutation applies");
+        assert!(!exit_problems(&mutant).is_empty(), "{name} is caught");
+    }
+}
+
+#[test]
+fn lane_tree_has_every_lane() {
+    assert!(
+        LIB_RS.lines().any(|l| l == "mod lanes;"),
+        "lib.rs declares mod lanes"
+    );
+    let dir = tauri_dir().join("src/lanes");
+    let mut got: BTreeSet<String> = BTreeSet::new();
+    for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("src-tauri/src/lanes: {e}")) {
+        let entry = entry.expect("entry");
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.path().is_dir() {
+            got.insert(name);
+        } else {
+            assert_eq!(
+                name, "mod.rs",
+                "src/lanes holds mod.rs and the lane folders only"
+            );
+        }
+    }
+    let want: BTreeSet<String> = LANES.iter().map(|l| l.to_string()).collect();
+    assert_eq!(got, want, "src/lanes holds exactly the ten lane folders");
+
+    let modrs = read_rel("src/lanes/mod.rs");
+    for lane in LANES {
+        assert!(
+            modrs.contains(&format!("pub(crate) mod {lane};")),
+            "lanes/mod.rs declares pub(crate) mod {lane}"
+        );
+        assert!(
+            read_rel(&format!("src/lanes/{lane}/mod.rs")).contains("pub(crate) mod hooks;"),
+            "lanes/{lane}/mod.rs declares its hooks module"
+        );
+        let hooks = read_rel(&format!("src/lanes/{lane}/hooks.rs"));
+        for phase in HOOK_PHASES {
+            assert_eq!(
+                hooks
+                    .matches(&format!("pub(crate) fn {phase}<R: Runtime>("))
+                    .count(),
+                1,
+                "lanes/{lane}/hooks.rs defines {phase} once, generic over the runtime"
+            );
+        }
+    }
+    // Each phase calls l0..l9 in that order, each lane's own hook (never another lane's).
+    for phase in HOOK_PHASES {
+        let mut last = 0;
+        for lane in LANES {
+            let row = format!("(\"{lane}\", {lane}::hooks::{phase})");
+            let at = offsets(&modrs, &row);
+            assert_eq!(at.len(), 1, "lanes/mod.rs calls {row} once");
+            assert!(
+                at[0] > last,
+                "lanes/mod.rs calls the {phase} hooks in lane order at {lane}"
+            );
+            last = at[0];
+        }
+    }
+}
+
+// The hooks as built, run through tauri's mock runtime: every phase runs l0 to l9, each once.
+#[cfg(not(windows))] // tauri's mock runtime (`test` feature) is a non-Windows dev-dependency
+#[test]
+fn lane_hooks_run_in_lane_order() {
+    let _ = crate::lanes::take_recorded();
+    let _builder = crate::lanes::plugins_all(tauri::test::mock_builder());
+    let app = tauri::test::mock_app();
+    crate::lanes::setup_all(&app).expect("an empty setup hook returns Ok");
+    crate::lanes::on_exit_all(app.handle());
+    let want: Vec<(&str, &str)> = HOOK_PHASES
+        .iter()
+        .flat_map(|phase| LANES.iter().map(move |lane| (*lane, *phase)))
+        .collect();
+    assert_eq!(
+        crate::lanes::take_recorded(),
+        want,
+        "plugins, then setup, then on_exit, each l0 to l9"
+    );
+}
+
+// Mutation case: a failing lane stops start-up with its lane id, and no later lane runs.
+#[cfg(not(windows))]
+#[test]
+fn setup_all_stops_at_the_first_failing_lane() {
+    fn ok<R: tauri::Runtime>(_app: &tauri::App<R>) -> Result<(), crate::lanes::HookError> {
+        Ok(())
+    }
+    fn fails<R: tauri::Runtime>(_app: &tauri::App<R>) -> Result<(), crate::lanes::HookError> {
+        Err("store folder is read-only".into())
+    }
+    let hooks: [(
+        &'static str,
+        crate::lanes::SetupHook<tauri::test::MockRuntime>,
+    ); 3] = [("l0", ok), ("l1", fails), ("l2", ok)];
+    let app = tauri::test::mock_app();
+    let _ = crate::lanes::take_recorded();
+    let err = crate::lanes::run_setup(&app, &hooks).expect_err("l1 fails");
+    assert_eq!(
+        err.to_string(),
+        "lane l1 setup hook failed: store folder is read-only"
+    );
+    assert_eq!(
+        crate::lanes::take_recorded(),
+        vec![("l0", "setup"), ("l1", "setup")],
+        "l2 does not run after l1 fails"
+    );
 }

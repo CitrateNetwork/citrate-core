@@ -367,11 +367,19 @@ fn hermes_setup_check_is_registered_and_allowed_for_the_main_window() {
         assert!(lib.contains(&format!("hermes_setup::{cmd}")), "{cmd}");
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd}");
     }
-    // The existing-data probe is the first thing setup does, before anything writes.
-    let setup = lib.find(".setup(|app| {").expect("setup");
-    let probe = lib.find("hermes_setup::had_existing_data(").expect("probe");
-    let gate = lib.find("network_profile::install_network_gate();").expect("first step");
-    assert!(setup < probe && probe < gate, "the probe must run first in setup");
+    // The existing-data probe is the first thing setup does, before anything writes. (L0-WP04
+    // moved the network gate, the former "next step" marker here, ahead of the builder in run();
+    // this now checks the stricter thing: the probe is the closure's first statement.)
+    let setup = lib.find(".setup(|app| {").expect("setup") + ".setup(|app| {".len();
+    let first = lib[setup..]
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//"))
+        .expect("the setup closure has a first statement");
+    assert!(
+        first.starts_with("let had_existing_data = hermes_setup::had_existing_data("),
+        "the probe must run first in setup, got: {first}"
+    );
     assert!(lib.contains("on for new installs only"));
     assert!(include_str!("hermes_mcp.rs").contains("Owner 2026-11-14: on for new installs"));
     // Launch provisioning runs before the node MCP server's state is built (so its default applies).

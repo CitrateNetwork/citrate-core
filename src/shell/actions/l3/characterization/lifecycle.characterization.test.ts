@@ -2,9 +2,12 @@
 // L3-WP16 (tray / menu-bar agent, close-to-tray) changes it. A failure here means the quit path
 // changed: update the expectation only together with that reviewed change.
 //
-//   1. The app's run loop calls shutdown_all_sidecars on ExitRequested and on Exit, and does
-//      nothing else; shutdown_all_sidecars stops each sidecar in today's order, every managed-state
-//      block stopping its own supervisor.
+//   1. The app's run loop calls shutdown_all_sidecars on ExitRequested and on Exit, then the lane
+//      quit hooks (crate::lanes::on_exit_all, empty until a lane adds a step), and does nothing
+//      else; shutdown_all_sidecars stops each sidecar in today's order, every managed-state block
+//      stopping its own supervisor.
+//      Updated with L0-WP04 (planset v060 L0_INTEGRATION_SEAMS 3.2, the reviewed seam change that
+//      added the per-lane quit hooks after the teardown, inside the same exit branch).
 //   2. Nothing intercepts a quit or the main window's close: closing the window ends the app.
 //
 // The Tauri run loop cannot run in a unit test, so the pins read the real Rust sources. They live
@@ -23,7 +26,8 @@ const SHUTDOWN_OPEN = "pub(crate) fn shutdown_all_sidecars(app: &tauri::AppHandl
 const flatRust = (src: string) => src.replace(/^[ \t]*\/\/.*$/gm, " ").replace(/\s+/g, " ").trim();
 
 /** Today's run loop handler body, flattened. */
-const RUN_TODAY = "if matches!( event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit ) { shutdown_all_sidecars(app_handle); }";
+const RUN_TODAY =
+  "if matches!( event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit ) { shutdown_all_sidecars(app_handle); crate::lanes::on_exit_all(app_handle); }";
 
 /** Today's shutdown order: the importer, each managed supervisor (its own stop), the lazy daemons. */
 const MANAGED = ["node::NodeState", "agent::AgentState", "memory::MemoryState", "serve::ServeState", "ipfs::IpfsState"];
@@ -56,7 +60,8 @@ describe("L3-WP00 characterization: app quit (src-tauri lib.rs)", () => {
   it("quit_path_check_catches_a_lost_stop_or_a_moved_call", () => {
     const nodeBlock = "try_state::<node::NodeState>() {\n        s.0.stop();\n    }";
     const agentBlock = "try_state::<agent::AgentState>() {\n        s.0.stop();\n    }";
-    const call = "            ) {\n                shutdown_all_sidecars(app_handle);\n            }";
+    const call = "                shutdown_all_sidecars(app_handle);\n";
+    const lanesExit = "                crate::lanes::on_exit_all(app_handle);\n            }";
     const mutants = [
       // The node block loses its stop while another block stops twice (the total count is unchanged).
       LIB.replace(nodeBlock, "try_state::<node::NodeState>() {\n    }").replace(
@@ -64,7 +69,11 @@ describe("L3-WP00 characterization: app quit (src-tauri lib.rs)", () => {
         "try_state::<agent::AgentState>() {\n        s.0.stop();\n        s.0.stop();\n    }",
       ),
       // The shutdown call moves out of the exit branch.
-      LIB.replace(call, "            ) {\n            }\n            shutdown_all_sidecars(app_handle);"),
+      LIB.replace(call, "").replace(lanesExit, lanesExit + "\n            shutdown_all_sidecars(app_handle);"),
+      // The lane quit hooks move out of the exit branch (they would run on every run event).
+      LIB.replace(lanesExit, "            }\n            crate::lanes::on_exit_all(app_handle);"),
+      // The lane quit hooks run before the sidecar teardown.
+      LIB.replace(lanesExit, "            }").replace(call, "                crate::lanes::on_exit_all(app_handle);\n" + call),
       // Exit alone, ExitRequested no longer handled.
       LIB.replace("tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit", "tauri::RunEvent::Exit"),
       // Two sidecars swap their stop order.

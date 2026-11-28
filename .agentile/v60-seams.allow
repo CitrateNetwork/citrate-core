@@ -29,3 +29,11 @@ l0-wp03 src-tauri/src/hermes_terminal_tests.rs
 l0-wp03 src-tauri/src/model_delete_tests.rs
 l0-wp03 src-tauri/src/store_catalog_tests.rs
 l0-wp03 src/fl/datasetBridge.test.ts
+
+# L0-WP04 per-lane module tree and start-up hooks (lanes/L0_INTEGRATION_SEAMS.md 5, L0-WP04, and
+# section 3.2 on_exit): the quit-path characterization pins the run-event handler text, and the
+# Hermes setup test used the network gate as the "next step" marker. WP04 adds the lane quit hooks
+# inside the exit branch and installs the gates before the builder (review finding: a lane plugin's
+# init ran before the gate). Test-only edits; each keeps or strengthens its mutation proof.
+l0-wp04 src/shell/actions/l3/characterization/lifecycle.characterization.test.ts
+l0-wp04 src-tauri/src/hermes_setup_tests.rs
