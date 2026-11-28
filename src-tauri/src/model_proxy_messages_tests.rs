@@ -218,3 +218,22 @@ fn messages_accepts_the_beta_query_claude_code_sends() {
         assert_eq!(status_of(&serve(&rig, &req)), 404, "{q}");
     }
 }
+
+#[test]
+fn messages_carries_the_system_turns_claude_code_sends() {
+    // claude-agent-acp 0.113.0 sends `role: "system"` turns inside `messages` (seen on the build host
+    // 2026-11-28, request shape only), plus fields this proxy does not carry (`output_config`,
+    // `context_management`, `safeguards`), which are left out of the vendor call.
+    let v = json!({"model": "m", "max_tokens": 10, "output_config": {"effort": "low"},
+        "context_management": {"edits": []}, "safeguards": [],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {"role": "system", "content": [{"type": "text", "text": "reminder"}]}
+        ]});
+    let r = from_messages_body(&v).unwrap();
+    let roles: Vec<Role> = r.messages.iter().map(|m| m.role).collect();
+    assert_eq!(roles, vec![Role::User, Role::System]);
+    assert_eq!(r.messages[1].content, "reminder");
+    let bad = json!({"messages": [{"role": "system", "content": [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]}]});
+    assert!(from_messages_body(&bad).is_err(), "a system turn carries text only");
+}
