@@ -244,16 +244,16 @@ fn launch_env_drops_vendor_key_variables_key_shaped_values_and_everything_unlist
         .homes()
         .launch_env(&id("codex"), inherited.into_iter(), None)
         .unwrap();
-    assert_eq!(get(&env, "PATH"), Some("/usr/bin:/bin"));
-    assert_eq!(get(&env, "LANG"), Some("en_US.UTF-8"));
-    assert_eq!(
-        get(&env, "TERM"),
-        None,
+    // Asserts here never print an environment value: some inputs are key-shaped (CodeQL
+    // rust/cleartext-logging), so each check is a plain boolean with a fixed message.
+    assert!(get(&env, "PATH") == Some("/usr/bin:/bin"), "PATH crosses");
+    assert!(get(&env, "LANG") == Some("en_US.UTF-8"), "LANG crosses");
+    assert!(
+        get(&env, "TERM").is_none(),
         "a key-shaped value is dropped even under an allowed name"
     );
-    assert_ne!(
-        get(&env, "HOME"),
-        Some("/Users/member"),
+    assert!(
+        get(&env, "HOME") != Some("/Users/member"),
         "the member's home never crosses"
     );
     for gone in [
@@ -264,14 +264,12 @@ fn launch_env_drops_vendor_key_variables_key_shaped_values_and_everything_unlist
         "AWS_SECRET_ACCESS_KEY",
         "CITRATE_DATA_DIR",
     ] {
-        assert_eq!(get(&env, gone), None, "{gone}");
+        assert!(get(&env, gone).is_none(), "{gone} is dropped");
     }
-    for (k, v) in &env {
-        assert!(
-            !crate::telemetry::has_key_shape(v),
-            "{k} carries a key shape"
-        );
-    }
+    assert!(
+        env.iter().all(|(_, v)| !crate::telemetry::has_key_shape(v)),
+        "no value carries a key shape"
+    );
 }
 
 #[test]
@@ -292,16 +290,19 @@ fn a_proxy_agent_gets_only_its_scoped_route_token_never_the_vendor_key() {
         .launch_env(&codex, std::iter::empty(), Some(&grant))
         .unwrap();
     let token = get(&env, ROUTE_TOKEN_ENV).unwrap();
-    assert!(is_route_token(token));
-    assert_eq!(get(&env, ROUTE_BASE_ENV), Some("http://127.0.0.1:1/v1"));
+    // Asserts here never print a value derived from the token (CodeQL rust/cleartext-logging).
+    assert!(is_route_token(token), "a cmp_ route token");
+    assert!(
+        get(&env, ROUTE_BASE_ENV) == Some("http://127.0.0.1:1/v1"),
+        "the proxy's loopback base URL"
+    );
     // The token is bound to exactly this provider, model and agent.
-    let route = rig.proxy.route_for(token).unwrap();
-    assert_eq!(route.provider.as_str(), "openai");
-    assert_eq!(route.model, "gpt-known");
+    let route = rig.proxy.route_for(token).expect("a live route");
+    assert!(route.provider.as_str() == "openai", "bound to the provider");
+    assert!(route.model == "gpt-known", "bound to the model");
     assert!(
         route.session_id.starts_with("ag:codex:"),
-        "{}",
-        route.session_id
+        "labelled for this agent"
     );
     // The vendor key appears nowhere in the environment, and nothing else is credential-shaped.
     let all: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
@@ -313,8 +314,10 @@ fn a_proxy_agent_gets_only_its_scoped_route_token_never_the_vendor_key() {
         .iter()
         .filter(|(_, v)| crate::telemetry::has_key_shape(v))
         .collect();
-    assert_eq!(creds.len(), 1, "exactly one credential: the route token");
-    assert_eq!(creds[0].0, ROUTE_TOKEN_ENV);
+    assert!(
+        creds.len() == 1 && creds[0].0 == ROUTE_TOKEN_ENV,
+        "exactly one credential: the route token"
+    );
 }
 
 #[test]
