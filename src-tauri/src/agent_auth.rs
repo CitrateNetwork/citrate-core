@@ -573,3 +573,8 @@ mod tests {
 mod lock_tests {
     include!("agent_auth_lock_tests.rs");
 }
+
+#[cfg(test)]
+mod command_tests {
+    include!("agent_auth_command_tests.rs");
+}
