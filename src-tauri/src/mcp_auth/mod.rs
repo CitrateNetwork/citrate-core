@@ -35,6 +35,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod discovery;
+pub(crate) mod flow;
 pub(crate) mod http;
 pub(crate) mod registration;
 pub(crate) mod store;
@@ -43,6 +44,8 @@ pub(crate) mod store;
 mod discovery_tests;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
