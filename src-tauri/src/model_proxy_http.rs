@@ -414,7 +414,12 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if ![CHAT_PATH, RESPONSES_PATH, MESSAGES_PATH].contains(&req.path.as_str()) {
+    // Claude Code posts to `/v1/messages?beta=true`; that one query is the Messages path too.
+    let path = match req.path.as_str() {
+        "/v1/messages?beta=true" => MESSAGES_PATH,
+        p => p,
+    };
+    if ![CHAT_PATH, RESPONSES_PATH, MESSAGES_PATH].contains(&path) {
         return write_json(
             out,
             404,
@@ -428,7 +433,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "method", "message": "POST only"}}),
         );
     }
-    let presented = if req.path == MESSAGES_PATH {
+    let presented = if path == MESSAGES_PATH {
         messages::route_token(req)
     } else {
         bearer(req)
@@ -446,11 +451,11 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             )
         }
     };
-    if req.path == MESSAGES_PATH {
+    if path == MESSAGES_PATH {
         let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
         return messages::serve(proxy, req, token, &route.model, &body, conversation, out);
     }
-    if req.path == RESPONSES_PATH {
+    if path == RESPONSES_PATH {
         let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
         return responses::serve(proxy, token, &route.model, &body, conversation, out);
     }
