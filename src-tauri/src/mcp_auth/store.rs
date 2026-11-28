@@ -70,6 +70,10 @@ pub(crate) struct TokenRecord {
     /// Set by a `401 invalid_token`: the next use refreshes once before sending anything.
     #[serde(default)]
     pub needs_refresh: bool,
+    /// Requested scopes the server did not grant (lead decision 2026-11-28: the connector is
+    /// "limited", the member sees this list, and tools needing one of these are unavailable).
+    #[serde(default)]
+    pub missing_scopes: Vec<String>,
 }
 
 impl std::fmt::Debug for TokenRecord {
@@ -84,6 +88,11 @@ impl std::fmt::Debug for TokenRecord {
 }
 
 impl TokenRecord {
+    /// Connected with fewer scopes than requested.
+    pub(crate) fn limited(&self) -> bool {
+        !self.missing_scopes.is_empty()
+    }
+
     /// Whether this record's token may be sent to `requested`: the requested URL is the bound
     /// resource or below it on the same origin ([`super::discovery::resource_covers`]).
     pub(crate) fn serves(&self, requested: &Url) -> bool {

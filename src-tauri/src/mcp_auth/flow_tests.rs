@@ -466,8 +466,6 @@ fn the_loopback_parser_keeps_iss_and_callbacks_without_it_still_parse() {
 
 #[test]
 fn slack_v2_user_takes_the_user_scopes_in_scope_comma_joined() {
-    // Slack's fixed row is not configured yet (no compiled client id), so the client is built here
-    // with a fixture id to pin the authorize parameters the row produces.
     let net = Net::new();
     serve(
         &net,
@@ -478,12 +476,10 @@ fn slack_v2_user_takes_the_user_scopes_in_scope_comma_joined() {
         SLACK_AS_URL,
         SLACK_AS,
     );
-    let d = discover(&NetHttp(net), &url(SLACK_MCP), &fixed_metadata).unwrap();
-    let client = Client::Relay {
-        provider: "slack",
-        client_id: "fixture-slack-client-id",
-        redirect_uri: crate::connections::HOSTED_REDIRECT_URI,
-    };
+    let d = discover(&NetHttp(net.clone()), &url(SLACK_MCP), &fixed_metadata).unwrap();
+    let client = resolve(&NetHttp(net), &vault(), &d.auth_server).unwrap();
+    assert_eq!(client.kind(), "relay");
+    assert_eq!(client.client_id(), "12717982880023.12719622703127");
     let req = begin(d, client);
     assert!(req
         .url
@@ -502,4 +498,100 @@ fn slack_v2_user_takes_the_user_scopes_in_scope_comma_joined() {
         4,
         "the row's scopes are the requested set"
     );
+}
+
+#[test]
+fn a_granted_subset_is_stored_as_limited_with_the_missing_scopes() {
+    let (net, d) = linear();
+    let v = vault();
+    net.on(
+        LINEAR_TOKEN,
+        200,
+        None,
+        &token_json("1", false, None, Some("read")),
+    );
+    let req = begin(d, cimd());
+    let done = complete(
+        &NetHttp(net),
+        &v,
+        None,
+        "linear",
+        &req,
+        cb(&req, "&iss=https://mcp.linear.app"),
+    )
+    .unwrap();
+    assert!(done.limited);
+    let rec = store::read(&v, "linear").unwrap();
+    assert!(rec.limited());
+    assert_eq!(rec.missing_scopes, vec!["write".to_string()]);
+}
+
+#[test]
+fn a_full_grant_or_an_unstated_scope_is_not_limited_and_slack_commas_are_understood() {
+    let (net, d) = linear();
+    let v = vault();
+    net.on(LINEAR_TOKEN, 200, None, &token_json("1", false, None, None));
+    let req = begin(d, cimd());
+    let done = complete(
+        &NetHttp(net),
+        &v,
+        None,
+        "linear",
+        &req,
+        cb(&req, "&iss=https://mcp.linear.app"),
+    )
+    .unwrap();
+    assert!(
+        !done.limited && done.missing_scopes.is_empty(),
+        "absent scope = as requested"
+    );
+    assert_eq!(split_scopes("a,b c\td"), vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn none_of_the_requested_scopes_granted_is_refused_and_the_token_revoked() {
+    let net = Net::new();
+    serve(
+        &net,
+        NOTION_MCP,
+        NOTION_WWW,
+        NOTION_PRM_URL,
+        NOTION_PRM,
+        NOTION_AS_URL,
+        NOTION_AS,
+    );
+    let notion_token = "https://mcp.notion.com/token";
+    net.on(
+        notion_token,
+        200,
+        None,
+        &token_json("n", true, Some(3600), Some("something_else")),
+    );
+    let v = vault();
+    let d = discover(&NetHttp(net.clone()), &url(NOTION_MCP), &fixed_metadata).unwrap();
+    let req = begin(d, cimd());
+    let err = complete(
+        &NetHttp(net.clone()),
+        &v,
+        None,
+        "notion",
+        &req,
+        cb(&req, "&iss=https://mcp.notion.com"),
+    )
+    .unwrap_err();
+    assert_eq!(err, McpAuthError::ScopesDenied);
+    assert_eq!(
+        store::read(&v, "notion").unwrap_err(),
+        McpAuthError::NotConnected,
+        "nothing stored"
+    );
+    // Notion's revocation endpoint is its token URL: the second POST there is the revoke.
+    let posts = net.sent_to(notion_token);
+    assert_eq!(posts.len(), 2);
+    assert_eq!(
+        posts[1].field("token"),
+        Some(format!("at-{MARK}-n").as_str())
+    );
+    assert_eq!(posts[1].field("token_type_hint"), Some("access_token"));
+    assert!(!err.to_string().contains(MARK));
 }
