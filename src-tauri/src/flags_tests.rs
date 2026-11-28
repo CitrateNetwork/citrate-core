@@ -127,7 +127,6 @@ fn signoff_failures(
     sources: &[(String, String)],
     read: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> Vec<String> {
-    let _ = sources;
     let mut out = Vec::new();
     for row in t.flags.iter().filter(|r| r.signoff == Signoff::Required) {
         let Some(id) = row.signoff_id() else {
@@ -138,7 +137,14 @@ fn signoff_failures(
             packet_repo: signoff::packet_repo(&id).to_string(),
             id: id.clone(),
         };
-        let on = row.default;
+        // The code's value as well as the table's: a const-only flip is gated too.
+        let on = match flags::gated_value(row, sources) {
+            Ok(on) => on,
+            Err(e) => {
+                out.push(e);
+                continue;
+            }
+        };
         if let Err(e) = signoff::gate(&spec, on, read) {
             out.push(format!(
                 "{} is {on} but its sign-off {id} does not hold: {e}",
@@ -500,7 +506,10 @@ fn a_const_flipped_without_a_table_edit_still_needs_its_record() {
     let none = |_: &str| None;
     let off = vec![(file.clone(), SOURCE.to_string())];
     let flipped = vec![(file.clone(), on)];
-    assert!(signoff_failures(&gated(false), &off, &none).is_empty(), "off in both");
+    assert!(
+        signoff_failures(&gated(false), &off, &none).is_empty(),
+        "off in both"
+    );
     let code_only = signoff_failures(&gated(false), &flipped, &none);
     assert!(
         code_only
@@ -509,7 +518,10 @@ fn a_const_flipped_without_a_table_edit_still_needs_its_record() {
         "{code_only:?}"
     );
     let table_only = signoff_failures(&gated(true), &off, &none);
-    assert!(table_only.iter().any(|m| m.contains("ALPHA is true")), "{table_only:?}");
+    assert!(
+        table_only.iter().any(|m| m.contains("ALPHA is true")),
+        "{table_only:?}"
+    );
     // A Rust row whose const cannot be found is refused, never read as off.
     let gone = vec![(file.clone(), "// no flag here\n".to_string())];
     let missing = signoff_failures(&gated(false), &gone, &none);

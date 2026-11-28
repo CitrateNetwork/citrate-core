@@ -275,3 +275,26 @@ pub(crate) fn mismatches(table: &Table, sources: &[(String, String)]) -> Vec<Str
     }
     out
 }
+
+/// The value a `required` row's sign-off gate checks: on when the table's `default` is on or, for
+/// a Rust row, when its marked const in `where` is on. Gating on the code as well as the table
+/// means a const flipped without a table edit still needs its record. A Rust row whose marked
+/// const is not in `sources` is refused, never read as off.
+pub(crate) fn gated_value(row: &Row, sources: &[(String, String)]) -> Result<bool, String> {
+    if row.table_only() {
+        return Ok(row.default);
+    }
+    let missing = || {
+        format!(
+            "{TABLE_PATH} row {} points at no `{MARKER} {}` const in {}",
+            row.id, row.id, row.where_
+        )
+    };
+    let (file, src) = sources
+        .iter()
+        .find(|(f, _)| *f == row.where_)
+        .ok_or_else(missing)?;
+    let marked = marked_consts(file, src)?;
+    let m = marked.iter().find(|m| m.id == row.id).ok_or_else(missing)?;
+    Ok(row.default || m.value)
+}
