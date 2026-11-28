@@ -572,3 +572,8 @@ pub fn revoke_agent_routes(proxy: Option<&ModelProxy>, id: &AgentId) {
 mod tests {
     include!("agent_auth_tests.rs");
 }
+
+#[cfg(test)]
+mod lock_tests {
+    include!("agent_auth_lock_tests.rs");
+}
