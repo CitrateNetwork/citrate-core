@@ -60,8 +60,15 @@
       "lane": "L0",
       "runner": "vitest",
       "files": ["src/shell/seams/routes.characterization.test.tsx"],
-      "covers": ["src/shell/PlaceView.tsx", "src/shell/places.ts"],
+      "covers": ["src/shell/PlaceView.tsx", "src/shell/places.ts", "src/shell/routes/**"],
       "fixtures": ["fixtures/seams/routes-surfaces.a826e441.json", "fixtures/seams/routes-resolve.a826e441.json"]
+    },
+    {
+      "id": "SEAM-ROUTES-REG",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/routes/registry.test.ts"],
+      "covers": ["src/shell/PlaceView.tsx", "src/shell/places.ts", "src/shell/routes/**"]
     },
     {
       "id": "SEAM-SNAPSHOT-LIB",
