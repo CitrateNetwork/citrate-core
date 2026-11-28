@@ -19,7 +19,7 @@ publish = false
 agent-client-protocol = "=5.6.1"
 # Already in Cargo.lock through Tauri (tokio 1.52.3, tokio-util 0.7.18, futures-* 0.3); `process`
 # and `compat` are features of those same crates.
-tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "io-std", "sync", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -30,3 +30,11 @@ hex = "0.4"
 [target.'cfg(unix)'.dependencies]
 # killpg for the agent's process group (already in the tree; src-tauri names it too).
 libc = "0.2"
+
+# A real ACP agent built from the SDK's Agent role, for tests/session_tests.rs only. It lives under
+# tests/ and no bundle ships it.
+[[bin]]
+name = "acp-test-agent"
+path = "tests/support/test_agent.rs"
+test = false
+doc = false
