@@ -43,14 +43,24 @@ fn char_default_listen_is_all_interfaces_4211() {
 
 #[test]
 fn char_pairing_listener_binds_an_ephemeral_port() {
-    // N8: every interface, a port the OS picks, a new one per listener. WP03 replaces this with a
-    // fixed, documented port on private addresses.
-    let a = crate::fleet::bind_pairing_listener().expect("binds");
-    let b = crate::fleet::bind_pairing_listener().expect("binds");
-    let (aa, ba) = (a.local_addr().expect("addr"), b.local_addr().expect("addr"));
-    assert!(aa.ip().is_unspecified(), "{aa}");
+    // N8, made stricter in L7-WP03. Before WP03 the listener bound every interface on a port the
+    // OS picked. Since WP03 it binds TCP 4210 on private addresses only, and an OS-picked port is
+    // the fallback for an address where 4210 is taken; it is never an unspecified address. The
+    // fixed-port and private-only halves are fleet_tests `the_pairing_listener_prefers_the_fixed_port`
+    // and `the_pairing_listener_never_binds_a_public_or_unspecified_address`.
+    let lo: std::net::IpAddr = "127.0.0.1".parse().expect("ip");
+    let held = std::net::TcpListener::bind((lo, 0)).expect("binds");
+    let taken = held.local_addr().expect("addr").port();
+    let a = crate::fleet::bind_pairing_listeners(&[lo], taken).expect("binds");
+    let b = crate::fleet::bind_pairing_listeners(&[lo], taken).expect("binds");
+    assert!(a.fallback && b.fallback);
+    let (aa, ba) = (a.addrs[0], b.addrs[0]);
+    assert!(!aa.ip().is_unspecified(), "{aa}");
     assert_ne!(aa.port(), 0);
+    assert_ne!(aa.port(), taken);
     assert_ne!(aa.port(), ba.port());
+    let unspecified: std::net::IpAddr = "0.0.0.0".parse().expect("ip");
+    assert!(crate::fleet::bind_pairing_listeners(&[unspecified], 0).is_err());
 }
 
 #[test]

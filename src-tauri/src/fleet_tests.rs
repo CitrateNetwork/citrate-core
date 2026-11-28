@@ -306,18 +306,134 @@ fn the_server_stops_when_told() {
 
 #[test]
 fn hints_dedupe_and_cap() {
-    let h = build_hints(
+    // L7-WP03: the candidates are collected first, then each bound address becomes a hint.
+    let ips = candidate_ips(
         Some("192.168.1.20".parse().unwrap()),
         &[
             "100.64.1.10".into(),
             "100.64.1.10".into(),
             "not-an-ip".into(),
         ],
-        41234,
     );
+    let bound: Vec<SocketAddr> = ips.iter().map(|ip| SocketAddr::new(*ip, 41234)).collect();
+    let h = build_hints(&bound);
     assert_eq!(h, vec!["192.168.1.20:41234", "100.64.1.10:41234"]);
-    let none = build_hints(None, &[], 1);
-    assert!(none.is_empty());
+    assert!(build_hints(&[]).is_empty());
+    assert!(candidate_ips(None, &[]).is_empty());
+    let many: Vec<SocketAddr> = (1..=20)
+        .map(|i| SocketAddr::new(std::net::Ipv4Addr::new(10, 0, 0, i).into(), 4210))
+        .collect();
+    assert_eq!(build_hints(&many).len(), crate::fleet_pairing::MAX_HINTS);
+}
+
+// ---- L7-WP03: the fixed pairing port on private addresses ----------------------------------
+// Written red-first: PAIRING_PORT, bind_pairing_listeners and the per-address hints were absent.
+// The tests bind loopback with a port picked for the test, never 4210 itself, so they cannot
+// collide with a real Citrate Core or with each other.
+
+/// A TCP port that was free a moment ago on loopback.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[test]
+fn the_pairing_listener_prefers_the_fixed_port() {
+    assert_eq!(PAIRING_PORT, 4210);
+    let lo: IpAddr = "127.0.0.1".parse().unwrap();
+    let port = free_port();
+    let b = bind_pairing_listeners(&[lo], port).unwrap();
+    assert_eq!(b.addrs, vec![SocketAddr::new(lo, port)]);
+    assert!(!b.fallback);
+    assert_eq!(b.listeners.len(), 1);
+}
+
+#[test]
+fn a_taken_fixed_port_falls_back_and_is_reported() {
+    let lo: IpAddr = "127.0.0.1".parse().unwrap();
+    let held = std::net::TcpListener::bind((lo, 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let b = bind_pairing_listeners(&[lo], port).unwrap();
+    assert!(b.fallback, "the taken port is reported");
+    assert_eq!(b.addrs.len(), 1);
+    assert_ne!(b.addrs[0].port(), port);
+    assert_ne!(b.addrs[0].port(), 0);
+    // The hint carries the port actually bound.
+    assert_eq!(build_hints(&b.addrs), vec![b.addrs[0].to_string()]);
+}
+
+#[test]
+fn the_pairing_listener_never_binds_a_public_or_unspecified_address() {
+    let bad: Vec<IpAddr> = [
+        "0.0.0.0",
+        "::",
+        "8.8.8.8",
+        "2001:4860:4860::8888",
+        "169.254.169.254",
+    ]
+    .iter()
+    .map(|x| x.parse().unwrap())
+    .collect();
+    // Asked directly, the binder refuses every one of them.
+    assert!(bind_pairing_listeners(&bad, 0).is_err());
+    // And production never asks: the private-link filter drops them first.
+    let mut candidates = bad.clone();
+    candidates.push("192.168.1.5".parse().unwrap());
+    candidates.push("100.64.1.10".parse().unwrap());
+    let addrs = crate::fleet::net::private_links::private_listen_addrs(
+        crate::fleet::net::private_links::PrivateLinkPolicy::ALL,
+        &candidates,
+    );
+    assert_eq!(
+        addrs,
+        vec![
+            "192.168.1.5".parse::<IpAddr>().unwrap(),
+            "100.64.1.10".parse::<IpAddr>().unwrap()
+        ]
+    );
+    for ip in &addrs {
+        assert!(!ip.is_unspecified() && !ip.is_loopback());
+    }
+}
+
+#[test]
+fn hints_use_the_bound_port_per_address() {
+    let bound: Vec<SocketAddr> = vec![
+        "192.168.1.5:4210".parse().unwrap(),
+        "100.64.1.10:51234".parse().unwrap(),
+    ];
+    assert_eq!(
+        build_hints(&bound),
+        vec!["192.168.1.5:4210", "100.64.1.10:51234"]
+    );
+}
+
+#[test]
+fn a_pairing_offer_names_the_port_and_any_fallback() {
+    let v = serde_json::to_value(PairOffer {
+        link: "citrate://pair?c=a&s=b".into(),
+        qr: QrMatrix {
+            size: 1,
+            rows: vec!["1".into()],
+        },
+        expires_at: 1,
+        hints: vec!["192.168.1.5:4210".into()],
+        install_url: INSTALL_URL.into(),
+        install_qr: QrMatrix {
+            size: 1,
+            rows: vec!["1".into()],
+        },
+        carries_device_link: false,
+        ephemeral_key: false,
+        port: PAIRING_PORT,
+        port_fallback: true,
+    })
+    .unwrap();
+    assert_eq!(v["port"], 4210);
+    assert_eq!(v["portFallback"], true);
 }
 
 // ---- review additions: the issuer validates what arrives on the wire --------------------------
@@ -539,10 +655,29 @@ fn a_reply_without_the_issuers_proof_is_not_a_pairing() {
 
 #[test]
 fn hints_are_only_private_cgnat_or_link_local_addresses() {
-    for ok in ["10.1.2.3", "172.16.0.9", "192.168.1.20", "100.64.1.10", "169.254.10.1", "fe80::1", "fd12::1"] {
+    for ok in [
+        "10.1.2.3",
+        "172.16.0.9",
+        "192.168.1.20",
+        "100.64.1.10",
+        "169.254.10.1",
+        "fe80::1",
+        "fd12::1",
+    ] {
         assert!(hint_ip_allowed(ok.parse().unwrap()), "{ok}");
     }
-    for bad in ["8.8.8.8", "127.0.0.1", "0.0.0.0", "169.254.169.254", "255.255.255.255", "::1", "2001:4860::8888", "224.0.0.1", "172.32.0.1", "100.128.0.1"] {
+    for bad in [
+        "8.8.8.8",
+        "127.0.0.1",
+        "0.0.0.0",
+        "169.254.169.254",
+        "255.255.255.255",
+        "::1",
+        "2001:4860::8888",
+        "224.0.0.1",
+        "172.32.0.1",
+        "100.128.0.1",
+    ] {
         assert!(!hint_ip_allowed(bad.parse().unwrap()), "{bad}");
     }
 }
@@ -555,12 +690,23 @@ fn a_link_pointing_at_this_machine_or_the_internet_makes_no_connection() {
     let now = now_secs();
     let mut iss = PairIssuer::from_seed([7u8; 32]);
     let (_c, link) = iss
-        .issue("Studio", None, vec![format!("127.0.0.1:{port}"), "8.8.8.8:53".into()], now)
+        .issue(
+            "Studio",
+            None,
+            vec![format!("127.0.0.1:{port}"), "8.8.8.8:53".into()],
+            now,
+        )
         .unwrap();
     let res = join_link(&link, &me(&"d".repeat(32), "Linux box", None), now);
-    assert!(matches!(res, Err(JoinError::Unreachable(ref t)) if t.is_empty()), "{res:?}");
+    assert!(
+        matches!(res, Err(JoinError::Unreachable(ref t)) if t.is_empty()),
+        "{res:?}"
+    );
     std::thread::sleep(std::time::Duration::from_millis(50));
-    assert!(l.accept().is_err(), "nothing connected to the loopback hint");
+    assert!(
+        l.accept().is_err(),
+        "nothing connected to the loopback hint"
+    );
 }
 
 #[test]

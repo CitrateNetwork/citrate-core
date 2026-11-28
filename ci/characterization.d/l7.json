@@ -30,7 +30,7 @@
         "char_mesh_gate_text_matches_ts",
         "char_suite_is_listed_for_lq"
       ],
-      "pins": "with no CITRATE_CLUSTER_LISTEN the mesh is off and the operator env always wins; the default listen is all interfaces on 4211; the pairing listener binds every interface on an OS-picked port; the pairing key is new every run and a new issuer forgets used and outstanding tokens; pairing hints refuse public, loopback and cloud metadata addresses; the Tailscale CLI is only asked `status --json`; mesh-only actions answer the same MESH_NOT_AVAILABLE words in core and in the Add-a-machine sheet",
+      "pins": "with no CITRATE_CLUSTER_LISTEN the mesh is off and the operator env always wins; the default listen is all interfaces on 4211; the pairing listener uses an OS-picked port only as the fallback where TCP 4210 is taken and never binds an unspecified address (stricter since L7-WP03); the pairing key is new every run and a new issuer forgets used and outstanding tokens; pairing hints refuse public, loopback and cloud metadata addresses; the Tailscale CLI is only asked `status --json`; mesh-only actions answer the same MESH_NOT_AVAILABLE words in core and in the Add-a-machine sheet",
       "keepsGreen": ["src-tauri/src/fleet_tests.rs", "src-tauri/src/fleet_pairing_tests.rs", "src-tauri/src/fleet_tailscale_tests.rs", "src-tauri/src/cluster_tests.rs"],
       "supersededBy": ["L7-WP02", "L7-WP03", "L7-WP10", "L7-WP11"]
     },
@@ -68,6 +68,20 @@
       "pins": "the member's mesh switch model for no status, an unsigned build, an operator setting and a signed build",
       "keepsGreen": ["src/surfaces/meshSwitch.test.ts"],
       "supersededBy": ["L7-WP11"]
+    }
+  ],
+  "strengthened": [
+    {
+      "test": "char_pairing_listener_binds_an_ephemeral_port",
+      "suite": "L7-CH-1",
+      "by": "L7-WP03",
+      "was": "every interface, an OS-picked port",
+      "now": "TCP 4210 on private addresses; an OS-picked port only where 4210 is taken; never an unspecified address",
+      "alongside": [
+        "fleet::tests::the_pairing_listener_prefers_the_fixed_port",
+        "fleet::tests::a_taken_fixed_port_falls_back_and_is_reported",
+        "fleet::tests::the_pairing_listener_never_binds_a_public_or_unspecified_address"
+      ]
     }
   ],
   "supersedesByWp": {
