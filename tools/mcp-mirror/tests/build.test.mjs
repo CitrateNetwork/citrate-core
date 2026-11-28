@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
   REGISTRY_BASE,
   fetchAllServers,
+  fetchCuratedServers,
   buildDocument,
   renderDocument,
   diffDocuments,
@@ -81,6 +82,30 @@ test("paginates_with_cursor", async () => {
   assert.equal(asked.length, 3);
   assert.ok(asked[0].startsWith("https://registry.modelcontextprotocol.io/v0.1/servers?"), asked[0]);
   assert.equal(new URL(asked[1]).searchParams.get("cursor"), "c2");
+});
+
+test("curated fetch searches each name and keeps exact matches only", async () => {
+  const asked = [];
+  const impl = async (url) => {
+    asked.push(url);
+    const u = new URL(url);
+    const search = u.searchParams.get("search");
+    const servers =
+      search === "com.notion/mcp"
+        ? [NOTION, item("com.notion/mcp-lookalike", { remotes: [{ type: "streamable-http", url: "https://x.example/mcp" }] })]
+        : [FILES];
+    return { ok: true, status: 200, text: async () => JSON.stringify({ servers, metadata: {} }) };
+  };
+  const got = await fetchCuratedServers(impl, ["io.github.example/files", "com.notion/mcp"], REGISTRY_BASE);
+  assert.deepEqual(got.map((s) => s.name), ["com.notion/mcp", "io.github.example/files"]);
+  assert.equal(new URL(asked[0]).searchParams.get("search"), "com.notion/mcp");
+});
+
+test("an inactive or older version upstream is not mirrored", async () => {
+  const old = { ...NOTION, _meta: { "io.modelcontextprotocol.registry/official": { status: "active", isLatest: false } } };
+  const gone = { ...FILES, _meta: { "io.modelcontextprotocol.registry/official": { status: "deleted", isLatest: true } } };
+  const { impl } = fakeFetch({ "": { servers: [old, gone], metadata: {} } });
+  assert.deepEqual(await fetchAllServers(impl, REGISTRY_BASE), []);
 });
 
 test("pagination stops on a repeated cursor and on a page limit", async () => {
