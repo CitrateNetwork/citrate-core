@@ -25,14 +25,17 @@
 # (docs/RELEASE.md "Local fallback").
 #
 # ── Owner prerequisites (one-time) ────────────────────────────────────────────
-# Repo secrets required (Settings → Secrets and variables → Actions):
+# Signing runs in the GitHub environment `release` (required reviewer, deployments from main and
+# v* tags only). Its secret OP_SERVICE_ACCOUNT_TOKEN is a 1Password service account that reads
+# only the citrate-release vault; the macOS job loads from it (1password/load-secrets-action):
+#   op://citrate-release/apple.developer-id/developer-id/p12   the Developer ID Application .p12
+#   op://citrate-release/apple.developer-id/P12_PASSWORD        its export password
+#   op://citrate-release/apple.developer-id/APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID   notarization
+# Repo secrets still required (no citrate-release item holds them yet):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.citrate-updater/citrate-core-v2.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  the updater key's passphrase (see RELEASE.md)
-#   APPLE_CERTIFICATE                   base64 of the Developer ID Application .p12
-#   APPLE_CERTIFICATE_PASSWORD          the .p12 export password
 #   APPLE_SIGNING_IDENTITY              Developer ID Application: Larry Klosowski (DDHUG44QC7)
 #   KEYCHAIN_PASSWORD                   any throwaway string (temp keychain in CI)
-#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
 #   CITRATE_CHAIN_READ_TOKEN            optional; fine-grained PAT, Contents:read, only if a federation
 #                                       repo goes private again. Only the dry run's clone steps get it
 #                                       (never a step that builds code), as a one-command git header.
@@ -106,6 +109,11 @@ jobs:
   release-macos-arm:
     name: build · sign · notarize (macOS arm64)
     runs-on: macos-15
+    # The `release` environment (required reviewer, deployments from main and v* tags only, secret
+    # OP_SERVICE_ACCOUNT_TOKEN: a 1Password service account that reads only the citrate-release
+    # vault) gates every run that signs. A dry run signs nothing and reads no signing secret, so it
+    # runs outside the environment and needs no approval.
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run != true) && 'release' || '' }}
     # Builds only; the release ceremony publishes (053-UPDATER decision 2).
     permissions:
       contents: read
@@ -372,21 +380,59 @@ jobs:
       # update tarball with the updater key. The DMG is then notarized and stapled here, as the
       # release ceremony does. Outputs keep the 0.5.2 names; the feed entry points at the public
       # update path (053-UPDATER section 3, step 3). Nothing is uploaded to a GitHub release.
+      # Release run: the Developer ID and notarization credentials come from the citrate-release
+      # vault through the environment's 1Password service account, as masked step outputs
+      # (export-env false: no later step sees them unless it names them). The service account
+      # token reaches only this step and the next one; no build step gets it.
+      - name: Load the Developer ID credentials (1Password, citrate-release)
+        id: op
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
+        with:
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE_PASSWORD: op://citrate-release/apple.developer-id/P12_PASSWORD
+          APPLE_ID: op://citrate-release/apple.developer-id/APPLE_ID
+          APPLE_PASSWORD: op://citrate-release/apple.developer-id/APPLE_PASSWORD
+          APPLE_TEAM_ID: op://citrate-release/apple.developer-id/APPLE_TEAM_ID
+
+      # The .p12 is a file attachment (binary), so it is read to a 0600 file under RUNNER_TEMP with
+      # the CLI the step above installed, never into a step output or the log.
+      - name: Write the Developer ID certificate to a temporary file (1Password, citrate-release)
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          op read --no-newline --force --out-file "$RUNNER_TEMP/developer-id.p12" \
+            "op://citrate-release/apple.developer-id/developer-id/p12" > /dev/null
+          [ -s "$RUNNER_TEMP/developer-id.p12" ] || { echo "::error::the Developer ID .p12 is empty"; exit 1; }
+
       - name: Build · sign · notarize (macOS arm64)
         if: ${{ env.DRY_RUN != 'true' }}
         env:
+          # No item in citrate-release holds these yet (missing source): repository secrets.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # citrate-release/apple.developer-id, loaded by step op.
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.op.outputs.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ steps.op.outputs.APPLE_ID }}
+          APPLE_PASSWORD: ${{ steps.op.outputs.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ steps.op.outputs.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          for v in TAURI_SIGNING_PRIVATE_KEY APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+          P12="$RUNNER_TEMP/developer-id.p12"
+          trap 'rm -f "$P12"' EXIT
+          # The bundler imports APPLE_CERTIFICATE (base64 of the .p12) into a temporary keychain.
+          APPLE_CERTIFICATE="$(base64 < "$P12" | tr -d '\n')"
+          echo "::add-mask::$APPLE_CERTIFICATE"
+          export APPLE_CERTIFICATE
+          rm -f "$P12"
+          for v in TAURI_SIGNING_PRIVATE_KEY APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             [ -n "${!v}" ] || { echo "::error::secret $v is not set"; exit 1; }
           done
           # bundle-lite: what the macOS releases ship (no Gemma in the bundle; first-run download).
@@ -471,6 +517,11 @@ jobs:
     name: build · sign update files (Linux aarch64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 240
+    # The `release` environment (required reviewer, deployments from main and v* tags only, secret
+    # OP_SERVICE_ACCOUNT_TOKEN: a 1Password service account that reads only the citrate-release
+    # vault) gates every run that signs. A dry run signs nothing and reads no signing secret, so it
+    # runs outside the environment and needs no approval.
+    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run != true) && 'release' || '' }}
     permissions:
       contents: read
     env:

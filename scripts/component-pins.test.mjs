@@ -290,6 +290,12 @@ describe("component-pins check", () => {
     expect(errorsOf(r)).toMatch(/step 'Build · sign · notarize \(macOS arm64\)' signs or publishes but is not guarded/);
   });
 
+  it("refuses a 1Password load of the release vault that runs in a dry run", () => {
+    const r = fixture();
+    edit(r, ".github/workflows/release.yml", "        id: op\n        if: ${{ env.DRY_RUN != 'true' }}\n", "        id: op\n");
+    expect(errorsOf(r)).toMatch(/step 'Load the Developer ID credentials \(1Password, citrate-release\)' signs or publishes but is not guarded/);
+  });
+
   it("refuses a dry-run step that reads a signing secret", () => {
     const r = fixture();
     edit(r, ".github/workflows/release.yml", "      - name: Build the bundle unsigned (dry run)\n        if: ${{ env.DRY_RUN == 'true' }}\n", "      - name: Build the bundle unsigned (dry run)\n        if: ${{ env.DRY_RUN == 'true' }}\n        env:\n          K: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}\n");

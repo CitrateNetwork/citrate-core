@@ -45,16 +45,27 @@ key. Artifacts built on other hosts are signed here with `tauri signer sign`, so
 private key never leaves the signing machine.
 
 ### 2. GitHub Actions secrets
+The signing jobs of `release.yml` run in the GitHub environment `release` (required
+reviewer, deployments from `main` and `v*` tags only; a dry run runs outside it). Its
+one environment secret, `OP_SERVICE_ACCOUNT_TOKEN`, is a 1Password service account that
+reads only the `citrate-release` vault; the macOS job loads from it with
+`1password/load-secrets-action` (pinned by commit):
+
+| Variable | Source |
+| --- | --- |
+| `APPLE_CERTIFICATE` | `op://citrate-release/apple.developer-id/developer-id/p12` (written to a temp file, base64 in the build step) |
+| `APPLE_CERTIFICATE_PASSWORD` | `op://citrate-release/apple.developer-id/P12_PASSWORD` |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | `op://citrate-release/apple.developer-id/<same name>` (app-specific password) |
+
+Still repository secrets (no `citrate-release` item holds them yet):
+
 | Secret | Value |
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core-v2.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key passphrase |
-| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
 | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Larry Klosowski (DDHUG44QC7)` |
 | `KEYCHAIN_PASSWORD` | any throwaway string (CI builds a temp keychain) |
-| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | notarization (use an app-specific password) |
-| `CITRATE_CHAIN_READ_TOKEN` | fine-grained PAT, Contents:read on `citrate-chain` |
+| `CITRATE_CHAIN_READ_TOKEN` | fine-grained PAT, Contents:read on `citrate-chain` (not a signing secret; dry-run clone steps only) |
 
 ### 3. Runtime deps prerelease (`runtime-deps`) — digest-pinned (PBA-L7b-005)
 

@@ -85,6 +85,43 @@ describe("release.yml jobs", () => {
     });
   }
 
+  // 2026-11-28: signing runs in the GitHub environment `release` (required reviewer, main and v*
+  // only); the Developer ID and notarization credentials come from the citrate-release vault
+  // through 1password/load-secrets-action pinned by commit, never from repository secrets.
+  for (const name of NAMES) {
+    it(`${name} signs only in the release environment, and a dry run runs outside it`, () => {
+      expect(J[name]).toContain("    environment: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run != true) && 'release' || '' }}\n");
+    });
+  }
+
+  it("has no pull_request trigger (its jobs use the release environment)", () => {
+    const on = wf.slice(wf.indexOf("\non:\n"), wf.indexOf("\njobs:\n"));
+    expect(on).not.toMatch(/pull_request/);
+  });
+
+  it("loads the Apple credentials from citrate-release with load-secrets-action pinned by commit", () => {
+    const s = workflowSteps(J["release-macos-arm"]);
+    const load = s.find((x) => x.includes("1password/load-secrets-action"));
+    expect(load).toBeDefined();
+    expect(load).toMatch(/uses: 1password\/load-secrets-action@[0-9a-f]{40} # v\d/);
+    expect(load).toMatch(/export-env: false/);
+    for (const [v, f] of [["APPLE_CERTIFICATE_PASSWORD", "P12_PASSWORD"], ["APPLE_ID", "APPLE_ID"], ["APPLE_PASSWORD", "APPLE_PASSWORD"], ["APPLE_TEAM_ID", "APPLE_TEAM_ID"]]) {
+      expect(load).toContain(`${v}: op://citrate-release/apple.developer-id/${f}`);
+    }
+    expect(J["release-macos-arm"]).toContain("op://citrate-release/apple.developer-id/developer-id/p12");
+    expect(J["release-macos-arm"]).not.toMatch(/secrets\.(APPLE_CERTIFICATE|APPLE_ID|APPLE_PASSWORD|APPLE_TEAM_ID)\b/);
+  });
+
+  it("hands the 1Password service account token only to the 1Password steps, never to a build", () => {
+    for (const name of NAMES) {
+      for (const st of workflowSteps(J[name]).filter((x) => x.includes("OP_SERVICE_ACCOUNT_TOKEN"))) {
+        expect(st).toMatch(/1password\/load-secrets-action|op read /);
+        expect(st).not.toMatch(/cargo |tauri build|npm |npx /);
+      }
+    }
+    expect(wf.match(/OP_SERVICE_ACCOUNT_TOKEN: \$\{\{ secrets\.OP_SERVICE_ACCOUNT_TOKEN \}\}/g)).toHaveLength(2);
+  });
+
   it("each job writes its own updater-feed fragment", () => {
     expect(J["release-macos-arm"]).toMatch(/updater-feed\.mjs fragment [^\n]*(\\\n[^\n]*)*darwin-aarch64/);
     expect(J["release-linux-aarch64"]).toMatch(/updater-feed\.mjs fragment [^\n]*(\\\n[^\n]*)*linux-aarch64 linux-aarch64-deb/);
