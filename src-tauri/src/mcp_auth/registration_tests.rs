@@ -10,34 +10,11 @@ fn meta(doc: &str, issuer: &str) -> AsMetadata {
     parse_as_metadata(doc, issuer).unwrap()
 }
 
+// The MCP 2025-11-25 order (lead decision 2026-11-28): pre-registered, then CIMD, then DCR.
+
 #[test]
-fn prefers_cimd_over_dcr_over_relay() {
-    // CIMD advertised (and DCR too): CIMD.
-    for (doc, iss) in [
-        (LINEAR_AS, "https://mcp.linear.app"),
-        (NOTION_AS, "https://mcp.notion.com"),
-        (VERCEL_AS, "https://vercel.com"),
-        (ATLASSIAN_AS, ATLASSIAN_ISSUER),
-    ] {
-        assert_eq!(choose(&meta(doc, iss)).unwrap(), Choice::Cimd, "{iss}");
-    }
-    // Notion has a fixed row, but CIMD wins: the row is used only without CIMD and DCR.
-    assert!(fixed_for("https://mcp.notion.com").is_some());
-    // DCR only (Stripe), and DCR when CIMD is advertised without a public token method (Hugging
-    // Face, quirk 5), and a confidential DCR server (Supabase).
-    assert_eq!(
-        choose(&meta(STRIPE_AS, "https://access.stripe.com/mcp")).unwrap(),
-        Choice::Dcr
-    );
-    assert_eq!(
-        choose(&meta(HF_AS, "https://huggingface.co")).unwrap(),
-        Choice::Dcr
-    );
-    assert_eq!(
-        choose(&meta(SUPABASE_AS, "https://api.supabase.com")).unwrap(),
-        Choice::Dcr
-    );
-    // Neither: the fixed row. GitHub's is configured; Slack's names the missing registration.
+fn a_configured_pre_registered_client_comes_first_even_when_cimd_is_advertised() {
+    // GitHub: no metadata published, the row supplies the endpoints.
     let gh = fixed_metadata("https://github.com/login/oauth").unwrap();
     match choose(&gh).unwrap() {
         Choice::Fixed(row) => {
@@ -46,15 +23,63 @@ fn prefers_cimd_over_dcr_over_relay() {
         }
         other => panic!("github: {other:?}"),
     }
-    match choose(&meta(SLACK_AS, "https://mcp.slack.com")).unwrap_err() {
-        McpAuthError::NotConfigured(why) => assert!(why.contains("sl-core"), "{why}"),
+    // Slack: its own metadata, no CIMD, no DCR; the compiled Slack Core client id is used.
+    match choose(&meta(SLACK_AS, "https://mcp.slack.com")).unwrap() {
+        Choice::Fixed(row) => assert_eq!(row.client_id, Some(SLACK_CLIENT_ID)),
         other => panic!("slack: {other:?}"),
     }
-    // Google (no CIMD, no DCR, no row yet): no path.
+    // A configured row wins over CIMD and DCR advertised by the same issuer.
+    let mut slack_cimd = meta(SLACK_AS, "https://mcp.slack.com");
+    slack_cimd.cimd_supported = true;
+    slack_cimd.registration_endpoint = Some(url("https://mcp.slack.com/register"));
+    assert!(matches!(choose(&slack_cimd).unwrap(), Choice::Fixed(r) if r.provider == "slack"));
+}
+
+#[test]
+fn cimd_when_advertised_and_no_configured_row() {
+    for (doc, iss) in [
+        (LINEAR_AS, "https://mcp.linear.app"),
+        (NOTION_AS, "https://mcp.notion.com"),
+        (VERCEL_AS, "https://vercel.com"),
+        (ATLASSIAN_AS, ATLASSIAN_ISSUER),
+        // Hugging Face advertises CIMD (its token methods list no `none`, matrix quirk 5).
+        (HF_AS, "https://huggingface.co"),
+    ] {
+        assert_eq!(choose(&meta(doc, iss)).unwrap(), Choice::Cimd, "{iss}");
+    }
+    // Notion's MCP row has no client id (the integration id is an api.notion.com client), so it
+    // is skipped and CIMD is used.
+    let row = fixed_for("https://mcp.notion.com").unwrap();
+    assert!(row.client_id.is_none() && row.reason.is_some());
+}
+
+#[test]
+fn dcr_when_only_a_registration_endpoint_is_advertised() {
+    assert_eq!(
+        choose(&meta(STRIPE_AS, "https://access.stripe.com/mcp")).unwrap(),
+        Choice::Dcr
+    );
+    assert_eq!(
+        choose(&meta(SUPABASE_AS, "https://api.supabase.com")).unwrap(),
+        Choice::Dcr
+    );
+}
+
+#[test]
+fn nothing_applies_reports_the_row_reason_or_no_path() {
+    // Google: no CIMD, no DCR, no row.
     assert_eq!(
         choose(&meta(GOOGLE_AS, "https://accounts.google.com")).unwrap_err(),
         McpAuthError::NoRegistrationPath
     );
+    // Notion's unconfigured row on an issuer that offered nothing else: its reason is reported.
+    let mut bare = meta(NOTION_AS, "https://mcp.notion.com");
+    bare.cimd_supported = false;
+    bare.registration_endpoint = None;
+    match choose(&bare).unwrap_err() {
+        McpAuthError::NotConfigured(why) => assert!(why.contains("mcp.notion.com"), "{why}"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
