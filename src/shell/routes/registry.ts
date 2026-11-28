@@ -19,9 +19,12 @@
 //     (built-in tabs are 10, 20, 30, …), so a registered tab never becomes a place's first tab,
 //     which a bare place id opens;
 //   - a register other than "instrument" or "charter" (charter when none is given).
-// A registered surface renders inside the shell, behind every gate App.tsx applies before it
-// (sign-in, onboarding, network compatibility). It adds no gate of its own: a surface that needs
-// one (a claim, a HIC level) checks it in its render, as built-in surfaces do.
+// A registered surface renders inside the shell. Sign-in (AuthGate) and onboarding gate whether
+// the shell mounts at all. The network compatibility gate (NetworkCompatGate) is visual only: an
+// overlay beside the shell, so PlaceView and a registered surface, with its effects, stay mounted
+// on a retired or unset network, as built-in surfaces do. On-chain work therefore checks network
+// compatibility at its own operation boundary. The registry adds no gate of its own: a surface
+// that needs one (a claim, a HIC level) checks it in its render, as built-in surfaces do.
 //
 // render runs as the body of its own component (RegisteredSurface in PlaceView.tsx), keyed by
 // route, so it may call hooks: PlaceView's hook order never depends on which route is open.
