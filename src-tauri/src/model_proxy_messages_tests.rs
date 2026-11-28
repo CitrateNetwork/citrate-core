@@ -202,3 +202,19 @@ fn messages_model_and_caps_follow_the_route() {
     assert!(!resp.contains("text/event-stream"));
     assert_eq!(rig.vendor.calls(), 0);
 }
+
+#[test]
+fn messages_accepts_the_beta_query_claude_code_sends() {
+    // claude-agent-acp 0.113.0 (Claude Code) posts to `/v1/messages?beta=true` (seen on the build
+    // host, 2026-11-28). Only that exact query is accepted; any other query stays 404.
+    let rig = Rig::new("msg-beta");
+    let g = rig.proxy.mint_route(rig.route("gpt-known"), rig.gate()).unwrap();
+    let mut req = post(g.bearer.expose(), body("gpt-known", false), &[]);
+    req.path = format!("{MESSAGES_PATH}?beta=true");
+    let ok = serve(&rig, &req);
+    assert_eq!(status_of(&ok), 200, "{ok}");
+    for q in ["?beta=false", "?x=1", "?beta=true&x=1"] {
+        req.path = format!("{MESSAGES_PATH}{q}");
+        assert_eq!(status_of(&serve(&rig, &req)), 404, "{q}");
+    }
+}
