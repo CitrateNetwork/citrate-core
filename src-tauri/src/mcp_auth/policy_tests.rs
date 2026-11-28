@@ -117,3 +117,50 @@ fn the_matrix_lists_are_disjoint_and_unique_per_provider() {
         }
     }
 }
+
+#[test]
+fn a_tool_needing_a_scope_that_was_not_granted_is_unavailable() {
+    let none = ProbeHints::default();
+    let missing = vec!["write".to_string()];
+    // Needs the missing scope: unavailable, even with writes on.
+    assert_eq!(
+        decide_scoped(
+            Some("linear"),
+            "save_issue",
+            &none,
+            true,
+            &["write"],
+            &missing
+        ),
+        Decision::Blocked(SCOPE_NOT_GRANTED)
+    );
+    // Needs only granted scopes, or nothing known: the normal decision.
+    let read = hints(Some(true), None);
+    assert_eq!(
+        decide_scoped(
+            Some("linear"),
+            "list_issues",
+            &read,
+            false,
+            &["read"],
+            &missing
+        ),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide_scoped(None, "x", &none, false, &[], &missing),
+        Decision::Blocked(WRITES_OFF)
+    );
+    // A full grant (nothing missing) never blocks on scope.
+    assert_eq!(
+        decide_scoped(
+            Some("gmail"),
+            "search_threads",
+            &none,
+            false,
+            &["gmail.readonly"],
+            &[]
+        ),
+        Decision::Allow
+    );
+}

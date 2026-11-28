@@ -173,3 +173,26 @@ pub(crate) fn decide(
         ToolClass::Write => Decision::Blocked(WRITES_OFF),
     }
 }
+
+/// The member-facing reason a tool is unavailable on a limited connector.
+pub(crate) const SCOPE_NOT_GRANTED: &str =
+    "this tool needs a permission you did not grant; reconnect the server to grant it";
+
+/// [`decide`] for a limited connector (lead decision 2026-11-28): a tool that needs a scope the
+/// server did not grant is unavailable, whatever else applies. `required` is the tool's scopes as
+/// the gateway knows them (a publisher's tool-to-scope list); `missing` is the sealed record's
+/// `missing_scopes`. A tool with no known scope requirement falls through to [`decide`], and a
+/// call the server then refuses with `insufficient_scope` goes to the step-up notice.
+pub(crate) fn decide_scoped(
+    provider: Option<&str>,
+    tool: &str,
+    hints: &ProbeHints,
+    writes_enabled: bool,
+    required: &[&str],
+    missing: &[String],
+) -> Decision {
+    if required.iter().any(|r| missing.iter().any(|m| m == r)) {
+        return Decision::Blocked(SCOPE_NOT_GRANTED);
+    }
+    decide(provider, tool, hints, writes_enabled)
+}
