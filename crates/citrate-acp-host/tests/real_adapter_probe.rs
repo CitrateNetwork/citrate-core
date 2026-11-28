@@ -129,6 +129,7 @@ fn real_adapter_initialize_session_prompt_cancel_cleanup() {
         tap: Some(tap),
         init_timeout: Duration::from_secs(90),
         cancel_grace: Duration::from_secs(5),
+        route_env: Some("CITRATE_ROUTE_TOKEN".into()),
     })
     .expect("host");
     let mut summary =

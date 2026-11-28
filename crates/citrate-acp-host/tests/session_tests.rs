@@ -15,6 +15,10 @@ const AGENT: &str = env!("CARGO_BIN_EXE_acp-test-agent");
 /// The marker every test scanner treats as a credential (the host takes the scanner from Core).
 const FAKE_KEY: &str = "sk-citrate-test-0123456789abcdef";
 
+/// The one variable that may carry the session's route token (Core: `CITRATE_ROUTE_TOKEN`).
+const ROUTE_ENV: &str = "CITRATE_ROUTE_TOKEN";
+const ROUTE_TOKEN: &str = "cmp_00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
 fn scan(s: &str) -> bool {
     s.contains("sk-citrate-test-")
 }
@@ -44,6 +48,7 @@ fn host_with(cancel_grace: Duration) -> (AcpHost, Frames) {
         tap: Some(tap),
         init_timeout: Duration::from_secs(20),
         cancel_grace,
+        route_env: Some(ROUTE_ENV.into()),
     })
     .expect("host");
     (host, frames)
@@ -497,4 +502,26 @@ fn relative_command_is_refused_before_spawn() {
         .err()
         .expect("refused");
     assert!(err.reason.contains("absolute"), "{}", err.reason);
+}
+
+#[test]
+fn route_token_rides_only_in_the_route_env_and_never_in_a_frame() {
+    // The test scanner does not know the cmp_ shape: the host itself keeps the session's token out
+    // of every other variable and every frame it writes.
+    let (h, frames) = host();
+    let s = start_in(&h, &tmp("route"), vec![(ROUTE_ENV.into(), ROUTE_TOKEN.into())], vec![]);
+    assert_eq!(report(&s)["env"][ROUTE_ENV], ROUTE_TOKEN, "the agent has its route");
+    let err = s.prompt(text(&format!("updates 1 {ROUTE_TOKEN}"))).expect_err("refused");
+    assert!(err.contains("credential"), "{err}");
+    assert!(s.authenticate(ROUTE_TOKEN).is_err());
+    let all = frames.lock().expect("frames");
+    assert!(all.iter().filter(|(d, _)| *d == Direction::ToAgent).all(|(_, l)| !l.contains(ROUTE_TOKEN)));
+    drop(all);
+    for env in [
+        vec![("OTHER".to_string(), ROUTE_TOKEN.to_string()), (ROUTE_ENV.into(), ROUTE_TOKEN.into())],
+        vec![(ROUTE_ENV.to_string(), FAKE_KEY.to_string())],
+    ] {
+        let r = h.start(SessionStart { spec: spec(), env, cwd: tmp("route2"), mcp_servers: vec![] });
+        assert!(r.err().expect("refused").reason.contains("credential"));
+    }
 }
