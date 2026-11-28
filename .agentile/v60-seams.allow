@@ -33,3 +33,7 @@ l0-wp03 src/fl/datasetBridge.test.ts
 # source tripwire that reads store.ts for an in-app local tool loop also reads actions/l1/turn.ts,
 # where the turn engine moved, so the moved code stays inside it. Test-only edit.
 l0-wp07c src/agent/harness.retire.test.ts
+# L0-WP07e store action extraction, local model (lanes/L0_INTEGRATION_SEAMS.md 5, L0-WP07): the L3
+# test that calls Store.prototype.verifyModel on a stub Store binds the stub's internals view, which
+# the moved verifyModel reads for stopModelPoll. Test-only edit; its assertions are unchanged.
+l0-wp07e src/onboarding/modelStep.test.tsx
