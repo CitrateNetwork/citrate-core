@@ -39,8 +39,8 @@
       "id": "SEAM-BRIDGE",
       "lane": "L0",
       "runner": "vitest",
-      "files": ["src/bridge/seams/bridge.characterization.test.ts"],
-      "covers": ["src/bridge/index.ts", "src/bridge/cx.ts", "src/bridge/domains.ts", "src/bridge/tauri/**", "src/bridge/sim/**"],
+      "files": ["src/bridge/seams/bridge.characterization.test.ts", "src/bridge/seams/bridgeLanes.test.ts"],
+      "covers": ["src/bridge/index.ts", "src/bridge/cx.ts", "src/bridge/domains.ts", "src/bridge/domains/**", "src/bridge/lanes/**", "src/bridge/tauri/**", "src/bridge/sim/**"],
       "fixtures": ["fixtures/seams/bridge-sim.a826e441.json", "fixtures/seams/bridge-tauri.a826e441.json"]
     },
     {

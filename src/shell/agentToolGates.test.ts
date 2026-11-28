@@ -501,7 +501,8 @@ describe("v0.5.0 approval audit: terminal access (#236) and model delete (#237)"
       .sort();
     // The bridge (interface, Tauri and preview implementations), the models slice that wraps it,
     // and the Models screen. Nothing under src/agent, the store's tool loop or the daemons.
-    expect(callers).toEqual(["bridge/domains.ts", "bridge/sim/models.ts", "bridge/tauri/models.ts", "shell/slices/models.ts", "surfaces/Models.tsx"]);
+    // L0-WP05: the interface moved with ModelsCatalogDomain from bridge/domains.ts to its own file.
+    expect(callers).toEqual(["bridge/domains/modelsCatalog.ts", "bridge/sim/models.ts", "bridge/tauri/models.ts", "shell/slices/models.ts", "surfaces/Models.tsx"]);
   });
 
   it("shell_run is not a core-hosted tool: the in-app loop and the idle-view path cannot run a command", async () => {
