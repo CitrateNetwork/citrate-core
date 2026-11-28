@@ -36,6 +36,8 @@
 
 pub(crate) mod discovery;
 pub(crate) mod http;
+pub(crate) mod registration;
+pub(crate) mod store;
 
 #[cfg(test)]
 mod discovery_tests;
@@ -43,6 +45,8 @@ mod discovery_tests;
 mod fixtures;
 #[cfg(test)]
 mod http_tests;
+#[cfg(test)]
+mod registration_tests;
 
 // @flag MCP_REMOTE_AUTH
 /// The MCP remote authorization flag (lanes/L6 WP06). Off until a release build has a recorded
