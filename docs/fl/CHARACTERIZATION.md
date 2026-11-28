@@ -47,6 +47,7 @@ File: `src-tauri/src/fl_characterization_tests.rs`, compiled into `fl_payouts::t
 | `collector_check_rejects_an_ignored_or_cfgd_out_test` | the check above fails a safety test that is `#[ignore]`d above or below `#[test]`, on the same line, behind a trailing comment, cfg'd out or behind a `cfg_attr`, and passes `#[should_panic]` and `cfg(test)` | (lane invariant) | none |
 | `collector_check_rejects_a_test_in_a_cfgd_out_module` | the check above fails a safety test inside a module that is cfg'd out (`cfg(any())`, `cfg(not(test))`, a wrapped or same-line `cfg`, one after `cfg(test)`), behind an inner `#![cfg(...)]`, or inside any `mod` at all, and passes a `derive` and `cfg(test)` | (lane invariant) | none |
 | `host_check_rejects_a_cfgd_out_test_module` | the host check above fails a test module under `cfg(any())` or `cfg(not(test))`, an attribute stacked above or below `#[cfg(test)]`, a commented or cfg'd include, an inner `#![cfg(...)]`, a block comment, a missing or doubled include; and the `lib.rs` check fails a cfg'd, commented, nested or missing `mod` line and a crate-level `#![cfg(...)]` | (lane invariant) | none |
+| `collector_check_rejects_a_nested_or_inverted_test` | the check above fails a safety test nested in a block that is not a module (a fn body, with or without `allow(unnameable_test_items)`, a closure, an `impl`, a `const` block), one under `#[should_panic]`, one hidden in a block comment, and the review's case on the real file (the DNS-rebinding guard wrapped in a fn); it passes braces inside a string, a char, a raw string or a trailing comment | (lane invariant) | none |
 
 This suite cannot report its own host chain cfg'd out (`fl_payouts.rs`'s test module, or `mod
 fl_payouts` in `lib.rs`), since it would then not run; the registry check below covers that chain
@@ -63,6 +64,7 @@ File: `src/fl/flRegistry.characterization.test.ts`. Tests: `registry_lists_every
 `characterization_doc_names_every_pinned_test`, `declaration_checks_ignore_commented_out_tests`,
 `cargo_checks_reject_an_ignored_or_cfgd_out_test`,
 `cargo_checks_reject_a_test_in_a_cfgd_out_module`, `host_checks_reject_a_cfgd_out_test_module`,
+`cargo_checks_reject_a_nested_or_inverted_test`,
 `vitest_checks_reject_a_skipped_or_focused_describe`.
 
 A test that no longer runs counts as lost, at every level it can be turned off:

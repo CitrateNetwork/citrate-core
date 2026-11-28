@@ -412,7 +412,7 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "fn block_comment() {}",
       "*/",
       "    #[tokio::test]",
-      "    #[should_panic]",
+      "    #[allow(dead_code)]",
       "    async fn nested_async() {}",
       "fn not_a_test() {}",
     ].join("\n");
@@ -459,10 +459,13 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "#[test]",
       "fn cfg_test_runs() {}",
       "#[test]",
+      "#[allow(clippy::bool_assert_comparison)]",
+      "fn allow_runs() {}",
+      "#[test]",
       "#[should_panic]",
-      "fn should_panic_runs() {}",
+      "fn should_panic_inverts() {}",
     ].join("\n");
-    expect(declaredCargo(rs)).toEqual(["cfg_test_runs", "should_panic_runs"]);
+    expect(declaredCargo(rs)).toEqual(["cfg_test_runs", "allow_runs"]);
     expect(countTests("cargo", rs)).toBe(2);
     expect(disabledCargo(rs)).toEqual([
       "ignore_above: #[ignore]",
@@ -475,6 +478,7 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "cfg_not_test: #[cfg(not(test))]",
       "cfg_attr_ignore: #[cfg_attr(unix,ignore)]",
       "cfg_attr_wrapped: #[cfg_attr(unix,ignore)]",
+      "should_panic_inverts: #[should_panic]",
       "#[ignore]",
       '#[ignore=""]',
       "#[ignore]",
@@ -485,6 +489,7 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "#[cfg(not(test))]",
       "#[cfg_attr(unix,ignore)]",
       "#[cfg_attr(unix,ignore)]",
+      "#[should_panic]",
     ]);
     // So a protected file whose test gains #[ignore] drops below its count and loses the name.
     const before = "#[test]\nfn guard() {}\n#[test]\nfn other() {}";
@@ -494,6 +499,7 @@ describe("L8 characterization registry (L8-WP01)", () => {
     expect(countTests("cargo", after)).toBe(1);
     expect(protectedDeclares("cargo", after, "guard")).toBe(false);
   });
+
   it("cargo_checks_reject_a_test_in_a_cfgd_out_module", () => {
     // A cfg on an enclosing module turns off every test in it while each fn keeps its own #[test]
     // block, so no pinned or protected file carries a cfg other than cfg(test), an inner
@@ -593,6 +599,67 @@ describe("L8 characterization registry (L8-WP01)", () => {
     expect(suiteModError(suite, "lq_g")).toBeUndefined();
     expect(suiteModError(suite.replace("mod lq_g", "#[cfg(any())]\nmod lq_g"), "lq_g")).toBeDefined();
     expect(suiteModError(suite.replace("mod lq_g", "// mod lq_g"), "lq_g")).toBeDefined();
+  });
+
+  it("cargo_checks_reject_a_nested_or_inverted_test", () => {
+    // rustc collects a #[test] fn at module scope only: one inside a fn body, a closure, an impl or
+    // a const block never runs (an allow(unnameable_test_items) silences the lint), so it counts as
+    // lost; so does a #[should_panic] test, which passes only while the behavior it guards is broken.
+    const inner = "    #[test]\n    fn guard() {}\n";
+    const nested = [
+      `fn off() {\n${inner}}\n`,
+      `#[allow(unnameable_test_items, dead_code)] fn off() {\n${inner}}\n`,
+      `const _: () = {\n${inner}};\n`,
+      `struct S;\nimpl S {\n${inner}}\n`,
+      `fn off() {\n    let _ = || {\n${inner}    };\n}\n`,
+      `mod lq_g {\n    fn off() {\n${inner}    }\n}\n`,
+    ];
+    for (const rs of nested) {
+      expect(declaredCargo(rs), rs).toEqual([]);
+      expect(countTests("cargo", rs), rs).toBe(0);
+      expect(protectedDeclares("cargo", rs, "guard"), rs).toBe(false);
+      expect(disabledCargo(rs, "lq_g"), rs).toContain("guard: inside a block that is not a module");
+    }
+    for (const rs of ["#[test]\n#[should_panic]\nfn guard() {}", '#[should_panic(expected = "dark")]\n#[test]\nfn guard() {}']) {
+      expect(declaredCargo(rs), rs).toEqual([]);
+      expect(disabledCargo(rs), rs).not.toEqual([]);
+    }
+    expect(disabledCargo("#[allow(unnameable_test_items)]\nconst X: u8 = 0;\n")).toEqual(["unnameable_test_items"]);
+    expect(disabledCargo(`}\n${inner}`)).toContain("a } with no { open");
+    expect(disabledCargo(`fn off() {\n${inner}`)).toContain("an unclosed {");
+    // A module scope stays live, and braces in a string, a char, a raw string or a comment are no scope.
+    expect(disabledCargo(`mod lq_g {\n${inner}}\n`, "lq_g")).toEqual([]);
+    expect(declaredCargo(`mod lq_g {\n${inner}}\n`)).toEqual(["guard"]);
+    const live = [
+      "fn h<'a>(s: &'a str) -> &'a str {",
+      '    let _ = "}";',
+      "    let _ = '}';",
+      '    let _ = r#"}"#;',
+      "    s",
+      "} // }",
+      "/* } */",
+      "#[test]",
+      "fn guard() {}",
+    ].join("\n");
+    expect(declaredCargo(live)).toEqual(["guard"]);
+    expect(disabledCargo(live)).toEqual([]);
+
+    // The review's case on the real file: the DNS-rebinding guard wrapped in a fn body.
+    const real = readFileSync("src-tauri/src/fl_collect_tests.rs", "utf8");
+    const name = "every_fetch_is_pinned_to_the_one_vetted_answer_and_a_rebinding_answer_is_never_used";
+    const count = countTests("cargo", real);
+    expect(count).toBeGreaterThanOrEqual(27);
+    expect(protectedDeclares("cargo", real, name)).toBe(true);
+    expect(disabledCargo(real)).toEqual([]);
+    const start = real.indexOf(`#[test]\nfn ${name}() {\n`);
+    expect(start).toBeGreaterThan(0);
+    const end = real.indexOf("\n}\n", start) + 3;
+    for (const open of ["#[allow(unnameable_test_items, dead_code)] fn off() {\n", "fn off() {\n"]) {
+      const wrapped = `${real.slice(0, start)}${open}${real.slice(start, end)}}\n${real.slice(end)}`;
+      expect(countTests("cargo", wrapped), open).toBe(count - 1);
+      expect(protectedDeclares("cargo", wrapped, name), open).toBe(false);
+      expect(disabledCargo(wrapped), open).toContain(`${name}: inside a block that is not a module`);
+    }
   });
 
   it("vitest_checks_reject_a_skipped_or_focused_describe", () => {

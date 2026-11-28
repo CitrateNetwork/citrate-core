@@ -742,7 +742,7 @@ mod lq_l8_fl {
         }
         let live = [
             "#[test]\nfn t() {\n}\n",
-            "/// Doc.\n#[test]\n#[should_panic]\nfn t() {\n}\n",
+            "/// Doc.\n#[test]\n#[allow(clippy::bool_assert_comparison)]\nfn t() {\n}\n",
             "#[cfg(test)]\n#[test]\nfn t() {\n}\n",
             "}\n\n#[test]\nfn t() {\n}\n",
         ];
@@ -828,6 +828,58 @@ mod lq_l8_fl {
         ];
         for case in &lost_lib {
             assert!(declared_in_lib(case, "guard").is_err(), "{case}");
+        }
+    }
+
+    #[test]
+    fn collector_check_rejects_a_nested_or_inverted_test() {
+        // rustc collects a #[test] fn at module scope only: one inside a fn body, a closure, an
+        // impl or a const block never runs (an allow(unnameable_test_items) silences the lint).
+        // A #[should_panic] test passes only while the behavior it guards is broken. A block
+        // comment can hide a declaration. Each counts as lost.
+        let inner = "    #[test]\n    fn t() {\n    }\n";
+        let lost = [
+            format!("fn off() {{\n{inner}}}\n"),
+            format!("#[allow(unnameable_test_items, dead_code)] fn off() {{\n{inner}}}\n"),
+            format!("#[allow(unnameable_test_items)]\nfn off() {{\n{inner}}}\n"),
+            format!("const _: () = {{\n{inner}}};\n"),
+            format!("struct S;\nimpl S {{\n{inner}}}\n"),
+            format!("fn off() {{\n    let _ = || {{\n{inner}    }};\n}}\n"),
+            "#[test]\n#[should_panic]\nfn t() {\n}\n".to_string(),
+            "#[should_panic(expected = \"dark\")]\n#[test]\nfn t() {\n}\n".to_string(),
+            format!("{BLOCK_OPEN}\nfn helper() {{\n}}\n#[test]\nfn t() {{\n}}\n*/\n"),
+            format!("{BLOCK_OPEN} a note */\n#[test]\nfn t() {{\n}}\n"),
+            "fn helper() {\n    let _ = 1;\n\n#[test]\nfn t() {\n}\n".to_string(),
+        ];
+        for case in &lost {
+            assert!(live_test(case, "t").is_err(), "{case}");
+        }
+        // Braces inside a string, a char, a raw string or a trailing comment are not scopes.
+        let live = [
+            "fn helper() {\n    let _ = \"}\";\n    let _ = '}';\n}\n\n#[test]\nfn t() {\n    let _ = '{';\n}\n",
+            "fn helper<'a>(s: &'a str) -> &'a str {\n    s\n}\n\n#[test]\nfn t() {\n}\n",
+            "const R: &str = r#\"}\"#;\nfn h() { // }\n}\n#[test]\nfn t() {\n}\n",
+            "#[test]\n#[allow(clippy::bool_assert_comparison)]\nfn t() {\n}\n",
+        ];
+        for case in live {
+            assert_eq!(live_test(case, "t"), Ok(()), "{case}");
+        }
+
+        // The review's case on the real file: the DNS-rebinding guard wrapped in a fn body.
+        let real = include_str!("fl_collect_tests.rs");
+        let name = COLLECTOR_SAFETY_TESTS[7];
+        assert_eq!(live_test(real, name), Ok(()));
+        let block = format!("#[test]\nfn {name}() {{\n");
+        let start = real.find(&block).expect("the guard is declared");
+        let end = start + real[start..].find("\n}\n").expect("the guard closes") + 3;
+        let (head, rest) = real.split_at(start);
+        let (guard, tail) = rest.split_at(end - start);
+        for open in [
+            "#[allow(unnameable_test_items, dead_code)] fn off() {\n",
+            "fn off() {\n",
+        ] {
+            let wrapped = format!("{head}{open}{guard}}}\n{tail}");
+            assert!(live_test(&wrapped, name).is_err(), "{open}");
         }
     }
 }
