@@ -2,7 +2,7 @@
 //!
 //! The document is refused unless the catalog key slot holds a key, the signature is ours and made
 //! for the subregistry (trusted-comment domain `citrate-mcp-subregistry-v1`), the bytes fit the cap,
-//! the document is fresh, it is not older than the one already seen, and every
+//! the document is fresh, it is not older than the one already seen (persisted on disk), and every
 //! entry carries a known Citrate trust value and only https remotes or pinned packages.
 //!
 //! Every signature here comes from a throwaway key generated inside the test. No production key
@@ -14,8 +14,9 @@ use citrate_components::catalog::{
 };
 use citrate_components::key::{app_updater_key_line, ed25519_public_key, TrustRoot};
 use citrate_components::mcp_subregistry::{
-    subregistry_trust_root, subregistry_trust_root_from, verify_subregistry, RegistryType,
-    SeenSubregistry, SubregistryError, Transport, Trust, MAX_SUBREGISTRY_BYTES, SUBREGISTRY_DOMAIN,
+    load_seen, record_seen, subregistry_trust_root, subregistry_trust_root_from, verify_and_record,
+    verify_subregistry, RegistryType, SeenSubregistry, SubregistryError, Transport, Trust,
+    MAX_SUBREGISTRY_BYTES, SUBREGISTRY_DOMAIN,
 };
 use common::*;
 
@@ -333,6 +334,114 @@ fn rollback_refused() {
         digest_hex: sha256_hex(json.as_bytes()),
     };
     assert!(verify_subregistry(json.as_bytes(), &sig, &root(&key), Some(&same), NOW).is_ok());
+}
+
+#[test]
+fn rollback_refused_across_restarts_via_the_persisted_record() {
+    let dir = TempDir::new("subregistry-seen");
+    let seen_path = dir.path().join("mcp-subregistry.seen.json");
+    let key = TestKey::generate();
+
+    let newer = good(7);
+    let v = verify_and_record(
+        newer.as_bytes(),
+        &sign(&key, &newer),
+        &root(&key),
+        &seen_path,
+        NOW,
+    )
+    .expect("first document accepted");
+    assert_eq!(v.document().sequence, 7);
+    // What a fresh process reads back.
+    assert_eq!(
+        load_seen(&seen_path).expect("readable"),
+        Some(SeenSubregistry {
+            sequence: 7,
+            digest_hex: sha256_hex(newer.as_bytes()),
+        })
+    );
+
+    let older = good(6);
+    assert_eq!(
+        verify_and_record(
+            older.as_bytes(),
+            &sign(&key, &older),
+            &root(&key),
+            &seen_path,
+            NOW
+        )
+        .unwrap_err(),
+        SubregistryError::Rollback { seen: 7, got: 6 }
+    );
+    // A refusal never lowers the record.
+    assert_eq!(
+        load_seen(&seen_path).expect("readable").map(|s| s.sequence),
+        Some(7)
+    );
+}
+
+#[test]
+fn a_refused_document_is_never_recorded() {
+    let dir = TempDir::new("subregistry-refused");
+    let seen_path = dir.path().join("seen.json");
+    let key = TestKey::generate();
+    let json = good(3);
+    let err = verify_and_record(
+        json.as_bytes(),
+        &sign(&key, &json),
+        &root(&key),
+        &seen_path,
+        NOW + 30 * DAY,
+    )
+    .unwrap_err();
+    assert_eq!(err, SubregistryError::Expired);
+    assert_eq!(load_seen(&seen_path).expect("readable"), None);
+}
+
+#[test]
+fn a_corrupt_seen_record_fails_closed() {
+    let dir = TempDir::new("subregistry-corrupt");
+    let seen_path = dir.path().join("seen.json");
+    std::fs::write(&seen_path, b"{not json").expect("write");
+    assert!(matches!(
+        load_seen(&seen_path).unwrap_err(),
+        SubregistryError::State(_)
+    ));
+    let key = TestKey::generate();
+    let json = good(1);
+    assert!(matches!(
+        verify_and_record(
+            json.as_bytes(),
+            &sign(&key, &json),
+            &root(&key),
+            &seen_path,
+            NOW
+        )
+        .unwrap_err(),
+        SubregistryError::State(_)
+    ));
+    // The corrupt record is left in place for a person to look at, never silently reset.
+    assert_eq!(std::fs::read(&seen_path).expect("read"), b"{not json");
+}
+
+#[test]
+fn record_seen_never_lowers_the_sequence() {
+    let dir = TempDir::new("subregistry-lower");
+    let seen_path = dir.path().join("seen.json");
+    let high = SeenSubregistry {
+        sequence: 10,
+        digest_hex: "11".repeat(32),
+    };
+    record_seen(&seen_path, &high).expect("written");
+    let low = SeenSubregistry {
+        sequence: 2,
+        digest_hex: "22".repeat(32),
+    };
+    assert_eq!(
+        record_seen(&seen_path, &low).unwrap_err(),
+        SubregistryError::Rollback { seen: 10, got: 2 }
+    );
+    assert_eq!(load_seen(&seen_path).expect("readable"), Some(high));
 }
 
 // --- Parsing and entry rules. ---
