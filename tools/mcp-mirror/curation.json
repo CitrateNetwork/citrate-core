@@ -1,0 +1,63 @@
+{
+  "_comment": "L6-WP08b reviewed overlay. Each entry is a person's review of one official MCP Registry server: the remote URLs or packages that were checked, the trust level, and the date. Rows here match the verified brand servers (provider matrix 2026-11-28) that are listed in the official registry. Sentry and the Cloudflare API server are not listed there, so they ship only in the pinned brand list.",
+  "entries": {
+    "app.linear/linear": {
+      "title": "Linear",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.linear.app/mcp/readonly"]
+    },
+    "co.huggingface/hf-mcp-server": {
+      "title": "Hugging Face",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://huggingface.co/mcp"]
+    },
+    "com.atlassian/atlassian-mcp-server": {
+      "title": "Atlassian (Jira and Confluence)",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.atlassian.com/v2/mcp"]
+    },
+    "com.cloudflare.mcp/mcp": {
+      "title": "Cloudflare",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": [
+        "https://bindings.mcp.cloudflare.com/mcp",
+        "https://docs.mcp.cloudflare.com/mcp",
+        "https://observability.mcp.cloudflare.com/mcp"
+      ]
+    },
+    "com.neon/mcp": {
+      "title": "Neon",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.neon.tech/mcp"]
+    },
+    "com.notion/mcp": {
+      "title": "Notion",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.notion.com/mcp"]
+    },
+    "com.stripe/mcp": {
+      "title": "Stripe",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.stripe.com"]
+    },
+    "com.supabase/mcp": {
+      "title": "Supabase",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.supabase.com/mcp"]
+    },
+    "com.vercel/vercel-mcp": {
+      "title": "Vercel",
+      "trust": "verified_brand",
+      "reviewedAt": "2026-11-28",
+      "remoteUrls": ["https://mcp.vercel.com"]
+    }
+  }
+}
