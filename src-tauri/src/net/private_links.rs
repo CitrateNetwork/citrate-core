@@ -65,7 +65,10 @@ pub(crate) fn is_private_link_ip(ip: IpAddr) -> Option<LinkKind> {
 /// The addresses to listen on: the private-link ones among `candidates` that `policy` allows,
 /// deduplicated, in order, capped at [`MAX_LISTEN_ADDRS`]. Never an unspecified, loopback or public
 /// address.
-pub(crate) fn private_listen_addrs(policy: PrivateLinkPolicy, candidates: &[IpAddr]) -> Vec<IpAddr> {
+pub(crate) fn private_listen_addrs(
+    policy: PrivateLinkPolicy,
+    candidates: &[IpAddr],
+) -> Vec<IpAddr> {
     let mut out: Vec<IpAddr> = Vec::new();
     for ip in candidates {
         let Some(kind) = is_private_link_ip(*ip) else {
