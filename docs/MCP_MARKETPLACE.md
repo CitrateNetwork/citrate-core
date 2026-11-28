@@ -15,6 +15,36 @@ brand servers, the signed subregistry, search, install, the dashboard) are added
 packages that build them (L6-WP07 to WP12). Until then, user-added servers are described in
 [MCP_USER_SERVERS.md](MCP_USER_SERVERS.md) and the Store in [STORE_CATALOG.md](STORE_CATALOG.md).
 
+## Verified brand servers (L6-WP07: implemented, IPC wired, UI in L6-WP11)
+
+`src-tauri/src/lanes/l6/mcp_catalog/brand.rs` holds the brand servers compiled into the app.
+They are listed with the "Verified brand" badge whether or not the catalog key exists, so the
+Marketplace works before the key ceremony. `mcp_catalog_list` returns them with `signed: false`
+and the refusal `no_key`, "Signed catalog not available yet: signing key not issued", for as long
+as the catalog key slot is empty. A filled slot alone does not change `signed`: only a verified
+signed subregistry can (L6-WP08c).
+
+Verification procedure for a row (the evidence is the provider matrix, citrate-federation
+`.agentile/planset/2026-11-07-v060/evidence/L6-WP07_MCP_PROVIDER_MATRIX_2026-11-28.md`):
+
+1. Domain match: the endpoint host is on the brand's own domain, and the source is the
+   publisher's own page.
+2. Probe: an unauthenticated `initialize` answers 401 with a `resource_metadata` challenge (or
+   200 for a server without sign-in), and the protected-resource and authorization-server
+   metadata are read.
+3. Registration: CIMD or DCR is advertised, so the app can sign in without a registration the
+   owner has not made yet.
+4. Date: the day a person checked the row goes in `checked`.
+
+Only rows with status `supported` are pinned: 13 today (Notion, Linear read-only, Vercel,
+Atlassian v2, Hugging Face, Stripe, Cloudflare API, Cloudflare Workers Bindings, Cloudflare
+Observability, Cloudflare Docs, Sentry, Supabase, Neon), all checked 2026-11-28. Left out until
+their blocker clears: Slack, Gmail, Drive, Figma, Asana and HubSpot (publisher approval or owner
+registration), GitHub (citrate-core GitHub App, L6-WP13) and X (redirect registration), PayPal and
+Discord (unverified), LinkedIn (no server) and Microsoft Work IQ (deferred). The lane file's floor
+of 20 entries is not met: an entry that cannot be verified is left out, never guessed. Write tools
+are off by default on every row. Tests: `cargo test -p citrate-core --lib mcp_catalog`.
+
 ## Characterization suite
 
 The suite pins what Connections, user-added MCP servers and the Store guarantee at citrate-core
