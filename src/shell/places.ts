@@ -262,6 +262,32 @@ export function resolveRoute(input: string): Redirect | null {
 /** Every string the hash router accepts. */
 export const ROUTABLE: string[] = [...CANONICAL_ROUTES, ...Object.keys(LEGACY_ROUTES), ...Object.keys(PREFIX_ROUTES)];
 
+/** A tab's place in its strip: built-in tabs are 10, 20, 30, … in PLACES order. */
+const TAB_ORDER = new Map<PlaceTab, number>();
+for (const p of PLACES) p.tabs.forEach((t, i) => TAB_ORDER.set(t, (i + 1) * 10));
+
+/**
+ * L0-WP08: add a route a lane registered. Only src/shell/routes/registry.ts calls this, after it
+ * refused anything built-in, taken or malformed. With a tab, the tab joins its place's strip after
+ * every tab of lower or equal order; without one, the route is a hidden leaf of its place. Either
+ * way it becomes canonical and routable. The arrays and records above change in place, so every
+ * importer (the sidebar, the hash router) sees the route.
+ */
+export function extendPlaces(route: string, place: PlaceId, tab?: { label: string; order: number }): void {
+  const p = PLACES.find((x) => x.id === place);
+  if (!p) throw new Error(`no place "${place}"`);
+  if (tab) {
+    const t: PlaceTab = { label: tab.label, route };
+    const at = p.tabs.findIndex((x) => (TAB_ORDER.get(x) ?? 0) > tab.order);
+    TAB_ORDER.set(t, tab.order);
+    p.tabs.splice(at < 0 ? p.tabs.length : at, 0, t);
+  } else {
+    HIDDEN_ROUTES[route] = place;
+  }
+  CANONICAL_ROUTES.push(route);
+  ROUTABLE.push(route);
+}
+
 export interface Location {
   place: PlaceId;
   /** The active tab's default route (null for a hidden leaf). */

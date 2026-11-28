@@ -21,6 +21,9 @@ import { WorkSettings } from "../fl/WorkSettings";
 import { StoragePins, StorageBackup, NodeServices } from "../surfaces";
 import { NodeRewards } from "../surfaces/node/NodeRewards";
 import { NodeAdvanced } from "../surfaces/node/NodeAdvanced";
+import { surfaceForRoute } from "./routes/registry";
+// Every lane's route declarations (src/shell/routes/l0.tsx to l9.tsx), L0-WP08.
+import "./routes";
 
 function TabStrip({ id, items, active, store, sub, badges }: { id: string; items: { label: string; route: string }[]; active: string | null; store: Store; sub?: boolean; badges?: Record<string, number> }) {
   return (
@@ -63,28 +66,15 @@ function TabStrip({ id, items, active, store, sub, badges }: { id: string; items
   );
 }
 
-/** The honest state for a tab whose content is not in this build. */
-export function NotAvailableYet({ route, title, body, action }: { route: string; title: string; body: string; action?: { label: string; go: () => void } }) {
-  return (
-    <div data-not-available={route} style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
-      <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>{title}</span>
-      <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10, maxWidth: 620 }}>
-        <span className="eyebrow">Not available yet</span>
-        <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>{body}</p>
-        {action && (
-          <span>
-            <button className="btn btn-ghost btn-sm" onClick={action.go}>
-              {action.label}
-            </button>
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
+/** The honest state for a tab whose content is not in this build (moved to a leaf module, L0-WP08). */
+export { NotAvailableYet } from "./routes/NotAvailableYet";
 
 /** Exported for the L0-WP02 route characterization (src/shell/seams/routes.characterization.test.tsx). */
 export function surfaceFor(route: string, store: Store, s: AppState): ReactNode {
+  // L0-WP08: a route a lane registered renders its declared surface. A built-in route can never be
+  // registered (src/shell/routes/registry.ts), so the switch below still decides every one of them.
+  const registered = surfaceForRoute(route);
+  if (registered) return registered.render(store, s);
   switch (route) {
     case "hermes/chat":
       return <Dashboard store={store} s={s} />;
