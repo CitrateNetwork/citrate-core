@@ -34,8 +34,11 @@
 //! acceptance). Until then nothing in the app calls into this module, hence the dead-code allow.
 #![allow(dead_code)]
 
+pub(crate) mod discovery;
 pub(crate) mod http;
 
+#[cfg(test)]
+mod discovery_tests;
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
