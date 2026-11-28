@@ -69,3 +69,40 @@ filter must select the module test block that includes the suite file
   slot refuses before any fetch or write.
 - `char_store_first_party_only`: a catalog with a third-party listing is refused even with a good
   signature; nothing is shown, kept or stageable from it.
+
+## Signed subregistry (L6-WP08a: verifier implemented, signing key not issued)
+
+The Citrate subregistry is a curated mirror of the official MCP Registry
+(`registry.modelcontextprotocol.io`). It is verified by `components/src/mcp_subregistry.rs` and
+tested by `components/tests/mcp_subregistry.rs` (`cargo test -p citrate-components --test
+mcp_subregistry`).
+
+- **Key.** The document is signed offline with the catalog key, the same key and custody as the
+  Store catalog, so the trust root is the `PRODUCTION_CATALOG_PUBKEY` slot. That slot is empty
+  until the owner's key ceremony. Until then every document is refused with "Signed catalog not
+  available yet: signing key not issued", and the Marketplace lists only the verified brand
+  servers compiled into the app (L6-WP07). There is no placeholder key: a test scans the verifier
+  source for any minisign public key line.
+- **Domain.** The trusted comment must start with `citrate-mcp-subregistry-v1` (followed by
+  nothing, a space or a tab). A Store catalog signature (`citrate-store-catalog`) or a component
+  manifest signature over the same bytes is refused as the wrong purpose, and a subregistry
+  signature never passes as a Store catalog.
+- **Order of checks.** Size cap (2 MiB) before the signature and before parsing, then the
+  signature (prehashed Ed25519 only), then the JSON and field rules, then freshness (at most 31
+  days of validity, 10 minutes of clock skew) and the sequence.
+- **Rollback.** A document with a lower sequence than the last one accepted, or the same sequence
+  with different bytes, is refused. `verify_and_record` keeps the last accepted sequence and
+  SHA-256 in a file; an unreadable record refuses (it is never reset), and a refused document is
+  never recorded.
+- **Schema v1.** `{ schema, sequence, issued_at, expires_at, servers[] }`. Each server follows the
+  official `server.json` (`name` as `<reverse-dns>/<server>`, `title`, `description`, `version`,
+  `remotes[]` of `{ type: "streamable-http" | "sse", url }`, `packages[]` of `{ registryType:
+  "npm" | "pypi" | "oci", identifier, version }`) plus `_meta["ai.citrate/curation"] = { trust:
+  "verified_brand" | "curated", reviewedAt: "YYYY-MM-DD", toolSnapshotSha256? }`. Third-party
+  servers are allowed, unlike the Store catalog, but only with that curation record. Every remote
+  must be https with a host; every package must be pinned to an exact version (never `latest` or
+  a range). Unknown fields or trust values, and any entry that breaks a rule, refuse the whole
+  document.
+
+What waits on the ceremony: the production key in the slot, the first signed document on the CDN,
+and with them every runtime proof of the signed path (L6-WP08c).
