@@ -157,7 +157,7 @@ def plan(specs, formal=FORMAL):
 
 def plan_self_test():
     ok = True
-    want = ["AppExitCoordinator", "SidecarSupervisor"]
+    want = ["AppExitCoordinator", "SidecarSupervisor", "WebSigningBudgetB3"]
     got = discover_specs()
     good = got == want
     ok = ok and good
