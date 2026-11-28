@@ -223,7 +223,6 @@ export function verify({ suites, cargo, vitest, root }) {
           if (failed.length) problems.push(`failed: ${failed.map(clean).join(", ")}`);
         }
         for (const t of s.tests) if (!names.some((n) => s.filters.some((f) => selects(f, n)) && (n === t || n.endsWith(`::${t}`)) && cargo.tests[n] === "ok")) problems.push(`listed test ${clean(t)} did not pass`);
-        if (cargo.exit !== 0 && !problems.length) problems.push(`cargo test exited ${clean(cargo.exit)}`);
       }
     } else {
       if (!vitest || !Array.isArray(vitest.testResults)) problems.push("no vitest report");
@@ -247,6 +246,10 @@ export function verify({ suites, cargo, vitest, root }) {
     }
     results.push({ id: s.id, ok: problems.length === 0, ran, reason: problems.join("; ") });
   }
+  // A red cargo run with no failing test to name (a build error, a crash, a missing summary) fails
+  // once, on its own line, instead of on every suite.
+  if (suites.some((s) => s.runner === "cargo") && cargo && cargo.exit !== 0 && !Object.values(cargo.tests || {}).includes("FAILED"))
+    results.push({ id: "cargo", ok: false, ran: 0, reason: `cargo test exited ${clean(cargo.exit)} with no failing test named in its output (build error or crash)` });
   return results;
 }
 
