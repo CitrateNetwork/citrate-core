@@ -78,7 +78,7 @@ export function sourceOrigin(src) {
   return src.split("#")[0].replace(/([?&])rev=[^&]*&?/, "$1").replace(/[?&]$/, "");
 }
 
-/** package-lock.json (v2/v3) packages: "npm:<name>" -> Set of resolved URLs. The name is the entry's own (an alias installs it under another path); workspace links are first party and left out. */
+/** package-lock.json (v2/v3) packages: "npm:<name>" -> Set of resolved URLs. The name is the entry's own (an alias installs it under another path); a workspace link to a path inside the repo is first party and left out; any other link is a package. */
 export function npmLockPackages(text) {
   let lock;
   try {
@@ -91,10 +91,11 @@ export function npmLockPackages(text) {
   for (const [p, v] of Object.entries(lock.packages)) {
     const i = p.lastIndexOf("node_modules/");
     if (i < 0) continue;
-    if (v?.link === true) continue;
+    const local = typeof v?.resolved === "string" && !/^[a-z][a-z0-9+.-]*:|^[\\/]|(^|[\\/])\.\.([\\/]|$)/i.test(v.resolved);
+    if (v?.link === true && local) continue;
     const key = `npm:${text(v?.name) ? v.name : p.slice(i + "node_modules/".length)}`;
     if (!pkgs.has(key)) pkgs.set(key, new Set());
-    pkgs.get(key).add(typeof v?.resolved === "string" ? v.resolved : "unresolved");
+    pkgs.get(key).add(v?.link === true ? `link:${v.resolved}` : typeof v?.resolved === "string" ? v.resolved : "unresolved");
   }
   return pkgs;
 }

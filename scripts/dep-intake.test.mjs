@@ -89,6 +89,8 @@ describe("lockfile package sets", () => {
     const alias = ["node_modules/cbw-sdk", "https://registry.npmjs.org/@coinbase/wallet-sdk/-/wallet-sdk-4.0.0.tgz", { name: "@coinbase/wallet-sdk" }];
     const link = ["node_modules/citrate-ui", "packages/ui", { link: true }];
     expect([...npmLockPackages(npmLock([alias, link])).keys()]).toEqual(["npm:@coinbase/wallet-sdk"]);
+    const out = ["node_modules/x", "../outside/x", { link: true }];
+    expect([...npmLockPackages(npmLock([out])).get("npm:x")]).toEqual(["link:../outside/x"]);
   });
 
   it("reduces a source to its origin: no rev, commit or file", () => {
