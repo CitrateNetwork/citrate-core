@@ -143,15 +143,19 @@ fn command_answers_carry_no_secret() {
     let h = fx.homes();
     let home = h.ensure_home(&id_for_test("codex")).unwrap();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
+    // A planted marker, not a key shape: the answer must not carry anything from the file.
     std::fs::write(
         home.join(".codex/auth.json"),
-        format!(
-            "{{\"token\":\"{}\"}}",
-            crate::provider_fixtures_tests::fake_key("sk-")
-        ),
+        "{\"access\":\"planted-login-value\"}",
     )
     .unwrap();
     let json = serde_json::to_string(&auth_status_at(&h, "codex").unwrap()).unwrap();
-    assert!(!crate::telemetry::has_key_shape(&json));
-    assert!(!json.contains("token"));
+    assert!(
+        !json.contains("planted-login-value"),
+        "the login file is never read"
+    );
+    assert!(
+        !json.contains("access"),
+        "no field of the login file appears"
+    );
 }
