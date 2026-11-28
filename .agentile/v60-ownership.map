@@ -34,6 +34,9 @@
 #! tail /scripts/ci/lq/tripwire-inventory.mjs @SaulBuilds
 #! tail /scripts/ci/lq/tripwire-inventory.test.mjs @SaulBuilds
 #! tail /.github/workflows/lq-tripwires.yml @SaulBuilds
+# L0-WP09: release/flags.json says which flags need a sign-off record. A PR that dropped a row's
+# signoff and flipped the const together would pass the build, so the owner approves every change.
+#! tail /release/flags.json @SaulBuilds
 #! tail /release/signoffs/ @SaulBuilds
 
 # --- Fallback: anything no row below claims is L0's (integration; other lanes go through a seam). ---
