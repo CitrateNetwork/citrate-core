@@ -1,0 +1,29 @@
+{
+  "about": "L7-WP01 shared fixture (lanes/L7_NETWORKING.md section 3.2). A test fixture, not a live reading: it pins the names and the shape of the L7 link vocabulary for both sides. Rust checks it in net/link_security_tests.rs (fixture_json), TS in src/net/netTypes.test.ts. Change it only together with both type definitions.",
+  "version": 1,
+  "linkKinds": ["tailnet-own", "tailnet-managed", "warp", "lan", "none"],
+  "linkSecurity": ["pq-hybrid-e2e", "classical-e2e", "terminated-at-provider", "none"],
+  "pqSuite": "X25519MLKEM768-HKDF-SHA384-AES256GCM",
+  "netStatus": {
+    "link": "none",
+    "tailscale": {
+      "state": "notInstalled",
+      "version": null,
+      "selfHost": null,
+      "selfIps": [],
+      "peers": []
+    },
+    "tailscaleVia": "none",
+    "warp": { "present": false, "ips": [] },
+    "privateAddrs": [],
+    "pairingPort": 4210,
+    "mesh": {
+      "on": false,
+      "source": "off",
+      "signedOff": false,
+      "note": "The cross-machine mesh is off."
+    },
+    "meshLinkSecurity": "none",
+    "note": "No private link is set up on this machine."
+  }
+}
