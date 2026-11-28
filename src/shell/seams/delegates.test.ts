@@ -13,6 +13,7 @@ import * as l4ChatHistory from "../actions/l4/chatHistory";
 import * as l3Auth from "../actions/l3/auth";
 import * as l1Turn from "../actions/l1/turn";
 import * as l4ThreadEdit from "../actions/l4/threadEdit";
+import * as l8Proposals from "../actions/l8/proposals";
 
 // Every export of a lane module becomes a pass-through spy, so a test can stub one and check the call.
 vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
@@ -29,6 +30,10 @@ vi.mock("../actions/l1/turn", async (importOriginal) => {
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
 vi.mock("../actions/l4/threadEdit", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+vi.mock("../actions/l8/proposals", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
@@ -115,7 +120,19 @@ const ROWS: Row[] = [
   { method: "everydayInvoke", target: l1Turn.everydayInvoke, args: [] },
   { method: "approveMcpRequest", target: l1Turn.approveMcpRequest, args: [{ id: "mcp-delegate" }] },
   { method: "handleTool", target: l1Turn.handleTool, args: [{ id: "call-delegate", name: "noop", args: {} }, "a-delegate-3", () => {}, { hic: "none" }, new AbortController().signal] },
+  // 07d: store.ts "Board 01 — the worker-terms proposal card" and "Board 07 — a round draft from
+  // Hermes" -> src/shell/actions/l8/proposals.ts (lane L8).
+  { method: "proposeWorkerTerms", target: l8Proposals.proposeWorkerTerms, args: [{ dataClass: "public" }, "m-terms"] },
+  { method: "patchProposal", target: l8Proposals.patchProposal, args: ["p-delegate-1", { state: "declined" }] },
+  { method: "confirmProposal", target: l8Proposals.confirmProposal, args: ["p-delegate-2"] },
+  { method: "declineProposal", target: l8Proposals.declineProposal, args: ["p-delegate-3"] },
+  { method: "reopenProposal", target: l8Proposals.reopenProposal, args: ["p-delegate-4"] },
+  { method: "proposeRoundDraft", target: l8Proposals.proposeRoundDraft, args: [{ title: "draft" }, "m-draft"] },
+  { method: "patchRoundDraft", target: l8Proposals.patchRoundDraft, args: ["d-delegate-1", { state: "declined" }] },
+  { method: "openRoundDraft", target: l8Proposals.openRoundDraft, args: ["d-delegate-2"] },
+  { method: "declineRoundDraft", target: l8Proposals.declineRoundDraft, args: ["d-delegate-3"] },
 ];
+
 afterEach(() => {
   vi.clearAllMocks();
 });

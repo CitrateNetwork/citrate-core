@@ -13,6 +13,7 @@ import * as l4ChatHistory from "./actions/l4/chatHistory";
 import * as l3Auth from "./actions/l3/auth";
 import * as l1Turn from "./actions/l1/turn";
 import * as l4ThreadEdit from "./actions/l4/threadEdit";
+import * as l8Proposals from "./actions/l8/proposals";
 import { PREFERRED_CHAT_ID } from "./actions/l1/turn";
 // L0-WP07c: the turn helpers moved to actions/l1/turn.ts; every name is still exported here.
 export { GATEWAY_CONSENT_UNAVAILABLE, LOCAL_ASK_NOT_SENT, LOCAL_ONLY_NOT_SENT, LOCAL_ROUTE_POLL_MS, LOCAL_START_WAIT_MS, PREFERRED_CHAT_ID, SELF_GATED_TOOLS } from "./actions/l1/turn";
@@ -23,8 +24,7 @@ import { isGrantOnChain } from "./grantReads";
 export { deriveIdentityFromEmail, ENTITLEMENT_POLL_MAX_MS, ENTITLEMENT_POLL_MS, entitlementSafeguardFromChain, FOCUS_RECHECK_MIN_MS, isExpiredClaim, membershipActivatingFromChain } from "./actions/l3/auth";
 export { isGrantOnChain, VALIDATOR_STAKE_REQUIREMENT_WEI } from "./grantReads";
 import { bindStoreInternals } from "./storeInternals";
-import { dataClassProblem, newProposalId } from "../agent/workerProposal";
-import { BLANK_DRAFT, draftProblems, setRoundDraft, type RoundDraft } from "../fl/roundDraft";
+import { type RoundDraft } from "../fl/roundDraft";
 import { type ChatAttachment } from "../agent/chatAttachments";
 import { useSyncExternalStore } from "react";
 import { toFunctionSelector } from "viem";
@@ -101,7 +101,7 @@ import { runHermesSelfCheck, setupNotice } from "./slices/hermesSetup";
 import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
 import { approvalNoted, beginTurn, commandRan, endTurn, notePhase, noteStep, planReported, toolFinished, toolStarted, usageReported, verifierReported } from "./slices/turnActivity";
-import { saveWorkerTerms, termsProblem, type WorkerTerms } from "../fl/workerTerms";
+import { type WorkerTerms } from "../fl/workerTerms";
 import { type RunOutcome } from "../agent/runTimeline";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { confirmRunning, withHermesStart } from "./slices/hermesRunning";
@@ -629,6 +629,10 @@ export interface StoreInternals {
   recheckSidecarBeforeSend: Store["recheckSidecarBeforeSend"];
   /** 07c: Store.routeHeldMessage (private). */
   routeHeldMessage: Store["routeHeldMessage"];
+  /** 07d: Store.patchProposal (private), actions/l8/proposals.ts. */
+  patchProposal: Store["patchProposal"];
+  /** 07d: Store.patchRoundDraft (private). */
+  patchRoundDraft: Store["patchRoundDraft"];
 }
 
 export class Store {
@@ -849,6 +853,8 @@ export class Store {
       readAloud: (...a: Parameters<Store["readAloud"]>) => self.readAloud(...a),
       recheckSidecarBeforeSend: (...a: Parameters<Store["recheckSidecarBeforeSend"]>) => self.recheckSidecarBeforeSend(...a),
       routeHeldMessage: (...a: Parameters<Store["routeHeldMessage"]>) => self.routeHeldMessage(...a),
+      patchProposal: (...a: Parameters<Store["patchProposal"]>) => self.patchProposal(...a),
+      patchRoundDraft: (...a: Parameters<Store["patchRoundDraft"]>) => self.patchRoundDraft(...a),
     });
     this.state = loadState();
     this.snap = this.state;
@@ -2908,94 +2914,46 @@ export class Store {
   }
 
   // ---------- Board 01 — the worker-terms proposal card (core-rendered, HIC-1) ----------
-
-  /**
-   * Put a worker-terms proposal card in the transcript, under reply `msgId` (or as its own Hermes
-   * message). Core checks the terms first; malformed terms are refused with the reason and no card
-   * is shown. Returns what the caller (the proposal tool, once it ships) tells Hermes.
-   * Hermes never confirms: only the card's Confirm calls saveWorkerTerms. The tool that calls this
-   * ships with core's worker-policy storage (core #689).
-   */
+  // L0-WP07d: both FL proposal cards live in actions/l8/proposals.ts (lane L8); one-line delegates.
+  /** Put a worker-terms proposal card in the transcript, under reply `msgId` (actions/l8/proposals.ts). */
   proposeWorkerTerms(terms: WorkerTerms, msgId?: string): string {
-    const bad = termsProblem(terms) ?? dataClassProblem(terms.dataClasses);
-    if (bad) return `refused: ${bad}. Nothing was shown to the member.`;
-    // Unique across launches, so a card restored from history never shares an id with a new one.
-    const proposal: ChatProposal = { id: newProposalId(), kind: "worker_terms", terms, state: "pending" };
-    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, proposal } : m)) }));
-    } else {
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, proposal }]) }));
-    }
-    return "The proposal is on a card in the chat. Nothing changes until the member confirms it there.";
+    return l8Proposals.proposeWorkerTerms(this, terms, msgId);
   }
 
   private patchProposal(id: string, patch: Partial<ChatProposal>): void {
-    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.proposal?.id === id ? { ...m, proposal: { ...m.proposal, ...patch } } : m)) }));
+    return l8Proposals.patchProposal(this, id, patch);
   }
 
-  /** The member pressed Confirm on the card (HIC-1): save the terms, then show the outcome. */
-  async confirmProposal(id: string): Promise<void> {
-    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
-    if (!p || (p.state !== "pending" && p.state !== "failed")) return;
-    this.patchProposal(id, { state: "saving", error: undefined });
-    try {
-      const receipt = await saveWorkerTerms(p.terms);
-      this.patchProposal(id, { state: "confirmed", at: receipt.savedAt || Date.now(), receipt });
-    } catch (e) {
-      this.patchProposal(id, { state: "failed", error: e instanceof Error ? e.message : String(e) });
-    }
+  /** The member pressed Confirm on the card (HIC-1): save the terms, show the outcome (actions/l8/proposals.ts). */
+  confirmProposal(id: string): Promise<void> {
+    return l8Proposals.confirmProposal(this, id);
   }
 
   declineProposal(id: string): void {
-    this.patchProposal(id, { state: "declined", at: Date.now() });
+    return l8Proposals.declineProposal(this, id);
   }
 
   reopenProposal(id: string): void {
-    const p = this.state.chatMsgs.find((m) => m.proposal?.id === id)?.proposal;
-    // An expired card stays expired: only a new proposal can be confirmed.
-    if (!p || p.state === "expired") return;
-    this.patchProposal(id, { state: "pending", at: undefined, error: undefined });
+    return l8Proposals.reopenProposal(this, id);
   }
 
   // ---------- Board 07 — a round draft from Hermes (core-rendered card) ----------
-  /** Show Hermes's round draft on a card under reply `msgId`. Nothing is saved until the member
-   *  presses "Review in Open a round". */
+  /** Show Hermes's round draft on a card under reply `msgId` (actions/l8/proposals.ts). */
   proposeRoundDraft(draft: Partial<RoundDraft>, msgId?: string): string {
-    const card: ChatRoundDraft = { id: newProposalId(), draft, state: "pending" };
-    if (msgId && this.state.chatMsgs.some((m) => m.id === msgId)) {
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? { ...m, roundDraft: card } : m)) }));
-    } else {
-      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, roundDraft: card }]) }));
-    }
-    const missing = draftProblems({ ...BLANK_DRAFT, ...draft, source: "hermes" });
-    return (
-      "The round draft is on a card in the chat. Nothing is saved or opened until the member presses Review in Open a round and signs it there." +
-      (missing.length ? " Still to fill in: " + missing.join("; ") + "." : "")
-    );
+    return l8Proposals.proposeRoundDraft(this, draft, msgId);
   }
 
   private patchRoundDraft(id: string, patch: Partial<ChatRoundDraft>): void {
-    this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.roundDraft?.id === id ? { ...m, roundDraft: { ...m.roundDraft, ...patch } } : m)) }));
+    return l8Proposals.patchRoundDraft(this, id, patch);
   }
 
-  /** The member pressed "Review in Open a round": the draft goes to that board, marked Hermes's. */
+  /** The member pressed "Review in Open a round": the draft goes to that board (actions/l8/proposals.ts). */
   openRoundDraft(id: string): void {
-    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
-    if (!c || c.state === "expired" || c.state === "declined") return;
-    try {
-      setRoundDraft({ ...c.draft, draftedFor: "this Hermes chat" }, "hermes");
-    } catch (e) {
-      this.toast("The draft could not be saved on this device: " + (e instanceof Error ? e.message : String(e)));
-      return;
-    }
-    this.patchRoundDraft(id, { state: "opened", at: Date.now() });
-    this.go("groups/rounds/open");
+    return l8Proposals.openRoundDraft(this, id);
   }
 
   declineRoundDraft(id: string): void {
-    const c = this.state.chatMsgs.find((m) => m.roundDraft?.id === id)?.roundDraft;
-    if (!c || c.state !== "pending") return;
-    this.patchRoundDraft(id, { state: "declined", at: Date.now() });
+    return l8Proposals.declineRoundDraft(this, id);
   }
 
   /** Retry an answer as a branch: its member message is sent again, on the current model (actions/l4/threadEdit.ts). */
