@@ -70,6 +70,11 @@ A test that no longer runs counts as lost, at every level it can be turned off:
 - **A Rust test.** One under `#[ignore]`, a `cfg_attr` or a `cfg` other than `cfg(test)` is not
   declared and does not count, so a protected or pinned file whose test is turned off fails the
   same way as one that lost the test.
+- **A Rust module inside a file.** A `cfg` on an enclosing module turns off every test in it while
+  each fn keeps its own `#[test]` block. So no protected or pinned Rust file carries, anywhere in
+  its code (strings and comments aside), an `#[ignore]`, a `cfg_attr`, a `cfg` other than
+  `cfg(test)`, an inner `#![...]`, or a `mod` item; the L8-RUST file's own opening
+  `mod lq_l8_fl {` is the one module allowed.
 - **A Rust file.** Each protected Rust file names its `host` in the registry. The host must include
   it, once and uncommented, in its column-0 `#[cfg(test)] mod tests { ... }` (include lines only),
   with no other attribute on that module and no inner `#![cfg...]`; and `lib.rs` must declare the

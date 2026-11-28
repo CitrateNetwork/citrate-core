@@ -28,6 +28,7 @@ mod lq_l8_fl {
     };
     use crate::rpc::{RpcClient, RpcError, RpcTransport};
     use serde_json::Value;
+    use sha3::{Digest, Keccak256};
     use std::cell::{Cell, RefCell};
 
     /// The book's PatronageLedger and FederatedRoundLedger on r1007 (block 0).
@@ -226,11 +227,21 @@ mod lq_l8_fl {
         assert_eq!(crate::training::scan_rounds(&rpc, PATRONAGE, &gid), Ok(1));
         let calls = rpc.transport().calls();
         assert_eq!(calls.len(), 2);
-        for (to, data) in &calls {
-            assert_eq!(to, PATRONAGE);
-            assert!(data.starts_with("0xa4402ca3"), "{data}");
-            assert_eq!(data.len(), 2 + 8 + 64, "{data}");
-        }
+        // Round n's key is keccak256(abi.encode(bytes32 groupId, uint256 n)), n from 1, so the
+        // two calls ask for rounds 1 and 2 in that order.
+        let round_call = |n: u8| {
+            let mut buf = [0u8; 64];
+            buf[..32].copy_from_slice(&gid);
+            buf[63] = n;
+            let key: String = Keccak256::digest(buf)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!("0xa4402ca3{key}")
+        };
+        let datas: Vec<String> = calls.iter().map(|(_, d)| d.clone()).collect();
+        assert_eq!(datas, [round_call(1), round_call(2)]);
+        assert!(calls.iter().all(|(to, _)| to == PATRONAGE));
 
         // training_reward: units(address), then pendingDividendOf(address), for the member.
         let rpc = RpcClient::with_transport(Recorded::new(vec![word(7), word(3)]));
@@ -507,15 +518,41 @@ mod lq_l8_fl {
         Ok(attrs)
     }
 
+    /// Why a code line of `src` could turn a test off wherever it sits, or None: an #[ignore], a
+    /// cfg_attr, a cfg other than cfg(test) or an inner `#![...]` anywhere on it (a cfg on an
+    /// enclosing module turns off every test in it), or a `mod` item at all.
+    fn disabling(line: &str) -> Option<&'static str> {
+        let squashed: String = line.split_whitespace().collect();
+        for (i, _) in squashed.match_indices('#') {
+            let at = &squashed[i..];
+            if at == "#" || at == "#!" || at == "#[" {
+                return Some("an attribute split across lines");
+            }
+            if at.starts_with("#![") {
+                return Some("an inner attribute");
+            }
+            if at.starts_with("#[ignore") {
+                return Some("an #[ignore]");
+            }
+            if at.starts_with("#[cfg") && !at.starts_with("#[cfg(test)]") {
+                return Some("a cfg other than cfg(test)");
+            }
+        }
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        if line.split(|c: char| !is_word(c)).any(|w| w == "mod") {
+            return Some("a mod item");
+        }
+        None
+    }
+
     /// Ok when `src` declares `fn <name>() {` as a test that runs: under #[test], with no
-    /// #[ignore], no cfg_attr and no cfg other than cfg(test) anywhere in its attribute block. A
-    /// line that starts an #[ignore] or a cfg_attr anywhere in the file fails it too (a backstop).
+    /// #[ignore], no cfg_attr and no cfg other than cfg(test) anywhere in its attribute block.
+    /// Any code line `disabling` names fails it too (a backstop the block parse cannot see past).
     fn live_test(src: &str, name: &str) -> Result<(), String> {
         let code = code_lines(src);
         for line in code.lines() {
-            let squashed: String = line.split_whitespace().collect();
-            if squashed.starts_with("#[ignore") || squashed.starts_with("#[cfg_attr") {
-                return Err(format!("a test is turned off: {line}"));
+            if let Some(why) = disabling(line) {
+                return Err(format!("a test could be turned off by {why}: {line}"));
             }
         }
         let decl = format!("fn {name}() {{");
@@ -544,13 +581,25 @@ mod lq_l8_fl {
         Ok(())
     }
 
-    /// A whole-line `//` comment (a doc comment too) blanked, indentation kept otherwise.
+    /// A whole-line `//` comment (a doc comment too) blanked, and a trailing `//` comment after
+    /// a closing `]` dropped (so `#[cfg(any())] // note` still reads as an attribute), indentation
+    /// kept otherwise.
     fn blank_comment(line: &str) -> &str {
         if line.trim_start().starts_with("//") {
-            ""
-        } else {
-            line
+            return "";
         }
+        for (i, _) in line.match_indices("//") {
+            let head = line[..i].trim_end();
+            if head.ends_with(']') {
+                return head;
+            }
+        }
+        line
+    }
+
+    /// True when `line` (its trailing comment dropped by `blank_comment`) ends an attribute.
+    fn is_attribute(line: &str) -> bool {
+        line.trim_end().ends_with(']')
     }
 
     /// A block comment's opener, built so that this file carries none for the registry check's
@@ -621,7 +670,7 @@ mod lq_l8_fl {
         if top < 2 || lines[top - 1] != "mod tests {" || lines[top - 2] != "#[cfg(test)]" {
             return Err(format!("{file} is not in a column-0 #[cfg(test)] mod tests"));
         }
-        if line_above(&lines, top - 2).trim_end().ends_with(']') {
+        if is_attribute(line_above(&lines, top - 2)) {
             return Err("an attribute stacked on the test module".to_string());
         }
         Ok(())
@@ -648,7 +697,7 @@ mod lq_l8_fl {
         if lines[i] != decl.as_str() {
             return Err(format!("not a plain column-0 declaration: {:?}", lines[i]));
         }
-        if line_above(&lines, i).trim_end().ends_with(']') {
+        if is_attribute(line_above(&lines, i)) {
             return Err(format!("an attribute on mod {module}"));
         }
         Ok(())
@@ -723,6 +772,13 @@ mod lq_l8_fl {
         }
         let live = "#[derive(Default)]\nstruct S;\n\n#[cfg(test)]\n#[test]\nfn t() {\n}\n";
         assert_eq!(live_test(live, "t"), Ok(()));
+        // Line by line: an attribute split across lines fails closed; cfg(test) and a derive pass.
+        for line in ["#", "#!", "#[", "x(); #[cfg(any())]", "# [ cfg ( any ( ) ) ]"] {
+            assert!(disabling(line).is_some(), "{line}");
+        }
+        for line in ["#[cfg(test)]", "#[derive(Default)]", "#[tokio::test]", "fn model() {"] {
+            assert_eq!(disabling(line), None, "{line}");
+        }
     }
 
     #[test]

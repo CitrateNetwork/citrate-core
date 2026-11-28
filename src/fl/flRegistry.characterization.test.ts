@@ -111,8 +111,25 @@ function disabledBy(f: CargoFn): string | undefined {
   return f.attrs.find((a) => /^(?:ignore|cfg_attr)\b/.test(a) || (/^cfg\b/.test(a) && a !== "cfg(test)"));
 }
 
-/** Lines that turn a Rust test off wherever they sit: a backstop for an attribute the block parse misreads. */
-const DISABLING_LINE = /^[ \t]*#\s*\[\s*(?:ignore|cfg_attr)\b.*$/gm;
+/**
+ * Rust source as code only: comments become a space and string, raw string and char literals
+ * become `""`, in one left-to-right pass so a `//` in a string or a quote in a comment is read as
+ * the lexer reads it.
+ */
+function rustCode(src: string): string {
+  const token = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|b?r(#*)"[\s\S]*?"\1|b?"(?:[^"\\]|\\[\s\S])*"|b?'(?:[^'\\\n]|\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.))'/g;
+  return src.replace(token, (t) => (t.startsWith("/") ? " " : '""'));
+}
+
+/**
+ * Attributes that turn a Rust test off wherever they sit, the block parse aside: an #[ignore], a
+ * cfg_attr, a cfg other than cfg(test) (on an enclosing module too), or any inner `#![...]`.
+ */
+const DISABLING_ATTR = /#\s*(?:!\s*\[|\[\s*(?:ignore\b|cfg(?!\s*\(\s*test\s*\)\s*\])))/g;
+const ATTR_AT = new RegExp(`^#\\s*!?\\s*\\[((?:"(?:[^"\\\\]|\\\\.)*"|[^\\]"])*)\\]`);
+
+/** The `mod` items in Rust code, by name. */
+const MOD_ITEM = /\bmod\s+([A-Za-z_][A-Za-z0-9_]*)/g;
 
 /** cargo: the functions under `#[test]` (or `#[tokio::test]`) that still run, outside comments. */
 function declaredCargo(src: string): string[] {
@@ -121,13 +138,26 @@ function declaredCargo(src: string): string[] {
     .map((f) => f.name);
 }
 
-/** cargo: each test turned off (`name: #[attr]`), then each disabling line. Empty when every test runs. */
-function disabledCargo(src: string): string[] {
+/**
+ * cargo: each test turned off (`name: #[attr]`), then each disabling attribute anywhere in the code
+ * (whitespace removed), then each `mod <name>` other than the suite's own opening `suiteMod`. A
+ * test in a cfg'd-out module keeps its own #[test] block, so a protected or pinned file carries
+ * no such attribute and no other module at all. Empty when every test runs.
+ */
+function disabledCargo(src: string, suiteMod?: string): string[] {
   const off = cargoFns(src)
     .filter((f) => isCargoTest(f) && disabledBy(f) !== undefined)
     .map((f) => `${f.name}: #[${disabledBy(f)}]`);
-  const lines = (cargoSource(src).match(DISABLING_LINE) ?? []).map((l) => l.trim());
-  return [...off, ...lines];
+  const code = rustCode(src);
+  const attrs = [...code.matchAll(DISABLING_ATTR)].map((m) => {
+    const at = code.slice(m.index ?? 0);
+    const whole = at.match(ATTR_AT)?.[0] ?? at.split("\n")[0];
+    return whole.replace(/\s+/g, "");
+  });
+  const mods = [...code.matchAll(MOD_ITEM)].map((m) => `mod ${m[1]}`);
+  const own = suiteMod === undefined ? -1 : mods.indexOf(`mod ${suiteMod}`);
+  if (own >= 0) mods.splice(own, 1);
+  return [...off, ...attrs, ...mods];
 }
 
 /** The column-0 test module of a host file: `#[cfg(test)]`, `mod tests {`, include lines only, `}`. */
@@ -325,16 +355,21 @@ describe("L8 characterization registry (L8-WP01)", () => {
   });
 
   it("no_pinned_or_protected_cargo_test_is_disabled", () => {
-    // A Rust test that is #[ignore]d, behind a cfg_attr or cfg'd out no longer runs, so no pinned
-    // or protected file carries one (the collector safety guards in fl_collect_tests.rs above all).
+    // A Rust test that is #[ignore]d, behind a cfg_attr or cfg'd out (itself or by an enclosing
+    // module) no longer runs, so no pinned or protected file carries one (the collector safety
+    // guards in fl_collect_tests.rs above all).
     const files = [
       ...REG.suites.filter((s) => s.runner === "cargo").flatMap((s) => s.files),
       ...REG.protected.filter((p) => p.runner === "cargo").map((p) => p.file),
     ];
     expect(files).toContain("src-tauri/src/fl_collect_tests.rs");
+    // The L8-RUST file opens with its own module (suiteModError pins where); no other mod anywhere.
+    const suiteMod = new Map<string, string>();
+    for (const s of REG.suites.filter((x) => x.runner === "cargo"))
+      for (const f of s.files) suiteMod.set(f, (s.filter ?? "").replace(/::$/, ""));
     for (const f of files) {
       const src = existsSync(f) ? readFileSync(f, "utf8") : "";
-      expect(disabledCargo(src), f).toEqual([]);
+      expect(disabledCargo(src, suiteMod.get(f)), f).toEqual([]);
     }
   });
 
@@ -441,12 +476,15 @@ describe("L8 characterization registry (L8-WP01)", () => {
       "cfg_attr_ignore: #[cfg_attr(unix,ignore)]",
       "cfg_attr_wrapped: #[cfg_attr(unix,ignore)]",
       "#[ignore]",
-      '#[ignore = "flaky"]',
-      "# [ignore]",
+      '#[ignore=""]',
       "#[ignore]",
-      '#[ignore = "see [1]"]',
-      "#[cfg_attr(unix, ignore)]",
-      "#[cfg_attr(",
+      "#[ignore]",
+      "#[ignore]",
+      '#[ignore=""]',
+      "#[cfg(any())]",
+      "#[cfg(not(test))]",
+      "#[cfg_attr(unix,ignore)]",
+      "#[cfg_attr(unix,ignore)]",
     ]);
     // So a protected file whose test gains #[ignore] drops below its count and loses the name.
     const before = "#[test]\nfn guard() {}\n#[test]\nfn other() {}";
@@ -467,6 +505,8 @@ describe("L8 characterization registry (L8-WP01)", () => {
       `fn x() {} #[cfg(any())] mod off {\n${inner}}\n`,
       `#[cfg(test)] #[cfg(any())] mod off {\n${inner}}\n`,
       `#[cfg(\n    any()\n)]\nmod off {\n${inner}}\n`,
+      `#\n[cfg(any())]\nconst _: () = ();\n${inner}`,
+      `#[\n  cfg(any())\n]\nconst _: () = ();\n${inner}`,
       `mod off {\n    #![cfg(any())]\n${inner}}\n`,
       `#![cfg(any())]\n${inner}`,
       `mod plain {\n${inner}}\n`,
@@ -491,6 +531,8 @@ describe("L8 characterization registry (L8-WP01)", () => {
       'const A: &str = "#[cfg(test)] mod guard; #[cfg(any())]";',
       'const B: &str = r#"mod off { "#;',
       "const C: char = '\"';",
+      "const D: [char; 3] = ['\\'', '\\u{22}', '\"'];",
+      "const E: &str = \"mod off\";",
       "fn d() {} // a trailing comment: mod off, #[cfg(any())]",
     ].join("\n");
     expect(disabledCargo(live)).toEqual([]);
