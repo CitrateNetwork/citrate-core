@@ -2890,6 +2890,11 @@ pub mod cloud;
 #[path = "agent_auth.rs"]
 pub mod agent_auth;
 
+// L1-WP03c (v060): the ACP host inside Core (one host, the live sessions, a pinned agent's launch in
+// its own home with at most one route). Declared here for the same reason as `agent_auth`.
+#[path = "agent_runtime_ipc.rs"]
+pub mod agent_runtime;
+
 // HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
 #[path = "hermes_personas.rs"]
 pub mod personas;
