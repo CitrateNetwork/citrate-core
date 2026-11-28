@@ -1,9 +1,11 @@
+// @vitest-environment node
 // L6-WP08b: the Citrate subregistry builder. It reads the official MCP Registry and the reviewed
 // overlay (curation.json) and writes the UNSIGNED subregistry document plus a human diff. It never
 // signs: the owner signs offline with the catalog key.
 //
-// Run: node --test tools/mcp-mirror/tests/
-import { test } from "node:test";
+// Run: npx vitest run tools/mcp-mirror (CI picks it up once vitest.config.ts includes
+// tools/**/*.test.mjs, the L0 seam).
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
