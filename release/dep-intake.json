@@ -1,0 +1,9 @@
+{
+  "$comment": [
+    "L0-WP10 dependency intake. Every third-party package a change adds to Cargo.lock or package-lock.json is listed in exactly one row's deps, as cargo:<name> or npm:<name>. Checked by scripts/dep-intake.mjs (ci.yml node job, against the PR base).",
+    "A row: deps (the direct dependency and the transitive packages it brings), lane (L0..L9, LQ), wp, reason, licence (SPDX), reviewer, supply_chain {skill: supply-chain-risk-auditor, result: pass | pass-with-notes, notes}, origins (the reviewed source origins, as scripts/dep-intake.mjs sourceOrigin prints them: a registry index for a crate, registry.npmjs.org/<package> for an npm package, the git URL for a git dep; a dep that later comes from another origin fails until the row is reviewed again), and drift (the citrate-federation manifest.toml [[drift]] entry) for a CitrateNetwork git crate.",
+    "A lane asks for a dependency with an intake row in its sprint WP; L0 lands it in a dependency PR, at most one a day, and regenerates the licence inventory and third-party notices (release/licences.json, scripts/third-party-notices.mjs). Packages already locked when intake started (2026-11-27) have no rows; a row whose package leaves the lockfiles goes with it."
+  ],
+  "version": 1,
+  "rows": []
+}

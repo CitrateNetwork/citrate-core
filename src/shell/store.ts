@@ -8,7 +8,9 @@
 // the prototype's setState-with-updater semantics exactly. A React reducer
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
-import { chatHistory, expireOpenProposal, forgetAllThreads, forgetThread, newThreadId, recordThread, type ThreadParent } from "./slices/chatHistory";
+import { expireOpenProposal, newThreadId, type ThreadParent } from "./slices/chatHistory";
+import * as l4ChatHistory from "./actions/l4/chatHistory";
+import { bindStoreInternals } from "./storeInternals";
 import { dataClassProblem, newProposalId } from "../agent/workerProposal";
 import { BLANK_DRAFT, draftProblems, setRoundDraft, type RoundDraft } from "../fl/roundDraft";
 import { contextPreamble, MAX_ATTACHMENTS, type ChatAttachment } from "../agent/chatAttachments";
@@ -808,6 +810,21 @@ function modelFailureReason(e: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * L0-WP07: the Store's private members that lane action modules (src/shell/actions/l<N>/*.ts) read,
+ * write or call. Narrow on purpose: each WP07 section adds only what its moved code uses. A lane
+ * module reaches them through storeInternals(store) (./storeInternals.ts), never through `any`.
+ * Methods here dispatch through the Store method of the same name, as `this.x()` did before the move.
+ */
+export interface StoreInternals {
+  /** 07a: the pending chat-archive debounce (actions/l4/chatHistory.ts). */
+  archiveT: ReturnType<typeof setTimeout> | null;
+  /** 07a: Board 01, which thread (and message) each branch of this session came from. */
+  readonly threadParents: Map<string, ThreadParent>;
+  /** 07a: Store.chatSwitchBlocked (private). */
+  chatSwitchBlocked(): string | null;
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -913,6 +930,20 @@ export class Store {
   jChatInputEl: HTMLInputElement | null = null;
 
   constructor() {
+    // L0-WP07: the one view of this Store's private members that lane action modules use.
+    const self = this;
+    bindStoreInternals(this, {
+      get archiveT() {
+        return self._archiveT;
+      },
+      set archiveT(t) {
+        self._archiveT = t;
+      },
+      get threadParents() {
+        return self.threadParents;
+      },
+      chatSwitchBlocked: () => self.chatSwitchBlocked(),
+    });
     this.state = loadState();
     this.snap = this.state;
     this.provider = createDemoProvider(() => this.snapshot());
@@ -943,102 +974,44 @@ export class Store {
   }
 
   // ---------- 0.5.4 — Hermes chat history (slices/chatHistory.ts) ----------
+  // L0-WP07a: the actions live in actions/l4/chatHistory.ts (lane L4); these are one-line delegates.
   private _archiveT: ReturnType<typeof setTimeout> | null = null;
 
   private scheduleChatArchive(): void {
-    if (this._archiveT) clearTimeout(this._archiveT);
-    this._archiveT = setTimeout(() => {
-      this._archiveT = null;
-      this.archiveChat();
-    }, 500);
+    return l4ChatHistory.scheduleChatArchive(this);
   }
 
-  /** Keep the current thread in the history, once no turn is running (a streaming reply is kept
-   *  when it has finished). A greeting-only thread is not kept. */
+  /** Keep the current thread in the history, once no turn is running (actions/l4/chatHistory.ts). */
   archiveChat(): void {
-    const s = this.state;
-    if (s.chatStatus !== "ready" || s.chatMsgs.some((m) => m.streaming)) return;
-    recordThread(s.chatThreadId, s.chatMsgs, Date.now(), this.threadParents.get(s.chatThreadId));
+    return l4ChatHistory.archiveChat(this);
   }
 
   /** Board 01: which thread (and message) each branch of this session came from. */
   private threadParents = new Map<string, ThreadParent>();
 
-  /** Why the thread can't be switched right now, or null. A running turn writes into the current
-   *  thread, so it is never swapped from under it. */
+  /** Why the thread can't be switched right now, or null (actions/l4/chatHistory.ts). */
   private chatSwitchBlocked(): string | null {
-    if (this.state.chatStatus !== "ready" || this.state.chatRouteHold) return "Finish or stop the current reply first";
-    return null;
+    return l4ChatHistory.chatSwitchBlocked(this);
   }
 
-  /** Start a new conversation. The current one stays in the history. Hermes's agent session is
-   *  rebuilt, so the new conversation does not carry the previous one's context. */
+  /** Start a new conversation; the current one stays in the history (actions/l4/chatHistory.ts). */
   newChat(): boolean {
-    const blocked = this.chatSwitchBlocked();
-    if (blocked) {
-      this.toast(blocked);
-      return false;
-    }
-    this.archiveChat();
-    // A follow-up queued in the old conversation belongs to it: it is dropped, never sent here.
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
-    if (this.chatInputEl) this.chatInputEl.value = "";
-    void this.rebuildProvider();
-    return true;
+    return l4ChatHistory.newChat(this);
   }
 
-  /** Reopen a conversation from the history. Its messages come back as they were kept; ids are
-   *  re-keyed so they never collide with new messages. Hermes's agent session is rebuilt (the
-   *  sidecar session has no record of this thread). */
+  /** Reopen a conversation from the history (actions/l4/chatHistory.ts). */
   openChat(threadId: string): boolean {
-    if (threadId === this.state.chatThreadId) return true;
-    const thread = chatHistory.get().threads.find((t) => t.id === threadId);
-    if (!thread) {
-      this.toast("That conversation is no longer in this device's history");
-      return false;
-    }
-    const blocked = this.chatSwitchBlocked();
-    if (blocked) {
-      this.toast(blocked);
-      return false;
-    }
-    this.archiveChat();
-    const msgs: ChatMsg[] = thread.msgs.map((m, i) => ({ ...m, id: "h" + i + "-" + thread.id, streaming: false, chips: m.chips ?? [] }));
-    this.setState({ chatMsgs: msgs, chatThreadId: thread.id, chatContextOff: [], chatQueue: [] });
-    // The reopened thread is recorded under its own id with the re-keyed messages, so nothing
-    // changed means nothing moves in the list.
-    recordThread(thread.id, msgs, thread.updatedAt);
-    if (this.chatInputEl) this.chatInputEl.value = "";
-    void this.rebuildProvider();
-    return true;
+    return l4ChatHistory.openChat(this, threadId);
   }
 
-  /** Erase a conversation from this device's history: core removes its sealed file and rotates the
-   *  history key, so no copy of it opens again. The current thread cannot be erased from under the
-   *  member. */
+  /** Erase a conversation from this device's history (actions/l4/chatHistory.ts). */
   forgetChat(threadId: string): Promise<void> {
-    if (threadId === this.state.chatThreadId) return Promise.resolve();
-    return forgetThread(threadId);
+    return l4ChatHistory.forgetChat(this, threadId);
   }
 
-  /** Erase every conversation, the current one included, and the history key. The chat starts
-   *  over (a fresh thread and agent session), so nothing erased is sealed again. */
-  async forgetAllChats(): Promise<boolean> {
-    const blocked = this.chatSwitchBlocked();
-    if (blocked) {
-      this.toast(blocked);
-      return false;
-    }
-    if (this._archiveT) {
-      clearTimeout(this._archiveT);
-      this._archiveT = null;
-    }
-    const ok = await forgetAllThreads();
-    if (!ok) return false;
-    this.setState({ chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })], chatThreadId: newThreadId(), chatContextOff: [], chatQueue: [] });
-    if (this.chatInputEl) this.chatInputEl.value = "";
-    void this.rebuildProvider();
-    return true;
+  /** Erase every conversation, the current one included (actions/l4/chatHistory.ts). */
+  forgetAllChats(): Promise<boolean> {
+    return l4ChatHistory.forgetAllChats(this);
   }
 
   start(): void {
