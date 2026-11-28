@@ -86,3 +86,4 @@ jobs:
             cp scripts/ci/lq/review-matrix.mjs "$RUNNER_TEMP/review-matrix.mjs"
           fi
           node "$RUNNER_TEMP/review-matrix.mjs" check --from-event --base "$BASE" --root "$GITHUB_WORKSPACE"
+# probe: throwaway change (LQ-WP18 RED probe, do not merge)
