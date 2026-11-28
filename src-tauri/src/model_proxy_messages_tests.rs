@@ -91,7 +91,7 @@ fn messages_maps_to_chat_request_and_back() {
     assert!(r.stream);
     for bad in [
         json!({"messages": []}),
-        json!({"messages": [{"role": "system", "content": "x"}]}),
+        json!({"messages": [{"role": "tool", "content": "x"}]}),
         json!({"messages": [{"role": "user", "content": [{"type": "image", "source": {}}]}]}),
         json!({"messages": [{"role": "user", "content": "x"}], "tools": [{"type": "web_search_20250305", "name": "web_search"}]}),
         json!({"messages": [{"role": "user", "content": "x"}], "stop_sequences": ["END"]}),
