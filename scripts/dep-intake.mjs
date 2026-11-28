@@ -79,10 +79,10 @@ export function sourceOrigin(src) {
 }
 
 /** package-lock.json (v2/v3) packages: "npm:<name>" -> Set of resolved URLs. The name is the entry's own (an alias installs it under another path); a workspace link to a path inside the repo is first party and left out; any other link is a package. */
-export function npmLockPackages(text) {
+export function npmLockPackages(lockText) {
   let lock;
   try {
-    lock = JSON.parse(text);
+    lock = JSON.parse(lockText);
   } catch (e) {
     throw new Usage(`package-lock.json: ${e.message}`);
   }
