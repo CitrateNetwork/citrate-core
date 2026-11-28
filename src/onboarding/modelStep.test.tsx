@@ -121,6 +121,10 @@ describe("store.verifyModel — ready is earned only from a real verify (Rule 1)
 
     // Import the real method off the prototype and bind it to the stub.
     const { Store } = await import("../shell/store");
+    // L0-WP07e: verifyModel now lives in actions/l5/localModel.ts and reaches the private
+    // stopModelPoll through the Store's internals view, so the stub gets that view too.
+    const { bindStoreInternals } = await import("../shell/storeInternals");
+    bindStoreInternals(stub as unknown as InstanceType<typeof Store>, { stopModelPoll: () => stub.stopModelPoll() } as unknown as Parameters<typeof bindStoreInternals>[1]);
     await (Store.prototype.verifyModel as (this: typeof stub) => Promise<void>).call(stub);
 
     expect(stub.state.modelState).toBe("error");
