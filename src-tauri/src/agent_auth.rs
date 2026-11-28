@@ -600,7 +600,7 @@ pub fn locked_agent(id: &str) -> Result<AgentId, AuthError> {
 
 /// The sign-in state of one agent (metadata only).
 pub fn auth_status_at(homes: &AgentHomes, id: &str) -> Result<HomeStatus, AuthError> {
-    Ok(homes.status(&locked_agent(id)?))
+    Ok(homes.home_status(&locked_agent(id)?))
 }
 
 /// Sign one agent out: its routes revoked, its home emptied. Answers the new state.
@@ -610,8 +610,8 @@ pub fn sign_out_at(
     id: &str,
 ) -> Result<HomeStatus, AuthError> {
     let id = locked_agent(id)?;
-    homes.sign_out(&id, proxy)?;
-    Ok(homes.status(&id))
+    homes.sign_out_agent(&id, proxy)?;
+    Ok(homes.home_status(&id))
 }
 
 /// Remove one agent's folder (uninstall cleanup). Answers whether anything was removed.
@@ -620,7 +620,7 @@ pub fn remove_at(
     proxy: Option<&ModelProxy>,
     id: &str,
 ) -> Result<bool, AuthError> {
-    homes.remove(&locked_agent(id)?, proxy)
+    homes.remove_agent_dir(&locked_agent(id)?, proxy)
 }
 
 fn homes_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<AgentHomes, String> {

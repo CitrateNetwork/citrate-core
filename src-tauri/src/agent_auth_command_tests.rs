@@ -4,8 +4,8 @@
 // refused before the file system is touched.
 
 use super::*;
-use crate::model_proxy::tests::Rig;
 use crate::model_provider::Vendor;
+use crate::model_proxy::tests::Rig;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static N: AtomicUsize = AtomicUsize::new(0);
@@ -36,11 +36,24 @@ impl Drop for Fx {
 
 #[test]
 fn only_agents_the_lock_names_are_accepted() {
-    for id in ["hermes", "codex", "claude", "gemini", "goose", "grok", "muse"] {
+    for id in [
+        "hermes", "codex", "claude", "gemini", "goose", "grok", "muse",
+    ] {
         assert!(locked_agent(id).is_ok(), "{id}");
     }
-    for id in ["unknown-agent", "openclaw", "", "../codex", "codex/..", "Codex", "codex\n"] {
-        assert!(matches!(locked_agent(id), Err(AuthError::BadId(_))), "{id:?}");
+    for id in [
+        "unknown-agent",
+        "openclaw",
+        "",
+        "../codex",
+        "codex/..",
+        "Codex",
+        "codex\n",
+    ] {
+        assert!(
+            matches!(locked_agent(id), Err(AuthError::BadId(_))),
+            "{id:?}"
+        );
     }
 }
 
@@ -52,7 +65,10 @@ fn a_refused_id_touches_nothing() {
     assert!(sign_out_at(&h, None, "unknown-agent").is_err());
     assert!(remove_at(&h, None, "..").is_err());
     assert!(!h.home(&id_for_test("codex")).exists());
-    assert!(!fx.0.join(AGENTS_DIR).exists(), "no folder is created for a refused id");
+    assert!(
+        !fx.0.join(AGENTS_DIR).exists(),
+        "no folder is created for a refused id"
+    );
 }
 
 fn id_for_test(s: &str) -> AgentId {
@@ -69,7 +85,10 @@ fn status_command_creates_nothing_and_reports_the_offer() {
     assert!(s.own_login_offered);
     assert!(!fx.0.join(AGENTS_DIR).exists());
     let c = auth_status_at(&h, "claude").unwrap();
-    assert!(!c.own_login_offered, "Claude Agent signs in only through the proxy (L1-Q3)");
+    assert!(
+        !c.own_login_offered,
+        "Claude Agent signs in only through the proxy (L1-Q3)"
+    );
 }
 
 #[test]
@@ -78,7 +97,7 @@ fn sign_out_command_revokes_routes_and_empties_the_home() {
     let rig = Rig::new("agent-auth-cmd-signout");
     let h = fx.homes();
     let codex = id_for_test("codex");
-    let home = h.ensure(&codex).unwrap();
+    let home = h.ensure_home(&codex).unwrap();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
     std::fs::write(home.join(".codex/auth.json"), "{}").unwrap();
     let g = mint_agent_route(
@@ -99,7 +118,7 @@ fn sign_out_command_revokes_routes_and_empties_the_home() {
 fn sign_out_without_a_running_proxy_still_empties_the_home() {
     let fx = Fx::new();
     let h = fx.homes();
-    let home = h.ensure(&id_for_test("gemini")).unwrap();
+    let home = h.ensure_home(&id_for_test("gemini")).unwrap();
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     std::fs::write(home.join(".gemini/oauth_creds.json"), "{}").unwrap();
     let s = sign_out_at(&h, None, "gemini").unwrap();
@@ -110,8 +129,8 @@ fn sign_out_without_a_running_proxy_still_empties_the_home() {
 fn remove_command_is_the_uninstall_cleanup() {
     let fx = Fx::new();
     let h = fx.homes();
-    h.ensure(&id_for_test("goose")).unwrap();
-    h.ensure(&id_for_test("grok")).unwrap();
+    h.ensure_home(&id_for_test("goose")).unwrap();
+    h.ensure_home(&id_for_test("grok")).unwrap();
     assert!(remove_at(&h, None, "goose").unwrap());
     assert!(!h.agent_dir(&id_for_test("goose")).exists());
     assert!(h.agent_dir(&id_for_test("grok")).exists());
@@ -122,11 +141,14 @@ fn remove_command_is_the_uninstall_cleanup() {
 fn command_answers_carry_no_secret() {
     let fx = Fx::new();
     let h = fx.homes();
-    let home = h.ensure(&id_for_test("codex")).unwrap();
+    let home = h.ensure_home(&id_for_test("codex")).unwrap();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
     std::fs::write(
         home.join(".codex/auth.json"),
-        format!("{{\"token\":\"{}\"}}", crate::provider_fixtures_tests::fake_key("sk-")),
+        format!(
+            "{{\"token\":\"{}\"}}",
+            crate::provider_fixtures_tests::fake_key("sk-")
+        ),
     )
     .unwrap();
     let json = serde_json::to_string(&auth_status_at(&h, "codex").unwrap()).unwrap();
