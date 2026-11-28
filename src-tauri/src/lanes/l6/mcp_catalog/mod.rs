@@ -35,15 +35,6 @@ pub(crate) enum TrustBadge {
     VerifiedBrand,
 }
 
-/// A package an entry installs from (empty for every remote brand server).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PackageView {
-    pub(crate) registry_type: String,
-    pub(crate) identifier: String,
-    pub(crate) version: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct McpCatalogEntry {
@@ -53,7 +44,9 @@ pub(crate) struct McpCatalogEntry {
     pub(crate) publisher: String,
     pub(crate) trust: TrustBadge,
     pub(crate) remote_url: Option<String>,
-    pub(crate) packages: Vec<PackageView>,
+    /// `{ registryType, identifier, version }` records; always empty for the remote brand servers
+    /// (the subregistry entries that carry packages arrive with L6-WP08c).
+    pub(crate) packages: Vec<serde_json::Value>,
     /// `oauth` or `none`.
     pub(crate) auth: String,
     /// A saved user server points at this entry's URL.
