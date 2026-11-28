@@ -602,3 +602,117 @@ fn removal_deletes_the_agents_folder_never_a_link_target_or_another_agent() {
         "removing twice is a no-op"
     );
 }
+
+// Review P2-1 (#842): every component from <app data> to the agent's home is checked without
+// following a link, so a symlinked `agents/`, `agents/<id>` or `home` is refused and nothing
+// outside the agent's folder is deleted.
+
+/// A folder outside every agent folder with one member file in `<sub>/file`.
+#[cfg(unix)]
+fn decoy(fx: &Fx, name: &str, sub: &str) -> PathBuf {
+    let d = fx.base.join(name);
+    std::fs::create_dir_all(d.join(sub)).unwrap();
+    std::fs::write(d.join(sub).join("file"), "member file").unwrap();
+    d
+}
+
+#[cfg(unix)]
+#[test]
+fn sign_out_refuses_a_symlinked_agent_folder_and_deletes_nothing_outside() {
+    let fx = Fx::new();
+    let elsewhere = decoy(&fx, "elsewhere", "home");
+    std::fs::create_dir_all(fx.appdata().join("agents")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents/codex")).unwrap();
+    let r = fx.homes().sign_out_agent(&id("codex"), None);
+    assert!(matches!(r, Err(AuthError::Refused(_))), "refused");
+    assert!(
+        elsewhere.join("home/file").exists(),
+        "nothing outside is deleted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sign_out_refuses_a_symlinked_home_and_deletes_nothing_outside() {
+    let fx = Fx::new();
+    let elsewhere = decoy(&fx, "elsewhere", "x");
+    std::fs::create_dir_all(fx.appdata().join("agents/codex")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents/codex/home")).unwrap();
+    let r = fx.homes().sign_out_agent(&id("codex"), None);
+    assert!(matches!(r, Err(AuthError::Refused(_))), "refused");
+    assert!(
+        elsewhere.join("x/file").exists(),
+        "nothing outside is deleted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sign_out_and_remove_refuse_a_symlinked_agents_folder() {
+    let fx = Fx::new();
+    let elsewhere = decoy(&fx, "elsewhere2", "goose");
+    std::fs::create_dir_all(elsewhere.join("codex/home")).unwrap();
+    std::fs::write(elsewhere.join("codex/home/file"), "member file").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents")).unwrap();
+    let h = fx.homes();
+    assert!(matches!(
+        h.remove_agent_dir(&id("goose"), None),
+        Err(AuthError::Refused(_))
+    ));
+    assert!(matches!(
+        h.sign_out_agent(&id("codex"), None),
+        Err(AuthError::Refused(_))
+    ));
+    assert!(matches!(
+        h.ensure_home(&id("muse")),
+        Err(AuthError::Refused(_))
+    ));
+    assert!(
+        elsewhere.join("goose/file").exists(),
+        "remove deleted nothing outside"
+    );
+    assert!(
+        elsewhere.join("codex/home/file").exists(),
+        "sign-out deleted nothing outside"
+    );
+    assert!(
+        !elsewhere.join("muse").exists(),
+        "ensure created nothing through the link"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn remove_deletes_a_symlinked_home_link_never_its_target() {
+    let fx = Fx::new();
+    let elsewhere = decoy(&fx, "elsewhere", "x");
+    std::fs::create_dir_all(fx.appdata().join("agents/grok")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents/grok/home")).unwrap();
+    assert!(fx.homes().remove_agent_dir(&id("grok"), None).unwrap());
+    assert!(!fx.appdata().join("agents/grok").exists());
+    assert!(
+        elsewhere.join("x/file").exists(),
+        "the link's target survives"
+    );
+}
+
+#[test]
+fn each_agent_gets_its_own_temp_folder_inside_its_home() {
+    let fx = Fx::new();
+    let h = fx.homes();
+    let inherited = vec![("TMPDIR".to_string(), "/tmp/shared".to_string())];
+    let env = h
+        .launch_env(&id("codex"), inherited.into_iter(), None)
+        .unwrap();
+    let home = h.home(&id("codex"));
+    for k in ["TMPDIR", "TMP", "TEMP"] {
+        let v = get(&env, k).expect("set");
+        assert!(
+            Path::new(v).starts_with(&home),
+            "{k} is inside the agent's home"
+        );
+        assert!(Path::new(v).is_dir(), "{k} exists");
+    }
+    #[cfg(unix)]
+    assert_eq!(mode(Path::new(get(&env, "TMPDIR").unwrap())), 0o700);
+}
