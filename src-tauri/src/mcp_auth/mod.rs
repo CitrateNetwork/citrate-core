@@ -38,6 +38,7 @@ pub(crate) mod discovery;
 pub(crate) mod flow;
 pub(crate) mod http;
 pub(crate) mod migration;
+pub(crate) mod policy;
 pub(crate) mod registration;
 pub(crate) mod store;
 pub(crate) mod token_source;
@@ -50,6 +51,8 @@ mod fixtures;
 mod flow_tests;
 #[cfg(test)]
 mod http_tests;
+#[cfg(test)]
+mod policy_tests;
 #[cfg(test)]
 mod registration_tests;
 #[cfg(test)]
