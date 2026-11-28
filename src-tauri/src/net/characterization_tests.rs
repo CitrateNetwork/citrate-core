@@ -55,7 +55,10 @@ fn char_pairing_listener_binds_an_ephemeral_port() {
 
 #[test]
 fn char_pairing_key_is_new_each_run() {
-    // N9: the production issuer is `PairIssuer::new_random()`, once per app run.
+    // N9: before L7-WP02 the production issuer was `PairIssuer::new_random()`, once per app run.
+    // Since WP02 production uses `PairIssuer::from_keyring` and `new_random` is the in-memory
+    // fallback only; the stricter replacement is fleet_pairing_tests
+    // `the_pairing_key_is_the_same_after_restart`. This pin still holds for the fallback.
     assert_ne!(
         PairIssuer::new_random().public_hex(),
         PairIssuer::new_random().public_hex()
@@ -66,7 +69,10 @@ fn char_pairing_key_is_new_each_run() {
 fn char_used_tokens_are_forgotten_by_a_new_issuer() {
     // N9: the outstanding and used sets live in memory. Even with the same key, a new issuer (the
     // next app run) knows neither: a used link no longer reads "already used", and a link issued
-    // before the restart is unknown. WP02 closes this with a persisted ledger.
+    // before the restart is unknown. WP02 closes this with a persisted ledger for the production
+    // issuer (`a_redeemed_token_stays_used_after_restart`,
+    // `an_outstanding_token_survives_restart_and_redeems_once`); this pin still holds for an
+    // in-memory issuer, which is what the keychain fallback is.
     let mut before = PairIssuer::from_seed([7u8; 32]);
     let (_c, used) = before.issue("Studio", None, hints(), NOW).expect("issues");
     let (_c, open) = before.issue("Studio", None, hints(), NOW).expect("issues");

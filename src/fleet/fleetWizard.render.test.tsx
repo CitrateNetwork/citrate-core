@@ -1,7 +1,7 @@
 // HUP-S8.2/S8.3 (US-8.1) — the fleet wizard view, one static render per state. Written red-first.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FleetWizardView, type FleetWizardHandlers } from "./FleetWizard";
+import { EPHEMERAL_KEY_NOTE, FleetWizardView, type FleetWizardHandlers } from "./FleetWizard";
 import { initialWizard, reduce, type WizardState, type WizardAction } from "./wizard";
 import type { FleetProbe, PairOffer, TailscaleView } from "../bridge/tauri/fleet";
 import { sampleReport } from "../shell/slices/tierTestReport";
@@ -173,6 +173,13 @@ describe("FleetWizardView", () => {
     expect(html).toContain("Tailscale is connected");
     expect(html).toContain("100.64.1.10");
     expect(html).toContain("linux-box");
+  });
+
+  it("pair step says when the link will not survive a restart (L7-WP02)", () => {
+    const show = (o: PairOffer) => render(st({ type: "probed", probe }, { type: "goto", step: "pair" }, { type: "offer", offer: o }));
+    expect(show({ ...offer, ephemeralKey: true })).toContain(EPHEMERAL_KEY_NOTE);
+    expect(show({ ...offer, ephemeralKey: false })).not.toContain('data-testid="fleet-ephemeral-key"');
+    expect(show(offer)).not.toContain('data-testid="fleet-ephemeral-key"');
   });
 
   it("done step lists devices and says, per machine, whether its device link came across", () => {

@@ -563,7 +563,8 @@ pub(crate) fn bind_pairing_listener() -> Result<TcpListener, String> {
 // ---- runtime state + commands ---------------------------------------------------------------
 
 struct Runtime {
-    issuer: Arc<Mutex<PairIssuer>>,
+    /// L7-WP02: built on first use from the keychain and the ledger (see [`issuer_for`]).
+    issuer: Option<Arc<Mutex<PairIssuer>>>,
     /// Random per-run mDNS instance id (not the roster id, so adverts are not linkable).
     instance_id: String,
     discovery: Option<Discovery>,
@@ -577,7 +578,7 @@ fn runtime() -> &'static Mutex<Runtime> {
         let mut r = [0u8; 8];
         rand::rngs::OsRng.fill_bytes(&mut r);
         Mutex::new(Runtime {
-            issuer: Arc::new(Mutex::new(PairIssuer::new_random())),
+            issuer: None,
             instance_id: hex::encode(r),
             discovery: None,
             server: None,
@@ -589,6 +590,24 @@ fn lock_rt() -> Result<std::sync::MutexGuard<'static, Runtime>, String> {
     runtime()
         .lock()
         .map_err(|_| "fleet state unavailable".to_string())
+}
+
+/// L7-WP02: the pairing issuer for this run. The key comes from the keychain and the token sets
+/// from `<app data>/fleet-pair-ledger.json`, so a link survives a restart and stays single use.
+/// If the keychain cannot be used, an in-memory key for this run, which the pairing offer reports
+/// (`ephemeralKey`), never silently.
+pub(crate) fn pairing_issuer(keyring: &dyn crate::custody::Keyring, ledger: &Path) -> PairIssuer {
+    PairIssuer::from_keyring(keyring, ledger).unwrap_or_else(|_| PairIssuer::new_random())
+}
+
+fn issuer_for(rt: &mut Runtime, roster: &Path) -> Arc<Mutex<PairIssuer>> {
+    rt.issuer
+        .get_or_insert_with(|| {
+            let ledger = roster.with_file_name(crate::fleet_pairing::LEDGER_FILE);
+            let keyring = crate::custody::OsKeyring::legacy();
+            Arc::new(Mutex::new(pairing_issuer(&keyring, &ledger)))
+        })
+        .clone()
 }
 
 fn default_label() -> String {
@@ -782,6 +801,9 @@ pub struct PairOffer {
     pub install_qr: QrMatrix,
     /// Whether this machine's DeviceLink travels with the pairing (it is linked).
     pub carries_device_link: bool,
+    /// L7-WP02: the pairing key is held in memory for this run only (the keychain could not be
+    /// used), so this link stops working if Citrate Core restarts.
+    pub ephemeral_key: bool,
 }
 
 /// **Command — fleet_pair_create.** Open a pairing link (and QR). Starts the pairing listener
@@ -800,6 +822,7 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
     let tailnet =
         crate::fleet_tailscale::tailnet_ipv4s(&crate::fleet_tailscale::detect_tailscale());
     let mut rt = lock_rt()?;
+    let issuer = issuer_for(&mut rt, &path);
     let port = match &rt.server {
         Some((port, running, ctx)) if running.load(Ordering::SeqCst) => {
             // The machine may have been linked since the listener started.
@@ -813,7 +836,7 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
             let port = listener.local_addr().map_err(|e| e.to_string())?.port();
             let running = Arc::new(AtomicBool::new(true));
             let ctx = Arc::new(PairCtx {
-                issuer: rt.issuer.clone(),
+                issuer: issuer.clone(),
                 roster_path: path.clone(),
                 me: Mutex::new(DeviceSelf {
                     device_id: me.device_id.clone(),
@@ -828,7 +851,7 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
                     })
                 }),
             });
-            let (iss, flag, c) = (rt.issuer.clone(), running.clone(), ctx.clone());
+            let (iss, flag, c) = (issuer.clone(), running.clone(), ctx.clone());
             std::thread::Builder::new()
                 .name("fleet-pair".into())
                 .spawn(move || {
@@ -852,12 +875,15 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
                 .into(),
         );
     }
-    let (claim, link) = rt
-        .issuer
-        .lock()
-        .map_err(|_| "pairing state unavailable".to_string())?
-        .issue(&me.label, me.tier.as_deref(), hints.clone(), now_secs())
-        .map_err(|e| e.message().to_string())?;
+    let (claim, link, persistent) = {
+        let mut iss = issuer
+            .lock()
+            .map_err(|_| "pairing state unavailable".to_string())?;
+        let (claim, link) = iss
+            .issue(&me.label, me.tier.as_deref(), hints.clone(), now_secs())
+            .map_err(|e| e.message().to_string())?;
+        (claim, link, iss.persistent())
+    };
     if let Some(d) = &rt.discovery {
         d.set_advert(advert_for(&rt, &me));
     }
@@ -869,6 +895,7 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
         install_url: INSTALL_URL.to_string(),
         install_qr: qr_matrix(INSTALL_URL)?,
         carries_device_link: link_code.is_some(),
+        ephemeral_key: !persistent,
     })
 }
 
@@ -987,11 +1014,16 @@ pub fn fleet_pair_join_sync(app: tauri::AppHandle, link: String) -> Result<JoinR
     let mut roster = ensure_roster_saved(&path)?;
     let (me, _) = self_view(&app)?;
     // A link this app minted is refused before any connection.
-    let own_pub = lock_rt()?
-        .issuer
-        .lock()
-        .map(|i| i.public_hex())
-        .map_err(|_| "pairing state unavailable".to_string())?;
+    let own_pub = {
+        let path = roster_path(&app)?;
+        let mut rt = lock_rt()?;
+        let issuer = issuer_for(&mut rt, &path);
+        drop(rt);
+        issuer
+            .lock()
+            .map(|i| i.public_hex())
+            .map_err(|_| "pairing state unavailable".to_string())?
+    };
     if verify_link(link.trim(), now_secs()).is_ok_and(|c| c.issuer_pub == own_pub) {
         return Ok(join_result(Err(JoinError::Refused(PairError::SameDevice))));
     }

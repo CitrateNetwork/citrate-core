@@ -2,8 +2,10 @@
 //!
 //! "Connect my machines" offers a link (and the same link as a QR code) that another machine
 //! running Citrate Core opens to pair with this one. The link carries a [`PairClaim`] signed by
-//! this app's **pairing key**: an ed25519 key generated in memory when the app starts, never
-//! written to disk, never derived from the wallet, and never used for anything else. It proves
+//! this app's **pairing key**: an ed25519 key kept in the OS keychain (L7-WP02, account
+//! [`PAIRING_KEY_ACCOUNT`], separate from the device key and the comms key), never written to any
+//! other file, never derived from the wallet, and never used for anything else. When the keychain
+//! cannot be used the app falls back to a key held in memory for this run and says so. It proves
 //! "this link was minted by the Citrate Core you are about to talk to"; it is NOT a wallet
 //! signature and it moves no value (Rule 3 is untouched: the wallet-signed `DeviceLink` that
 //! binds a device to the member is S8.1, through the SignatureCeremony).
@@ -16,18 +18,34 @@
 //!   that asks for longer is refused even when validly signed.
 //! - **Single use.** The issuer keeps the nonce of every outstanding token; a redeem consumes it,
 //!   a second redeem is `AlreadyUsed`. At most [`MAX_OUTSTANDING`] tokens are live at once.
+//! - **Survives a restart (L7-WP02).** The outstanding and used nonces (with their expiry, no key
+//!   material) are written to the ledger [`LEDGER_FILE`] (owner-only). A redeem is written before
+//!   it is accepted, so a used link stays used after a restart; an unreadable ledger starts empty,
+//!   which refuses every earlier link (fail closed).
 //!
 //! Link format (v1): `citrate://pair?c=<base64url(claim_json)>&s=<base64url(sig64)>`. The verifier
 //! checks the signature over the exact `c` bytes it received (never a re-serialization).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, Zeroizing};
+
+use crate::custody::Keyring;
+
+/// The keychain account of the pairing key (L7-WP02). Not the device key
+/// (`device_link::DEVICE_KEY_ACCOUNT`) and not the comms key.
+pub const PAIRING_KEY_ACCOUNT: &str = "fleet-pairing-key-v1";
+/// The single-use ledger beside the fleet roster, in the app data dir (L7-WP02).
+pub const LEDGER_FILE: &str = "fleet-pair-ledger.json";
+/// Largest ledger read; a bigger file is treated as unreadable.
+const MAX_LEDGER_BYTES: u64 = 64 * 1024;
 
 /// The link scheme + host every pairing link starts with.
 pub const LINK_PREFIX: &str = "citrate://pair?";
@@ -67,6 +85,8 @@ pub enum PairError {
     TooManyOutstanding,
     /// The link was created on the device trying to use it.
     SameDevice,
+    /// L7-WP02: the issuer could not record the redeem, so it refused it (the link stays open).
+    Unavailable,
 }
 
 impl PairError {
@@ -86,6 +106,9 @@ impl PairError {
             }
             PairError::SameDevice => {
                 "That link was created on this machine; open it on the other machine."
+            }
+            PairError::Unavailable => {
+                "The other machine could not save its pairing state; try again in a moment."
             }
         }
     }
@@ -300,30 +323,133 @@ pub fn qr_matrix(link: &str) -> Result<QrMatrix, String> {
     Ok(QrMatrix { size, rows })
 }
 
-/// This app's pairing issuer: the in-memory pairing key and the live token set.
+/// This app's pairing issuer: the pairing key and the live token set.
 pub struct PairIssuer {
     key: SigningKey,
     /// nonce → expires_at, for tokens issued and not yet used.
     outstanding: HashMap<String, u64>,
     /// nonce → expires_at, for tokens already redeemed (kept until they would have expired).
     used: HashMap<String, u64>,
+    /// L7-WP02: where the token sets are persisted; `None` for an in-memory issuer.
+    ledger: Option<PathBuf>,
+}
+
+/// The ledger file: nonces and expiry times only.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Ledger {
+    v: u8,
+    outstanding: BTreeMap<String, u64>,
+    used: BTreeMap<String, u64>,
+}
+
+/// Read the ledger. Missing is empty; unreadable, oversized or malformed is also empty and the
+/// file is left as it is until the next write (fail closed: every earlier link is unknown).
+fn read_ledger(path: &Path) -> (HashMap<String, u64>, HashMap<String, u64>) {
+    let read = || -> Option<Ledger> {
+        let f = std::fs::File::open(path).ok()?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX_LEDGER_BYTES + 1), &mut buf)
+            .ok()?;
+        if buf.len() as u64 > MAX_LEDGER_BYTES {
+            return None;
+        }
+        serde_json::from_slice::<Ledger>(&buf)
+            .ok()
+            .filter(|l| l.v == 1)
+    };
+    match read() {
+        Some(l) => (
+            l.outstanding.into_iter().collect(),
+            l.used.into_iter().collect(),
+        ),
+        None => (HashMap::new(), HashMap::new()),
+    }
+}
+
+/// Write the ledger, owner-only, through a unique temp file and an atomic rename.
+fn write_ledger(
+    path: &Path,
+    outstanding: &HashMap<String, u64>,
+    used: &HashMap<String, u64>,
+) -> std::io::Result<()> {
+    let l = Ledger {
+        v: 1,
+        outstanding: outstanding.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        used: used.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+    };
+    let bytes = serde_json::to_vec(&l).map_err(std::io::Error::other)?;
+    let staged = crate::atomic_file::stage_secret(path, &bytes)?;
+    crate::atomic_file::commit_staged(&staged, path)
+}
+
+/// This machine's pairing key seed from the keychain, minting and storing a fresh random one on
+/// first use. A stored value of the wrong length is an error, never silently replaced.
+fn load_or_mint_pairing_seed(keyring: &dyn Keyring) -> Result<Zeroizing<[u8; 32]>, String> {
+    let stored = keyring
+        .get(PAIRING_KEY_ACCOUNT)
+        .map_err(|e| format!("pairing key keychain error: {e}"))?;
+    let mut seed = Zeroizing::new([0u8; 32]);
+    match stored {
+        Some(mut bytes) => {
+            let ok = bytes.len() == 32;
+            if ok {
+                seed.copy_from_slice(&bytes);
+            }
+            bytes.zeroize();
+            if !ok {
+                return Err("the stored pairing key is not 32 bytes".into());
+            }
+        }
+        None => {
+            rand::rngs::OsRng.fill_bytes(seed.as_mut());
+            keyring
+                .set(PAIRING_KEY_ACCOUNT, seed.as_ref())
+                .map_err(|e| format!("pairing key keychain error: {e}"))?;
+        }
+    }
+    Ok(seed)
 }
 
 impl PairIssuer {
-    /// A fresh random pairing key (production: once per app run).
+    /// A fresh random pairing key held in memory for this run only (the fallback when the
+    /// keychain cannot be used; nothing is persisted).
     pub fn new_random() -> Self {
         let mut seed = zeroize::Zeroizing::new([0u8; 32]);
         rand::rngs::OsRng.fill_bytes(seed.as_mut());
-        Self::from_seed(*seed)
+        Self::from_seed_ref(&seed)
     }
 
-    /// A pairing key from a fixed seed (tests).
+    /// A pairing key from a fixed seed, in memory only (tests).
+    #[cfg(test)]
     pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self::from_seed_ref(&seed)
+    }
+
+    fn from_seed_ref(seed: &[u8; 32]) -> Self {
         Self {
-            key: SigningKey::from_bytes(&seed),
+            key: SigningKey::from_bytes(seed),
             outstanding: HashMap::new(),
             used: HashMap::new(),
+            ledger: None,
         }
+    }
+
+    /// L7-WP02, production: the pairing key from the keychain (minted there on first use) and the
+    /// token sets from `ledger`, so links survive a restart and stay single use across it.
+    pub fn from_keyring(keyring: &dyn Keyring, ledger: &Path) -> Result<Self, String> {
+        let seed = load_or_mint_pairing_seed(keyring)?;
+        let mut me = Self::from_seed_ref(&seed);
+        let (outstanding, used) = read_ledger(ledger);
+        me.outstanding = outstanding;
+        me.used = used;
+        me.ledger = Some(ledger.to_path_buf());
+        Ok(me)
+    }
+
+    /// Whether the token sets are persisted (false for the in-memory fallback).
+    pub fn persistent(&self) -> bool {
+        self.ledger.is_some()
     }
 
     /// The pairing public key, hex.
@@ -372,6 +498,11 @@ impl PairIssuer {
         let sig = self.key.sign(&signing_bytes(&json));
         self.outstanding
             .insert(claim.nonce.clone(), claim.expires_at);
+        // Best effort: if this write fails the link still works in this run, and after a restart
+        // it is unknown (refused), never redeemable twice.
+        if let Some(p) = &self.ledger {
+            let _ = write_ledger(p, &self.outstanding, &self.used);
+        }
         let link = encode_link(&json, &sig.to_bytes());
         Ok((claim, link))
     }
@@ -399,12 +530,23 @@ impl PairIssuer {
             self.outstanding.remove(&claim.nonce);
             return Err(e);
         }
-        let exp = self
+        let exp = *self
             .outstanding
-            .remove(&claim.nonce)
+            .get(&claim.nonce)
             .ok_or(PairError::UnknownToken)?;
-        self.used.insert(claim.nonce.clone(), exp);
-        self.prune(now);
+        let mut outstanding = self.outstanding.clone();
+        let mut used = self.used.clone();
+        outstanding.remove(&claim.nonce);
+        used.insert(claim.nonce.clone(), exp);
+        outstanding.retain(|_, e| *e > now);
+        used.retain(|_, e| *e > now);
+        // L7-WP02: the redeem is recorded before it is accepted. If it cannot be recorded it is
+        // refused and the token stays open, so a restart can never make a used link usable again.
+        if let Some(p) = &self.ledger {
+            write_ledger(p, &outstanding, &used).map_err(|_| PairError::Unavailable)?;
+        }
+        self.outstanding = outstanding;
+        self.used = used;
         Ok(claim)
     }
 }
