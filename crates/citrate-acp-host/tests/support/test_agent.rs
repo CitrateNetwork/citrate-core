@@ -14,6 +14,9 @@
 //! - `stderr N`: writes N bytes to stderr, then `end_turn`.
 //! - `report`: one chunk holding what it saw: the initialize request's client capabilities, the
 //!   `session/new` cwd and mcpServers, its argv, and its environment (names and values).
+//!
+//! With `ACP_TEST_AGENT_AUTH=required` in its environment it offers one auth method and refuses
+//! `session/new` with ACP's auth-required error, as unauthenticated real adapters do.
 
 use agent_client_protocol::v1::schema::{
     CancelNotification, InitializeRequest, InitializeResponse, NewSessionRequest,
@@ -34,6 +37,10 @@ struct Seen {
 
 fn cast<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, Error> {
     serde_json::from_value(v).map_err(Error::into_internal_error)
+}
+
+fn auth_required() -> bool {
+    std::env::var("ACP_TEST_AGENT_AUTH").as_deref() == Ok("required")
 }
 
 fn chunk(sid: &str, text: &str) -> Result<SessionNotification, Error> {
@@ -65,7 +72,12 @@ async fn main() -> Result<(), Error> {
             async move |req: InitializeRequest, responder, _cx| {
                 let v = serde_json::to_value(&req).map_err(Error::into_internal_error)?;
                 s1.lock().expect("seen").init = v;
-                responder.respond(InitializeResponse::new(req.protocol_version))
+                let mut resp = serde_json::to_value(InitializeResponse::new(req.protocol_version))
+                    .map_err(Error::into_internal_error)?;
+                if auth_required() {
+                    resp["authMethods"] = json!([{"id": "agent-login", "name": "Log in"}]);
+                }
+                responder.respond(cast::<InitializeResponse>(resp)?)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -73,6 +85,9 @@ async fn main() -> Result<(), Error> {
             async move |req: NewSessionRequest, responder, _cx| {
                 let v = serde_json::to_value(&req).map_err(Error::into_internal_error)?;
                 s2.lock().expect("seen").new_session = v;
+                if auth_required() {
+                    return responder.respond_with_error(Error::auth_required());
+                }
                 responder.respond(cast::<NewSessionResponse>(json!({"sessionId": "test-s1"}))?)
             },
             agent_client_protocol::on_receive_request!(),

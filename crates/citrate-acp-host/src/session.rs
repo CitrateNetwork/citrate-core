@@ -45,6 +45,10 @@ pub struct SessionStart {
 #[derive(Debug)]
 pub struct StartFailure {
     pub reason: String,
+    /// The agent's `initialize` response when it answered one (its auth methods say how to sign in).
+    pub initialize: Option<Value>,
+    /// True when `session/new` was refused with ACP's auth-required error (-32000).
+    pub auth_required: bool,
     /// The agent's newest stderr bytes, for the caller to show or drop; the host never logs it.
     pub stderr_tail: String,
 }
@@ -73,6 +77,23 @@ fn end_turn(events: &EventLog, t: &TurnState, r: &Result<String, String>, killed
             Err(m) => events.push("error", json!({"method": "session/prompt", "message": m})),
         };
     }
+}
+
+/// ACP's "authentication required" error code.
+pub const AUTH_REQUIRED: i32 = -32000;
+
+struct SetupError {
+    reason: String,
+    code: i32,
+    initialize: Option<Value>,
+}
+
+fn describe(e: &Error) -> String {
+    let data = match &e.data {
+        Some(Value::String(s)) => format!(" ({})", s.chars().take(300).collect::<String>()),
+        _ => String::new(),
+    };
+    format!("{}{data}", e.message)
 }
 
 const EXITED_MID_TURN: &str = "the agent exited mid-turn; the turn was not answered";
@@ -121,10 +142,14 @@ impl AcpHost {
 
     /// Verify the pin, spawn the agent, then `initialize` and `session/new`. Must not be called
     /// from inside an async runtime (it blocks until the session is ready or refused).
-    pub fn start(&self, s: SessionStart) -> Result<Session, StartFailure> {
-        let fail = |reason: String| StartFailure {
-            reason,
-            stderr_tail: String::new(),
+    pub fn start(&self, s: SessionStart) -> Result<Session, Box<StartFailure>> {
+        let fail = |reason: String| {
+            Box::new(StartFailure {
+                reason,
+                initialize: None,
+                auth_required: false,
+                stderr_tail: String::new(),
+            })
         };
         verify_pin(&s.spec).map_err(fail)?;
         process::check_launch(&s.env, &s.spec.args, &self.cfg.scan).map_err(fail)?;
@@ -192,27 +217,37 @@ impl AcpHost {
         let ready = self
             .rt
             .block_on(tokio::time::timeout(self.cfg.init_timeout, ready_rx));
-        let reason = match ready {
+        let (reason, initialize, auth_required) = match ready {
             Ok(Ok(Ok((init, sid)))) => {
                 session.initialize = init;
                 session.acp_session = sid;
                 return Ok(session);
             }
-            Ok(Ok(Err(e))) => e,
-            Ok(Err(_)) => format!(
-                "{}: the agent closed the connection before session/new",
-                session.id
+            Ok(Ok(Err(e))) => (e.reason, e.initialize, e.code == AUTH_REQUIRED),
+            Ok(Err(_)) => (
+                format!(
+                    "{}: the agent closed the connection before session/new",
+                    session.id
+                ),
+                None,
+                false,
             ),
-            Err(_) => format!(
-                "{}: no session within {:?}",
-                session.id, self.cfg.init_timeout
+            Err(_) => (
+                format!(
+                    "{}: no session within {:?}",
+                    session.id, self.cfg.init_timeout
+                ),
+                None,
+                false,
             ),
         };
         std::thread::sleep(Duration::from_millis(100));
-        Err(StartFailure {
+        Err(Box::new(StartFailure {
             reason,
+            initialize,
+            auth_required,
             stderr_tail: session.stderr_tail(),
-        })
+        }))
     }
 }
 
@@ -237,7 +272,7 @@ async fn drive<O, I>(
     events: Arc<EventLog>,
     turn: Arc<TurnState>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
-    ready: oneshot::Sender<Result<(Value, String), String>>,
+    ready: oneshot::Sender<Result<(Value, String), SetupError>>,
 ) where
     O: futures::io::AsyncWrite + Send + 'static,
     I: futures::io::AsyncRead + Send + 'static,
@@ -282,18 +317,20 @@ async fn drive<O, I>(
                 "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
                 "clientInfo": {"name": cfg.client_name, "version": cfg.client_version}
             }))?;
-            let setup = async {
-                let init = cx.send_request(init_req).block_task().await?;
-                let new = cx
-                    .send_request(cast::<NewSessionRequest>(json!({"cwd": cwd, "mcpServers": mcp}))?)
-                    .block_task()
-                    .await?;
-                Ok::<_, Error>((to_json(&init)?, new.session_id.to_string()))
-            };
-            let (init, sid) = match setup.await {
-                Ok(v) => v,
+            let init = match cx.send_request(init_req).block_task().await.and_then(|i| to_json(&i)) {
+                Ok(i) => i,
                 Err(e) => {
-                    let _ = ready.send(Err(format!("initialize or session/new failed: {}", e.message)));
+                    let reason = format!("initialize failed: {}", describe(&e));
+                    let _ = ready.send(Err(SetupError { reason, code: e.code.into(), initialize: None }));
+                    return Err(e);
+                }
+            };
+            let new_req = cast::<NewSessionRequest>(json!({"cwd": cwd, "mcpServers": mcp}))?;
+            let sid = match cx.send_request(new_req).block_task().await {
+                Ok(n) => n.session_id.to_string(),
+                Err(e) => {
+                    let reason = format!("session/new failed: {}", describe(&e));
+                    let _ = ready.send(Err(SetupError { reason, code: e.code.into(), initialize: Some(init) }));
                     return Err(e);
                 }
             };

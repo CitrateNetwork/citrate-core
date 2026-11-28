@@ -458,3 +458,25 @@ fn cancel_returns_even_when_an_escaped_grandchild_holds_stdout() {
         .count();
     assert_eq!(stops, 1, "one ending per turn");
 }
+
+#[test]
+fn session_new_auth_required_keeps_the_agents_auth_methods() {
+    let (h, _) = host();
+    let err = h
+        .start(SessionStart {
+            spec: spec(),
+            env: vec![("ACP_TEST_AGENT_AUTH".into(), "required".into())],
+            cwd: tmp("auth"),
+            mcp_servers: vec![],
+        })
+        .err()
+        .expect("refused");
+    assert!(err.auth_required, "{}", err.reason);
+    assert!(
+        err.reason.starts_with("session/new failed"),
+        "{}",
+        err.reason
+    );
+    let methods = &err.initialize.expect("initialize answered")["authMethods"];
+    assert_eq!(methods[0]["id"], "agent-login");
+}
