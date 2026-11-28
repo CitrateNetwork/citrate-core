@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { store } from "../store";
 import * as l4ChatHistory from "../actions/l4/chatHistory";
 import * as l3Auth from "../actions/l3/auth";
+import * as l1Turn from "../actions/l1/turn";
+import * as l4ThreadEdit from "../actions/l4/threadEdit";
 
 // Every export of a lane module becomes a pass-through spy, so a test can stub one and check the call.
 vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
@@ -19,6 +21,14 @@ vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
 });
 
 vi.mock("../actions/l3/auth", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+vi.mock("../actions/l1/turn", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+vi.mock("../actions/l4/threadEdit", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
@@ -63,8 +73,49 @@ const ROWS: Row[] = [
   { method: "recheckEntitlementOnFocus", target: l3Auth.recheckEntitlementOnFocus, args: [] },
   { method: "authLogout", target: l3Auth.authLogout, args: [] },
   { method: "kycStart", target: l3Auth.kycStart, args: [] },
+  // 07c: store.ts "chat" and "Board 01 — Stop, Steer now, Queue for after" (and sendChat with its
+  // helpers) -> src/shell/actions/l1/turn.ts (lane L1); "Board 01 — edit, retry and branch" ->
+  // src/shell/actions/l4/threadEdit.ts (lane L4).
+  { method: "acceptBrief", target: l1Turn.acceptBrief, args: [{ id: "b-delegate" }, "# brief"] },
+  { method: "sidecarSystemPrompt", target: l1Turn.sidecarSystemPrompt, args: [] },
+  { method: "branchChat", target: l4ThreadEdit.branchChat, args: ["m-delegate", { text: "again", includeFrom: true }] },
+  { method: "retryAsBranch", target: l4ThreadEdit.retryAsBranch, args: ["a-delegate"] },
+  { method: "retryChat", target: l1Turn.retryChat, args: ["f-delegate"] },
+  { method: "recheckSidecarBeforeSend", target: l1Turn.recheckSidecarBeforeSend, args: [{ kind: "delegate" }] },
+  { method: "resumeSidecarSession", target: l1Turn.resumeSidecarSession, args: [{ kind: "delegate" }] },
+  { method: "activeProviderKind", target: l1Turn.activeProviderKind, args: [] },
+  { method: "stopAgentTurn", target: l1Turn.stopAgentTurn, args: [] },
+  { method: "routeHeldMessage", target: l1Turn.routeHeldMessage, args: ["m-held", "held text", new AbortController().signal] },
+  { method: "answerLocalModelAsk", target: l1Turn.answerLocalModelAsk, args: ["cancel"] },
+  { method: "restartLocalModel", target: l1Turn.restartLocalModel, args: [new AbortController().signal] },
+  { method: "daemonRunAvailability", target: l1Turn.daemonRunAvailability, args: [] },
+  { method: "runDaemonTurn", target: l1Turn.runDaemonTurn, args: [{ id: "claim-delegate" }, new AbortController().signal, { add: () => {} }] },
+  { method: "sendChat", target: l1Turn.sendChat, args: ["hello", { attachments: [] }] },
+  { method: "takeCallOutcome", target: l1Turn.takeCallOutcome, args: ["c-delegate-1"] },
+  { method: "setChatContext", target: l1Turn.setChatContext, args: ["journal", false] },
+  { method: "takeCallRefusal", target: l1Turn.takeCallRefusal, args: ["c-delegate-2"] },
+  { method: "chatRunLive", target: l1Turn.chatRunLive, args: [] },
+  { method: "queueChat", target: l1Turn.queueChat, args: ["later", []] },
+  { method: "steerChat", target: l1Turn.steerChat, args: ["now"] },
+  { method: "dropQueuedChat", target: l1Turn.dropQueuedChat, args: ["q-delegate-1"] },
+  { method: "drainChatQueue", target: l1Turn.drainChatQueue, args: ["done"] },
+  { method: "sendQueuedNow", target: l1Turn.sendQueuedNow, args: ["q-delegate-2"] },
+  { method: "deployLedger", target: l1Turn.deployLedger, args: [] },
+  { method: "nodeMcpTrusted", target: l1Turn.nodeMcpTrusted, args: [] },
+  { method: "deployEvidence", target: l1Turn.deployEvidence, args: [[], "a-delegate-2"] },
+  { method: "checkAnswerClaims", target: l1Turn.checkAnswerClaims, args: ["m-delegate-2", []] },
+  { method: "checkDaemonReply", target: l1Turn.checkDaemonReply, args: ["reply", []] },
+  { method: "scrollChat", target: l1Turn.scrollChat, args: [] },
+  { method: "approveShellRun", target: l1Turn.approveShellRun, args: [{ id: "shell-delegate" }] },
+  { method: "flEnvelopeApi", target: l1Turn.flEnvelopeApi, args: [] },
+  { method: "flWorkTerms", target: l1Turn.flWorkTerms, args: [] },
+  { method: "flNetworkState", target: l1Turn.flNetworkState, args: [] },
+  { method: "flRoundBinding", target: l1Turn.flRoundBinding, args: [] },
+  { method: "flMarketOffers", target: l1Turn.flMarketOffers, args: [] },
+  { method: "everydayInvoke", target: l1Turn.everydayInvoke, args: [] },
+  { method: "approveMcpRequest", target: l1Turn.approveMcpRequest, args: [{ id: "mcp-delegate" }] },
+  { method: "handleTool", target: l1Turn.handleTool, args: [{ id: "call-delegate", name: "noop", args: {} }, "a-delegate-3", () => {}, { hic: "none" }, new AbortController().signal] },
 ];
-
 afterEach(() => {
   vi.clearAllMocks();
 });
