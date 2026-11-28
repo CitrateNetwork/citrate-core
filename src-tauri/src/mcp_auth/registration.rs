@@ -35,6 +35,9 @@ pub(crate) struct FixedClient {
     /// Endpoints for an issuer that publishes no RFC 8414 metadata. `None` when the issuer
     /// publishes its metadata.
     pub static_endpoints: Option<(&'static str, &'static str)>,
+    /// The scopes this client asks for, when narrower than the server's list, and how the
+    /// provider joins them in the `scope` parameter. `None`: the discovered scopes, space-joined.
+    pub scopes: Option<(&'static [&'static str], &'static str)>,
 }
 
 /// The Slack Core app's public OAuth client id (lead, 2026-11-28).
@@ -55,6 +58,7 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
             "https://github.com/login/oauth/authorize",
             "https://github.com/login/oauth/access_token",
         )),
+        scopes: None,
     },
     FixedClient {
         provider: "slack",
@@ -65,6 +69,17 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
         redirect_uri: crate::connections::HOSTED_REDIRECT_URI,
         reason: None,
         static_endpoints: None,
+        // Slack's v2_user authorize takes the user scopes in `scope`, comma-joined, and rejects
+        // `user_scope` (lead's live check 2026-11-28T06:18Z; docs.slack.dev installing-with-oauth).
+        scopes: Some((
+            &[
+                "search:read.public",
+                "channels:read",
+                "channels:history",
+                "users:read",
+            ],
+            ",",
+        )),
     },
     FixedClient {
         provider: "notion",
@@ -79,6 +94,7 @@ pub(crate) const FIXED_CLIENTS: &[FixedClient] = &[
              client; it offers CIMD, which is used",
         ),
         static_endpoints: None,
+        scopes: None,
     },
 ];
 

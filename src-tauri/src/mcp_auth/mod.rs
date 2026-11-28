@@ -35,6 +35,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod discovery;
+pub(crate) mod flow;
 pub(crate) mod http;
 pub(crate) mod registration;
 pub(crate) mod store;
@@ -43,6 +44,8 @@ pub(crate) mod store;
 mod discovery_tests;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
@@ -109,6 +112,8 @@ pub(crate) enum McpAuthError {
     IssMismatch,
     /// The member declined consent.
     Declined,
+    /// The server granted none of the requested scopes; the token was revoked, nothing stored.
+    ScopesDenied,
     /// The authorization or token endpoint answered with this OAuth error code.
     TokenRejected(String),
     NotSignedIn,
@@ -159,6 +164,9 @@ impl std::fmt::Display for McpAuthError {
             McpAuthError::Declined => {
                 f.write_str("the sign-in was declined; nothing was connected")
             }
+            McpAuthError::ScopesDenied => f.write_str(
+                "the server granted none of the permissions Citrate Core asked for; nothing was connected",
+            ),
             McpAuthError::TokenRejected(code) => {
                 write!(f, "the server refused the sign-in ({code})")
             }

@@ -656,6 +656,8 @@ fn parse_callback_denial(target: &str) -> Option<String> {
 struct CallbackParams {
     code: String,
     state: String,
+    /// L6-WP06: the RFC 9207 `iss` response parameter, when the server sent one.
+    iss: Option<String>,
 }
 
 impl std::fmt::Debug for CallbackParams {
@@ -676,16 +678,18 @@ fn parse_callback_target(target: &str) -> std::result::Result<CallbackParams, Co
         .map_err(|_| ConnError::StateMismatch)?;
     let mut code = None;
     let mut state = None;
+    let mut iss = None;
     for (k, v) in parsed.query_pairs() {
         match k.as_ref() {
             "code" => code = Some(v.into_owned()),
             "state" => state = Some(v.into_owned()),
+            "iss" => iss = Some(v.into_owned()),
             _ => {}
         }
     }
     match (code, state) {
         (Some(code), Some(state)) if !code.is_empty() && !state.is_empty() => {
-            Ok(CallbackParams { code, state })
+            Ok(CallbackParams { code, state, iss })
         }
         _ => Err(ConnError::StateMismatch),
     }
