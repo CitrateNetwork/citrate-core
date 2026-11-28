@@ -64,6 +64,29 @@
       "fixtures": ["fixtures/seams/routes-surfaces.a826e441.json", "fixtures/seams/routes-resolve.a826e441.json"]
     },
     {
+      "id": "SEAM-FLAGS",
+      "lane": "L0",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "flags_tests::",
+      "covers": ["release/flags.json", "src-tauri/src/flags.rs", "src-tauri/src/signoff.rs", "src-tauri/src/hermes_mcp.rs", "src-tauri/src/cluster_mesh.rs", "release/signoffs/**"]
+    },
+    {
+      "id": "SEAM-FLAGS-CL-S4",
+      "lane": "L0",
+      "runner": "cargo",
+      "package": "citrate-core",
+      "filter": "cluster_mesh::",
+      "covers": ["src-tauri/src/signoff.rs", "src-tauri/src/cluster_mesh.rs", "release/signoffs/**"]
+    },
+    {
+      "id": "SEAM-FLAGS-TS",
+      "lane": "L0",
+      "runner": "vitest",
+      "files": ["src/shell/flags.test.ts"],
+      "covers": ["release/flags.json", "scripts/gen-flags.mjs", "src/shell/flags.gen.ts", "src/shell/flags.ts", ".github/CODEOWNERS"]
+    },
+    {
       "id": "SEAM-SNAPSHOT-LIB",
       "lane": "L0",
       "runner": "vitest",

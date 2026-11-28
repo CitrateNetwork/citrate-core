@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "flags": [
+    {
+      "id": "HERMES_NODE_WRITE_TOOLS",
+      "lane": "L1",
+      "where": "src-tauri/src/hermes_mcp.rs",
+      "default": false,
+      "signoff": "required",
+      "record": "release/signoffs/HERMES_NODE_WRITE_TOOLS.json"
+    },
+    {
+      "id": "TRANSPORT_SIGNED_OFF",
+      "lane": "L7",
+      "where": "src-tauri/src/cluster_mesh.rs",
+      "default": false,
+      "signoff": "required",
+      "record": "release/signoffs/CL-S4.json"
+    },
+    {
+      "id": "MULTI_GROUP_DAEMON",
+      "lane": "L7",
+      "where": "src-tauri/src/cluster_mesh.rs",
+      "default": true,
+      "signoff": "none"
+    },
+    {
+      "id": "PQC_CLAIMS_ALLOWED",
+      "lane": "L9",
+      "where": "release/flags.json",
+      "default": false,
+      "signoff": "required"
+    }
+  ]
+}

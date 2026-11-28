@@ -28,12 +28,14 @@ use serde::{Deserialize, Serialize};
 /// for those roles in `release/signoffs/signers.json`, and the packet copy committed beside the
 /// record hashes to the signed sha256. The test `signed_flag_requires_signoff_record` fails the
 /// build otherwise.
+// @flag TRANSPORT_SIGNED_OFF
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
 /// The bundled daemon serves every group from one process (citrate-cluster HUP-S8.4, on main since
 /// #11). V60 MESH-1: `true`, because the pinned `cluster-daemon` rev is in
 /// [`MULTI_GROUP_DAEMON_REVS`]. On its own this turns nothing on: the mesh default also needs
 /// [`TRANSPORT_SIGNED_OFF`].
+// @flag MULTI_GROUP_DAEMON
 pub(crate) const MULTI_GROUP_DAEMON: bool = true;
 
 /// V60 MESH-1: the citrate-cluster revs checked to serve every group from one daemon process. The
@@ -221,9 +223,13 @@ pub async fn cluster_mesh_set_enabled(
 /// (required before `TRANSPORT_SIGNED_OFF` may be true) checks each role's signature against the
 /// registered role key and the committed packet copy against the signed digest. It is a build gate: only the tests read it
 /// (the record is evidence for whoever flips [`TRANSPORT_SIGNED_OFF`], not something the app loads).
+/// L0-WP09: the check itself is the shared sign-off verifier (`crate::signoff`). CL-S4 is the
+/// record of the `TRANSPORT_SIGNED_OFF` row in `release/flags.json`, and its packet repo stays
+/// `CitrateNetwork/citrate-cluster`, pinned in `signoff.rs`; these names keep the tests below
+/// unchanged.
 #[cfg(test)]
 mod signoff {
-    use serde::Deserialize;
+    use crate::signoff as shared;
 
     /// Where the record lives, relative to `src-tauri/`.
     pub(super) const RECORD: &str = "../release/signoffs/CL-S4.json";
@@ -234,174 +240,30 @@ mod signoff {
     /// owner; a role missing here means no record can verify.
     pub(super) const SIGNERS: &str = "../release/signoffs/signers.json";
 
-    /// The roles that must both sign, each by a different person.
-    const ROLES: [&str; 2] = ["owner", "security-lead"];
+    const ID: &str = "CL-S4";
 
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct Record {
-        pub wp: String,
-        pub packet: Packet,
-        pub signers: Vec<Signer>,
-    }
-
-    /// The packet that was reviewed, pinned to a commit and a digest of the file at that commit.
-    /// `release/signoffs/signers.json`: exactly one address per role.
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Registry {
-        owner: String,
-        #[serde(rename = "security-lead")]
-        security_lead: String,
-    }
-
-    impl Registry {
-        fn address(&self, role: &str) -> &str {
-            if role == "owner" {
-                &self.owner
-            } else {
-                &self.security_lead
-            }
-        }
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct Packet {
-        pub repo: String,
-        pub path: String,
-        pub rev: String,
-        pub sha256: String,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(super) struct Signer {
-        pub role: String,
-        pub github: String,
-        pub date: String,
-        /// EIP-191 signature (65 bytes, hex) over [`signing_message`] by the role's registered key.
-        pub sig: String,
-    }
-
-    /// What a signer signs: the role, the person, the date and the pinned packet, one field per
-    /// line so no field can run into another.
     pub(super) fn signing_message(
         role: &str,
         github: &str,
         date: &str,
         packet: &serde_json::Value,
     ) -> String {
-        let f = |k: &str| packet[k].as_str().unwrap_or_default().to_string();
-        format!(
-            "citrate-core CL-S4 sign-off v1\nrole: {role}\ngithub: {github}\ndate: {date}\nrepo: {}\npath: {}\nrev: {}\nsha256: {}",
-            f("repo"),
-            f("path"),
-            f("rev"),
-            f("sha256")
-        )
+        shared::signing_message(ID, role, github, date, packet)
     }
 
-    /// Full check: [`validate`], then the committed packet copy hashes to `packet.sha256`, the
-    /// registry names a different address for each role, and each role's signature over
-    /// [`signing_message`] recovers to that role's registered address.
     pub(super) fn verify(text: &str, packet: &[u8], registry: &str) -> Result<(), String> {
-        use sha2::{Digest, Sha256};
-        let r = validate(text)?;
-        if hex::encode(Sha256::digest(packet)) != r.packet.sha256.to_ascii_lowercase() {
-            return Err("the committed packet does not match the signed sha256".into());
-        }
-        // A struct, not a map: serde refuses a repeated key ("duplicate field") and, with
-        // deny_unknown_fields, any role other than the two (review P3 on #631).
-        let reg: Registry =
-            serde_json::from_str(registry).map_err(|e| format!("signers registry: {e}"))?;
-        let canon = |a: &str| a.trim().trim_start_matches("0x").to_ascii_lowercase();
-        let packet_json = serde_json::json!({
-            "repo": r.packet.repo, "path": r.packet.path,
-            "rev": r.packet.rev, "sha256": r.packet.sha256,
-        });
-        let mut seen: Vec<String> = Vec::new();
-        for role in ROLES {
-            let want = canon(reg.address(role));
-            if seen.contains(&want) {
-                return Err("the owner and the security lead must be different keys".into());
-            }
-            seen.push(want.clone());
-            let s = r
-                .signers
-                .iter()
-                .find(|s| s.role == role)
-                .ok_or_else(|| format!("no {role} signature"))?;
-            let msg = signing_message(role, &s.github, &s.date, &packet_json);
-            if crate::device_link::recover_eip191(&msg, &s.sig).as_deref() != Some(want.as_str()) {
-                return Err(format!(
-                    "the {role} signature is not by the registered {role} key"
-                ));
-            }
-        }
-        Ok(())
+        shared::verify(&shared::spec(ID)?, text, packet, registry)
     }
 
-    fn hex_of_len(s: &str, n: usize) -> bool {
-        s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit())
+    pub(super) fn validate(text: &str) -> Result<shared::Record, String> {
+        shared::validate(&shared::spec(ID)?, text)
     }
 
-    /// `YYYY-MM-DD` with a plausible month and day.
-    fn is_date(s: &str) -> bool {
-        let b = s.as_bytes();
-        if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-            return false;
-        }
-        let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().ok();
-        matches!(
-            (num(0..4), num(5..7), num(8..10)),
-            (Some(y), Some(m), Some(d)) if y >= 2026 && (1..=12).contains(&m) && (1..=31).contains(&d)
-        )
-    }
-
-    pub(super) fn validate(text: &str) -> Result<Record, String> {
-        let r: Record =
-            serde_json::from_str(text).map_err(|e| format!("not a sign-off record: {e}"))?;
-        if r.wp != "CL-S4" {
-            return Err(format!("record is for {}, not CL-S4", r.wp));
-        }
-        if r.packet.repo != "CitrateNetwork/citrate-cluster" || r.packet.path.trim().is_empty() {
-            return Err("the packet must be a file in CitrateNetwork/citrate-cluster".into());
-        }
-        if !hex_of_len(&r.packet.rev, 40) {
-            return Err("packet.rev must be a full commit id".into());
-        }
-        if !hex_of_len(&r.packet.sha256, 64) {
-            return Err("packet.sha256 must be the file's SHA-256".into());
-        }
-        let mut people: Vec<String> = Vec::new();
-        if r.signers.len() != ROLES.len() {
-            return Err(format!(
-                "the record must have exactly one signature per role ({})",
-                ROLES.join(", ")
-            ));
-        }
-        for role in ROLES {
-            let s = r
-                .signers
-                .iter()
-                .find(|s| s.role == role)
-                .ok_or_else(|| format!("no {role} signature"))?;
-            if s.github.trim().is_empty() || !is_date(&s.date) {
-                return Err(format!(
-                    "the {role} signature needs a GitHub handle and a date"
-                ));
-            }
-            if !hex_of_len(s.sig.trim_start_matches("0x"), 130) {
-                return Err(format!("the {role} signature must be 65 bytes of hex"));
-            }
-            let who = s.github.trim().to_ascii_lowercase();
-            if people.contains(&who) {
-                return Err("the owner and the security lead must be different people".into());
-            }
-            people.push(who);
-        }
-        Ok(r)
+    #[test]
+    fn the_paths_are_the_shared_ones() {
+        assert_eq!(RECORD, format!("../{}", shared::record_path(ID)));
+        assert_eq!(PACKET, format!("../{}", shared::packet_path(ID)));
+        assert_eq!(SIGNERS, format!("../{}", shared::SIGNERS));
     }
 }
 

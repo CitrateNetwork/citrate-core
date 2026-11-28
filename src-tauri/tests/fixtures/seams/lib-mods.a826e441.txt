@@ -2,6 +2,8 @@
 #[cfg(any(test, feature = "updater-e2e"))] mod updater_e2e;
 #[cfg(test)] mod chain_backup_tests;
 #[cfg(test)] mod custody_namespace_tests {
+#[cfg(test)] mod flags;
+#[cfg(test)] mod flags_tests;
 #[cfg(test)] mod hello_mint_e2e_tests;
 #[cfg(test)] mod invoke_secret_scan_tests;
 #[cfg(test)] mod lsp_retired_tests;
@@ -13,6 +15,7 @@
 #[cfg(test)] mod removed_commands_tests;
 #[cfg(test)] mod seams_tests;
 #[cfg(test)] mod shutdown_coverage_tests;
+#[cfg(test)] mod signoff;
 #[cfg(test)] mod sync_truth_tests;
 #[cfg(test)] mod tests {
 #[cfg(test)] mod upgrade_r1007_tests;

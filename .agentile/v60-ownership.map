@@ -34,6 +34,12 @@
 #! tail /scripts/ci/lq/tripwire-inventory.mjs @SaulBuilds
 #! tail /scripts/ci/lq/tripwire-inventory.test.mjs @SaulBuilds
 #! tail /.github/workflows/lq-tripwires.yml @SaulBuilds
+# L0-WP09: release/flags.json says which flags need a sign-off record. A PR that set a row's
+# signoff to "none" and flipped the const together would pass the build, so the owner approves
+# every change. Owner note (2026-11-28): this tightens L0 section 2.2 ("row edits reviewed by L0
+# for schema only"). The file stays L0's in this map (a lane's row lands through an L0 PR,
+# reviewed by L0 for schema), and the owner's approval is added on top.
+#! tail /release/flags.json @SaulBuilds
 #! tail /release/signoffs/ @SaulBuilds
 
 # --- Fallback: anything no row below claims is L0's (integration; other lanes go through a seam). ---

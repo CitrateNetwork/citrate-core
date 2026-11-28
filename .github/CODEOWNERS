@@ -527,4 +527,5 @@
 /scripts/ci/lq/tripwire-inventory.mjs @SaulBuilds
 /scripts/ci/lq/tripwire-inventory.test.mjs @SaulBuilds
 /.github/workflows/lq-tripwires.yml @SaulBuilds
+/release/flags.json @SaulBuilds
 /release/signoffs/ @SaulBuilds
