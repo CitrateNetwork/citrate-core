@@ -28,6 +28,12 @@ pub const RESPONSES_PATH: &str = "/v1/responses";
 /// lane module tree.
 #[path = "model_proxy_responses.rs"]
 pub(crate) mod responses;
+/// L1-WP12: the Anthropic Messages API path (Claude Agent), served by [`messages`].
+pub const MESSAGES_PATH: &str = "/v1/messages";
+
+/// L1-WP12 (v060) — `/v1/messages`, declared here for the same reason as [`responses`].
+#[path = "model_proxy_messages.rs"]
+pub(crate) mod messages;
 /// Header naming the conversation a call belongs to (recorded in the usage log).
 pub const CONVERSATION_HEADER: &str = "x-citrate-conversation";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
