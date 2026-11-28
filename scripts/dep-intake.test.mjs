@@ -80,6 +80,42 @@ describe("lockfile package sets", () => {
     expect([...pkgs.get("cargo:serde")]).toEqual([REG]);
   });
 
+  // cargo --locked compares locks as resolves, not text, so a hand-formatted lock passes the Rust
+  // jobs; the reader must refuse any line outside cargo's emitted grammar instead of misreading it.
+  it("refuses a single-quoted source instead of reading the crate as first party", () => {
+    const lock = cargoLock([["citrate-core"], ["serde", REG]]).replace(`source = "${REG}"`, `source = '${REG}'`);
+    expect(() => cargoLockPackages(lock)).toThrow(/Cargo\.lock line \d+ is outside cargo's lockfile grammar/);
+  });
+
+  it("refuses a decorated [[package]] header instead of joining it to the previous package", () => {
+    const lock = cargoLock([["citrate-core"], ["serde", REG], ["evil", REG]]);
+    for (const header of ["[[package]] # x", "[[ package ]]", "[[package]] "]) {
+      const bad = lock.replace(/\[\[package\]\]\nname = "evil"/, `${header}\nname = "evil"`);
+      expect(() => cargoLockPackages(bad), header).toThrow(/outside cargo's lockfile grammar/);
+    }
+  });
+
+  it("reads every line cargo emits: comments, version, dependencies, [metadata] and [[patch.unused]]", () => {
+    const lock = `${cargoLock([["citrate-core"], ["serde", REG]])}checksum = "abc"\ndependencies = [\n "serde_derive",\n]\n\n[[patch.unused]]\nname = "x"\nversion = "0.1.0"\nsource = "${REG}"\n\n[metadata]\n"checksum a 1.0 (${REG})" = "abc"\n`;
+    expect([...cargoLockPackages(lock).keys()]).toEqual(["cargo:serde"]);
+    expect(() => cargoLockPackages(`${baseCargo}name = "twice"\n`)).toThrow(/repeats name/);
+  });
+
+  it("an unreadable Cargo.lock exits 2 from the command line", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp10-lock-"));
+    tmpDirs.push(root);
+    fs.mkdirSync(path.join(root, "release"));
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(root, "Cargo.lock"), baseCargo.replace(`source = "${REG}"`, `source = '${REG}'`));
+    fs.writeFileSync(path.join(root, "package-lock.json"), baseNpm);
+    fs.writeFileSync(path.join(root, "release", "dep-intake.json"), '{"version":1,"rows":[]}');
+    fs.writeFileSync(path.join(root, "release", "components.json"), '{"components":[]}');
+    fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), CI_OK);
+    const r = spawnSync(process.execPath, [SCRIPT, "check", "--repo", root], { encoding: "utf8" });
+    expect(r.stderr).toMatch(/outside cargo's lockfile grammar/);
+    expect(r.status).toBe(2);
+  });
+
   it("reads npm package names from nested and scoped install paths", () => {
     const pkgs = npmLockPackages(npmLock(["node_modules/react", "node_modules/@tauri-apps/api", "node_modules/a/node_modules/@x/y"]));
     expect([...pkgs.keys()].sort()).toEqual(["npm:@tauri-apps/api", "npm:@x/y", "npm:react"]);
@@ -210,6 +246,8 @@ describe("dep intake", () => {
     const other = "1111111111111111111111111111111111111111";
     const pins = federationPins({ components: [{ source: { repo: "CitrateNetwork/citrate-chain" }, federation: { rev: REV } }, { source: { repo: "ipfs/kubo" }, federation: { status: "not-pinned" } }] });
     expect([...pins]).toEqual([["citrate-chain", REV]]);
+    const twice = { components: [{ source: { repo: "CitrateNetwork/citrate-chain" }, federation: { rev: REV } }, { source: { repo: "citratenetwork/Citrate-Chain" }, federation: { rev: other } }] };
+    expect(() => federationPins(twice)).toThrow(/records citrate-chain more than once/);
     const on = cargoLock([["citrate-core"], ["serde", REG], ["citrate-wallet-core", `${CHAIN}?rev=${REV}#${REV}`]]);
     expect(check({ cargo: on, base: on, pins })).toEqual([]);
     const moved = cargoLock([["citrate-core"], ["serde", REG], ["citrate-wallet-core", `${CHAIN}?rev=${other}#${other}`], ["citrate-commd", `${CHAIN}?rev=${other}#${other}`]]);
