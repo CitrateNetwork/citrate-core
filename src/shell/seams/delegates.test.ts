@@ -15,6 +15,7 @@ import * as l1Turn from "../actions/l1/turn";
 import * as l4ThreadEdit from "../actions/l4/threadEdit";
 import * as l8Proposals from "../actions/l8/proposals";
 import * as l5LocalModel from "../actions/l5/localModel";
+import * as l3Onboarding from "../actions/l3/onboarding";
 
 // Every export of a lane module becomes a pass-through spy, so a test can stub one and check the call.
 vi.mock("../actions/l4/chatHistory", async (importOriginal) => {
@@ -39,6 +40,10 @@ vi.mock("../actions/l8/proposals", async (importOriginal) => {
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
 vi.mock("../actions/l5/localModel", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
+});
+vi.mock("../actions/l3/onboarding", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return Object.fromEntries(Object.entries(actual).map(([k, v]) => [k, typeof v === "function" ? vi.fn(v as (...a: unknown[]) => unknown) : v]));
 });
@@ -151,6 +156,31 @@ const ROWS: Row[] = [
   { method: "skipModel", target: l5LocalModel.skipModel, args: [] },
   { method: "stopModelPoll", target: l5LocalModel.stopModelPoll, args: [] },
   { method: "serveLocalAndRoute", target: l5LocalModel.serveLocalAndRoute, args: [] },
+  // 07f: store.ts "onboarding transitions" and "demo panel" -> src/shell/actions/l3/onboarding.ts
+  // (lane L3).
+  { method: "onJoin", target: l3Onboarding.onJoin, args: [] },
+  { method: "onExplore", target: l3Onboarding.onExplore, args: [] },
+  { method: "onS3Free", target: l3Onboarding.onS3Free, args: [] },
+  { method: "submitEnterpriseLead", target: l3Onboarding.submitEnterpriseLead, args: [{ org: "Org", email: "lead@example.invalid" }] },
+  { method: "onS1Start", target: l3Onboarding.onS1Start, args: [] },
+  { method: "onS1Cancel", target: l3Onboarding.onS1Cancel, args: [] },
+  { method: "onS2Start", target: l3Onboarding.onS2Start, args: [] },
+  { method: "pollKyc", target: l3Onboarding.pollKyc, args: [] },
+  { method: "onS3Pay", target: l3Onboarding.onS3Pay, args: [] },
+  { method: "endS3Check", target: l3Onboarding.endS3Check, args: [] },
+  { method: "pollMembership", target: l3Onboarding.pollMembership, args: [2, 7] },
+  { method: "recheckMembership", target: l3Onboarding.recheckMembership, args: [] },
+  { method: "readSignerHealth", target: l3Onboarding.readSignerHealth, args: [] },
+  { method: "updateGrantDelayed", target: l3Onboarding.updateGrantDelayed, args: [] },
+  { method: "settleS3IfAlreadyGranted", target: l3Onboarding.settleS3IfAlreadyGranted, args: [] },
+  { method: "readHeldGrant", target: l3Onboarding.readHeldGrant, args: [] },
+  { method: "linkBeforeCheckout", target: l3Onboarding.linkBeforeCheckout, args: ["link first"] },
+  { method: "onS5Begin", target: l3Onboarding.onS5Begin, args: [] },
+  { method: "pollGrantSim", target: l3Onboarding.pollGrantSim, args: [3] },
+  { method: "pollGrant", target: l3Onboarding.pollGrant, args: [4] },
+  { method: "onEnter", target: l3Onboarding.onEnter, args: [] },
+  { method: "selectPersona", target: l3Onboarding.selectPersona, args: ["p2"] },
+  { method: "resetProto", target: l3Onboarding.resetProto, args: [] },
 ];
 
 afterEach(() => {
