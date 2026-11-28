@@ -38,7 +38,6 @@ function TabStrip({ id, items, active, store, sub, badges }: { id: string; items
           <button
             key={t.route}
             role="tab"
-            data-route={t.route}
             aria-selected={on}
             onClick={() => store.go(t.route)}
             className="mono"

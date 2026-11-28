@@ -10,7 +10,7 @@ import { Sidebar } from "./Sidebar";
 import { store } from "./store";
 import { freshState, type AppState } from "./state";
 import { locate } from "./places";
-import { registeredRoutes } from "./routes/registry";
+import { registeredRoutes, surfaceForRoute } from "./routes/registry";
 
 function at(route: string, patch: Partial<AppState> = {}): AppState {
   const s = freshState("p1");
@@ -28,15 +28,27 @@ const html = (route: string, patch: Partial<AppState> = {}) =>
     </WagmiProvider>,
   );
 
-/** Routes a lane registered in its src/shell/routes/l<N>.tsx (L0-WP08). This suite pins the
- *  built-in strips, so their tabs are left out; the lane's own tests pin them. */
-const LANE_ROUTES = new Set(registeredRoutes());
+/** The labels of the tabs lanes registered in their src/shell/routes/l<N>.tsx (L0-WP08) on the
+ *  place this markup shows. This suite pins the built-in strips, so those tabs are left out (the
+ *  lane's own tests pin them). A place never shows two tabs with one label (the registry refuses
+ *  it), so a label names one tab. */
+function laneTabLabels(markup: string): Set<string> {
+  const route = markup.match(/data-surface="([^"]*)"/)?.[1];
+  const place = route === undefined ? null : locate(route).place;
+  const out = new Set<string>();
+  for (const r of registeredRoutes()) {
+    const tab = surfaceForRoute(r)?.tab;
+    if (tab && tab.place === place) out.add(tab.label);
+  }
+  return out;
+}
 
 /** The labels of a rendered tab strip's built-in tabs, in order. */
 function tabs(markup: string, list: "place-tabs" | "place-subtabs"): string[] {
   const m = markup.match(new RegExp(`<div[^>]*data-testid="${list}"[^>]*>(.*?)</div>`));
   if (!m) return [];
-  return [...m[1].matchAll(/<button[^>]*data-route="([^"]*)"[^>]*>([^<]*)<\/button>/g)].filter((x) => !LANE_ROUTES.has(x[1])).map((x) => x[2]);
+  const lane = laneTabLabels(markup);
+  return [...m[1].matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((x) => x[1]).filter((l) => !lane.has(l));
 }
 
 /** The selected tab labels in the place strip and the sub-tab strip (surfaces' own tabs are ignored). */
