@@ -41,17 +41,11 @@ fn char_default_listen_is_all_interfaces_4211() {
     assert_eq!(DEFAULT_LISTEN, "/ip4/0.0.0.0/tcp/4211");
 }
 
-#[test]
-fn char_pairing_listener_binds_an_ephemeral_port() {
-    // N8: every interface, a port the OS picks, a new one per listener. WP03 replaces this with a
-    // fixed, documented port on private addresses.
-    let a = crate::fleet::bind_pairing_listener().expect("binds");
-    let b = crate::fleet::bind_pairing_listener().expect("binds");
-    let (aa, ba) = (a.local_addr().expect("addr"), b.local_addr().expect("addr"));
-    assert!(aa.ip().is_unspecified(), "{aa}");
-    assert_ne!(aa.port(), 0);
-    assert_ne!(aa.port(), ba.port());
-}
+// N8 `char_pairing_listener_binds_an_ephemeral_port` (every interface, an OS-picked port) was
+// replaced in L7-WP03 by the stricter fleet_tests `the_pairing_listener_prefers_the_fixed_port`,
+// `a_taken_fixed_port_falls_back_and_is_reported` and
+// `the_pairing_listener_never_binds_a_public_or_unspecified_address`: the listener is now TCP 4210
+// on private addresses only.
 
 #[test]
 fn char_pairing_key_is_new_each_run() {

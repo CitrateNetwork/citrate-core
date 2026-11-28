@@ -83,6 +83,19 @@ describe("Add a machine (this device)", () => {
     expect(byTest("add-machine-waiting")).not.toBeNull();
   });
 
+  it("Pending: says which port pairing uses (L7-WP03)", async () => {
+    const withPort = api({ createLink: async () => ({ link: "citrate://pair?c=abc", qr: { size: 2, rows: ["10", "01"] }, expiresAt: 1600, hints: ["192.168.1.20:4210"], port: 4210, portFallback: false }) });
+    await act(async () => root.render(<AddMachineSheet mode="add" api={withPort} groupLabel={null} onClose={() => {}} nowSecs={() => NOW} />));
+    await flush();
+    expect(byTest("add-machine-port")?.textContent).toContain("port 4210 (TCP)");
+  });
+
+  it("Pending: an older core that reports no port gets no port line", async () => {
+    await act(async () => root.render(<AddMachineSheet mode="add" api={api()} groupLabel={null} onClose={() => {}} nowSecs={() => NOW} />));
+    await flush();
+    expect(byTest("add-machine-port")).toBeNull();
+  });
+
   it("Success: the machine that used this link appears with its code, the mismatch advice and Remove", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let rosterNow: FleetDevice[] = [dev("old", "Old")];
