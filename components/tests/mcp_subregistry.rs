@@ -14,9 +14,9 @@ use citrate_components::catalog::{
 };
 use citrate_components::key::{app_updater_key_line, ed25519_public_key, TrustRoot};
 use citrate_components::mcp_subregistry::{
-    load_seen, record_seen, subregistry_trust_root, subregistry_trust_root_from,
-    verify_and_record, verify_subregistry, RegistryType, SeenSubregistry, SubregistryError,
-    Transport, Trust, MAX_SUBREGISTRY_BYTES, SUBREGISTRY_DOMAIN,
+    load_seen, record_seen, subregistry_trust_root, subregistry_trust_root_from, verify_and_record,
+    verify_subregistry, RegistryType, SeenSubregistry, SubregistryError, Transport, Trust,
+    MAX_SUBREGISTRY_BYTES, SUBREGISTRY_DOMAIN,
 };
 use common::*;
 
@@ -56,7 +56,11 @@ fn good(seq: u64) -> String {
     doc(
         seq,
         &[
-            remote_entry("com.notion/mcp", "https://mcp.notion.com/mcp", "verified_brand"),
+            remote_entry(
+                "com.notion/mcp",
+                "https://mcp.notion.com/mcp",
+                "verified_brand",
+            ),
             package_entry(
                 "io.github.example/files",
                 "npm",
@@ -165,7 +169,10 @@ fn a_tampered_subregistry_is_refused() {
     let tampered = json.replace("https://mcp.notion.com/mcp", "https://mcp.notion.evil/mcp");
     assert_ne!(tampered, json);
     let err = verify_subregistry(tampered.as_bytes(), &sig, &root(&key), None, NOW).unwrap_err();
-    assert!(matches!(err, SubregistryError::SignatureInvalid(_)), "{err:?}");
+    assert!(
+        matches!(err, SubregistryError::SignatureInvalid(_)),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -173,9 +180,18 @@ fn a_subregistry_signed_by_another_key_is_refused() {
     let key = TestKey::generate();
     let other = TestKey::generate();
     let json = good(4);
-    let err = verify_subregistry(json.as_bytes(), &sign(&other, &json), &root(&key), None, NOW)
-        .unwrap_err();
-    assert!(matches!(err, SubregistryError::SignatureInvalid(_)), "{err:?}");
+    let err = verify_subregistry(
+        json.as_bytes(),
+        &sign(&other, &json),
+        &root(&key),
+        None,
+        NOW,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SubregistryError::SignatureInvalid(_)),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -184,7 +200,10 @@ fn a_garbage_signature_is_refused() {
     let json = good(4);
     let err =
         verify_subregistry(json.as_bytes(), "not a signature", &root(&key), None, NOW).unwrap_err();
-    assert!(matches!(err, SubregistryError::SignatureInvalid(_)), "{err:?}");
+    assert!(
+        matches!(err, SubregistryError::SignatureInvalid(_)),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -355,7 +374,10 @@ fn rollback_refused_across_restarts_via_the_persisted_record() {
         SubregistryError::Rollback { seen: 7, got: 6 }
     );
     // A refusal never lowers the record.
-    assert_eq!(load_seen(&seen_path).expect("readable").map(|s| s.sequence), Some(7));
+    assert_eq!(
+        load_seen(&seen_path).expect("readable").map(|s| s.sequence),
+        Some(7)
+    );
 }
 
 #[test]
@@ -433,7 +455,10 @@ fn malformed_json_is_refused_after_the_signature() {
 
 #[test]
 fn an_unknown_schema_is_refused() {
-    assert_malformed(refused(&good(4).replace("\"schema\":1", "\"schema\":2")), "schema");
+    assert_malformed(
+        refused(&good(4).replace("\"schema\":1", "\"schema\":2")),
+        "schema",
+    );
 }
 
 #[test]
@@ -444,10 +469,20 @@ fn unknown_fields_are_refused() {
 
 #[test]
 fn unknown_trust_value_refused() {
-    for t in ["registry_unreviewed", "member_added", "verified", "VerifiedBrand", ""] {
+    for t in [
+        "registry_unreviewed",
+        "member_added",
+        "verified",
+        "VerifiedBrand",
+        "",
+    ] {
         let json = doc(
             1,
-            &[remote_entry("com.notion/mcp", "https://mcp.notion.com/mcp", t)],
+            &[remote_entry(
+                "com.notion/mcp",
+                "https://mcp.notion.com/mcp",
+                t,
+            )],
         );
         assert_malformed(refused(&json), "json");
     }
@@ -459,7 +494,9 @@ fn third_party_entries_allowed_only_with_trust_field() {
     // field: the curated package entry in `good` is one.
     let key = TestKey::generate();
     let json = good(4);
-    assert!(verify_subregistry(json.as_bytes(), &sign(&key, &json), &root(&key), None, NOW).is_ok());
+    assert!(
+        verify_subregistry(json.as_bytes(), &sign(&key, &json), &root(&key), None, NOW).is_ok()
+    );
     // Without `_meta`, or with `_meta` but no Citrate curation record, it is refused.
     let no_meta = format!(
         r#"{{"name":"io.github.example/files","title":"Files","description":"{DESC}","version":"1.0.0","remotes":[{{"type":"streamable-http","url":"https://files.example.com/mcp"}}]}}"#
@@ -508,20 +545,40 @@ fn packages_must_be_pinned() {
     }
     let unknown_registry = doc(
         1,
-        &[package_entry("com.example/pkg", "cargo", "example", "1.0.0")],
+        &[package_entry(
+            "com.example/pkg",
+            "cargo",
+            "example",
+            "1.0.0",
+        )],
     );
     assert_malformed(refused(&unknown_registry), "json");
     let bad_ident = doc(
         1,
-        &[package_entry("com.example/pkg", "npm", "pkg; rm -rf ~", "1.0.0")],
+        &[package_entry(
+            "com.example/pkg",
+            "npm",
+            "pkg; rm -rf ~",
+            "1.0.0",
+        )],
     );
     assert_malformed(refused(&bad_ident), "identifier");
 }
 
 #[test]
 fn names_are_registry_names_and_unique() {
-    for name in ["notion", "com.notion/", "/mcp", "com notion/mcp", "com.notion/mcp/x", "-a/b"] {
-        let json = doc(1, &[remote_entry(name, "https://mcp.notion.com/mcp", "curated")]);
+    for name in [
+        "notion",
+        "com.notion/",
+        "/mcp",
+        "com notion/mcp",
+        "com.notion/mcp/x",
+        "-a/b",
+    ] {
+        let json = doc(
+            1,
+            &[remote_entry(name, "https://mcp.notion.com/mcp", "curated")],
+        );
         assert_malformed(refused(&json), "name");
     }
     let dup = doc(
@@ -536,7 +593,10 @@ fn names_are_registry_names_and_unique() {
 
 #[test]
 fn curation_fields_are_checked() {
-    let bad_date = good(4).replace("\"reviewedAt\":\"2026-11-28\"", "\"reviewedAt\":\"yesterday\"");
+    let bad_date = good(4).replace(
+        "\"reviewedAt\":\"2026-11-28\"",
+        "\"reviewedAt\":\"yesterday\"",
+    );
     assert_malformed(refused(&bad_date), "reviewedAt");
     let bad_sha = good(4).replace(&"cd".repeat(32), &"CD".repeat(32));
     assert_malformed(refused(&bad_sha), "toolSnapshotSha256");

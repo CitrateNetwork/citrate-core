@@ -59,13 +59,18 @@ pub enum SubregistryError {
     /// A valid signature made for another purpose (a Store catalog or component manifest).
     WrongPurpose,
     /// Larger than the cap; refused before the signature or the parser saw it.
-    TooLarge { limit: usize },
+    TooLarge {
+        limit: usize,
+    },
     /// Signed, but not JSON of the schema, or a field is out of bounds.
     Malformed(String),
     Expired,
     NotYetValid,
     /// Older than the subregistry already seen.
-    Rollback { seen: u64, got: u64 },
+    Rollback {
+        seen: u64,
+        got: u64,
+    },
     /// The persisted last-seen record cannot be read or written. Never silently reset: the
     /// sequence in it is what stops a replayed older document.
     State(String),
@@ -87,7 +92,10 @@ impl std::fmt::Display for SubregistryError {
                 f,
                 "the signed catalog is older than the one already seen (sequence {got} < {seen})"
             ),
-            State(m) => write!(f, "the signed catalog record on this machine is unreadable: {m}"),
+            State(m) => write!(
+                f,
+                "the signed catalog record on this machine is unreadable: {m}"
+            ),
         }
     }
 }
@@ -359,10 +367,7 @@ fn is_registry_name(s: &str) -> bool {
     let Some((ns, server)) = s.split_once('/') else {
         return false;
     };
-    let ns_ok = ns
-        .bytes()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphanumeric())
+    let ns_ok = ns.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && ns
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'));
@@ -379,8 +384,7 @@ fn is_pinned_version(s: &str) -> bool {
         && s.len() <= 64
         && !s.eq_ignore_ascii_case("latest")
         && s.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric())
-        && s
-            .bytes()
+        && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_'))
 }
 
@@ -389,7 +393,9 @@ fn is_package_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 214
         && !s.contains("..")
-        && s.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'@')
+        && s.bytes()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'@')
         && s.bytes().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, b'@' | b'/' | b'.' | b'_' | b'-' | b':')
         })
