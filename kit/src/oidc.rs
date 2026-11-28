@@ -1814,6 +1814,43 @@ impl AuthManager {
         Ok((sess.claims.sub.clone(), sess.access_token.to_string()))
     }
 
+    /// 0.6.0 L6-WP05 (seam for L0): `POST` a JSON body to `path` on THIS authority, with the live
+    /// session's access token as the bearer, and return the response body.
+    ///
+    /// The connections token relay (`/oauth/relay/v1/{provider}/{token|refresh|revoke}`) is a
+    /// Citrate service for signed-in members, so it needs the member's bearer. The access token
+    /// still never leaves this module (I-2): the caller names a PATH, never a URL, and the request
+    /// always goes to the pinned issuer origin, so the bearer cannot be sent anywhere else. A path
+    /// that is not a plain absolute path (`//host`, a scheme, `\`, `@`, `..`) is refused before
+    /// any request. `NotSignedIn` with no session; `Unauthorized` without a request when the
+    /// session's access token has expired (the caller refreshes, then retries); a reply is
+    /// classified as in [`classify_ureq`] (401 is `Unauthorized`, any other non-2xx
+    /// `Rejected(status)`, never the body).
+    pub fn post_json_to_authority(&self, path: &str, body: &str) -> Result<String> {
+        let plain = path.starts_with('/')
+            && !path.starts_with("//")
+            && !path.contains("..")
+            && !path
+                .bytes()
+                .any(|b| matches!(b, b'\\' | b'@' | b':' | b'?' | b'#') || b.is_ascii_whitespace());
+        if !plain {
+            return Err(AuthError::Rejected(400));
+        }
+        let access = {
+            let guard = self.lock();
+            let sess = guard.as_ref().ok_or(AuthError::NotSignedIn)?;
+            if sess.claims.sub.is_empty() {
+                return Err(AuthError::NotSignedIn);
+            }
+            if sess.expires_at <= Self::now() {
+                return Err(AuthError::Unauthorized);
+            }
+            Zeroizing::new(sess.access_token.to_string())
+        };
+        let url = format!("{}{path}", self.cfg.issuer.trim_end_matches('/'));
+        self.http.post_json(&url, Some(access.as_str()), body)
+    }
+
     // --- A3.4: KYC seam -------------------------------------------------
 
     /// The `/kyc/start` URL to open in the browser (S2). Polling is done via
