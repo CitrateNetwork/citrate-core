@@ -408,7 +408,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if req.path != CHAT_PATH {
+    if req.path != CHAT_PATH && req.path != RESPONSES_PATH {
         return write_json(
             out,
             404,
@@ -435,6 +435,10 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             )
         }
     };
+    if req.path == RESPONSES_PATH {
+        let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
+        return responses::serve(proxy, token, &route.model, &body, conversation, out);
+    }
     let chat = match from_openai_body(&body) {
         Ok(c) => c,
         Err(m) => return write_json(out, 400, &error_body(&ProxyError::BadRequest(m))),
