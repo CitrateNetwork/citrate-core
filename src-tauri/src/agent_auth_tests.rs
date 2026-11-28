@@ -117,7 +117,7 @@ fn agent_ids_are_validated() {
 fn every_level_of_a_new_home_is_owner_only() {
     let fx = Fx::new();
     let h = fx.homes();
-    let home = h.ensure(&id("codex")).unwrap();
+    let home = h.ensure_home(&id("codex")).unwrap();
     assert_eq!(home, fx.appdata().join("agents/codex/home"));
     for p in [
         fx.appdata().join("agents"),
@@ -142,7 +142,7 @@ fn a_loose_existing_home_is_narrowed_to_owner_only() {
     ] {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    fx.homes().ensure(&id("gemini")).unwrap();
+    fx.homes().ensure_home(&id("gemini")).unwrap();
     assert_eq!(mode(&home), 0o700);
     assert_eq!(mode(&fx.appdata().join("agents")), 0o700);
 }
@@ -156,16 +156,16 @@ fn a_symlinked_home_or_agent_folder_is_refused() {
     std::fs::create_dir_all(fx.appdata().join("agents/codex")).unwrap();
     std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents/codex/home")).unwrap();
     assert!(matches!(
-        fx.homes().ensure(&id("codex")),
+        fx.homes().ensure_home(&id("codex")),
         Err(AuthError::Refused(_))
     ));
     std::os::unix::fs::symlink(&elsewhere, fx.appdata().join("agents/goose")).unwrap();
     assert!(matches!(
-        fx.homes().ensure(&id("goose")),
+        fx.homes().ensure_home(&id("goose")),
         Err(AuthError::Refused(_))
     ));
     assert!(matches!(
-        fx.homes().remove(&id("goose"), None),
+        fx.homes().remove_agent_dir(&id("goose"), None),
         Err(AuthError::Refused(_))
     ));
     assert!(elsewhere.exists(), "a refused removal deletes nothing");
@@ -410,8 +410,8 @@ fn apply_env_replaces_the_inherited_environment_of_a_real_process() {
 fn one_agent_cannot_resolve_a_path_in_another_agents_home() {
     let fx = Fx::new();
     let h = fx.homes();
-    let codex_home = h.ensure(&id("codex")).unwrap();
-    let gemini_home = h.ensure(&id("gemini")).unwrap();
+    let codex_home = h.ensure_home(&id("codex")).unwrap();
+    let gemini_home = h.ensure_home(&id("gemini")).unwrap();
     std::fs::create_dir_all(gemini_home.join(".gemini")).unwrap();
     std::fs::write(gemini_home.join(".gemini/oauth_creds.json"), "{}").unwrap();
     // Inside its own home (existing or not yet): allowed.
@@ -446,8 +446,8 @@ fn one_agent_cannot_resolve_a_path_in_another_agents_home() {
 fn a_symlink_out_of_the_home_is_refused() {
     let fx = Fx::new();
     let h = fx.homes();
-    let codex_home = h.ensure(&id("codex")).unwrap();
-    let gemini_home = h.ensure(&id("gemini")).unwrap();
+    let codex_home = h.ensure_home(&id("codex")).unwrap();
+    let gemini_home = h.ensure_home(&id("gemini")).unwrap();
     std::os::unix::fs::symlink(&gemini_home, codex_home.join("peek")).unwrap();
     std::os::unix::fs::symlink(&fx.base, codex_home.join("up")).unwrap();
     assert!(h
@@ -461,17 +461,17 @@ fn a_symlink_out_of_the_home_is_refused() {
 #[test]
 fn the_home_and_the_agents_own_sign_in_survive_a_restart() {
     let fx = Fx::new();
-    let home = fx.homes().ensure(&id("codex")).unwrap();
+    let home = fx.homes().ensure_home(&id("codex")).unwrap();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
     std::fs::write(home.join(".codex/auth.json"), "{}").unwrap();
     // A new process: a fresh AgentHomes over the same app data.
     let again = AgentHomes::new(&fx.appdata());
-    assert_eq!(again.ensure(&id("codex")).unwrap(), home);
+    assert_eq!(again.ensure_home(&id("codex")).unwrap(), home);
     assert!(
         home.join(".codex/auth.json").exists(),
         "ensure never clears an existing home"
     );
-    let s = again.status(&id("codex"));
+    let s = again.home_status(&id("codex"));
     assert!(s.home_exists);
     assert_eq!(s.own_login_present, Some(true));
     assert!(s.own_login_offered);
@@ -482,12 +482,12 @@ fn the_home_and_the_agents_own_sign_in_survive_a_restart() {
 fn status_reads_metadata_only_never_the_login_file() {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new();
-    let home = fx.homes().ensure(&id("gemini")).unwrap();
+    let home = fx.homes().ensure_home(&id("gemini")).unwrap();
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     let f = home.join(".gemini/oauth_creds.json");
     std::fs::write(&f, "{\"token\":\"secret-value\"}").unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let s = fx.homes().status(&id("gemini"));
+    let s = fx.homes().home_status(&id("gemini"));
     assert_eq!(
         s.own_login_present,
         Some(true),
@@ -511,7 +511,7 @@ fn own_sign_in_is_offered_only_where_core_knows_the_agent_keeps_it_in_its_home()
         ("muse", false),
         ("unknown-agent", false),
     ] {
-        let s = h.status(&id(a));
+        let s = h.home_status(&id(a));
         assert_eq!(s.own_login_offered, offered, "{a}");
         assert_eq!(s.own_login_present.is_some(), offered, "{a}");
         assert!(!s.home_exists, "status creates nothing");
@@ -524,10 +524,10 @@ fn sign_out_empties_the_home_and_revokes_only_that_agents_routes() {
     let rig = Rig::new("agent-auth-signout");
     let h = fx.homes();
     let (codex, codex_x) = (id("codex"), id("codex-x"));
-    let home = h.ensure(&codex).unwrap();
+    let home = h.ensure_home(&codex).unwrap();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
     std::fs::write(home.join(".codex/auth.json"), "{}").unwrap();
-    let other_home = h.ensure(&codex_x).unwrap();
+    let other_home = h.ensure_home(&codex_x).unwrap();
     std::fs::write(other_home.join("keep"), "x").unwrap();
     let g1 = mint_agent_route(
         &rig.proxy,
@@ -545,7 +545,7 @@ fn sign_out_empties_the_home_and_revokes_only_that_agents_routes() {
         rig.gate(),
     )
     .unwrap();
-    h.sign_out(&codex, Some(&*rig.proxy)).unwrap();
+    h.sign_out_agent(&codex, Some(&*rig.proxy)).unwrap();
     assert!(
         rig.proxy.route_for(g1.bearer.expose()).is_none(),
         "the agent's route is revoked"
@@ -556,7 +556,7 @@ fn sign_out_empties_the_home_and_revokes_only_that_agents_routes() {
     );
     assert!(home.exists(), "the home is recreated");
     assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0, "and empty");
-    assert_eq!(h.status(&codex).own_login_present, Some(false));
+    assert_eq!(h.home_status(&codex).own_login_present, Some(false));
     assert!(
         other_home.join("keep").exists(),
         "another agent's home is untouched"
@@ -573,10 +573,10 @@ fn removal_deletes_the_agents_folder_never_a_link_target_or_another_agent() {
     let h = fx.homes();
     let outside = fx.base.join("outside.txt");
     std::fs::write(&outside, "member file").unwrap();
-    let home = h.ensure(&id("goose")).unwrap();
+    let home = h.ensure_home(&id("goose")).unwrap();
     std::os::unix::fs::symlink(&outside, home.join("link")).unwrap();
     std::os::unix::fs::symlink(&fx.base, home.join("dirlink")).unwrap();
-    let other = h.ensure(&id("grok")).unwrap();
+    let other = h.ensure_home(&id("grok")).unwrap();
     let g = mint_agent_route(
         &rig.proxy,
         &id("goose"),
@@ -585,7 +585,7 @@ fn removal_deletes_the_agents_folder_never_a_link_target_or_another_agent() {
         rig.gate(),
     )
     .unwrap();
-    assert!(h.remove(&id("goose"), Some(&*rig.proxy)).unwrap());
+    assert!(h.remove_agent_dir(&id("goose"), Some(&*rig.proxy)).unwrap());
     assert!(!h.agent_dir(&id("goose")).exists());
     assert!(rig.proxy.route_for(g.bearer.expose()).is_none());
     assert_eq!(
@@ -595,7 +595,7 @@ fn removal_deletes_the_agents_folder_never_a_link_target_or_another_agent() {
     );
     assert!(other.exists(), "another agent's folder survives");
     assert!(
-        !h.remove(&id("goose"), Some(&*rig.proxy)).unwrap(),
+        !h.remove_agent_dir(&id("goose"), Some(&*rig.proxy)).unwrap(),
         "removing twice is a no-op"
     );
 }

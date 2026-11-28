@@ -18,7 +18,7 @@
 //! - **Arguments never carry a credential**, not even a route token ([`check_argv`]): argv is
 //!   visible to every local process.
 //! - **ACP `authenticate` never carries a vendor key** ([`check_authenticate`]).
-//! - **Core never reads an agent's login files.** [`AgentHomes::status`] looks at metadata only.
+//! - **Core never reads an agent's login files.** [`AgentHomes::home_status`] looks at metadata only.
 //! - **Sign-out** revokes the agent's routes and empties its home; **removal** revokes its routes
 //!   and deletes `<app data>/agents/<id>` (the uninstall cleanup). Neither follows a symlink out of
 //!   the agent's folder, and neither touches another agent.
@@ -254,7 +254,7 @@ impl AgentHomes {
     }
 
     /// Create (or check) the agent's home: every level owner-only, none a symlink.
-    pub fn ensure(&self, id: &AgentId) -> Result<PathBuf, AuthError> {
+    pub fn ensure_home(&self, id: &AgentId) -> Result<PathBuf, AuthError> {
         let agent = self.agent_dir(id);
         let home = self.home(id);
         for dir in [&self.root, &agent, &home] {
@@ -271,7 +271,7 @@ impl AgentHomes {
         inherited: impl Iterator<Item = (String, String)>,
         route: Option<&ProxyGrant>,
     ) -> Result<Vec<(String, String)>, AuthError> {
-        let home = self.ensure(id)?;
+        let home = self.ensure_home(id)?;
         let layout = layout_for(id);
         let mut env: Vec<(String, String)> = inherited
             .filter(|(k, v)| {
@@ -318,7 +318,7 @@ impl AgentHomes {
 
     /// Whether the agent's home exists and its own sign-in file is present. Metadata only: no
     /// file in the home is opened.
-    pub fn status(&self, id: &AgentId) -> HomeStatus {
+    pub fn home_status(&self, id: &AgentId) -> HomeStatus {
         let home = self.home(id);
         let layout = layout_for(id);
         let home_exists = std::fs::symlink_metadata(&home).is_ok_and(|m| m.is_dir());
@@ -339,7 +339,11 @@ impl AgentHomes {
 
     /// Sign the agent out: revoke its routes and empty its home (its own sign-in and everything
     /// else it kept). The empty home is recreated owner-only.
-    pub fn sign_out(&self, id: &AgentId, proxy: Option<&ModelProxy>) -> Result<(), AuthError> {
+    pub fn sign_out_agent(
+        &self,
+        id: &AgentId,
+        proxy: Option<&ModelProxy>,
+    ) -> Result<(), AuthError> {
         revoke_agent_routes(proxy, id);
         let home = self.home(id);
         match std::fs::symlink_metadata(&home) {
@@ -353,12 +357,16 @@ impl AgentHomes {
             }
             Ok(_) => std::fs::remove_dir_all(&home).map_err(|e| io("empty the agent's home", e))?,
         }
-        self.ensure(id).map(|_| ())
+        self.ensure_home(id).map(|_| ())
     }
 
     /// Remove the agent's folder (uninstall cleanup): revoke its routes and delete
     /// `<root>/<id>`. Returns whether anything was removed.
-    pub fn remove(&self, id: &AgentId, proxy: Option<&ModelProxy>) -> Result<bool, AuthError> {
+    pub fn remove_agent_dir(
+        &self,
+        id: &AgentId,
+        proxy: Option<&ModelProxy>,
+    ) -> Result<bool, AuthError> {
         revoke_agent_routes(proxy, id);
         let dir = self.agent_dir(id);
         match std::fs::symlink_metadata(&dir) {
