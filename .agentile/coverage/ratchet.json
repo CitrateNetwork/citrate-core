@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "rev": "af8d6277a79267dde05a9ddafa33d8f044b2cd23",
-  "measured": "2026-11-27T12:38:20Z",
+  "rev": "ee5ff8747f43ffae12173ead3fbfda983d25226e",
+  "measured": "2026-11-28T06:02:34Z",
   "tests": {
     "rust": {
-      "passed": 4150,
+      "passed": 4217,
       "ignored": 24
     },
     "vitest": {
-      "passed": 6032,
+      "passed": 6446,
       "skipped": 38
     }
   },
@@ -17,11 +17,11 @@
     "tlc_configs_in_ci": 61
   },
   "tripwires": {
-    "registered": 250,
-    "ci_steps": 16
+    "registered": 886,
+    "ci_steps": 17
   },
   "frontmatter": {
-    "docs": 261,
-    "with": 261
+    "docs": 263,
+    "with": 263
   }
 }
