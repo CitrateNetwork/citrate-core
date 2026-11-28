@@ -395,8 +395,18 @@ with `OnlyOwnDeployedTargets` violated, `WebSigningBudgetB3_Mixed` with `NoCreat
 violated (CI run 46109206356). The green commit adds the checks (CI run 46109449077).
 
 **Non-regression of the pre-B-3 configs.** With the B-3 constants off, the state space is the
-same as before the extension: `WebSigningBudget.cfg` 37,916,870 states generated, 7,828,872
-distinct, depth 21, no error (identical to the 2026-09-30 row above).
+same as before the extension, rerun on the build host (8 cores) on 2026-11-28, each identical to
+its 2026-09-30 row above, no error:
+
+| Config | Generated | Distinct | Depth |
+|---|---|---|---|
+| `WebSigningBudget.cfg` | 37,916,870 | 7,828,872 | 21 |
+| `WebSigningBudget_Live.cfg` | 10,609,496 | 2,361,774 | 21 |
+| `WebSigningBudget_O3.cfg` | 131,030,726 | 23,191,496 | 24 |
+| `WebSigningBudget_Siwe.cfg` | 21,454,563 | 5,077,204 | 26 |
+
+`WebSigningBudget_X402.cfg` (about 17 minutes on 12 workers) was not rerun for this change; it
+sets the same B-3 constants off as the four above.
 `WebSigningBudget_mutants.py`: 23 of 23 mutants still caught, each by its target, with every
 patch anchor unchanged.
 
