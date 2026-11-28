@@ -60,7 +60,9 @@ pub const AGENT_ROUTE_PREFIX: &str = "ag:";
 /// The longest agent id.
 pub const MAX_ID_LEN: usize = 32;
 
-/// Launch-environment names an agent process may inherit. Nothing else crosses.
+/// Launch-environment names an agent process may inherit. Nothing else crosses. `PATH` is
+/// inherited, so the ACP host (WP03) must launch the agent by the absolute path of its pinned,
+/// hash-checked binary, never by a name looked up on `PATH`.
 pub const INHERITED_ENV: &[&str] = &[
     "PATH",
     "LANG",
@@ -68,9 +70,12 @@ pub const INHERITED_ENV: &[&str] = &[
     "LC_CTYPE",
     "TERM",
     "TZ",
-    "TMPDIR",
     "SYSTEMROOT",
 ];
+
+/// The agent's own temp folder inside its home (`TMPDIR`, `TMP`, `TEMP`); the member's shared temp
+/// folder never crosses.
+pub const TMP_DIR: &str = ".tmp";
 
 /// Why a home operation was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,14 +258,16 @@ impl AgentHomes {
         self.agent_dir(id).join(HOME_DIR)
     }
 
-    /// Create (or check) the agent's home: every level owner-only, none a symlink.
+    /// Create (or check) the agent's home: every level from `agents/` down is a real folder this
+    /// user owns, none a symlink (each is opened without following links), narrowed to `0700`.
     pub fn ensure_home(&self, id: &AgentId) -> Result<PathBuf, AuthError> {
-        let agent = self.agent_dir(id);
-        let home = self.home(id);
-        for dir in [&self.root, &agent, &home] {
-            private_dir(dir)?;
-        }
-        Ok(home)
+        nf_ensure_chain(self.base(), &[AGENTS_DIR, id.as_str(), HOME_DIR])?;
+        Ok(self.home(id))
+    }
+
+    /// Core's app data folder (trusted: core made it; everything below it is checked).
+    fn base(&self) -> &Path {
+        self.root.parent().unwrap_or(&self.root)
     }
 
     /// The environment the agent process starts with (after [`apply_env`] clears the inherited
@@ -272,6 +279,7 @@ impl AgentHomes {
         route: Option<&ProxyGrant>,
     ) -> Result<Vec<(String, String)>, AuthError> {
         let home = self.ensure_home(id)?;
+        nf_ensure_chain(self.base(), &[AGENTS_DIR, id.as_str(), HOME_DIR, TMP_DIR])?;
         let layout = layout_for(id);
         let mut env: Vec<(String, String)> = inherited
             .filter(|(k, v)| {
@@ -296,6 +304,9 @@ impl AgentHomes {
         set("XDG_DATA_HOME", at(".local/share"));
         set("XDG_STATE_HOME", at(".local/state"));
         set("XDG_CACHE_HOME", at(".cache"));
+        for k in ["TMPDIR", "TMP", "TEMP"] {
+            set(k, at(TMP_DIR));
+        }
         for &(k, rel) in layout.dirs {
             set(k, at(rel));
         }
@@ -338,49 +349,29 @@ impl AgentHomes {
     }
 
     /// Sign the agent out: revoke its routes and empty its home (its own sign-in and everything
-    /// else it kept). The empty home is recreated owner-only.
+    /// else it kept). The path from `agents/` to the home is opened without following links, and
+    /// the home is emptied through those handles, so a symlink anywhere on it is refused and the
+    /// delete can never reach outside the agent's folder. The home is left empty and owner-only.
     pub fn sign_out_agent(
         &self,
         id: &AgentId,
         proxy: Option<&ModelProxy>,
     ) -> Result<(), AuthError> {
         revoke_agent_routes(proxy, id);
-        let home = self.home(id);
-        match std::fs::symlink_metadata(&home) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io("the agent's home", e)),
-            Ok(m) if !m.is_dir() || m.file_type().is_symlink() => {
-                return Err(AuthError::Refused(format!(
-                    "refused: {} is not a folder Core made",
-                    home.display()
-                )))
-            }
-            Ok(_) => std::fs::remove_dir_all(&home).map_err(|e| io("empty the agent's home", e))?,
-        }
+        nf_empty_chain(self.base(), &[AGENTS_DIR, id.as_str(), HOME_DIR])?;
         self.ensure_home(id).map(|_| ())
     }
 
     /// Remove the agent's folder (uninstall cleanup): revoke its routes and delete
-    /// `<root>/<id>`. Returns whether anything was removed.
+    /// `agents/<id>` through handles opened without following links (a link inside is removed,
+    /// never its target). Returns whether anything was removed.
     pub fn remove_agent_dir(
         &self,
         id: &AgentId,
         proxy: Option<&ModelProxy>,
     ) -> Result<bool, AuthError> {
         revoke_agent_routes(proxy, id);
-        let dir = self.agent_dir(id);
-        match std::fs::symlink_metadata(&dir) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(io("the agent's folder", e)),
-            Ok(m) if !m.is_dir() || m.file_type().is_symlink() => Err(AuthError::Refused(format!(
-                "refused: {} is not a folder Core made",
-                dir.display()
-            ))),
-            // `remove_dir_all` removes a symlink inside the folder, never its target.
-            Ok(_) => std::fs::remove_dir_all(&dir)
-                .map(|()| true)
-                .map_err(|e| io("remove the agent's folder", e)),
-        }
+        nf_remove_last(self.base(), &[AGENTS_DIR, id.as_str()])
     }
 
     /// `requested` resolved inside `id`'s own home, or refused: outside every home, or inside
@@ -414,42 +405,328 @@ impl AgentHomes {
     }
 }
 
-/// Create `dir` owner-only if missing (one level: its parent must exist), or check it: a real
-/// folder, not a symlink, narrowed to `0700`.
-fn private_dir(dir: &Path) -> Result<(), AuthError> {
-    match std::fs::symlink_metadata(dir) {
-        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
-            return Err(AuthError::Refused(format!(
-                "refused: {} is not a folder Core made (a symlink or a file)",
-                dir.display()
-            )))
+fn refused_link(names: &[&str]) -> AuthError {
+    AuthError::Refused(format!(
+        "refused: {} is not a folder Core made (a symlink, a file or another user's)",
+        names.join("/")
+    ))
+}
+
+/// Folder operations below core's app data that never follow a link (review P2-1 on #842). On
+/// unix every component is opened with `O_NOFOLLOW | O_DIRECTORY` relative to its parent's handle,
+/// checked owned by this user, chmodded through the handle, and deleted with `unlinkat` relative to
+/// its parent's handle, so swapping a component for a link between a check and a delete cannot
+/// redirect it.
+#[cfg(unix)]
+mod nofollow {
+    use std::ffi::{CStr, CString};
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    pub(super) enum Kind {
+        Missing,
+        Dir,
+        Other,
+    }
+
+    pub(super) fn is_link_or_not_dir(e: &io::Error) -> bool {
+        matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENOTDIR))
+    }
+
+    pub(super) fn cname(s: &str) -> io::Result<CString> {
+        CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    fn fd_or_err(fd: libc::c_int) -> io::Result<OwnedFd> {
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
         }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut b = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                b.mode(0o700);
+        // SAFETY: `fd` is a descriptor the kernel just returned to us and nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    fn rc(r: libc::c_int) -> io::Result<()> {
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Core's app data folder (followed: core made it).
+    pub(super) fn open_base(p: &Path) -> io::Result<OwnedFd> {
+        let c = CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: `c` is a valid NUL-terminated path for the duration of the call.
+        fd_or_err(unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        })
+    }
+
+    /// `name` inside `dir`, refused (ELOOP or ENOTDIR) when it is a link or not a folder.
+    pub(super) fn open_child(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
+        // SAFETY: `dir` is an open descriptor and `name` a valid C string for the call.
+        fd_or_err(unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })
+    }
+
+    pub(super) fn mkdir_child(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
+        // SAFETY: as in `open_child`.
+        match rc(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) }) {
+            Err(e) if e.raw_os_error() == Some(libc::EEXIST) => Ok(()),
+            r => r,
+        }
+    }
+
+    /// Owned by this user, then narrowed to `0700` through the handle (never by path).
+    pub(super) fn own_and_narrow(fd: &OwnedFd) -> io::Result<bool> {
+        // SAFETY: `stat` is plain old data; zeroed is a valid value that fstat overwrites.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is open and `st` is a valid out pointer.
+        rc(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) })?;
+        // SAFETY: geteuid has no preconditions.
+        if st.st_uid != unsafe { libc::geteuid() } {
+            return Ok(false);
+        }
+        // SAFETY: `fd` is open.
+        rc(unsafe { libc::fchmod(fd.as_raw_fd(), 0o700) })?;
+        Ok(true)
+    }
+
+    pub(super) fn kind_at(dir: &OwnedFd, name: &CStr) -> io::Result<Kind> {
+        // SAFETY: as in `own_and_narrow`.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `dir` is open, `name` valid, `st` a valid out pointer.
+        let r = unsafe {
+            libc::fstatat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        match rc(r) {
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => Ok(Kind::Missing),
+            Err(e) => Err(e),
+            Ok(()) if (st.st_mode & libc::S_IFMT) == libc::S_IFDIR => Ok(Kind::Dir),
+            Ok(()) => Ok(Kind::Other),
+        }
+    }
+
+    /// The entry names of `dir` (without `.` and `..`).
+    fn entry_names(dir: &OwnedFd) -> io::Result<Vec<CString>> {
+        // SAFETY: `dir` is open; the duplicate is owned by the DIR stream from here on.
+        let dup = unsafe { libc::dup(dir.as_raw_fd()) };
+        if dup < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `dup` is a fresh descriptor; on success fdopendir takes ownership of it.
+        let d = unsafe { libc::fdopendir(dup) };
+        if d.is_null() {
+            let e = io::Error::last_os_error();
+            // SAFETY: fdopendir failed, so `dup` is still ours to close.
+            unsafe { libc::close(dup) };
+            return Err(e);
+        }
+        // SAFETY: `d` is a valid stream until closedir.
+        unsafe { libc::rewinddir(d) };
+        let mut out = Vec::new();
+        loop {
+            // SAFETY: `d` is a valid stream; the entry is read before the next readdir call.
+            let ent = unsafe { libc::readdir(d) };
+            if ent.is_null() {
+                break;
             }
-            match b.create(dir) {
-                Ok(()) => {}
-                // Another caller made it in between: check it like an existing one below.
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return private_dir(dir);
+            // SAFETY: `d_name` is a NUL-terminated name inside the entry readdir returned.
+            let name = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) };
+            let b = name.to_bytes();
+            if b != b"." && b != b".." {
+                out.push(name.to_owned());
+            }
+        }
+        // SAFETY: `d` is a valid stream, closed once (this also closes `dup`).
+        unsafe { libc::closedir(d) };
+        Ok(out)
+    }
+
+    fn unlink_at(dir: &OwnedFd, name: &CStr, flags: libc::c_int) -> io::Result<()> {
+        // SAFETY: `dir` is open and `name` valid.
+        rc(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) })
+    }
+
+    /// Delete everything inside `dir`, relative to its handle: links and files are unlinked,
+    /// folders are opened without following links, emptied, then removed.
+    pub(super) fn empty_dir(dir: &OwnedFd) -> io::Result<()> {
+        for n in entry_names(dir)? {
+            match kind_at(dir, &n)? {
+                Kind::Missing => {}
+                Kind::Other => unlink_at(dir, &n, 0)?,
+                Kind::Dir => {
+                    let sub = open_child(dir, &n)?;
+                    empty_dir(&sub)?;
+                    drop(sub);
+                    unlink_at(dir, &n, libc::AT_REMOVEDIR)?;
                 }
-                Err(e) => return Err(io("create the agent's folder", e)),
             }
         }
-        Err(e) => return Err(io("the agent's folder", e)),
+        Ok(())
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| io("make the agent's folder owner-only", e))?;
+
+    pub(super) fn remove_dir_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
+        unlink_at(dir, name, libc::AT_REMOVEDIR)
     }
-    Ok(())
+}
+
+/// Open `names` below `base` one handle at a time, never following a link; `create` makes a
+/// missing component (`0700`). `Ok(None)`: a component is missing and `create` is off.
+#[cfg(unix)]
+fn nf_open_chain(
+    base: &Path,
+    names: &[&str],
+    create: bool,
+) -> Result<Option<std::os::fd::OwnedFd>, AuthError> {
+    let mut cur = nofollow::open_base(base).map_err(|e| io("core's app data folder", e))?;
+    for (i, n) in names.iter().enumerate() {
+        let c = nofollow::cname(n).map_err(|e| io("an agent folder name", e))?;
+        if create {
+            nofollow::mkdir_child(&cur, &c).map_err(|e| io("create the agent's folder", e))?;
+        }
+        let next = match nofollow::open_child(&cur, &c) {
+            Ok(fd) => fd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
+            Err(e) if nofollow::is_link_or_not_dir(&e) => return Err(refused_link(&names[..=i])),
+            Err(e) => return Err(io("open the agent's folder", e)),
+        };
+        if !nofollow::own_and_narrow(&next).map_err(|e| io("the agent's folder", e))? {
+            return Err(refused_link(&names[..=i]));
+        }
+        cur = next;
+    }
+    Ok(Some(cur))
+}
+
+#[cfg(unix)]
+fn nf_ensure_chain(base: &Path, names: &[&str]) -> Result<(), AuthError> {
+    nf_open_chain(base, names, true).map(|_| ())
+}
+
+/// Empty the last folder of `names`; `Ok(false)` when it does not exist.
+#[cfg(unix)]
+fn nf_empty_chain(base: &Path, names: &[&str]) -> Result<bool, AuthError> {
+    match nf_open_chain(base, names, false)? {
+        None => Ok(false),
+        Some(fd) => nofollow::empty_dir(&fd)
+            .map(|()| true)
+            .map_err(|e| io("empty the agent's folder", e)),
+    }
+}
+
+/// Delete the last folder of `names` (a link there is refused); `Ok(false)` when it is missing.
+#[cfg(unix)]
+fn nf_remove_last(base: &Path, names: &[&str]) -> Result<bool, AuthError> {
+    let Some((last, parents)) = names.split_last() else {
+        return Ok(false);
+    };
+    let Some(parent) = nf_open_chain(base, parents, false)? else {
+        return Ok(false);
+    };
+    let c = nofollow::cname(last).map_err(|e| io("an agent folder name", e))?;
+    match nofollow::kind_at(&parent, &c).map_err(|e| io("the agent's folder", e))? {
+        nofollow::Kind::Missing => return Ok(false),
+        nofollow::Kind::Other => return Err(refused_link(names)),
+        nofollow::Kind::Dir => {}
+    }
+    let fd = match nofollow::open_child(&parent, &c) {
+        Ok(fd) => fd,
+        Err(e) if nofollow::is_link_or_not_dir(&e) => return Err(refused_link(names)),
+        Err(e) => return Err(io("open the agent's folder", e)),
+    };
+    if !nofollow::own_and_narrow(&fd).map_err(|e| io("the agent's folder", e))? {
+        return Err(refused_link(names));
+    }
+    nofollow::empty_dir(&fd).map_err(|e| io("remove the agent's folder", e))?;
+    drop(fd);
+    nofollow::remove_dir_at(&parent, &c).map_err(|e| io("remove the agent's folder", e))?;
+    Ok(true)
+}
+
+/// Non-unix: every component is checked with `symlink_metadata` before use (no handle-relative
+/// delete is available here, so this is check-then-act).
+#[cfg(not(unix))]
+fn nf_checked_path(
+    base: &Path,
+    names: &[&str],
+    create: bool,
+) -> Result<Option<PathBuf>, AuthError> {
+    let mut cur = base.to_path_buf();
+    for (i, n) in names.iter().enumerate() {
+        cur.push(n);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+                return Err(refused_link(&names[..=i]))
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
+                match std::fs::create_dir(&cur) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(io("create the agent's folder", e)),
+                }
+                let m = std::fs::symlink_metadata(&cur).map_err(|e| io("the agent's folder", e))?;
+                if m.file_type().is_symlink() || !m.is_dir() {
+                    return Err(refused_link(&names[..=i]));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io("the agent's folder", e)),
+        }
+    }
+    Ok(Some(cur))
+}
+
+#[cfg(not(unix))]
+fn nf_ensure_chain(base: &Path, names: &[&str]) -> Result<(), AuthError> {
+    nf_checked_path(base, names, true).map(|_| ())
+}
+
+#[cfg(not(unix))]
+fn nf_empty_chain(base: &Path, names: &[&str]) -> Result<bool, AuthError> {
+    let Some(p) = nf_checked_path(base, names, false)? else {
+        return Ok(false);
+    };
+    for e in std::fs::read_dir(&p).map_err(|e| io("empty the agent's folder", e))? {
+        let e = e.map_err(|e| io("empty the agent's folder", e))?;
+        let ft = e
+            .file_type()
+            .map_err(|e| io("empty the agent's folder", e))?;
+        let r = if ft.is_dir() && !ft.is_symlink() {
+            std::fs::remove_dir_all(e.path())
+        } else {
+            std::fs::remove_file(e.path())
+        };
+        r.map_err(|e| io("empty the agent's folder", e))?;
+    }
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn nf_remove_last(base: &Path, names: &[&str]) -> Result<bool, AuthError> {
+    match nf_checked_path(base, names, false)? {
+        None => Ok(false),
+        Some(p) => std::fs::remove_dir_all(&p)
+            .map(|()| true)
+            .map_err(|e| io("remove the agent's folder", e)),
+    }
 }
 
 /// The canonical form of `p` when it exists, else of its nearest existing ancestor joined with
@@ -528,7 +805,9 @@ pub fn check_argv(args: &[String]) -> Result<(), AuthError> {
 }
 
 /// The ACP `authenticate` check: the request Core sends (method id and params as JSON) never
-/// carries a vendor key. Core only ever selects a method; it never forwards a key.
+/// carries a vendor key. Core only ever selects a method; it never forwards a key. A per-agent
+/// allowlist of method ids (from the agent's `initialize.authMethods`) lands with the ACP host
+/// (WP03), which is the only caller.
 pub fn check_authenticate(params_json: &str) -> Result<(), AuthError> {
     crate::hermes::cloud::ensure_keyless("ACP authenticate request", params_json)
         .map_err(AuthError::Refused)
