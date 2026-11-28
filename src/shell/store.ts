@@ -14,6 +14,7 @@ import * as l3Auth from "./actions/l3/auth";
 import * as l1Turn from "./actions/l1/turn";
 import * as l4ThreadEdit from "./actions/l4/threadEdit";
 import * as l8Proposals from "./actions/l8/proposals";
+import * as l5LocalModel from "./actions/l5/localModel";
 import { PREFERRED_CHAT_ID } from "./actions/l1/turn";
 // L0-WP07c: the turn helpers moved to actions/l1/turn.ts; every name is still exported here.
 export { GATEWAY_CONSENT_UNAVAILABLE, LOCAL_ASK_NOT_SENT, LOCAL_ONLY_NOT_SENT, LOCAL_ROUTE_POLL_MS, LOCAL_START_WAIT_MS, PREFERRED_CHAT_ID, SELF_GATED_TOOLS } from "./actions/l1/turn";
@@ -68,11 +69,10 @@ import { flSnapshot } from "../fl/flSnapshot";
 import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
-import type { ChatRoute, ModelStatus, RouteAskOptions } from "../bridge/domains";
-import { LOCAL_MODELS } from "./localModels";
+import type { ChatRoute, RouteAskOptions } from "../bridge/domains";
 import { commandCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
-import { activeRouterId, canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
+import { type ModelChoice } from "../agent/modelRouter";
 import { formatMemoryHits } from "../agent/knowledgeSearch";
 import { escalationOffered, withEscalationTool } from "../agent/escalation";
 import { cognitionConnected, delegationOffered, withDelegationTools } from "../agent/cognition";
@@ -551,14 +551,6 @@ export function tickPatch(
   return u;
 }
 
-/** Why a model download/verify failed. A Tauri command rejects with the Rust error as a plain
- *  string, not an Error; that string is the real cause and is shown as is. */
-function modelFailureReason(e: unknown, fallback: string): string {
-  if (e instanceof Error && e.message.trim()) return e.message;
-  if (typeof e === "string" && e.trim()) return e;
-  return fallback;
-}
-
 /**
  * L0-WP07: the Store's private members that lane action modules (src/shell/actions/l<N>/*.ts) read,
  * write or call. Narrow on purpose: each WP07 section adds only what its moved code uses. A lane
@@ -633,6 +625,18 @@ export interface StoreInternals {
   patchProposal: Store["patchProposal"];
   /** 07d: Store.patchRoundDraft (private). */
   patchRoundDraft: Store["patchRoundDraft"];
+  /** 07e: a model_download call is in flight (actions/l5/localModel.ts). */
+  modelDownloadInFlight: Store["modelDownloadInFlight"];
+  /** 07e: bumped by every startModelDownload, so a superseded call is ignored. */
+  modelGen: Store["modelGen"];
+  /** 07e: the refreshModel in-flight guard. */
+  modelRefreshing: Store["modelRefreshing"];
+  /** 07e: the model download poll. */
+  modelTimer: Store["modelTimer"];
+  /** 07e: the serve-and-route poll. */
+  serveRouteTimer: Store["serveRouteTimer"];
+  /** 07e: Store.stopModelPoll (private). */
+  stopModelPoll: Store["stopModelPoll"];
 }
 
 export class Store {
@@ -855,6 +859,37 @@ export class Store {
       routeHeldMessage: (...a: Parameters<Store["routeHeldMessage"]>) => self.routeHeldMessage(...a),
       patchProposal: (...a: Parameters<Store["patchProposal"]>) => self.patchProposal(...a),
       patchRoundDraft: (...a: Parameters<Store["patchRoundDraft"]>) => self.patchRoundDraft(...a),
+      get modelDownloadInFlight() {
+        return self.modelDownloadInFlight;
+      },
+      set modelDownloadInFlight(v) {
+        self.modelDownloadInFlight = v;
+      },
+      get modelGen() {
+        return self.modelGen;
+      },
+      set modelGen(v) {
+        self.modelGen = v;
+      },
+      get modelRefreshing() {
+        return self.modelRefreshing;
+      },
+      set modelRefreshing(v) {
+        self.modelRefreshing = v;
+      },
+      get modelTimer() {
+        return self.modelTimer;
+      },
+      set modelTimer(v) {
+        self.modelTimer = v;
+      },
+      get serveRouteTimer() {
+        return self.serveRouteTimer;
+      },
+      set serveRouteTimer(v) {
+        self.serveRouteTimer = v;
+      },
+      stopModelPoll: (...a: Parameters<Store["stopModelPoll"]>) => self.stopModelPoll(...a),
     });
     this.state = loadState();
     this.snap = this.state;
@@ -3834,300 +3869,71 @@ export class Store {
   }
 
   // ---------- CORE-BC-3: local model (download + verify + serve) ----------
+  // L0-WP07e: the model actions live in actions/l5/localModel.ts (lane L5); one-line delegates.
 
-  /** Fold the REAL model status from the bridge into AppState. `ready` is EARNED
-   * only by a real verify (Rule 1) — the bridge never fabricates it. A failed
-   * poll keeps the last honest values. */
-  async refreshModel(): Promise<void> {
-    if (this.modelRefreshing) return; // in-flight guard — skip this 2s tick if the last is still running
-    this.modelRefreshing = true;
-    try {
-      const st = await bridge.model.status();
-      // While a download call is in flight the backend may not have written its `.part` yet
-      // (disk check, first request): that reads as notPresent, never as a reason to show the
-      // Download button again.
-      const state = st.state === "notPresent" && this.modelDownloadInFlight ? "downloading" : st.state;
-      const patch: Partial<AppState> = {
-        modelState: state,
-        modelError: state === "error" ? this.state.modelError : null,
-        modelBytesPerSec: null,
-        modelEtaSecs: null,
-        modelRetryInSecs: null,
-        modelRetryReason: null,
-      };
-      if (st.state === "downloading" || st.state === "paused") {
-        patch.modelDownloadedBytes = st.downloadedBytes;
-        patch.modelTotalBytes = st.totalBytes;
-      }
-      if (st.state === "downloading") {
-        patch.modelBytesPerSec = st.bytesPerSec ?? null;
-        patch.modelEtaSecs = st.etaSecs ?? null;
-        patch.modelRetryInSecs = st.retryInSecs ?? null;
-        patch.modelRetryReason = st.lastError ?? null;
-      } else if (st.state === "error") {
-        patch.modelError = st.msg;
-      }
-      // An error the download call reported stays on screen until the next start.
-      if (this.state.modelState === "error" && !this.modelDownloadInFlight && (st.state === "notPresent" || st.state === "downloading")) {
-        patch.modelState = "error";
-        patch.modelError = this.state.modelError;
-      }
-      this.setState(patch);
-      // If the local model is verified-Ready, SPAWN the llama-server sidecar so
-      // chat actually uses on-device Gemma. Previously serveStart was only called
-      // right after a fresh verify (onboarding), so a normal launch with an
-      // already-verified model left the server down → inference fell back to the
-      // canned demo provider. Idempotent (serveStart returns AlreadyRunning if up);
-      // best-effort (a missing/failed llama-server binary is caught, chat stays on
-      // its honest fallback). Re-select the provider once the server is healthy.
-      if (BRIDGE_MODE === "tauri" && st.state === "ready") {
-        // Spawn + route once healthy (idempotent; polls readiness so it doesn't pick demo while the
-        // server is still cold-loading, and doesn't require an app restart to switch to local).
-        void this.serveLocalAndRoute();
-      }
-    } catch {
-      /* honest no-op: a failed poll keeps the last real status, never a sim number */
-    } finally {
-      this.modelRefreshing = false;
-    }
+  /** Fold the REAL model status from the bridge into AppState (actions/l5/localModel.ts). */
+  refreshModel(): Promise<void> {
+    return l5LocalModel.refreshModel(this);
   }
 
-  /** Read the onboarding model options (the member's choice and the free disk space). */
-  async loadModelOptions(): Promise<void> {
-    try {
-      const o = await bridge.model.options();
-      this.setState({ modelChoice: o.chosen, modelFreeBytes: o.freeBytes ?? null });
-    } catch {
-      /* honest no-op: the step shows no disk figure */
-    }
+  /** Read the onboarding model options (the member's choice and the free disk space) (actions/l5/localModel.ts). */
+  loadModelOptions(): Promise<void> {
+    return l5LocalModel.loadModelOptions(this);
   }
 
-  /** Start (or resume) the STREAMED model download + verify, polling `model.status()` for real
-   * progress. `model` picks the default or the smaller pinned model (and becomes the choice).
-   * The backend retries a lost connection on its own while the app is open, verifies, and on a
-   * checksum mismatch downloads once more from the start, so this resolves at `ready` or rejects
-   * with plain words. A second start while one runs attaches to it (the backend waits on it).
-   * A pause rejects; the status then reads `paused`, which is shown as paused, not as an error. */
+  /** Start (or resume) the streamed model download + verify (actions/l5/localModel.ts). */
   startModelDownload(model?: "default" | "small"): void {
-    const gen = ++this.modelGen;
-    const patch: Partial<AppState> = { modelState: "downloading", modelError: null, modelRetryInSecs: null, modelRetryReason: null };
-    if (model && model !== this.state.modelChoice) {
-      patch.modelChoice = model;
-      patch.modelDownloadedBytes = 0;
-      patch.modelTotalBytes = LOCAL_MODELS[model].sizeBytes;
-      patch.modelBytesPerSec = null;
-      patch.modelEtaSecs = null;
-    }
-    this.setState(patch);
-    this.save();
-    this.modelDownloadInFlight = true;
-    // Poll the real status every 2s so the progress bar reflects real bytes.
-    if (!this.modelTimer) this.modelTimer = setInterval(() => void this.refreshModel(), 2000);
-    void bridge.model
-      .download(model)
-      .then(async () => {
-        if (gen !== this.modelGen) return;
-        this.modelDownloadInFlight = false;
-        await this.refreshModel();
-        // The download call verifies; verify here only if the status does not read ready yet.
-        if (this.state.modelState !== "ready") await this.verifyModel();
-        else {
-          this.toast("Local model verified, SHA-256 matched. Chat can run on this computer.");
-          void this.serveLocalAndRoute();
-          this.stopModelPoll();
-        }
-        void this.loadModelOptions();
-      })
-      .catch(async (e: unknown) => {
-        if (gen !== this.modelGen) return;
-        this.modelDownloadInFlight = false;
-        const reason = modelFailureReason(e, "download failed");
-        let st: ModelStatus | null = null;
-        try {
-          st = await bridge.model.status();
-        } catch {
-          st = null;
-        }
-        if (gen !== this.modelGen) return;
-        if (st?.state === "paused") {
-          this.setState({ modelState: "paused", modelDownloadedBytes: st.downloadedBytes, modelTotalBytes: st.totalBytes, modelError: null, modelBytesPerSec: null, modelEtaSecs: null, modelRetryInSecs: null, modelRetryReason: null });
-          this.stopModelPoll();
-          return;
-        }
-        if (st?.state === "ready") {
-          this.setState({ modelState: "ready", modelError: null });
-          this.stopModelPoll();
-          void this.serveLocalAndRoute();
-          return;
-        }
-        this.setState({ modelState: "error", modelError: reason, modelRetryInSecs: null, modelRetryReason: null });
-        this.toast("Model download stopped: " + reason + " Chat uses the gateway meanwhile.");
-        this.stopModelPoll();
-        void this.loadModelOptions();
-        this.save();
-      });
+    return l5LocalModel.startModelDownload(this, model);
   }
 
-  /** Pause the running download; its progress is kept and Resume continues from the same byte. */
+  /** Pause the running download; Resume continues from the same byte (actions/l5/localModel.ts). */
   pauseModelDownload(): void {
-    void bridge.model
-      .pause()
-      .then(() => this.refreshModel())
-      .catch(() => {
-        /* the next poll shows the real state */
-      });
+    return l5LocalModel.pauseModelDownload(this);
   }
 
-  /** Switch to the smaller pinned model (a slow connection or a full disk). The default model's
-   * partial download, if any, is paused and kept. */
+  /** Switch to the smaller pinned model (a slow connection or a full disk) (actions/l5/localModel.ts). */
   chooseSmallerModel(): void {
-    const wasRunning = this.modelDownloadInFlight;
-    const go = () => this.startModelDownload("small");
-    if (wasRunning) {
-      void bridge.model.pause().catch(() => undefined).finally(go);
-    } else go();
+    return l5LocalModel.chooseSmallerModel(this);
   }
 
-  /** Go back to the default model (its own partial download resumes). */
+  /** Go back to the default model (its own partial download resumes) (actions/l5/localModel.ts). */
   chooseDefaultModel(): void {
-    const wasRunning = this.modelDownloadInFlight;
-    const go = () => this.startModelDownload("default");
-    if (wasRunning) {
-      void bridge.model.pause().catch(() => undefined).finally(go);
-    } else go();
+    return l5LocalModel.chooseDefaultModel(this);
   }
 
-  /** Stream-verify the downloaded model (SHA-256 == the pinned hash). On a match
-   * the model becomes `ready`; on a mismatch the file is quarantined and an
-   * honest error surfaces (never a fabricated "verified"). */
-  async verifyModel(): Promise<void> {
-    this.setState({ modelState: "verifying" });
-    try {
-      await bridge.model.verify();
-      await this.refreshModel(); // reads the EARNED `ready` from the bridge
-      if (this.state.modelState === "ready") {
-        this.toast("Local model verified, SHA-256 matched. Chat can run on this computer.");
-        // Spawn llama-server AND route chat to it once it's healthy (the cold-load takes tens of
-        // seconds; serveLocalAndRoute polls readiness before switching the provider off demo).
-        void this.serveLocalAndRoute();
-      }
-      this.stopModelPoll();
-    } catch (e) {
-      const reason = modelFailureReason(e, "verify failed");
-      this.setState({ modelState: "error", modelError: reason });
-      this.toast("Model verify failed: " + reason + " Chat uses the gateway meanwhile.");
-      this.stopModelPoll();
-    }
-    this.save();
+  /** Stream-verify the downloaded model (SHA-256 == the pinned hash) (actions/l5/localModel.ts). */
+  verifyModel(): Promise<void> {
+    return l5LocalModel.verifyModel(this);
   }
 
-  /**
-   * Hermes ModelRouter (P0/WP0.4) — persist the member's model selection. `choices` is the
-   * live router list the surface built (local + gateway [+ registry]). Fail-closed on a
-   * phantom id (INV-Router-3): a selection that is not an enumerated choice is ignored, so
-   * the active can never point at a fabricated model. The caller (the chat surface) also
-   * switches the SERVED local model for a local pick (modelsSlice.selectModel restarts
-   * llama-server); the gateway is the always-ready default, so picking it needs no restart.
-   */
-  /**
-   * D-11 — a cloud choice (a model of a provider connected in Settings › Models) is stored in core
-   * as the preferred model (`providers_preferred_set`, which checks the provider can take calls),
-   * and the provider is rebuilt so the next Hermes turn runs on it through the core model proxy.
-   * A local or gateway choice clears a stored cloud model, so the pick in the chat is what answers.
-   * Returns core's refusal (nothing changes then), or null.
-   */
-  async selectModel(id: string, choices: ModelChoice[]): Promise<string | null> {
-    if (!canSelect(id, choices)) return null; // phantom id — never persist a non-choice
-    const chosen = choices.find((c) => c.id === id);
-    if (chosen?.source === "cloud" && chosen.cloud) {
-      const err = await this.setHermesCloudModel(chosen.cloud);
-      if (err) return err;
-      this.setState({ activeModelId: id });
-      this.save();
-      return null;
-    }
-    this.setState({ activeModelId: id });
-    this.save();
-    if (this.state.hermesCloudModel) return this.setHermesCloudModel(null);
-    return null;
+  /** Hermes ModelRouter (P0/WP0.4) — persist the member's model selection (actions/l5/localModel.ts). */
+  selectModel(id: string, choices: ModelChoice[]): Promise<string | null> {
+    return l5LocalModel.selectModel(this, id, choices);
   }
 
-  /** The router id shown as selected: the stored cloud model while one is set, else the stored id. */
+  /** The router id shown as selected (actions/l5/localModel.ts). */
   routerActiveId(): string | null {
-    return activeRouterId(this.state.activeModelId, this.state.hermesCloudModel);
+    return l5LocalModel.routerActiveId(this);
   }
 
-  /**
-   * The model the send path actually resolves (INV-Router-2): the active choice iff it is
-   * READY, else the always-ready gateway terminal. Pure over the passed `choices` so the
-   * chat never routes to a not-ready (still-downloading / not-pulled) model.
-   */
+  /** The model the send path actually resolves, INV-Router-2 (actions/l5/localModel.ts). */
   routerActive(choices: ModelChoice[]): ModelChoice {
-    return resolveActive(this.routerActiveId(), choices);
+    return l5LocalModel.routerActive(this, choices);
   }
 
-  /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
-   * opt-out, not a failure — no fabricated "ready". */
+  /** Honestly SKIP the local model: chat routes to the gateway/demo (actions/l5/localModel.ts). */
   skipModel(): void {
-    // A running download keeps going in the background (and its progress keeps showing).
-    if (!this.modelDownloadInFlight) this.stopModelPoll();
-    this.setState({ modelSkipped: true });
-    this.toast("Skipped the local model. Chat runs on the gateway; you can download it any time in Settings, Models.");
-    this.save();
+    return l5LocalModel.skipModel(this);
   }
 
-  /** Stop the model status poller (called on complete/skip/error). */
+  /** Stop the model status poller (called on complete/skip/error) (actions/l5/localModel.ts). */
   private stopModelPoll(): void {
-    if (this.modelTimer) {
-      clearInterval(this.modelTimer);
-      this.modelTimer = null;
-    }
+    return l5LocalModel.stopModelPoll(this);
   }
 
-  /**
-   * Spawn the local llama-server for a verified model, then route chat to it ONCE IT IS HEALTHY.
-   *
-   * WHY THIS EXISTS: `serveStart` only *spawns* llama-server; a cold start mmaps a multi-GB GGUF and
-   * builds the compute graph, which takes tens of seconds. The old code called `serveStart` then
-   * `rebuildProvider` immediately (server still loading → inferenceState not "ready" → the honest DEMO
-   * provider) and then STOPPED polling — so chat stayed on the canned demo agent for the whole session
-   * even though the model was serving. Here we spawn, then poll `inferenceState` until it reports
-   * "ready" and only THEN rebuild the provider (→ local). Idempotent (a running server → AlreadyRunning;
-   * the poll guard prevents overlaps); bounded (~80s cap) so a genuinely dead server falls back honestly.
-   */
-  async serveLocalAndRoute(): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") return;
-    try {
-      await bridge.model.serveStart();
-    } catch {
-      // No local server (binary missing / spawn failed) — leave chat on its honest fallback.
-      // SCL-S7.5a: the startup start has settled (failed), so a held message asks now.
-      this.launchLocalStartPending = false;
-      await this.rebuildProvider();
-      return;
-    }
-    // SCL-S7.5a: the startup start has settled (spawned; a cold load counts as running).
-    this.launchLocalStartPending = false;
-    if (this.serveRouteTimer) return; // a poll is already waiting for the server to warm up
-    let tries = 0;
-    const check = async () => {
-      tries++;
-      let state = "demo";
-      try {
-        state = await bridge.chat.inferenceState(false);
-      } catch {
-        /* transient read failure — keep waiting */
-      }
-      if (state === "ready" || tries >= 40) {
-        if (this.serveRouteTimer) {
-          clearInterval(this.serveRouteTimer);
-          this.serveRouteTimer = null;
-        }
-        await this.rebuildProvider(); // now routes to local (or stays on fallback at the cap)
-      }
-    };
-    this.serveRouteTimer = setInterval(() => void check(), 2000);
-    void check();
+  /** Spawn the local llama-server for a verified model, then route chat to it (actions/l5/localModel.ts). */
+  serveLocalAndRoute(): Promise<void> {
+    return l5LocalModel.serveLocalAndRoute(this);
   }
 
   /**
