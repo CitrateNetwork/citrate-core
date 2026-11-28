@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { RESERVED_ROUTES, registerSurfaces, surfaceForRoute, type SurfaceDecl } from "./registry";
-import { CANONICAL_ROUTES, LEGACY_ROUTES, PLACES, ROUTABLE, locate, resolveRoute } from "../places";
+import { CANONICAL_ROUTES, LEGACY_ROUTES, PLACES, ROUTABLE, locate, registerFor, resolveRoute } from "../places";
 import { PlaceView, surfaceFor } from "../PlaceView";
 import { ROUTES } from "../Sidebar";
 import { store } from "../store";
@@ -97,17 +97,66 @@ describe("L0-WP08 route registry", () => {
   });
 
   it("every_named_navigation_target_is_built_in_or_reserved", () => {
-    // A store.go("<id>") literal that no place resolves could be taken by a lane's registration and
-    // capture that navigation. Each one resolves, or is reserved in registry.ts.
+    // A route the app navigates to by name that no place resolves could be taken by a lane's
+    // registration and capture that navigation. Each one resolves, or is reserved in registry.ts.
+    // Names come from: go("<id>") in any quote style (store.go, this.go, a go prop), a *_ROUTE
+    // constant, a `route: "<id>"` field (coach ctas, alerts, controls links) outside the bridge,
+    // and the app_navigate tool's allowlist in store.ts.
     const targets = new Set<string>();
+    const lit = /(["'`])([^"'`$]+)\1/.source;
+    const patterns = [new RegExp(/\bgo\(\s*/.source + lit, "g"), new RegExp(/\b[A-Z][A-Z0-9_]*_ROUTE\s*=\s*/.source + lit, "g")];
+    const field = new RegExp(/\broute:\s*/.source + lit, "g");
     for (const f of readdirSync(SRC, { recursive: true }) as string[]) {
       if (!/\.tsx?$/.test(f) || /\.test\.tsx?$/.test(f)) continue;
-      for (const m of readFileSync(join(SRC, f), "utf8").matchAll(/\.go\("([^"]+)"/g)) targets.add(m[1]);
+      const rel = f.split("\\").join("/");
+      const text = readFileSync(join(SRC, f), "utf8");
+      for (const re of patterns) for (const m of text.matchAll(re)) targets.add(m[2]);
+      // The bridge's `route:` fields are policy routing (ask_first, …), not navigation; places.ts is the table itself.
+      if (!rel.startsWith("bridge/") && rel !== "shell/places.ts") for (const m of text.matchAll(field)) targets.add(m[2]);
     }
-    expect(targets.size).toBeGreaterThan(10);
+    const nav = readFileSync(join(SRC, "shell/store.ts"), "utf8").match(/\[([^\]]*)\]\.indexOf\(args\.route\)/);
+    expect(nav, "app_navigate allowlist").not.toBeNull();
+    for (const m of (nav?.[1] ?? "").matchAll(/["']([^"']+)["']/g)) targets.add(m[1]);
+    // The scan reaches every form named above (a single-quoted cta, both route constants, the allowlist).
+    for (const t of ["groups", "groups/cluster", "settings/work", "storage", "commissary", "groups/members"]) expect(targets, t).toContain(t);
+    expect(targets.size).toBeGreaterThan(20);
     const loose = [...targets].filter((t) => resolveRoute(t) === null && !RESERVED_ROUTES.includes(t)).sort();
     expect(loose).toEqual([]);
     expect(resolveRoute("onboarding")).toBeNull(); // still not a place route, so still reserved
+  });
+
+  it("refuses_a_route_under_a_built_in_sub_tab_strip", () => {
+    // A registered route cannot join a built-in sub-tab strip; it would show as a top-level tab.
+    for (const r of ["groups/rounds/wp08", "node/storage/wp08", "hermes/controls/wp08", "groups/chat/wp08", "node/storage/files/wp08"]) {
+      const place = r.split("/")[0] as "groups";
+      expect(() => registerSurfaces([decl(r, "L4", { tab: { place, label: "X", order: 30 } })]), r).toThrow(/sub-tab strip/);
+      expect(() => registerSurfaces([decl(r, "L4")]), r).toThrow(/sub-tab strip/);
+      expect(ROUTABLE, r).not.toContain(r);
+    }
+    // A sibling that only shares the first letters is not under the strip.
+    registerSurfaces([decl("node/storagex-wp08", "L7")]);
+    expect(surfaceForRoute("node/storagex-wp08")?.lane).toBe("L7");
+  });
+
+  it("a_registered_route_declares_its_register", () => {
+    // Instrument (dark telemetry) or charter (light document); charter when the lane says nothing.
+    registerSurfaces([decl("node/wp08-dark", "L7", { register: "instrument" }), decl("node/wp08-light", "L7")]);
+    expect(registerFor("node/wp08-dark")).toBe("instrument");
+    expect(registerFor("node/wp08-light")).toBe("charter");
+    expect(registerFor("wallet")).toBe("instrument"); // a built-in keeps its own
+    expect(() => registerSurfaces([decl("node/wp08-dim", "L7", { register: "dim" as never })])).toThrow(/register/);
+    expect(ROUTABLE).not.toContain("node/wp08-dim");
+  });
+
+  it("lane_route_files_declare_only_their_own_lane", () => {
+    // SurfaceDecl.lane names the lane that owns the file declaring it: l6.tsx declares only L6.
+    for (let n = 0; n <= 9; n++) {
+      const text = readFileSync(join(SRC, `shell/routes/l${n}.tsx`), "utf8");
+      const lanes = [...text.matchAll(/\blane:\s*["'`]([^"'`]*)["'`]/g)].map((m) => m[1]);
+      expect(lanes.filter((l) => l !== `L${n}`), `l${n}.tsx`).toEqual([]);
+      // A lane id from a variable or an expression could not be checked here.
+      expect(text, `l${n}.tsx`).not.toMatch(/\blane:\s*[^"'`\s]/);
+    }
   });
 
   it("lane_route_files_exist_and_never_import_place_view", () => {
