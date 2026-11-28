@@ -21,6 +21,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const CHAT_PATH: &str = "/v1/chat/completions";
+/// L1-WP10: the OpenAI Responses API path (Codex), served by [`responses`].
+pub const RESPONSES_PATH: &str = "/v1/responses";
+
+/// L1-WP10 (v060) — `/v1/responses`. Declared here (L1 owns this file) until L0-WP04 lands the
+/// lane module tree.
+#[path = "model_proxy_responses.rs"]
+pub(crate) mod responses;
 /// Header naming the conversation a call belongs to (recorded in the usage log).
 pub const CONVERSATION_HEADER: &str = "x-citrate-conversation";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -349,12 +356,12 @@ pub fn completion_json(model: &str, r: &ChatResponse) -> Value {
     out
 }
 
-fn error_body(e: &ProxyError) -> Value {
+pub(crate) fn error_body(e: &ProxyError) -> Value {
     let (_, kind) = e.http();
     json!({"error": {"type": kind, "message": e.to_string()}})
 }
 
-fn write_json(out: &mut dyn Write, status: u16, body: &Value) {
+pub(crate) fn write_json(out: &mut dyn Write, status: u16, body: &Value) {
     let b = body.to_string();
     let _ = write!(
         out,
@@ -401,7 +408,7 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             &json!({"error": {"type": "forbidden", "message": msg}}),
         );
     }
-    if req.path != CHAT_PATH {
+    if req.path != CHAT_PATH && req.path != RESPONSES_PATH {
         return write_json(
             out,
             404,
@@ -428,6 +435,10 @@ pub fn serve_one(proxy: &ModelProxy, req: &HttpReq, port: u16, out: &mut dyn Wri
             )
         }
     };
+    if req.path == RESPONSES_PATH {
+        let conversation = req.header(CONVERSATION_HEADER).map(str::to_string);
+        return responses::serve(proxy, token, &route.model, &body, conversation, out);
+    }
     let chat = match from_openai_body(&body) {
         Ok(c) => c,
         Err(m) => return write_json(out, 400, &error_body(&ProxyError::BadRequest(m))),
