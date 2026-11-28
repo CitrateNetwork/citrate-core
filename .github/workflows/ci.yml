@@ -128,6 +128,21 @@ jobs:
       # pin must agree; a component script that builds outside the pinned engine fails here.
       - name: release component pins
         run: node scripts/component-pins.mjs check
+      # L0-WP10: a package new to Cargo.lock or package-lock.json (against the PR or merge-group
+      # base, or the previous main commit) needs its row in release/dep-intake.json with a
+      # supply-chain review; CitrateNetwork git crates stay on one pinned rev with a [[drift]]
+      # entry; a new cargo audit --ignore above needs an EXPIRES date. Scheduled and manual runs
+      # have no base and check only the rows, the pins and the ignores.
+      - name: dependency intake
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            node scripts/dep-intake.mjs check --base "$BASE_SHA"
+          else
+            node scripts/dep-intake.mjs check
+          fi
       # K6: every network profile is well formed, an unset value always has a reason, and the
       # active one is release-ready (the same check release.yml runs as the G0 gate).
       - name: network profile

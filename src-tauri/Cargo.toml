@@ -21,6 +21,9 @@ citrate-core-kit = { path = "../kit" }
 citrate-components = { path = "../components" }
 # HUP-S6.2 / S6.9 — the contract template renderer and per-tier Medusa budgets (workspace crate).
 citrate-templates = { path = "../templates/renderer" }
+# L1-WP03 (v060) — the ACP host (crates/citrate-acp-host, L1-owned): runs pinned coding agents over
+# the Agent Client Protocol. Its third-party packages are in release/dep-intake.json.
+citrate-acp-host = { path = "../crates/citrate-acp-host" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

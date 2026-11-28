@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "L0-WP10 dependency intake. Every third-party package a change adds to Cargo.lock or package-lock.json is listed in exactly one row's deps, as cargo:<name> or npm:<name>. Checked by scripts/dep-intake.mjs (ci.yml node job, against the PR base).",
+    "A row: deps (the direct dependency and the transitive packages it brings), lane (L0..L9, LQ), wp, reason, licence (SPDX), reviewer, supply_chain {skill: supply-chain-risk-auditor, result: pass | pass-with-notes, notes}, origins (the reviewed source origins, as scripts/dep-intake.mjs sourceOrigin prints them: a registry index for a crate, registry.npmjs.org/<package> for an npm package, the git URL for a git dep; a dep that later comes from another origin fails until the row is reviewed again), and drift (the citrate-federation manifest.toml [[drift]] entry) for a CitrateNetwork git crate.",
+    "A lane asks for a dependency with an intake row in its sprint WP; L0 lands it in a dependency PR, at most one a day, and regenerates the licence inventory and third-party notices (release/licences.json, scripts/third-party-notices.mjs). Packages already locked when intake started (2026-11-27) have no rows; a row whose package leaves the lockfiles goes with it."
+  ],
+  "version": 1,
+  "rows": [
+    {
+      "deps": [
+        "cargo:agent-client-protocol",
+        "cargo:agent-client-protocol-derive",
+        "cargo:agent-client-protocol-schema",
+        "cargo:convert_case",
+        "cargo:fixedbitset",
+        "cargo:futures",
+        "cargo:futures-concurrency",
+        "cargo:pin-project",
+        "cargo:pin-project-internal",
+        "cargo:strum",
+        "cargo:strum_macros",
+        "cargo:syn",
+        "cargo:unicode-xid"
+      ],
+      "lane": "L1",
+      "wp": "L1-WP02/WP03",
+      "reason": "The ACP SDK for the agent host (crates/citrate-acp-host): Core is the ACP client that spawns the pinned agents in release/agents.lock.json. agent-client-protocol is pinned =5.6.1 (crates.io sha256 e2889673b9bc92e57857cb780f5431b684840c78a95a8edaa4afc00293d10dda, the agents.lock.json evidence value) with default features only (no process, no stdio). The rest are its transitive packages new to Cargo.lock: syn 3.0.10 is a second major of syn, pulled by agent-client-protocol-derive and strum_macros 0.28 (proc macros, build time only). The lock also moves the existing futures-* crates 0.3.32 -> 0.3.34 (same source, the SDK's minimum) and adds tokio's signal-hook-registry (tokio's process feature).",
+      "licence": "Apache-2.0 (agent-client-protocol, -derive, -schema); MIT OR Apache-2.0 (fixedbitset, futures, futures-concurrency, pin-project, pin-project-internal, syn, unicode-xid); MIT (convert_case, strum, strum_macros)",
+      "reviewer": "pending: L0 lane lead (this row was prepared by the L1-WP03 worker)",
+      "supply_chain": {
+        "skill": "supply-chain-risk-auditor",
+        "result": "pass-with-notes",
+        "notes": "Checked on crates.io 2026-11-28. agent-client-protocol 5.6.1 (published 2026-11-25, 6.8M downloads), -derive 5.6.1 and -schema 1.22.0 (2026-11-23) come from the agentclientprotocol org (github.com/agentclientprotocol/rust-sdk and agent-client-protocol), Apache-2.0; crate sha256 re-computed locally and equal to the pin. Release cadence is fast (5.3.0 to 5.6.1 in 11 days), so the exact pin is load-bearing and any bump is a reviewed PR. The SDK's default features add no process-spawning or network code to Core: the host spawns the agent itself with a cleared environment. The others are widely used ecosystem crates (each over 18M downloads; futures, syn, pin-project, strum over 700M) from their long-standing maintainers. Not run here: cargo audit (the CI rust job runs it on this lock)."
+      },
+      "origins": [
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ]
+    }
+  ]
+}
