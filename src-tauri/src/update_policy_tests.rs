@@ -317,3 +317,9 @@ fn update_policy_commands_are_registered_and_allowed_for_the_main_window() {
         assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
     }
 }
+
+#[test]
+fn lq_wp12_red_probe_fails() {
+    // LQ-WP12 RED probe (throwaway, never merged).
+    assert_eq!(1 + 1, 3, "lq probe");
+}

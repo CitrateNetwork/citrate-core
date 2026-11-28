@@ -531,3 +531,6 @@ export function useAppUpdate() {
 
   return { state, check, install, restart, dismiss };
 }
+
+// LQ-WP12 RED probe (throwaway, never merged): a behavior edit on the forced-update-gate surface.
+export const LQ_PROBE = 1;

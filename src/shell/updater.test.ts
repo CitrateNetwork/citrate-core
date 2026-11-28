@@ -206,3 +206,9 @@ describe("#619: the install-held refusal is matched by its code", () => {
   });
 });
 
+
+describe("lq-wp12 red probe (throwaway)", () => {
+  it("fails on purpose", () => {
+    expect(1).toBe(2);
+  });
+});
