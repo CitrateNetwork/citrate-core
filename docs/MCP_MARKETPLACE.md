@@ -24,6 +24,13 @@ and the refusal `no_key`, "Signed catalog not available yet: signing key not iss
 as the catalog key slot is empty. A filled slot alone does not change `signed`: only a verified
 signed subregistry can (L6-WP08c).
 
+`installed` on an entry says whether a saved user server points at the same endpoint (an `https`
+URL compared on parsed parts: host lowercased, default port 443 and one trailing `/` dropped, path
+and query kept). The saved servers are read from `mcp-servers.json` without changing anything: the
+view never migrates legacy values to the keychain, rewrites the file or removes the old allowlist
+(that stays with `McpStore::load`). If the file cannot be read, the pinned list and the key status
+are still returned, every `installed` is `null`, and `installedUnavailable` says why.
+
 Verification procedure for a row (the evidence is the provider matrix, citrate-federation
 `.agentile/planset/2026-11-07-v060/evidence/L6-WP07_MCP_PROVIDER_MATRIX_2026-11-28.md`):
 

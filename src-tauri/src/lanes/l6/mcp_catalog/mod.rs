@@ -2,8 +2,8 @@
 //!
 //! Data source (Rule 7): the verified brand servers compiled into the app ([`brand`]), the
 //! catalog key slot (`citrate_components::catalog::PRODUCTION_CATALOG_PUBKEY`, shared with the
-//! signed subregistry), and the member's saved MCP servers (`mcp_servers_list`) for the installed
-//! flag.
+//! signed subregistry), and the member's saved MCP servers (the `mcp-servers.json` registry,
+//! read only by [`saved_endpoint_urls`]) for the installed flag.
 //!
 //! The key slot is empty until the owner's key ceremony, so the view is the pinned list with
 //! `signed: false` and the refusal "Signed catalog not available yet: signing key not issued".
@@ -17,10 +17,12 @@ mod brand_tests;
 mod catalog_tests;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use citrate_components::catalog::{catalog_trust_root, CatalogError};
 use citrate_components::key::TrustRoot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use brand::BRAND_SERVERS;
 
@@ -49,8 +51,9 @@ pub(crate) struct McpCatalogEntry {
     pub(crate) packages: Vec<serde_json::Value>,
     /// `oauth` or `none`.
     pub(crate) auth: String,
-    /// A saved user server points at this entry's URL.
-    pub(crate) installed: bool,
+    /// A saved user server points at this entry's URL. `None` when the saved servers could not
+    /// be read ([`McpCatalogView::installed_unavailable`] says why).
+    pub(crate) installed: Option<bool>,
     /// The date a person checked the entry.
     pub(crate) reviewed_at: Option<String>,
     /// The publisher's own page for the server.
@@ -75,20 +78,73 @@ pub(crate) struct McpCatalogView {
     pub(crate) source: String,
     pub(crate) signed: bool,
     pub(crate) refused: Option<CatalogRefusal>,
+    /// Why the installed flags are unknown (the saved servers could not be read); `None` when
+    /// they were read.
+    pub(crate) installed_unavailable: Option<String>,
     pub(crate) entries: Vec<McpCatalogEntry>,
 }
 
-/// The URL form used to match a saved server: host lowercased, one trailing `/` dropped.
-pub(crate) fn normalize_url(url: &str) -> String {
-    let url = url.trim();
-    let url = url.strip_suffix('/').unwrap_or(url);
-    match url.strip_prefix("https://") {
-        Some(rest) => {
-            let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-            format!("https://{}{path}", host.to_ascii_lowercase())
+/// The URL form used to match a saved server against a pinned entry. An `https` URL is parsed:
+/// the host is lowercased, the default port (443) and any user info are dropped, one trailing `/`
+/// of the path is dropped, and the path (its case kept) and query stay, so a different port, path
+/// or query is a different endpoint. Anything else (not `https`, or unparsable) is kept as given,
+/// trimmed, and so never equals a pinned entry.
+pub(crate) fn normalize_url(raw: &str) -> String {
+    let raw = raw.trim();
+    let parsed = match url::Url::parse(raw) {
+        Ok(u) if u.scheme() == "https" => u,
+        _ => return raw.to_string(),
+    };
+    let Some(host) = parsed.host_str() else {
+        return raw.to_string();
+    };
+    // `Url` already drops a port equal to the scheme's default.
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let path = parsed.path();
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
+    format!("https://{host}{port}{path}{query}")
+}
+
+/// Only the field the installed flag needs; every other field of a saved entry (including the
+/// plain-text `env` an older version stored) is skipped, not kept in memory.
+#[derive(Deserialize)]
+struct SavedUrls {
+    #[serde(default)]
+    servers: Vec<SavedUrl>,
+}
+
+#[derive(Deserialize)]
+struct SavedUrl {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// The normalized URLs of the member's saved servers, read from `<dir>/mcp-servers.json` without
+/// changing anything: no migration, no keychain, no rewrite, no removal of the old allowlist
+/// (those stay with `McpStore::load`). A missing file is an empty set; an unreadable or damaged
+/// file is an error, never silently empty.
+pub(crate) fn saved_endpoint_urls(dir: &Path) -> Result<BTreeSet<String>, String> {
+    let text = match std::fs::read_to_string(dir.join(crate::mcp_servers::REGISTRY_FILE)) {
+        Ok(t) => Zeroizing::new(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(e) => {
+            return Err(format!(
+                "Installed status unknown: the MCP server list could not be read ({})",
+                e.kind()
+            ))
         }
-        None => url.to_string(),
-    }
+    };
+    let saved: SavedUrls = serde_json::from_str(&text).map_err(|_| {
+        "Installed status unknown: the MCP server list could not be read (file is damaged)"
+            .to_string()
+    })?;
+    Ok(saved
+        .servers
+        .iter()
+        .filter_map(|s| s.url.as_deref())
+        .map(normalize_url)
+        .collect())
 }
 
 fn refusal(key: &Result<TrustRoot, CatalogError>) -> CatalogRefusal {
@@ -107,10 +163,12 @@ fn refusal(key: &Result<TrustRoot, CatalogError>) -> CatalogRefusal {
     }
 }
 
-/// The catalog view over the given key slot result and the saved servers' normalized URLs.
+/// The catalog view over the given key slot result and the saved servers' normalized URLs. A
+/// failed saved-server lookup leaves the pinned entries and the key status as they are and marks
+/// every installed flag unknown.
 pub(crate) fn catalog_view(
     key: &Result<TrustRoot, CatalogError>,
-    installed_urls: &BTreeSet<String>,
+    installed_urls: &Result<BTreeSet<String>, String>,
 ) -> McpCatalogView {
     let entries = BRAND_SERVERS
         .iter()
@@ -123,7 +181,10 @@ pub(crate) fn catalog_view(
             remote_url: Some(s.url.to_string()),
             packages: Vec::new(),
             auth: s.auth.as_str().to_string(),
-            installed: installed_urls.contains(&normalize_url(s.url)),
+            installed: installed_urls
+                .as_ref()
+                .ok()
+                .map(|urls| urls.contains(&normalize_url(s.url))),
             reviewed_at: Some(s.checked.to_string()),
             source_url: s.source.to_string(),
             registration: s.client.as_str().to_string(),
@@ -134,19 +195,22 @@ pub(crate) fn catalog_view(
         source: "pinned".to_string(),
         signed: false,
         refused: Some(refusal(key)),
+        installed_unavailable: installed_urls.as_ref().err().cloned(),
         entries,
     }
 }
 
-/// **mcp_catalog_list**: the Marketplace MCP catalog. Reads no network; with the key slot empty
-/// it is the pinned brand list and the "signing key not issued" refusal.
+/// **mcp_catalog_list**: the Marketplace MCP catalog. Reads no network and writes nothing; with
+/// the key slot empty it is the pinned brand list and the "signing key not issued" refusal. It
+/// always returns the pinned list: a saved-server lookup that fails only makes `installed` unknown.
 #[tauri::command]
 pub(crate) async fn mcp_catalog_list(app: tauri::AppHandle) -> Result<McpCatalogView, String> {
-    let saved = crate::mcp_servers::mcp_servers_list(app).await?;
-    let installed: BTreeSet<String> = saved
-        .iter()
-        .filter_map(|s| s.url.as_deref())
-        .map(normalize_url)
-        .collect();
+    let installed = match crate::mcp_servers::hermes_dir(&app) {
+        Ok(dir) => match crate::blocking::off_main(move || Ok(saved_endpoint_urls(&dir))).await {
+            Ok(lookup) => lookup,
+            Err(e) => Err(format!("Installed status unknown: {e}")),
+        },
+        Err(e) => Err(format!("Installed status unknown: {e}")),
+    };
     Ok(catalog_view(&catalog_trust_root(), &installed))
 }
